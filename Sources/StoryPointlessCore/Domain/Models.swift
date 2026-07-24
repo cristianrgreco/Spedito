@@ -1,0 +1,1193 @@
+import Foundation
+
+public struct Product: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public var name: String
+  public var vision: String
+  public var instructions: String
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    name: String,
+    vision: String,
+    instructions: String = "",
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.name = name
+    self.vision = vision
+    self.instructions = instructions
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum EpicStatus: String, Codable, CaseIterable, Hashable, Sendable {
+  case draft
+  case active
+  case complete
+  case archived
+
+  public var title: String {
+    switch self {
+    case .draft: "Draft"
+    case .active: "Active"
+    case .complete: "Complete"
+    case .archived: "Archived"
+    }
+  }
+}
+
+public struct Epic: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public var title: String
+  public var goal: String
+  public var successCriteria: [String]
+  public var constraints: String
+  public var status: EpicStatus
+  public var rank: Int
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    title: String,
+    goal: String,
+    successCriteria: [String] = [],
+    constraints: String = "",
+    status: EpicStatus = .draft,
+    rank: Int = 0,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.title = title
+    self.goal = goal
+    self.successCriteria = successCriteria
+    self.constraints = constraints
+    self.status = status
+    self.rank = rank
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum WorkItemState: String, Codable, CaseIterable, Sendable {
+  case backlog
+  case refining
+  case ready
+  case queued
+  case running
+  case integrating
+  case verifying
+  case acceptance
+  case readyToRelease = "ready_to_release"
+  case released
+  case cancelled
+
+  public var title: String {
+    switch self {
+    case .backlog: "Backlog"
+    case .refining: "Refining"
+    case .ready: "Ready"
+    case .queued: "Queued"
+    case .running: "Running"
+    case .integrating: "Integrating"
+    case .verifying: "Verifying"
+    case .acceptance: "Acceptance"
+    case .readyToRelease: "Ready to release"
+    case .released: "Released"
+    case .cancelled: "Cancelled"
+    }
+  }
+}
+
+public enum WorkItemPriority: Int, Codable, CaseIterable, Sendable {
+  case urgent = 0
+  case high = 1
+  case normal = 2
+  case low = 3
+
+  public var title: String {
+    switch self {
+    case .urgent: "Urgent"
+    case .high: "High"
+    case .normal: "Normal"
+    case .low: "Low"
+    }
+  }
+}
+
+public enum WorkItemType: String, Codable, CaseIterable, Sendable {
+  case story
+  case task
+  case bug
+
+  public var title: String {
+    switch self {
+    case .story: "Story"
+    case .task: "Task"
+    case .bug: "Bug"
+    }
+  }
+
+  public var guidance: String {
+    switch self {
+    case .story: "A user-visible product outcome"
+    case .task: "Supporting delivery, research, or maintenance work"
+    case .bug: "Behavior that should already work but does not"
+    }
+  }
+}
+
+public struct WorkItem: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let key: String
+  public var title: String
+  public var type: WorkItemType
+  public var body: String
+  public var acceptanceCriteria: [String]
+  public var state: WorkItemState
+  public var priority: WorkItemPriority
+  public var rank: Int
+  public var customFields: [String: String]
+  public var ownerProfileID: UUID?
+  public var epicID: UUID?
+  public var version: Int
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    key: String,
+    title: String,
+    type: WorkItemType = .story,
+    body: String = "",
+    acceptanceCriteria: [String] = [],
+    state: WorkItemState = .backlog,
+    priority: WorkItemPriority = .normal,
+    rank: Int = 0,
+    customFields: [String: String] = [:],
+    ownerProfileID: UUID? = nil,
+    epicID: UUID? = nil,
+    version: Int = 1,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.key = key
+    self.title = title
+    self.type = type
+    self.body = body
+    self.acceptanceCriteria = acceptanceCriteria
+    self.state = state
+    self.priority = priority
+    self.rank = rank
+    self.customFields = customFields
+    self.ownerProfileID = ownerProfileID
+    self.epicID = epicID
+    self.version = version
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum WorkItemRankPosition: Sendable {
+  case top
+  case bottom
+}
+
+public enum WorkItemUpdateError: Error, Equatable, LocalizedError, Sendable {
+  case versionConflict(key: String, expected: Int, actual: Int)
+
+  public var errorDescription: String? {
+    switch self {
+    case .versionConflict(let key, let expected, let actual):
+      "\(key) changed while you were editing it (expected version \(expected), found \(actual)). Reload the ticket before applying these changes."
+    }
+  }
+}
+
+public enum WorkItemRankingError: Error, Equatable, LocalizedError, Sendable {
+  case notPlanningItem(String)
+  case dependencyOrder(String)
+
+  public var errorDescription: String? {
+    switch self {
+    case .notPlanningItem(let key):
+      "\(key) is no longer in the planning backlog."
+    case .dependencyOrder(let message):
+      message
+    }
+  }
+}
+
+public struct WorkItemDependency: Codable, Hashable, Sendable {
+  public let workItemID: UUID
+  public let dependsOnWorkItemID: UUID
+
+  public init(workItemID: UUID, dependsOnWorkItemID: UUID) {
+    self.workItemID = workItemID
+    self.dependsOnWorkItemID = dependsOnWorkItemID
+  }
+}
+
+public enum SuggestionSessionStatus: String, Codable, Sendable {
+  case generating
+  case ready
+  case failed
+  case cancelled
+}
+
+public struct SuggestionSession: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let epicID: UUID?
+  public var status: SuggestionSessionStatus
+  public var codexThreadID: String?
+  public var codexTurnID: String?
+  public var errorMessage: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    epicID: UUID? = nil,
+    status: SuggestionSessionStatus = .generating,
+    codexThreadID: String? = nil,
+    codexTurnID: String? = nil,
+    errorMessage: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.epicID = epicID
+    self.status = status
+    self.codexThreadID = codexThreadID
+    self.codexTurnID = codexTurnID
+    self.errorMessage = errorMessage
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum TicketSuggestionStatus: String, Codable, Sendable {
+  case proposed
+  case accepted
+  case rejected
+}
+
+public struct TicketSuggestion: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let sessionID: UUID
+  public let reference: String
+  public let position: Int
+  public var title: String
+  public var type: WorkItemType
+  public var body: String
+  public var acceptanceCriteria: [String]
+  public var suggestedRole: AgentRole
+  public var priority: WorkItemPriority
+  public var rationale: String
+  public var dependencyIDs: [UUID]
+  public var existingDependencyWorkItemIDs: [UUID]
+  public var status: TicketSuggestionStatus
+  public var acceptedWorkItemID: UUID?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    sessionID: UUID,
+    reference: String,
+    position: Int,
+    title: String,
+    type: WorkItemType = .story,
+    body: String,
+    acceptanceCriteria: [String],
+    suggestedRole: AgentRole,
+    priority: WorkItemPriority,
+    rationale: String,
+    dependencyIDs: [UUID] = [],
+    existingDependencyWorkItemIDs: [UUID] = [],
+    status: TicketSuggestionStatus = .proposed,
+    acceptedWorkItemID: UUID? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.sessionID = sessionID
+    self.reference = reference
+    self.position = position
+    self.title = title
+    self.type = type
+    self.body = body
+    self.acceptanceCriteria = acceptanceCriteria
+    self.suggestedRole = suggestedRole
+    self.priority = priority
+    self.rationale = rationale
+    self.dependencyIDs = dependencyIDs
+    self.existingDependencyWorkItemIDs = existingDependencyWorkItemIDs
+    self.status = status
+    self.acceptedWorkItemID = acceptedWorkItemID
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
+  public let reference: String
+  public let title: String
+  public let type: WorkItemType
+  public let body: String
+  public let acceptanceCriteria: [String]
+  public let suggestedRole: AgentRole
+  public let priority: WorkItemPriority
+  public let rationale: String
+  public let dependsOnReferences: [String]
+  public let dependsOnExistingWorkItemKeys: [String]
+
+  public init(
+    reference: String,
+    title: String,
+    type: WorkItemType = .story,
+    body: String,
+    acceptanceCriteria: [String],
+    suggestedRole: AgentRole,
+    priority: WorkItemPriority,
+    rationale: String,
+    dependsOnReferences: [String] = [],
+    dependsOnExistingWorkItemKeys: [String] = []
+  ) {
+    self.reference = reference
+    self.title = title
+    self.type = type
+    self.body = body
+    self.acceptanceCriteria = acceptanceCriteria
+    self.suggestedRole = suggestedRole
+    self.priority = priority
+    self.rationale = rationale
+    self.dependsOnReferences = dependsOnReferences
+    self.dependsOnExistingWorkItemKeys = dependsOnExistingWorkItemKeys
+  }
+}
+
+public struct EpicPlanDraft: Codable, Hashable, Sendable {
+  public let title: String
+  public let goal: String
+  public let successCriteria: [String]
+  public let constraints: String
+  public let ticketSuggestions: [TicketSuggestionDraft]
+
+  public init(
+    title: String,
+    goal: String,
+    successCriteria: [String],
+    constraints: String,
+    ticketSuggestions: [TicketSuggestionDraft]
+  ) {
+    self.title = title
+    self.goal = goal
+    self.successCriteria = successCriteria
+    self.constraints = constraints
+    self.ticketSuggestions = ticketSuggestions
+  }
+}
+
+public struct TicketSuggestionBatch: Codable, Hashable, Sendable {
+  public var session: SuggestionSession
+  public var suggestions: [TicketSuggestion]
+
+  public init(session: SuggestionSession, suggestions: [TicketSuggestion]) {
+    self.session = session
+    self.suggestions = suggestions
+  }
+}
+
+public enum CommentAuthorKind: String, Codable, Sendable {
+  case owner
+  case agent
+  case system
+}
+
+public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let workItemID: UUID
+  public let authorKind: CommentAuthorKind
+  public let authorName: String
+  public let body: String
+  public let createdAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    workItemID: UUID,
+    authorKind: CommentAuthorKind,
+    authorName: String,
+    body: String,
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.workItemID = workItemID
+    self.authorKind = authorKind
+    self.authorName = authorName
+    self.body = body
+    self.createdAt = createdAt
+  }
+}
+
+public enum AgentRole: String, Codable, CaseIterable, Sendable {
+  case businessAnalyst = "business_analyst"
+  case uxDesigner = "ux_designer"
+  case lead
+  case implementer
+  case frontendEngineer = "frontend_engineer"
+  case backendEngineer = "backend_engineer"
+  case reviewer
+  case qualityAssurance = "quality_assurance"
+  case knowledgeCurator = "knowledge_curator"
+
+  public var title: String {
+    switch self {
+    case .businessAnalyst: "Business Analyst"
+    case .uxDesigner: "UX Designer"
+    case .lead: "Tech Lead"
+    case .implementer: "Implementer"
+    case .frontendEngineer: "Frontend Engineer"
+    case .backendEngineer: "Backend Engineer"
+    case .reviewer: "Reviewer"
+    case .qualityAssurance: "QA Explorer"
+    case .knowledgeCurator: "Knowledge Curator"
+    }
+  }
+
+  public var canImplement: Bool {
+    switch self {
+    case .implementer, .frontendEngineer, .backendEngineer: true
+    default: false
+    }
+  }
+
+  /// Whether this role can own the primary deliverable for a ticket.
+  ///
+  /// Delivery is broader than writing code: research, experience design, quality
+  /// work, and documentation can each be the ticket's intended artifact.
+  public var canOwnDelivery: Bool {
+    true
+  }
+
+  public var canReview: Bool {
+    switch self {
+    case .lead, .reviewer: true
+    default: false
+    }
+  }
+
+  public var capabilityTitle: String {
+    switch self {
+    case .businessAnalyst: "Analysis & research"
+    case .uxDesigner: "Experience design"
+    case .lead: "Architecture, planning & code review"
+    case .implementer: "General implementation"
+    case .frontendEngineer: "Frontend implementation"
+    case .backendEngineer: "Backend & platform implementation"
+    case .reviewer: "Independent review & audit"
+    case .qualityAssurance: "Quality assurance"
+    case .knowledgeCurator: "Knowledge & documentation"
+    }
+  }
+}
+
+public struct AgentProfile: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public var name: String
+  public var role: AgentRole
+  public var model: String
+  public var reasoningEffort: String
+  public var customInstructions: String?
+  public var parallelismLimit: Int?
+  public var isBuiltIn: Bool
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    name: String,
+    role: AgentRole,
+    model: String = "default",
+    reasoningEffort: String = "medium",
+    customInstructions: String? = nil,
+    parallelismLimit: Int? = nil,
+    isBuiltIn: Bool = true,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.name = name
+    self.role = role
+    self.model = model
+    self.reasoningEffort = reasoningEffort
+    self.customInstructions = customInstructions
+    self.parallelismLimit = parallelismLimit
+    self.isBuiltIn = isBuiltIn
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+
+  public var effectiveInstructions: String {
+    if let trimmed = customInstructions?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !trimmed.isEmpty
+    {
+      return trimmed
+    }
+    return AgentPersonaDefaults.instructions(for: role)
+  }
+}
+
+public enum SprintState: String, Codable, CaseIterable, Sendable {
+  case draft
+  case active
+  case completed
+  case cancelled
+
+  public var title: String {
+    switch self {
+    case .draft: "Draft"
+    case .active: "Active"
+    case .completed: "Completed"
+    case .cancelled: "Cancelled"
+    }
+  }
+}
+
+public struct Sprint: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let number: Int
+  public var goal: String
+  public var state: SprintState
+  public var tokenBudgetLimit: Int?
+  public var concurrencyLimit: Int
+  public var planVersion: Int
+  public var startedAt: Date?
+  public var completedAt: Date?
+  public var retrospectiveConcludedAt: Date?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    number: Int,
+    goal: String,
+    state: SprintState = .draft,
+    tokenBudgetLimit: Int? = nil,
+    concurrencyLimit: Int = 4,
+    planVersion: Int = 1,
+    startedAt: Date? = nil,
+    completedAt: Date? = nil,
+    retrospectiveConcludedAt: Date? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.number = number
+    self.goal = goal
+    self.state = state
+    self.tokenBudgetLimit = tokenBudgetLimit
+    self.concurrencyLimit = concurrencyLimit
+    self.planVersion = planVersion
+    self.startedAt = startedAt
+    self.completedAt = completedAt
+    self.retrospectiveConcludedAt = retrospectiveConcludedAt
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct SprintItem: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let sprintID: UUID
+  public let workItemID: UUID
+  public var implementerProfileID: UUID?
+  public var reviewerProfileID: UUID?
+  public var estimatedTokens: Int
+  public var frozenWorkItemVersion: Int?
+  public var frozenTitle: String?
+  public var frozenBody: String?
+  public var frozenAcceptanceCriteria: [String]?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    sprintID: UUID,
+    workItemID: UUID,
+    implementerProfileID: UUID? = nil,
+    reviewerProfileID: UUID? = nil,
+    estimatedTokens: Int,
+    frozenWorkItemVersion: Int? = nil,
+    frozenTitle: String? = nil,
+    frozenBody: String? = nil,
+    frozenAcceptanceCriteria: [String]? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.sprintID = sprintID
+    self.workItemID = workItemID
+    self.implementerProfileID = implementerProfileID
+    self.reviewerProfileID = reviewerProfileID
+    self.estimatedTokens = estimatedTokens
+    self.frozenWorkItemVersion = frozenWorkItemVersion
+    self.frozenTitle = frozenTitle
+    self.frozenBody = frozenBody
+    self.frozenAcceptanceCriteria = frozenAcceptanceCriteria
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct SprintPlan: Codable, Hashable, Sendable {
+  public var sprint: Sprint
+  public var items: [SprintItem]
+
+  public init(sprint: Sprint, items: [SprintItem]) {
+    self.sprint = sprint
+    self.items = items
+  }
+
+  public var estimatedTokens: Int {
+    items.reduce(0) { $0 + $1.estimatedTokens }
+  }
+}
+
+public struct SprintDraftItemInput: Equatable, Sendable {
+  public let workItemID: UUID
+  public let implementerProfileID: UUID?
+  public let reviewerProfileID: UUID?
+  public let estimatedTokens: Int
+
+  public init(
+    workItemID: UUID,
+    implementerProfileID: UUID? = nil,
+    reviewerProfileID: UUID? = nil,
+    estimatedTokens: Int = 0
+  ) {
+    self.workItemID = workItemID
+    self.implementerProfileID = implementerProfileID
+    self.reviewerProfileID = reviewerProfileID
+    self.estimatedTokens = estimatedTokens
+  }
+}
+
+public struct SprintReadinessIssue: Identifiable, Codable, Hashable, Sendable {
+  public let id: String
+  public let workItemID: UUID?
+  public let message: String
+
+  public init(id: String, workItemID: UUID? = nil, message: String) {
+    self.id = id
+    self.workItemID = workItemID
+    self.message = message
+  }
+}
+
+public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
+  case activeSprintExists
+  case sprintNotDraft
+  case emptySprint
+  case invalidConcurrency
+  case invalidTokenBudget
+  case duplicateWorkItem
+  case itemNotReady(String)
+  case invalidImplementer(String)
+  case invalidReviewer(String)
+  case notReady([String])
+
+  public var errorDescription: String? {
+    switch self {
+    case .activeSprintExists:
+      "Only one sprint can be active at a time."
+    case .sprintNotDraft:
+      "Only a draft sprint can be edited or started."
+    case .emptySprint:
+      "Select at least one ready ticket."
+    case .invalidConcurrency:
+      "Sprint parallelism must be between 1 and 64."
+    case .invalidTokenBudget:
+      "The sprint token budget must be greater than zero."
+    case .duplicateWorkItem:
+      "A ticket can only appear once in a sprint."
+    case .itemNotReady(let key):
+      "\(key) is no longer ready for sprint planning."
+    case .invalidImplementer(let key):
+      "\(key) needs a valid delivery owner."
+    case .invalidReviewer(let key):
+      "\(key) needs a valid review assignment."
+    case .notReady(let messages):
+      messages.joined(separator: "\n")
+    }
+  }
+}
+
+public enum AgentRunStatus: String, Codable, CaseIterable, Sendable {
+  case queued
+  case running
+  case awaitingOwner = "awaiting_owner"
+  case interrupted
+  case completed
+  case failed
+  case cancelled
+}
+
+public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sprintID: UUID?
+  public let sprintItemID: UUID?
+  public let workItemID: UUID
+  public let profileID: UUID
+  public var status: AgentRunStatus
+  public var codexThreadID: String?
+  public var worktreePath: String?
+  public var ticketBudgetUsed: Double
+  public var contextUsedTokens: Int?
+  public var contextWindowTokens: Int?
+  public var compactionCount: Int
+  public var activeDurationSeconds: TimeInterval
+  public var turnStartedAt: Date?
+  public var lastActivityAt: Date?
+  public var lastActivityText: String?
+  public var lastActivityKind: CodexLiveActivityKind?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sprintID: UUID? = nil,
+    sprintItemID: UUID? = nil,
+    workItemID: UUID,
+    profileID: UUID,
+    status: AgentRunStatus = .queued,
+    codexThreadID: String? = nil,
+    worktreePath: String? = nil,
+    ticketBudgetUsed: Double = 0,
+    contextUsedTokens: Int? = nil,
+    contextWindowTokens: Int? = nil,
+    compactionCount: Int = 0,
+    activeDurationSeconds: TimeInterval = 0,
+    turnStartedAt: Date? = nil,
+    lastActivityAt: Date? = nil,
+    lastActivityText: String? = nil,
+    lastActivityKind: CodexLiveActivityKind? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sprintID = sprintID
+    self.sprintItemID = sprintItemID
+    self.workItemID = workItemID
+    self.profileID = profileID
+    self.status = status
+    self.codexThreadID = codexThreadID
+    self.worktreePath = worktreePath
+    self.ticketBudgetUsed = ticketBudgetUsed
+    self.contextUsedTokens = contextUsedTokens
+    self.contextWindowTokens = contextWindowTokens
+    self.compactionCount = compactionCount
+    self.activeDurationSeconds = activeDurationSeconds
+    self.turnStartedAt = turnStartedAt
+    self.lastActivityAt = lastActivityAt
+    self.lastActivityText = lastActivityText
+    self.lastActivityKind = lastActivityKind
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+
+  public var persistedActivity: CodexLiveActivity? {
+    guard let lastActivityText, let lastActivityKind else { return nil }
+    return CodexLiveActivity(text: lastActivityText, kind: lastActivityKind)
+  }
+
+  public func activeDuration(at referenceDate: Date = Date()) -> TimeInterval {
+    let currentTurn = status == .running
+      ? turnStartedAt.map { max(0, referenceDate.timeIntervalSince($0)) } ?? 0
+      : 0
+    return max(0, activeDurationSeconds + currentTurn)
+  }
+}
+
+public struct AgentRunKnowledgePage: Codable, Hashable, Sendable {
+  public let runID: UUID
+  public let pageID: UUID
+
+  public init(runID: UUID, pageID: UUID) {
+    self.runID = runID
+    self.pageID = pageID
+  }
+}
+
+public struct ActivityEvent: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let sequence: Int64
+  public let productID: UUID
+  public let workItemID: UUID?
+  public let kind: String
+  public let actor: String
+  public let detail: String
+  public let createdAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    sequence: Int64 = 0,
+    productID: UUID,
+    workItemID: UUID? = nil,
+    kind: String,
+    actor: String,
+    detail: String,
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.sequence = sequence
+    self.productID = productID
+    self.workItemID = workItemID
+    self.kind = kind
+    self.actor = actor
+    self.detail = detail
+    self.createdAt = createdAt
+  }
+}
+
+public enum RetrospectiveNoteCategory: String, Codable, CaseIterable, Sendable {
+  case wentWell = "went_well"
+  case couldImprove = "could_improve"
+  case suggestedAction = "suggested_action"
+
+  public var title: String {
+    switch self {
+    case .wentWell: "Went well"
+    case .couldImprove: "Could improve"
+    case .suggestedAction: "Suggested actions"
+    }
+  }
+}
+
+public enum RetrospectiveActionStatus: String, Codable, Sendable {
+  case proposed
+  case accepted
+  case dismissed
+}
+
+public enum RetrospectiveActionDestination: String, Codable, Sendable {
+  case teamPractice = "team_practice"
+  case backlog
+
+  public var title: String {
+    switch self {
+    case .teamPractice: "Team practice"
+    case .backlog: "Backlog ticket"
+    }
+  }
+}
+
+public struct RetrospectiveNote: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sprintID: UUID
+  public let workItemID: UUID?
+  public let profileID: UUID?
+  public let authorName: String
+  public let category: RetrospectiveNoteCategory
+  public let body: String
+  public var actionStatus: RetrospectiveActionStatus?
+  public let actionDestination: RetrospectiveActionDestination?
+  public var acceptedWorkItemID: UUID?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sprintID: UUID,
+    workItemID: UUID? = nil,
+    profileID: UUID? = nil,
+    authorName: String,
+    category: RetrospectiveNoteCategory,
+    body: String,
+    actionStatus: RetrospectiveActionStatus? = nil,
+    actionDestination: RetrospectiveActionDestination? = nil,
+    acceptedWorkItemID: UUID? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sprintID = sprintID
+    self.workItemID = workItemID
+    self.profileID = profileID
+    self.authorName = authorName
+    self.category = category
+    self.body = body
+    self.actionStatus = actionStatus
+    self.actionDestination = actionDestination
+    self.acceptedWorkItemID = acceptedWorkItemID
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum KnowledgePageKind: String, Codable, Sendable {
+  case section
+  case page
+  case deliveryNote = "delivery_note"
+}
+
+public enum KnowledgeVerificationStatus: String, Codable, Sendable {
+  case proposed
+  case verified
+  case stale
+
+  public var title: String {
+    rawValue.capitalized
+  }
+}
+
+public struct KnowledgePage: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public var parentID: UUID?
+  public var title: String
+  public var slug: String
+  public var bodyMarkdown: String
+  public var kind: KnowledgePageKind
+  public var verificationStatus: KnowledgeVerificationStatus
+  public var sortOrder: Int
+  public var sourceWorkItemID: UUID?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    parentID: UUID? = nil,
+    title: String,
+    slug: String,
+    bodyMarkdown: String = "",
+    kind: KnowledgePageKind = .page,
+    verificationStatus: KnowledgeVerificationStatus = .verified,
+    sortOrder: Int = 0,
+    sourceWorkItemID: UUID? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.parentID = parentID
+    self.title = title
+    self.slug = slug
+    self.bodyMarkdown = bodyMarkdown
+    self.kind = kind
+    self.verificationStatus = verificationStatus
+    self.sortOrder = sortOrder
+    self.sourceWorkItemID = sourceWorkItemID
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct KnowledgePageRevision: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let pageID: UUID
+  public let version: Int
+  public let bodyMarkdown: String
+  public let authorName: String
+  public let changeSummary: String
+  public let createdAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    pageID: UUID,
+    version: Int,
+    bodyMarkdown: String,
+    authorName: String,
+    changeSummary: String,
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.pageID = pageID
+    self.version = version
+    self.bodyMarkdown = bodyMarkdown
+    self.authorName = authorName
+    self.changeSummary = changeSummary
+    self.createdAt = createdAt
+  }
+}
+
+public enum CandidateRevisionStatus: String, Codable, CaseIterable, Sendable {
+  case queuedForIntegration = "queued_for_integration"
+  case integrating
+  case resolvingConflict = "resolving_conflict"
+  case reviewing
+  case changesRequested = "changes_requested"
+  case readyForDemo = "ready_for_demo"
+  case accepted
+  case superseded
+  case failed
+}
+
+public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sprintID: UUID
+  public let sprintItemID: UUID
+  public let workItemID: UUID
+  public let implementationRunID: UUID
+  public let version: Int
+  public let branchName: String
+  public let baseSHA: String
+  public let headSHA: String
+  public var integratedSHA: String?
+  public let worktreePath: String
+  public var integrationWorktreePath: String?
+  public var status: CandidateRevisionStatus
+  public let commitCount: Int
+  public let executionResultJSON: String
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sprintID: UUID,
+    sprintItemID: UUID,
+    workItemID: UUID,
+    implementationRunID: UUID,
+    version: Int,
+    branchName: String,
+    baseSHA: String,
+    headSHA: String,
+    integratedSHA: String? = nil,
+    worktreePath: String,
+    integrationWorktreePath: String? = nil,
+    status: CandidateRevisionStatus = .queuedForIntegration,
+    commitCount: Int,
+    executionResultJSON: String,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sprintID = sprintID
+    self.sprintItemID = sprintItemID
+    self.workItemID = workItemID
+    self.implementationRunID = implementationRunID
+    self.version = version
+    self.branchName = branchName
+    self.baseSHA = baseSHA
+    self.headSHA = headSHA
+    self.integratedSHA = integratedSHA
+    self.worktreePath = worktreePath
+    self.integrationWorktreePath = integrationWorktreePath
+    self.status = status
+    self.commitCount = commitCount
+    self.executionResultJSON = executionResultJSON
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+
+  public var shortHeadSHA: String {
+    String(headSHA.prefix(8))
+  }
+
+  public var shortIntegratedSHA: String? {
+    integratedSHA.map { String($0.prefix(8)) }
+  }
+}
+
+public enum KnowledgePageProposalOperation: String, Codable, CaseIterable, Sendable {
+  case create
+  case update
+}
+
+public enum KnowledgePageProposalStatus: String, Codable, CaseIterable, Sendable {
+  case proposed
+  case reviewed
+  case accepted
+  case rejected
+  case superseded
+}
+
+public struct KnowledgePageProposal: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sprintID: UUID
+  public let workItemID: UUID
+  public let candidateRevisionID: UUID
+  public let operation: KnowledgePageProposalOperation
+  public let targetPageID: UUID?
+  public let parentPageID: UUID?
+  public let basePageTitle: String?
+  public let basePageBodyMarkdown: String?
+  public let basePageUpdatedAt: Date?
+  public let title: String
+  public let proposedBodyMarkdown: String
+  public let rationale: String
+  public var status: KnowledgePageProposalStatus
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sprintID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID,
+    operation: KnowledgePageProposalOperation,
+    targetPageID: UUID? = nil,
+    parentPageID: UUID? = nil,
+    basePageTitle: String? = nil,
+    basePageBodyMarkdown: String? = nil,
+    basePageUpdatedAt: Date? = nil,
+    title: String,
+    proposedBodyMarkdown: String,
+    rationale: String,
+    status: KnowledgePageProposalStatus = .proposed,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sprintID = sprintID
+    self.workItemID = workItemID
+    self.candidateRevisionID = candidateRevisionID
+    self.operation = operation
+    self.targetPageID = targetPageID
+    self.parentPageID = parentPageID
+    self.basePageTitle = basePageTitle
+    self.basePageBodyMarkdown = basePageBodyMarkdown
+    self.basePageUpdatedAt = basePageUpdatedAt
+    self.title = title
+    self.proposedBodyMarkdown = proposedBodyMarkdown
+    self.rationale = rationale
+    self.status = status
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
