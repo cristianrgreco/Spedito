@@ -198,6 +198,11 @@ integrated SHA and completed-review provenance. The ticket presents **Retry demo
 preparation** without requiring a new owner comment. That action reruns only the
 candidate-bound smoke preparation and, on success, advances the existing reviewed
 candidate to **Ready for Demo**; it does not resume implementation or repeat review.
+The acceptance Work log routes **Comment** through the existing read-only
+ticket-conversation path, preferring the assigned Implementer, then the latest
+participating team member, then the Tech Lead. The answer does not supersede the
+candidate or resume delivery; **Request changes** remains the explicit revision-loop
+action.
 
 Demo commands use the pinned App Server's standalone `command/exec` API; the app
 does not maintain a second `sandbox-exec` implementation. Each demo command gets
@@ -258,14 +263,22 @@ When the App Server sends `item/commandExecution/requestApproval`,
 adapter preserves the bidirectional JSON-RPC request instead of rejecting it.
 Application coordination maps its thread and turn to the durable AgentRun,
 projects **Needs your input**, and stores the exact scope, rationale, signature,
-and decision. **Allow** accepts only the exact command or file change, or grants
-the requested capability for the current turn; it never creates a connection-wide
-App Server rule. **Deny** declines without cancelling the turn so the agent can
-adapt. The turn timeout does not advance while a supported permission request
-is outstanding. StoryPointless may transparently reapply an identical recorded
-decision when the same durable AgentRun requests it again, but a new run does
-not inherit the decision. If the app restarts, the connection-scoped request
-becomes interrupted and the resumed run can request it again.
+and decision. **Allow once** accepts only the exact command or file change, or
+grants the requested capability for the current turn. For command and permission
+requests, **Always allow for this product** stores a durable product-scoped grant.
+Its normalized signature retains the exact command and requested capabilities
+but excludes the ticket worktree path only after confirming the requested
+working directory is within that run's assigned workspace, so the same
+capability can follow future ticket workspaces for that product. It does not become a binary-only or
+connection-wide App Server rule. Matching future requests are answered with a
+turn-scoped approval and recorded in the receiving ticket's Work log. The owner
+can inspect and revoke active grants in Product settings. File-change approvals
+cannot be persisted. **Deny** declines without cancelling the turn so the agent
+can adapt. The turn timeout does not advance while a supported permission
+request is outstanding. StoryPointless may also transparently reapply an
+identical recorded decision within the same durable AgentRun. If the app
+restarts, a pending connection-scoped request becomes interrupted and the
+resumed run can request it again; saved product grants remain durable.
 
 The same adapter owns buffered and streaming `command/exec`, output deltas, and
 termination for candidate demos. The durable run stores the thread identifier
@@ -301,6 +314,19 @@ worktrees, candidate commits, and preview processes. A normal quit requests a
 structured checkpoint, interrupts after a bounded grace period, and preserves
 the run as paused. Crash recovery creates a system note from durable events and
 filesystem state when no agent-authored checkpoint exists.
+
+Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown,
+including one paused at a scoped permission request, retains its review run,
+non-ephemeral Conversation, integration path, and integrated SHA. On restart
+StoryPointless verifies or reconstructs the detached checkout at that exact SHA,
+recovers a valid completed structured result when one exists, or starts a
+continuation turn in the same Conversation. An expired live approval request is
+reissued only if the continuing agent still needs it; saved matching run or
+product grants apply normally. A missing Conversation starts a replacement
+review against the same SHA. Only a missing, mutated, or unverifiable integrated
+revision returns the candidate to integration and full review, with an explicit
+Work log explanation. A candidate already in **Ready for Demo** keeps its
+reviewed revision; only its owned demo process is stopped and restarted.
 
 Owner-facing clarification records are durable independently of their Codex
 thread. When a persisted read-only thread is no longer available, the adapter
@@ -354,11 +380,15 @@ must return citations or an explicit unknown.
    runs in parallel, routes concurrent Codex notifications by thread and turn,
    records attributed Work log updates, pauses for owner input, resumes the same
    Codex thread, persists paused questions as structured comment data, presents
-   their choices natively in the Work log, performs independent read-only Tech
-   Lead review, returns findings to the original implementer, and supports owner
-   demo feedback and approval.
-   Restart recovery requeues interrupted implementation, integration, and review
-   work from preserved workspaces.
+   their choices natively in the Work log, and chronologically interleaves
+   permission requests, run context, candidate revisions, knowledge proposals,
+   follow-up recommendations, and demo submissions with comments and audit
+   events. It performs independent read-only Tech Lead review, returns findings
+   to the original implementer, and supports owner demo feedback and approval.
+   Restart recovery requeues interrupted implementation and integration, while
+   interrupted Tech Lead review continues in the same Conversation against its
+   verified exact integrated SHA and recovers a completed structured result
+   before starting another turn.
 7. **Partial:** product repository bootstrap, ticket-named private branches and
    worktrees, versioned candidate commit ranges, detached integration worktrees,
    a rank-ordered serial candidate queue, internal Integrator conflict runs,

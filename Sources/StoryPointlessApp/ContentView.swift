@@ -403,7 +403,7 @@ private struct TeamSidebar: View {
               Button {
                 showingProductContext = true
               } label: {
-                Label("View product context", systemImage: "doc.text")
+                Label("Product settings", systemImage: "gearshape")
                   .font(.caption)
               }
               .buttonStyle(.plain)
@@ -867,43 +867,102 @@ private struct ProductContextView: View {
   @Binding var isPresented: Bool
   @State private var name = ""
   @State private var description = ""
+  @State private var revokingPermissionGrantID: UUID?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 4) {
-        Text("Product context")
+        Text("Product settings")
           .font(.title.bold())
-        Text("The durable product description supplied to planning and delivery agents.")
+        Text("Manage durable context and saved agent access for this product.")
           .foregroundStyle(.secondary)
       }
       .padding(24)
 
       Divider()
 
-      VStack(alignment: .leading, spacing: 18) {
-        EditableTextField(
-          title: "Product name",
-          prompt: "Product name",
-          text: $name
-        )
+      ScrollView {
+        VStack(alignment: .leading, spacing: 22) {
+          EditableTextField(
+            title: "Product name",
+            prompt: "Product name",
+            text: $name
+          )
 
-        EditableTextArea(
-          title: "Product description",
-          prompt: "Describe who it is for, the problem it solves, and the outcome you want.",
-          text: $description,
-          minHeight: 140
-        )
+          EditableTextArea(
+            title: "Product description",
+            prompt: "Describe who it is for, the problem it solves, and the outcome you want.",
+            text: $description,
+            minHeight: 140
+          )
 
-        Label(
-          "Changes become context for future agent work. Active work keeps the context it started with.",
-          systemImage: "brain.head.profile"
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+          Label(
+            "Changes become context for future agent work. Active work keeps the context it started with.",
+            systemImage: "brain.head.profile"
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+
+          Divider()
+
+          VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+              Text("Saved agent access")
+                .font(.headline)
+              Text(
+                "Matching requests are allowed automatically for this product and recorded in the ticket Work log."
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            }
+
+            if model.permissionGrants.isEmpty {
+              Text("No saved access")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+            } else {
+              ForEach(model.permissionGrants) { grant in
+                HStack(alignment: .top, spacing: 12) {
+                  Image(systemName: grant.kind == .command ? "terminal" : "lock.open")
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 20)
+                  VStack(alignment: .leading, spacing: 4) {
+                    Text(grant.kind == .command ? "Command" : "Additional access")
+                      .font(.caption.weight(.semibold))
+                      .foregroundStyle(.secondary)
+                    Text(grant.detail)
+                      .font(
+                        grant.kind == .command
+                          ? .system(.callout, design: .monospaced)
+                          : .callout
+                      )
+                      .textSelection(.enabled)
+                      .fixedSize(horizontal: false, vertical: true)
+                    Text("Saved \(grant.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                      .font(.caption2)
+                      .foregroundStyle(.tertiary)
+                  }
+                  Spacer(minLength: 12)
+                  Button("Revoke", role: .destructive) {
+                    revokingPermissionGrantID = grant.id
+                    Task {
+                      await model.revokePermissionGrant(grant)
+                      revokingPermissionGrantID = nil
+                    }
+                  }
+                  .disabled(revokingPermissionGrantID != nil)
+                }
+                .padding(14)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+              }
+            }
+          }
+        }
+        .padding(24)
       }
-      .padding(24)
 
-      Spacer(minLength: 0)
       Divider()
       HStack {
         Spacer()
@@ -921,7 +980,7 @@ private struct ProductContextView: View {
       .padding(20)
     }
     .background(InitialFocusClearer())
-    .frame(width: 660, height: 500)
+    .frame(width: 680, height: 640)
     .onAppear {
       name = model.selectedProduct?.name ?? ""
       description = model.selectedProduct?.vision ?? ""
@@ -8053,6 +8112,47 @@ enum SprintTicketWorkLogHistory {
   }
 }
 
+enum SprintTicketCommentRouting {
+  static func replyRecipient(
+    workItemID: UUID,
+    assignedProfileID: UUID?,
+    comments: [TicketComment],
+    runs: [AgentRun],
+    profiles: [AgentProfile]
+  ) -> AgentProfile? {
+    if let assignedProfileID,
+      let assigned = profiles.first(where: { $0.id == assignedProfileID })
+    {
+      return assigned
+    }
+
+    var latestParticipant: (profile: AgentProfile, date: Date)?
+    for comment in comments
+    where comment.workItemID == workItemID && comment.authorKind == .agent
+    {
+      guard let profile = profiles.first(where: { $0.name == comment.authorName }) else {
+        continue
+      }
+      if latestParticipant.map({ comment.createdAt > $0.date }) ?? true {
+        latestParticipant = (profile, comment.createdAt)
+      }
+    }
+    for run in runs where run.workItemID == workItemID {
+      guard let profile = profiles.first(where: { $0.id == run.profileID }) else {
+        continue
+      }
+      let interactionDate = run.lastActivityAt ?? run.updatedAt
+      if latestParticipant.map({ interactionDate > $0.date }) ?? true {
+        latestParticipant = (profile, interactionDate)
+      }
+    }
+    if let latestParticipant {
+      return latestParticipant.profile
+    }
+    return profiles.first { $0.role == .lead }
+  }
+}
+
 private struct SprintTicketDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -8071,7 +8171,7 @@ private struct SprintTicketDetailView: View {
   @State private var commentError: String?
   @State private var workLogScrollRequest = 0
   @State private var hasLoadedWorkLog = false
-  @State private var isContextExpanded = false
+  @State private var hoveredContextPageID: UUID?
   @State private var ownerAnswerSelection: TicketOwnerAnswerSelection?
   @State private var customOwnerAnswerDraft = ""
   @FocusState private var isCommentComposerFocused: Bool
@@ -8088,6 +8188,16 @@ private struct SprintTicketDetailView: View {
     let sprintOwnerID = currentSprintItem?.implementerProfileID
     guard let ownerID = sprintOwnerID ?? currentItem.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
+  }
+
+  private var commentReplyRecipient: AgentProfile? {
+    SprintTicketCommentRouting.replyRecipient(
+      workItemID: item.id,
+      assignedProfileID: currentSprintItem?.implementerProfileID ?? currentItem.ownerProfileID,
+      comments: comments,
+      runs: model.runs,
+      profiles: model.profiles
+    )
   }
 
   private var prerequisites: [WorkItem] {
@@ -8112,46 +8222,86 @@ private struct SprintTicketDetailView: View {
     return model.workItems.filter { ids.contains($0.id) }
   }
 
-  private var contextPages: [KnowledgePage] {
-    let runIDsWithContext = Set(model.agentRunKnowledgeContext.map(\.runID))
-    let contextRuns = model.runs.filter {
-      $0.workItemID == item.id && runIDsWithContext.contains($0.id)
-    }
-    guard let run = contextRuns.max(by: { $0.updatedAt < $1.updatedAt }) else {
-      return []
-    }
-    let pageIDs = Set(
-      model.agentRunKnowledgeContext
-        .filter { $0.runID == run.id }
-        .map(\.pageID)
-    )
-    return model.knowledgePages
-      .filter { pageIDs.contains($0.id) }
-      .sorted { $0.title < $1.title }
+  private var ticketCandidates: [CandidateRevision] {
+    model.candidateRevisions
+      .filter { $0.workItemID == item.id }
+      .sorted {
+        if $0.createdAt == $1.createdAt {
+          return $0.version < $1.version
+        }
+        return $0.createdAt < $1.createdAt
+      }
   }
 
   private var currentCandidate: CandidateRevision? {
-    model.candidateRevisions
+    ticketCandidates.max(by: { $0.version < $1.version })
+  }
+
+  private var ticketPermissionRequests: [AgentPermissionRequest] {
+    model.permissionRequests
       .filter { $0.workItemID == item.id }
-      .max(by: { $0.version < $1.version })
+      .sorted { $0.createdAt < $1.createdAt }
   }
 
-  private var currentExecutionResult: TicketExecutionResult? {
-    guard let candidate = currentCandidate else { return nil }
-    return try? CodexTicketExecutor.decode(candidate.executionResultJSON)
+  private var ticketRunContexts: [SprintTicketRunContextLogItem] {
+    let pageIDsByRun = Dictionary(
+      grouping: model.agentRunKnowledgeContext,
+      by: \.runID
+    )
+    return model.runs
+      .filter { $0.workItemID == item.id }
+      .compactMap { run in
+        let pageIDs = Set((pageIDsByRun[run.id] ?? []).map(\.pageID))
+        guard !pageIDs.isEmpty else { return nil }
+        let pages = model.knowledgePages
+          .filter { pageIDs.contains($0.id) }
+          .sorted { $0.title < $1.title }
+        guard !pages.isEmpty else { return nil }
+        return SprintTicketRunContextLogItem(run: run, pages: pages)
+      }
+      .sorted { $0.createdAt < $1.createdAt }
   }
 
-  private var currentDemoSession: DemoSession? {
-    guard let candidateID = currentCandidate?.id else { return nil }
-    return model.currentDemoSession(for: candidateID)
+  private var ticketKnowledgeBatches: [SprintTicketKnowledgeLogItem] {
+    let proposalsByCandidate = Dictionary(
+      grouping: model.knowledgePageProposals.filter {
+        $0.workItemID == item.id
+      },
+      by: \.candidateRevisionID
+    )
+    return ticketCandidates.compactMap { candidate in
+      guard let proposals = proposalsByCandidate[candidate.id], !proposals.isEmpty else {
+        return nil
+      }
+      return SprintTicketKnowledgeLogItem(
+        candidate: candidate,
+        proposals: proposals.sorted { $0.createdAt < $1.createdAt }
+      )
+    }
+  }
+
+  private var ticketDemoSubmissions: [SprintTicketDemoLogItem] {
+    SprintTicketWorkLogTimeline.demoSubmissions(
+      events: activityEvents,
+      candidates: ticketCandidates
+    )
+  }
+
+  private var ticketFollowUps: [SprintTicketFollowUpLogItem] {
+    ticketCandidates.compactMap { candidate in
+      guard
+        let result = executionResult(for: candidate),
+        !result.followUpTicketProposals.isEmpty
+      else { return nil }
+      return SprintTicketFollowUpLogItem(candidate: candidate)
+    }
   }
 
   private var pendingPermissionRequest: AgentPermissionRequest? {
     model.pendingPermissionRequest(workItemID: item.id)
   }
 
-  private var trunkPromotionValue: String {
-    guard let candidate = currentCandidate else { return "No candidate" }
+  private func trunkPromotionValue(for candidate: CandidateRevision) -> String {
     switch candidate.status {
     case .accepted:
       return "Promoted after approval"
@@ -8162,14 +8312,14 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private var trunkPromotionSymbol: String {
-    currentCandidate?.status == .accepted
+  private func trunkPromotionSymbol(for candidate: CandidateRevision) -> String {
+    candidate.status == .accepted
       ? "checkmark.circle.fill"
       : "arrow.triangle.branch"
   }
 
-  private var trunkPromotionTint: Color {
-    switch currentCandidate?.status {
+  private func trunkPromotionTint(for candidate: CandidateRevision) -> Color {
+    switch candidate.status {
     case .accepted:
       .green
     case .readyForDemo:
@@ -8192,6 +8342,12 @@ private struct SprintTicketDetailView: View {
         model.requiresKnowledgeApproval
           && currentKnowledgeProposals.contains { $0.status == .reviewed }
       )
+  }
+
+  private var hasPendingWorkLogAction: Bool {
+    pendingPermissionRequest != nil
+      || knowledgeProposalsBlockCompletion
+      || currentItem.state == .acceptance
   }
 
   private var detailWidth: CGFloat {
@@ -8260,6 +8416,12 @@ private struct SprintTicketDetailView: View {
       && !isPostingComment
       && !isAskingQuestion
       && !isResumingWork
+  }
+
+  private var canAskQuestion: Bool {
+    canPostComment
+      && commentReplyRecipient != nil
+      && !model.isTicketConversationMessageRunning
   }
 
   private var ownerAnswer: String? {
@@ -8347,6 +8509,12 @@ private struct SprintTicketDetailView: View {
     return model.profiles.first { $0.id == failedDeliveryRun.profileID }
   }
 
+  private func executionResult(
+    for candidate: CandidateRevision
+  ) -> TicketExecutionResult? {
+    try? CodexTicketExecutor.decode(candidate.executionResultJSON)
+  }
+
   private var workLogEntries: [SprintWorkLogEntry] {
     let commentEntries = SprintTicketWorkLogHistory.displayedComments(from: comments)
       .filter(isVisibleWorkLogComment)
@@ -8354,15 +8522,16 @@ private struct SprintTicketDetailView: View {
     let eventEntries = activityEvents
       .filter(isVisibleWorkLogEvent)
       .map(SprintWorkLogEntry.event)
-    return (commentEntries + eventEntries).sorted {
-      if $0.createdAt == $1.createdAt {
-        if $0.sortOrder == $1.sortOrder {
-          return $0.id < $1.id
-        }
-        return $0.sortOrder < $1.sortOrder
-      }
-      return $0.createdAt < $1.createdAt
-    }
+    let artifactEntries =
+      ticketPermissionRequests.map(SprintWorkLogEntry.permission)
+      + ticketRunContexts.map(SprintWorkLogEntry.runContext)
+      + ticketCandidates.map(SprintWorkLogEntry.candidate)
+      + ticketKnowledgeBatches.map(SprintWorkLogEntry.knowledge)
+      + ticketDemoSubmissions.map(SprintWorkLogEntry.demo)
+      + ticketFollowUps.map(SprintWorkLogEntry.followUp)
+    return SprintTicketWorkLogTimeline.ordered(
+      commentEntries + eventEntries + artifactEntries
+    )
   }
 
   private func isVisibleWorkLogComment(_ comment: TicketComment) -> Bool {
@@ -8371,6 +8540,15 @@ private struct SprintTicketDetailView: View {
       "I’m continuing with the latest feedback.",
       "I’m reviewing the implementation and its evidence against the ticket.",
     ]
+    if
+      comment.authorKind == .system,
+      comment.body.hasPrefix("Permission requested: "),
+      ticketPermissionRequests.contains(where: {
+        comment.body.contains($0.detail)
+      })
+    {
+      return false
+    }
     return !boilerplate.contains(comment.body)
   }
 
@@ -8415,8 +8593,30 @@ private struct SprintTicketDetailView: View {
     !activePrerequisites.isEmpty || !dependants.isEmpty
   }
 
-  private var hasSupportingRail: Bool {
-    !contextPages.isEmpty || currentCandidate != nil
+  private var relationshipColumnWidth: CGFloat {
+    (detailWidth - 48 - 18) / 3
+  }
+
+  @ViewBuilder
+  private var acceptanceCriteriaSection: some View {
+    SprintTicketSectionCard(title: "Acceptance criteria") {
+      if currentItem.acceptanceCriteria.isEmpty {
+        Label("No acceptance criteria", systemImage: "exclamationmark.circle")
+          .foregroundStyle(.secondary)
+      } else {
+        VStack(alignment: .leading, spacing: 10) {
+          ForEach(currentItem.acceptanceCriteria, id: \.self) { criterion in
+            HStack(alignment: .top, spacing: 9) {
+              Text("•")
+                .foregroundStyle(.secondary)
+                .frame(width: 16, alignment: .center)
+              Text(criterion)
+                .textSelection(.enabled)
+            }
+          }
+        }
+      }
+    }
   }
 
   @ViewBuilder
@@ -8441,87 +8641,194 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  @ViewBuilder
-  private var contextSection: some View {
-    SprintTicketSectionCard(title: "Context used") {
-      VStack(alignment: .leading, spacing: 10) {
-        Label(
-          "\(contextPages.count) knowledge page\(contextPages.count == 1 ? "" : "s")",
-          systemImage: "books.vertical"
-        )
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
+  private func profile(for candidate: CandidateRevision) -> AgentProfile? {
+    guard
+      let run = model.runs.first(where: {
+        $0.id == candidate.implementationRunID
+      })
+    else { return nil }
+    return model.profiles.first { $0.id == run.profileID }
+  }
 
-        if isContextExpanded {
-          if contextPages.count <= 7 {
-            LazyVStack(alignment: .leading, spacing: 8) {
-              ForEach(contextPages) { page in
+  private func workLogArtifactRow<Content: View>(
+    actorName: String,
+    profile: AgentProfile?,
+    createdAt: Date,
+    showsBottomSeparator: Bool,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    let tint = profile?.role.tint ?? Color.secondary
+    let symbol = profile?.role.symbolName ?? "gearshape.fill"
+    return HStack(alignment: .top, spacing: 12) {
+      ZStack {
+        Circle()
+          .fill(tint.opacity(0.12))
+        Image(systemName: symbol)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(tint)
+      }
+      .frame(width: 34, height: 34)
+
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 8) {
+          Text(actorName)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(profile == nil ? Color.primary : tint)
+          Text(
+            createdAt,
+            format: .dateTime.day().month(.abbreviated).hour().minute()
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        }
+        content()
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.top, 14)
+    .padding(.bottom, showsBottomSeparator ? 14 : 0)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .overlay(alignment: .bottom) {
+      if showsBottomSeparator {
+        Rectangle()
+          .fill(Color(nsColor: .separatorColor).opacity(0.55))
+          .frame(height: 1)
+          .padding(.leading, 46)
+      }
+    }
+  }
+
+  private func workLogPanel<Content: View>(
+    tint: Color,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    content()
+      .padding(14)
+      .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
+      .overlay {
+        RoundedRectangle(cornerRadius: 11)
+          .stroke(tint.opacity(0.3), lineWidth: 1)
+      }
+  }
+
+  private func contextSection(
+    _ context: SprintTicketRunContextLogItem,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    let profile = model.profiles.first { $0.id == context.run.profileID }
+    return workLogArtifactRow(
+      actorName: profile?.name ?? "StoryPointless",
+      profile: profile,
+      createdAt: context.createdAt,
+      showsBottomSeparator: showsBottomSeparator
+    ) {
+      workLogPanel(tint: .indigo) {
+        SprintTicketSectionCard(title: "Context used") {
+          VStack(alignment: .leading, spacing: 10) {
+            Label(
+              "\(context.pages.count) knowledge page\(context.pages.count == 1 ? "" : "s")",
+              systemImage: "books.vertical"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+            LazyVGrid(
+              columns: [
+                GridItem(
+                  .adaptive(minimum: 156, maximum: 230),
+                  spacing: 8,
+                  alignment: .topLeading
+                )
+              ],
+              alignment: .leading,
+              spacing: 8
+            ) {
+              ForEach(context.pages) { page in
                 contextPageRow(page)
               }
             }
-          } else {
-            ScrollView {
-              LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(contextPages) { page in
-                  contextPageRow(page)
-                }
-              }
-            }
-            .frame(height: 154)
-            .scrollIndicators(.visible)
           }
-        } else {
-          ForEach(Array(contextPages.prefix(3))) { page in
-            contextPageRow(page)
-          }
-        }
-
-        if contextPages.count > 3 {
-          Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
-              isContextExpanded.toggle()
-            }
-          } label: {
-            Label(
-              isContextExpanded
-                ? "Show less"
-                : "Show \(contextPages.count - 3) more",
-              systemImage: isContextExpanded ? "chevron.up" : "chevron.down"
-            )
-            .font(.caption.weight(.medium))
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(.indigo)
         }
       }
     }
   }
 
   private func contextPageRow(_ page: KnowledgePage) -> some View {
-    HStack(spacing: 8) {
-      Image(systemName: "doc.text")
-        .font(.caption)
-        .foregroundStyle(.indigo)
-      Text(page.title)
-        .font(.caption.weight(.semibold))
-        .lineLimit(1)
+    let isHovered = hoveredContextPageID == page.id
+    return Button {
+      model.requestKnowledgeFocus(pageID: page.id)
+      dismiss()
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "doc.text")
+          .font(.caption)
+          .foregroundStyle(.indigo)
+        Text(page.title)
+          .font(.caption.weight(.semibold))
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 4)
+        Image(systemName: "arrow.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(isHovered ? Color.indigo : Color.secondary)
+      }
+      .padding(.horizontal, 10)
+      .frame(
+        maxWidth: .infinity,
+        minHeight: 34,
+        maxHeight: 34,
+        alignment: .leading
+      )
+      .contentShape(Rectangle())
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .buttonStyle(.plain)
+    .background(
+      isHovered
+        ? Color.indigo.opacity(0.12)
+        : Color(nsColor: .controlBackgroundColor).opacity(0.72),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(
+          isHovered
+            ? Color.indigo.opacity(0.55)
+            : Color(nsColor: .separatorColor).opacity(0.45),
+          lineWidth: 1
+        )
+    }
+    .onHover { hovering in
+      if hovering {
+        hoveredContextPageID = page.id
+      } else if hoveredContextPageID == page.id {
+        hoveredContextPageID = nil
+      }
+    }
+    .help("Open \(page.title) in Product knowledge")
   }
 
-  @ViewBuilder
-  private var deliveryRevisionSection: some View {
-    if let candidate = currentCandidate {
-      SprintTicketSectionCard(title: "Delivery revision") {
-        VStack(alignment: .leading, spacing: 10) {
-          LazyVGrid(
-            columns: Array(
-              repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
-              count: 5
-            ),
-            alignment: .leading,
-            spacing: 12
-          ) {
+  private func deliveryRevisionSection(
+    _ candidate: CandidateRevision,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    let candidateProfile = profile(for: candidate)
+    return workLogArtifactRow(
+      actorName: candidateProfile?.name ?? "StoryPointless",
+      profile: candidateProfile,
+      createdAt: candidate.createdAt,
+      showsBottomSeparator: showsBottomSeparator
+    ) {
+      workLogPanel(tint: .purple) {
+        SprintTicketSectionCard(title: "Delivery revision") {
+          VStack(alignment: .leading, spacing: 10) {
+            LazyVGrid(
+              columns: Array(
+                repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
+                count: 5
+              ),
+              alignment: .leading,
+              spacing: 12
+            ) {
             SprintTicketMetadata(
               title: "Ticket branch",
               value: candidate.branchName,
@@ -8544,109 +8851,211 @@ private struct SprintTicketDetailView: View {
             }
             SprintTicketMetadata(
               title: "Local trunk",
-              value: trunkPromotionValue,
-              symbol: trunkPromotionSymbol,
-              tint: trunkPromotionTint
+              value: trunkPromotionValue(for: candidate),
+              symbol: trunkPromotionSymbol(for: candidate),
+              tint: trunkPromotionTint(for: candidate)
             )
-            Button {
-              model.requestCodebaseFocus(workItemID: currentItem.id)
-              dismiss()
-            } label: {
-              HStack(spacing: 8) {
-                Image(systemName: "chevron.left.forwardslash.chevron.right")
-                  .foregroundStyle(.indigo)
-                VStack(alignment: .leading, spacing: 1) {
-                  Text("Codebase")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                  HStack(spacing: 4) {
-                    Text("View changes")
-                    Image(systemName: "arrow.right")
+            if candidate.id == currentCandidate?.id {
+              Button {
+                model.requestCodebaseFocus(workItemID: currentItem.id)
+                dismiss()
+              } label: {
+                HStack(spacing: 8) {
+                  Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .foregroundStyle(.indigo)
+                  VStack(alignment: .leading, spacing: 1) {
+                    Text("Codebase")
+                      .font(.caption2)
+                      .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                      Text("View changes")
+                      Image(systemName: "arrow.right")
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.indigo)
                   }
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(.indigo)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
               }
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(Rectangle())
+              .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
           }
           if candidate.status != .accepted {
-            Text(
-              "The ticket branch remains isolated from trunk until the reviewed demo is approved."
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(deliveryRevisionExplanation(candidate.status))
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            }
           }
+          .textSelection(.enabled)
         }
-        .textSelection(.enabled)
       }
     }
   }
 
-  @ViewBuilder
-  private var permissionRequestSection: some View {
-    if let request = pendingPermissionRequest {
+  private func deliveryRevisionExplanation(
+    _ status: CandidateRevisionStatus
+  ) -> String {
+    switch status {
+    case .changesRequested, .superseded, .failed:
+      "This candidate was not promoted to local trunk."
+    default:
+      "The ticket branch remains isolated from trunk until the reviewed demo is approved."
+    }
+  }
+
+  private func permissionRequestSection(
+    _ request: AgentPermissionRequest,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    let run = model.runs.first { $0.id == request.agentRunID }
+    let requestProfile = run.flatMap { run in
+      model.profiles.first { $0.id == run.profileID }
+    }
+    return workLogArtifactRow(
+      actorName: requestProfile?.name ?? "StoryPointless",
+      profile: requestProfile,
+      createdAt: request.createdAt,
+      showsBottomSeparator: showsBottomSeparator
+    ) {
       VStack(alignment: .leading, spacing: 13) {
-        HStack(alignment: .top, spacing: 11) {
-          Image(systemName: "lock.shield.fill")
-            .font(.title3)
-            .foregroundStyle(.orange)
-          VStack(alignment: .leading, spacing: 3) {
-            Text(request.title)
-              .font(.headline)
-            Text("Additional access for this agent run")
+        if let reason = request.reason, !reason.isEmpty {
+          TicketMarkdownDocument(source: reason, baseFont: .body)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        VStack(alignment: .leading, spacing: 13) {
+          HStack(alignment: .top, spacing: 11) {
+            Image(systemName: "lock.shield.fill")
+              .font(.title3)
+              .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(request.title)
+                .font(.headline)
+              Text("The agent needs access outside its current ticket workspace")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(permissionStatusTitle(request.status))
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(permissionStatusTint(request.status))
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(
+                permissionStatusTint(request.status).opacity(0.1),
+                in: Capsule()
+              )
+          }
+
+          Text(request.detail)
+            .font(request.kind == .command ? .system(.callout, design: .monospaced) : .callout)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+
+          if request.status == .pending {
+            HStack {
+              Spacer()
+              Button("Deny") {
+                decidePermissionRequest(request, allow: false)
+              }
+              .buttonStyle(.bordered)
+              .disabled(decidingPermissionRequestID != nil)
+
+              Button("Allow once") {
+                decidePermissionRequest(request, allow: true)
+              }
+              .buttonStyle(.bordered)
+              .disabled(decidingPermissionRequestID != nil)
+
+              if request.productGrantSignature != nil {
+                Button("Always allow") {
+                  decidePermissionRequest(
+                    request,
+                    allow: true,
+                    rememberForProduct: true
+                  )
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(decidingPermissionRequestID != nil)
+              }
+            }
+          }
+
+          if let explanation = permissionExplanation(request) {
+            Text(explanation)
               .font(.caption)
               .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
           }
-          Spacer()
-          Button("Deny") {
-            decidePermissionRequest(request, allow: false)
-          }
-          .buttonStyle(.bordered)
-          .disabled(decidingPermissionRequestID != nil)
-
-          Button("Allow") {
-            decidePermissionRequest(request, allow: true)
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(decidingPermissionRequestID != nil)
         }
-
-        Text(request.detail)
-          .font(request.kind == .command ? .system(.callout, design: .monospaced) : .callout)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-
-        if let reason = request.reason, !reason.isEmpty {
-          Text(reason)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        .padding(17)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+        .overlay {
+          RoundedRectangle(cornerRadius: 13)
+            .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
         }
-
-        Text(
-          "Allow grants only this requested capability for the current run. Deny returns control to the agent so it can adapt."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      }
-      .padding(17)
-      .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
-      .overlay {
-        RoundedRectangle(cornerRadius: 13)
-          .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
       }
     }
   }
 
-  @ViewBuilder
-  private var demoSection: some View {
-    if currentItem.state == .acceptance, let candidate = currentCandidate {
-      let specification = currentExecutionResult?.demo
+  private func permissionStatusTitle(
+    _ status: AgentPermissionRequestStatus
+  ) -> String {
+    switch status {
+    case .pending: "Needs your input"
+    case .allowed: "Allowed"
+    case .denied: "Denied"
+    case .interrupted: "Interrupted"
+    }
+  }
+
+  private func permissionStatusTint(
+    _ status: AgentPermissionRequestStatus
+  ) -> Color {
+    switch status {
+    case .pending: .orange
+    case .allowed: .green
+    case .denied, .interrupted: .secondary
+    }
+  }
+
+  private func permissionExplanation(
+    _ request: AgentPermissionRequest
+  ) -> String? {
+    switch request.status {
+    case .pending:
+      if request.kind == .fileChange {
+        "Allow once grants this file change for the current run. Deny returns control to the agent so it can adapt."
+      } else {
+        nil
+      }
+    case .allowed, .denied, .interrupted:
+      nil
+    }
+  }
+
+  private func demoSection(
+    _ demo: SprintTicketDemoLogItem,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    let candidate = demo.candidate
+    let result = executionResult(for: candidate)
+    let specification = result?.demo
+    let session = model.currentDemoSession(for: candidate.id)
+    let eventProfile = model.profiles.first { $0.name == demo.event.actor }
+    let canOpenDemo =
+      candidate.id == currentCandidate?.id
+      && candidate.status == .readyForDemo
+      && currentItem.state == .acceptance
+    return workLogArtifactRow(
+      actorName: eventProfile?.name ?? demo.event.actor,
+      profile: eventProfile,
+      createdAt: demo.createdAt,
+      showsBottomSeparator: showsBottomSeparator
+    ) {
       VStack(alignment: .leading, spacing: 14) {
         HStack(spacing: 10) {
           Image(systemName: "play.rectangle.fill")
@@ -8660,7 +9069,8 @@ private struct SprintTicketDetailView: View {
               .foregroundStyle(.secondary)
           }
           Spacer()
-          if currentDemoSession?.status == .ready,
+          if canOpenDemo,
+            session?.status == .ready,
             specification?.presentation.kind == .browser
               || specification?.presentation.kind == .macApplication
           {
@@ -8670,19 +9080,35 @@ private struct SprintTicketDetailView: View {
             .buttonStyle(.bordered)
             .disabled(isDemoActionRunning)
           }
-          Button(demoButtonTitle) {
-            launchDemo(candidate)
+          if canOpenDemo {
+            Button(demoButtonTitle(specification: specification, session: session)) {
+              launchDemo(candidate)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isDemoActionRunning || specification == nil)
+          } else {
+            Text(demoStatusTitle(candidate.status))
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(demoStatusTint(candidate.status))
+              .padding(.horizontal, 8)
+              .padding(.vertical, 4)
+              .background(demoStatusTint(candidate.status).opacity(0.1), in: Capsule())
           }
-          .buttonStyle(.borderedProminent)
-          .disabled(isDemoActionRunning || specification == nil)
         }
 
-        Text(demoExplanation)
+        Text(
+          demoExplanation(
+            candidate: candidate,
+            specification: specification,
+            session: session,
+            canOpenDemo: canOpenDemo
+          )
+        )
           .font(.callout)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
 
-        if let instructions = currentExecutionResult?.reviewInstructions,
+        if let instructions = result?.reviewInstructions,
           !instructions.isEmpty
         {
           VStack(alignment: .leading, spacing: 7) {
@@ -8702,7 +9128,7 @@ private struct SprintTicketDetailView: View {
           }
         }
 
-        if let output = currentDemoSession?.output, !output.isEmpty {
+        if let output = session?.output, !output.isEmpty {
           VStack(alignment: .leading, spacing: 7) {
             Text("Demo result")
               .font(.caption.weight(.semibold))
@@ -8719,7 +9145,7 @@ private struct SprintTicketDetailView: View {
           }
         }
 
-        if let error = currentDemoSession?.errorMessage, !error.isEmpty {
+        if let error = session?.errorMessage, !error.isEmpty {
           Label(error, systemImage: "exclamationmark.triangle.fill")
             .font(.callout)
             .foregroundStyle(.orange)
@@ -8735,13 +9161,16 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private var demoButtonTitle: String {
+  private func demoButtonTitle(
+    specification: DemoLaunchSpecification?,
+    session: DemoSession?
+  ) -> String {
     if isDemoActionRunning {
-      return currentDemoSession?.status == .starting ? "Starting…" : "Preparing…"
+      return session?.status == .starting ? "Starting…" : "Preparing…"
     }
-    switch currentDemoSession?.status {
+    switch session?.status {
     case .ready:
-      return currentExecutionResult?.demo?.presentation.kind == .commandOutput
+      return specification?.presentation.kind == .commandOutput
         ? "Run demo again"
         : "Open demo"
     case .failed:
@@ -8751,11 +9180,41 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private var demoExplanation: String {
-    guard let specification = currentExecutionResult?.demo else {
+  private func demoStatusTitle(_ status: CandidateRevisionStatus) -> String {
+    switch status {
+    case .accepted: "Approved"
+    case .readyForDemo: "Ready"
+    case .changesRequested: "Changes requested"
+    case .superseded: "Superseded"
+    case .failed: "Stopped"
+    default: "Historical"
+    }
+  }
+
+  private func demoStatusTint(_ status: CandidateRevisionStatus) -> Color {
+    switch status {
+    case .accepted: .green
+    case .readyForDemo: .orange
+    case .changesRequested, .failed: .red
+    default: .secondary
+    }
+  }
+
+  private func demoExplanation(
+    candidate: CandidateRevision,
+    specification: DemoLaunchSpecification?,
+    session: DemoSession?,
+    canOpenDemo: Bool
+  ) -> String {
+    guard let specification else {
       return "This candidate predates managed demos. Request changes so the assigned team member can add a one-click demo."
     }
-    switch currentDemoSession?.status {
+    guard canOpenDemo else {
+      return candidate.status == .accepted
+        ? "The Product Owner approved this reviewed demo and promoted its integrated revision."
+        : "This earlier demo submission remains in the Work log as delivery history."
+    }
+    switch session?.status {
     case .preparing:
       return "StoryPointless is preparing the exact reviewed revision."
     case .starting:
@@ -8800,88 +9259,129 @@ private struct SprintTicketDetailView: View {
 
   private func decidePermissionRequest(
     _ request: AgentPermissionRequest,
-    allow: Bool
+    allow: Bool,
+    rememberForProduct: Bool = false
   ) {
     guard decidingPermissionRequestID == nil else { return }
     decidingPermissionRequestID = request.id
     Task {
-      await model.decidePermissionRequest(request, allow: allow)
+      await model.decidePermissionRequest(
+        request,
+        allow: allow,
+        rememberForProduct: rememberForProduct
+      )
       decidingPermissionRequestID = nil
     }
   }
 
   @ViewBuilder
-  private var followUpTicketProposalsSection: some View {
-    if let proposals = currentExecutionResult?.followUpTicketProposals,
-      !proposals.isEmpty
+  private func followUpTicketProposalsSection(
+    _ followUp: SprintTicketFollowUpLogItem,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    if let result = executionResult(for: followUp.candidate),
+      !result.followUpTicketProposals.isEmpty
     {
-      VStack(alignment: .leading, spacing: 12) {
-        Label("Recommended follow-up work", systemImage: "arrow.triangle.branch")
-          .font(.headline)
-          .foregroundStyle(.purple)
+      let followUpProfile = profile(for: followUp.candidate)
+      workLogArtifactRow(
+        actorName: followUpProfile?.name ?? "StoryPointless",
+        profile: followUpProfile,
+        createdAt: followUp.createdAt,
+        showsBottomSeparator: showsBottomSeparator
+      ) {
+        VStack(alignment: .leading, spacing: 12) {
+          Label("Recommended follow-up work", systemImage: "arrow.triangle.branch")
+            .font(.headline)
+            .foregroundStyle(.purple)
 
-        Text(
-          currentItem.state == .released
-            ? "These recommendations were published to the Backlog for individual review."
-            : "Approving this research outcome will publish these as reviewable Backlog proposals. Nothing enters the Backlog until you accept each proposal."
-        )
-        .font(.callout)
-        .foregroundStyle(.secondary)
+          Text(followUpExplanation(followUp.candidate.status))
+            .font(.callout)
+            .foregroundStyle(.secondary)
 
-        ForEach(proposals, id: \.reference) { proposal in
-          HStack(alignment: .top, spacing: 10) {
-            Text(proposal.reference)
-              .font(.caption.monospaced().weight(.semibold))
-              .foregroundStyle(.purple)
-              .frame(width: 28, alignment: .leading)
-            VStack(alignment: .leading, spacing: 4) {
-              Text(proposal.title)
-                .font(.subheadline.weight(.semibold))
-              Text(proposal.rationale)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Label(proposal.suggestedRole.title, systemImage: proposal.suggestedRole.symbolName)
+          ForEach(result.followUpTicketProposals, id: \.reference) { proposal in
+            HStack(alignment: .top, spacing: 10) {
+              Text(proposal.reference)
+                .font(.caption.monospaced().weight(.semibold))
+                .foregroundStyle(.purple)
+                .frame(width: 28, alignment: .leading)
+              VStack(alignment: .leading, spacing: 4) {
+                Text(proposal.title)
+                  .font(.subheadline.weight(.semibold))
+                Text(proposal.rationale)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              Spacer()
+              Label(
+                proposal.suggestedRole.title,
+                systemImage: proposal.suggestedRole.symbolName
+              )
               .font(.caption.weight(.medium))
               .foregroundStyle(proposal.suggestedRole.tint)
+            }
+            .padding(11)
+            .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
           }
-          .padding(11)
-          .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
         }
-      }
-      .padding(17)
-      .background(Color.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
-      .overlay {
-        RoundedRectangle(cornerRadius: 13)
-          .stroke(Color.purple.opacity(0.34), lineWidth: 1.2)
+        .padding(17)
+        .background(Color.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
+        .overlay {
+          RoundedRectangle(cornerRadius: 13)
+            .stroke(Color.purple.opacity(0.34), lineWidth: 1.2)
+        }
       }
     }
   }
 
-  @ViewBuilder
-  private var knowledgeProposalsSection: some View {
-    if !currentKnowledgeProposals.isEmpty {
+  private func followUpExplanation(
+    _ status: CandidateRevisionStatus
+  ) -> String {
+    switch status {
+    case .accepted:
+      "These recommendations were published to the Backlog for individual review."
+    case .readyForDemo:
+      "Approving this research outcome will publish these as reviewable Backlog proposals. Nothing enters the Backlog until you accept each proposal."
+    case .queuedForIntegration, .integrating, .resolvingConflict, .reviewing:
+      "These recommendations are part of this candidate and remain subject to Tech Lead review."
+    case .changesRequested, .superseded, .failed:
+      "These recommendations belonged to an earlier candidate and were not published."
+    }
+  }
+
+  private func knowledgeProposalsSection(
+    _ knowledge: SprintTicketKnowledgeLogItem,
+    showsBottomSeparator: Bool
+  ) -> some View {
+    let knowledgeProfile = profile(for: knowledge.candidate)
+    return workLogArtifactRow(
+      actorName: knowledgeProfile?.name ?? "StoryPointless",
+      profile: knowledgeProfile,
+      createdAt: knowledge.createdAt,
+      showsBottomSeparator: showsBottomSeparator
+    ) {
       VStack(alignment: .leading, spacing: 12) {
         HStack(spacing: 9) {
           Label("Knowledge changes", systemImage: "books.vertical.fill")
             .font(.headline)
             .foregroundStyle(.indigo)
           Spacer()
-          Text(knowledgeProposalStatusTitle)
+          Text(knowledgeProposalStatusTitle(knowledge.proposals))
             .font(.caption.weight(.semibold))
-            .foregroundStyle(knowledgeProposalStatusTint)
+            .foregroundStyle(knowledgeProposalStatusTint(knowledge.proposals))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(knowledgeProposalStatusTint.opacity(0.1), in: Capsule())
+            .background(
+              knowledgeProposalStatusTint(knowledge.proposals).opacity(0.1),
+              in: Capsule()
+            )
         }
 
-        Text(knowledgeProposalExplanation)
+        Text(knowledgeProposalExplanation(knowledge.proposals))
           .font(.callout)
           .foregroundStyle(.secondary)
 
-        ForEach(currentKnowledgeProposals) { proposal in
+        ForEach(knowledge.proposals) { proposal in
           let knowledgePage = publishedKnowledgePage(for: proposal)
           CanonicalKnowledgeProposalCard(
             proposal: proposal,
@@ -8929,40 +9429,46 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private var knowledgeProposalStatusTitle: String {
-    if currentKnowledgeProposals.contains(where: { $0.status == .proposed }) {
+  private func knowledgeProposalStatusTitle(
+    _ proposals: [KnowledgePageProposal]
+  ) -> String {
+    if proposals.contains(where: { $0.status == .proposed }) {
       return "Reviewing"
     }
-    if currentKnowledgeProposals.contains(where: { $0.status == .reviewed }) {
+    if proposals.contains(where: { $0.status == .reviewed }) {
       return model.requiresKnowledgeApproval ? "Your approval required" : "Publishing"
     }
-    if currentKnowledgeProposals.allSatisfy({ $0.status == .accepted }) {
+    if proposals.allSatisfy({ $0.status == .accepted }) {
       return "Published"
     }
     return "Review recorded"
   }
 
-  private var knowledgeProposalStatusTint: Color {
-    if currentKnowledgeProposals.contains(where: { $0.status == .reviewed }) {
+  private func knowledgeProposalStatusTint(
+    _ proposals: [KnowledgePageProposal]
+  ) -> Color {
+    if proposals.contains(where: { $0.status == .reviewed }) {
       return model.requiresKnowledgeApproval ? .orange : .indigo
     }
-    if currentKnowledgeProposals.allSatisfy({ $0.status == .accepted }) {
+    if proposals.allSatisfy({ $0.status == .accepted }) {
       return .green
     }
     return .indigo
   }
 
-  private var knowledgeProposalExplanation: String {
-    if currentKnowledgeProposals.contains(where: { $0.status == .proposed }) {
+  private func knowledgeProposalExplanation(
+    _ proposals: [KnowledgePageProposal]
+  ) -> String {
+    if proposals.contains(where: { $0.status == .proposed }) {
       return "These durable wiki changes travel with the delivery and are currently being checked by the Tech Lead."
     }
-    if currentKnowledgeProposals.contains(where: { $0.status == .reviewed }) {
+    if proposals.contains(where: { $0.status == .reviewed }) {
       return model.requiresKnowledgeApproval
         ? "The Tech Lead reviewed these durable wiki changes. Accept or reject each change before completing the ticket."
         : "The Tech Lead reviewed these durable wiki changes. StoryPointless is publishing them automatically."
     }
-    if currentKnowledgeProposals.allSatisfy({ $0.status == .accepted }) {
-      return "Published automatically after Tech Lead review. Open a page below to read the canonical result in the Knowledge Base."
+    if proposals.allSatisfy({ $0.status == .accepted }) {
+      return "Published after Tech Lead review. Open a page below to read the canonical result in the Knowledge Base."
     }
     return "These proposed changes remain visible as part of the ticket’s delivery history."
   }
@@ -8978,7 +9484,7 @@ private struct SprintTicketDetailView: View {
         Text("Ticket details")
           .font(.title2.bold())
         Spacer()
-        if awaitingOwnerRun != nil {
+        if hasPendingWorkLogAction {
           latestActivityButton
             .buttonStyle(.borderedProminent)
             .tint(.orange)
@@ -9047,53 +9553,15 @@ private struct SprintTicketDetailView: View {
               }
             }
 
-            SprintTicketSectionCard(title: "Acceptance criteria") {
-              if currentItem.acceptanceCriteria.isEmpty {
-                Label("No acceptance criteria", systemImage: "exclamationmark.circle")
-                  .foregroundStyle(.secondary)
-              } else {
-                VStack(alignment: .leading, spacing: 10) {
-                  ForEach(currentItem.acceptanceCriteria, id: \.self) { criterion in
-                    HStack(alignment: .top, spacing: 9) {
-                      Text("•")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, alignment: .center)
-                      Text(criterion)
-                        .textSelection(.enabled)
-                    }
-                  }
-                }
+            if hasRelationships {
+              HStack(alignment: .top, spacing: 18) {
+                acceptanceCriteriaSection
+                  .frame(width: relationshipColumnWidth * 2, alignment: .topLeading)
+                relationshipsSection
+                  .frame(width: relationshipColumnWidth, alignment: .topLeading)
               }
-            }
-
-            permissionRequestSection
-
-            demoSection
-
-            followUpTicketProposalsSection
-
-            knowledgeProposalsSection
-
-            if hasRelationships || hasSupportingRail {
-              VStack(alignment: .leading, spacing: 18) {
-                if hasRelationships, !contextPages.isEmpty {
-                  HStack(alignment: .top, spacing: 18) {
-                    relationshipsSection
-                    contextSection
-                  }
-                } else {
-                  if hasRelationships {
-                    relationshipsSection
-                  }
-                  if !contextPages.isEmpty {
-                    contextSection
-                  }
-                }
-
-                if currentCandidate != nil {
-                  deliveryRevisionSection
-                }
-              }
+            } else {
+              acceptanceCriteriaSection
             }
 
             Divider()
@@ -9108,9 +9576,6 @@ private struct SprintTicketDetailView: View {
                   .padding(.vertical, 3)
                   .background(.quaternary, in: Capsule())
                 Spacer()
-                Label("Updates automatically", systemImage: "arrow.clockwise")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
               }
 
               if workLogEntries.isEmpty {
@@ -9165,6 +9630,36 @@ private struct SprintTicketDetailView: View {
                           retrospectiveNotes: model.retrospectiveNotes,
                           showsBottomSeparator: showsBottomSeparator
                         )
+                      case .permission(let request):
+                        permissionRequestSection(
+                          request,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
+                      case .runContext(let context):
+                        contextSection(
+                          context,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
+                      case .candidate(let candidate):
+                        deliveryRevisionSection(
+                          candidate,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
+                      case .knowledge(let knowledge):
+                        knowledgeProposalsSection(
+                          knowledge,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
+                      case .demo(let demo):
+                        demoSection(
+                          demo,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
+                      case .followUp(let followUp):
+                        followUpTicketProposalsSection(
+                          followUp,
+                          showsBottomSeparator: showsBottomSeparator
+                        )
                       }
                     }
                     .id(entry.id)
@@ -9197,11 +9692,18 @@ private struct SprintTicketDetailView: View {
     }
     .task {
       while !Task.isCancelled {
+        let isFirstLoad = !hasLoadedWorkLog
         let previousLastEntryID = workLogEntries.last?.id
         comments = await model.comments(for: item.id)
         activityEvents = await model.activityEvents(for: item.id)
         let latestEntryID = workLogEntries.last?.id
-        if hasLoadedWorkLog, !isAcceptingTicket, latestEntryID != previousLastEntryID {
+        if isFirstLoad, hasPendingWorkLogAction {
+          workLogScrollRequest += 1
+        } else if
+          hasLoadedWorkLog,
+          !isAcceptingTicket,
+          latestEntryID != previousLastEntryID
+        {
           workLogScrollRequest += 1
         }
         hasLoadedWorkLog = true
@@ -9266,7 +9768,10 @@ private struct SprintTicketDetailView: View {
           .foregroundStyle(.red)
         } else if currentItem.state == .acceptance {
           Label(
-            "Approve this demo, or add feedback and request changes.",
+            commentReplyRecipient.map {
+              "Comments go to \($0.name) for a reply without changing the reviewed demo."
+            }
+              ?? "No team member is available to answer comments on this ticket.",
             systemImage: "play.rectangle"
           )
           .font(.caption)
@@ -9293,6 +9798,12 @@ private struct SprintTicketDetailView: View {
               guard keyPress.key == .return else { return .ignored }
               if keyPress.modifiers.contains(.shift) {
                 return .ignored
+              }
+              if currentItem.state == .acceptance, let commentReplyRecipient {
+                if canAskQuestion {
+                  askQuestion(to: commentReplyRecipient)
+                }
+                return .handled
               }
               if canPostComment {
                 postComment()
@@ -9373,11 +9884,12 @@ private struct SprintTicketDetailView: View {
             .buttonStyle(.borderedProminent)
             .disabled(!canResumeWork)
           } else if currentItem.state == .acceptance {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
+            Button(isAskingQuestion ? "Commenting…" : "Comment") {
+              guard let commentReplyRecipient else { return }
+              askQuestion(to: commentReplyRecipient)
             }
             .buttonStyle(.bordered)
-            .disabled(!canPostComment)
+            .disabled(!canAskQuestion)
 
             Divider()
               .frame(height: 20)
@@ -9791,14 +10303,59 @@ private struct SprintTicketMetadata: View {
   }
 }
 
-private enum SprintWorkLogEntry: Identifiable {
+struct SprintTicketRunContextLogItem: Identifiable {
+  let run: AgentRun
+  let pages: [KnowledgePage]
+
+  var id: UUID { run.id }
+  var createdAt: Date { run.createdAt }
+}
+
+struct SprintTicketKnowledgeLogItem: Identifiable {
+  let candidate: CandidateRevision
+  let proposals: [KnowledgePageProposal]
+
+  var id: UUID { candidate.id }
+  var createdAt: Date {
+    proposals.map(\.createdAt).min() ?? candidate.createdAt
+  }
+}
+
+struct SprintTicketDemoLogItem: Identifiable {
+  let event: ActivityEvent
+  let candidate: CandidateRevision
+
+  var id: UUID { event.id }
+  var createdAt: Date { event.createdAt }
+}
+
+struct SprintTicketFollowUpLogItem: Identifiable {
+  let candidate: CandidateRevision
+
+  var id: UUID { candidate.id }
+  var createdAt: Date { candidate.createdAt }
+}
+
+enum SprintWorkLogEntry: Identifiable {
   case comment(TicketComment)
   case event(ActivityEvent)
+  case permission(AgentPermissionRequest)
+  case runContext(SprintTicketRunContextLogItem)
+  case candidate(CandidateRevision)
+  case knowledge(SprintTicketKnowledgeLogItem)
+  case demo(SprintTicketDemoLogItem)
+  case followUp(SprintTicketFollowUpLogItem)
 
   var id: String {
     switch self {
     case .comment(let comment): "comment-\(comment.id.uuidString)"
     case .event(let event): "event-\(event.id.uuidString)"
+    case .permission(let request): "permission-\(request.id.uuidString)"
+    case .runContext(let context): "context-\(context.id.uuidString)"
+    case .candidate(let candidate): "candidate-\(candidate.id.uuidString)"
+    case .knowledge(let knowledge): "knowledge-\(knowledge.id.uuidString)"
+    case .demo(let demo): "demo-\(demo.id.uuidString)"
+    case .followUp(let followUp): "follow-up-\(followUp.id.uuidString)"
     }
   }
 
@@ -9806,14 +10363,81 @@ private enum SprintWorkLogEntry: Identifiable {
     switch self {
     case .comment(let comment): comment.createdAt
     case .event(let event): event.createdAt
+    case .permission(let request): request.createdAt
+    case .runContext(let context): context.createdAt
+    case .candidate(let candidate): candidate.createdAt
+    case .knowledge(let knowledge): knowledge.createdAt
+    case .demo(let demo): demo.createdAt
+    case .followUp(let followUp): followUp.createdAt
     }
   }
 
   var sortOrder: Int {
     switch self {
     case .event: 0
-    case .comment: 1
+    case .runContext: 1
+    case .comment: 2
+    case .permission: 3
+    case .candidate: 4
+    case .knowledge: 5
+    case .followUp: 6
+    case .demo: 7
     }
+  }
+}
+
+enum SprintTicketWorkLogTimeline {
+  static func ordered(_ entries: [SprintWorkLogEntry]) -> [SprintWorkLogEntry] {
+    entries.sorted {
+      if $0.createdAt == $1.createdAt {
+        if $0.sortOrder == $1.sortOrder {
+          return $0.id < $1.id
+        }
+        return $0.sortOrder < $1.sortOrder
+      }
+      return $0.createdAt < $1.createdAt
+    }
+  }
+
+  static func demoSubmissions(
+    events: [ActivityEvent],
+    candidates: [CandidateRevision]
+  ) -> [SprintTicketDemoLogItem] {
+    let orderedCandidates = candidates.sorted {
+      if $0.createdAt == $1.createdAt {
+        return $0.version < $1.version
+      }
+      return $0.createdAt < $1.createdAt
+    }
+    return events
+      .filter(isDemoSubmission)
+      .sorted {
+        if $0.createdAt == $1.createdAt {
+          return $0.sequence < $1.sequence
+        }
+        return $0.createdAt < $1.createdAt
+      }
+      .compactMap { event in
+        guard
+          let candidate = orderedCandidates.last(where: {
+            $0.createdAt <= event.createdAt
+          })
+        else { return nil }
+        return SprintTicketDemoLogItem(event: event, candidate: candidate)
+      }
+  }
+
+  private static func isDemoSubmission(_ event: ActivityEvent) -> Bool {
+    guard event.kind == "work_item.transitioned" else { return false }
+    let movement = event.detail
+      .split(separator: ":", maxSplits: 1)
+      .first
+      .map(String.init) ?? ""
+    let destination = movement
+      .components(separatedBy: " -> ")
+      .last?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return destination == WorkItemState.acceptance.rawValue
   }
 }
 

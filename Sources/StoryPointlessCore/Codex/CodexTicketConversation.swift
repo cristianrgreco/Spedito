@@ -105,8 +105,9 @@ public enum CodexTicketConversation {
         to \(item.version). Otherwise return proposal as null.
         """
       : """
-        This is an explanatory question about paused sprint work. Answer it directly and return
-        proposal as null. Do not resume implementation or imply that the ticket status changed.
+        This is an explanatory question about sprint delivery. Answer it directly and return
+        proposal as null. Do not resume implementation, invalidate a reviewed candidate, or imply
+        that the ticket status changed.
         """
 
     return """

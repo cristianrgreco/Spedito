@@ -3,6 +3,42 @@ import Foundation
 public struct SprintWorkRecoveryPolicy: Sendable {
   public init() {}
 
+  public func latestReviewRun(
+    for candidate: CandidateRevision,
+    runs: [AgentRun],
+    reviewerProfileIDs: Set<UUID>
+  ) -> AgentRun? {
+    guard
+      candidate.status == .reviewing,
+      candidate.integratedSHA != nil,
+      let integrationWorktreePath = candidate.integrationWorktreePath
+    else {
+      return nil
+    }
+
+    return runs
+      .filter { run in
+        guard
+          run.productID == candidate.productID,
+          run.sprintID == candidate.sprintID,
+          run.sprintItemID == candidate.sprintItemID,
+          run.workItemID == candidate.workItemID,
+          reviewerProfileIDs.contains(run.profileID),
+          run.createdAt >= candidate.updatedAt,
+          run.worktreePath == nil || run.worktreePath == integrationWorktreePath
+        else {
+          return false
+        }
+        switch run.status {
+        case .queued, .running, .awaitingOwner, .interrupted, .completed:
+          return true
+        case .failed, .cancelled:
+          return false
+        }
+      }
+      .max(by: { $0.createdAt < $1.createdAt })
+  }
+
   public func runsWithExpiredPermissionDecisions(
     runs: [AgentRun],
     permissionRequests: [AgentPermissionRequest]

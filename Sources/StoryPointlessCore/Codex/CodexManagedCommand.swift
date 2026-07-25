@@ -315,6 +315,7 @@ public struct CodexApprovalPresentation: Equatable, Sendable {
   public let detail: String
   public let reason: String?
   public let signature: String
+  public let productGrantSignature: String?
 
   public init(
     kind: CodexApprovalRequestKind,
@@ -323,7 +324,8 @@ public struct CodexApprovalPresentation: Equatable, Sendable {
     title: String,
     detail: String,
     reason: String?,
-    signature: String
+    signature: String,
+    productGrantSignature: String? = nil
   ) {
     self.kind = kind
     self.threadID = threadID
@@ -332,6 +334,7 @@ public struct CodexApprovalPresentation: Equatable, Sendable {
     self.detail = detail
     self.reason = reason
     self.signature = signature
+    self.productGrantSignature = productGrantSignature
   }
 }
 
@@ -370,6 +373,7 @@ public struct AgentPermissionRequest: Identifiable, Codable, Hashable, Sendable 
   public let detail: String
   public let reason: String?
   public let signature: String
+  public let productGrantSignature: String?
   public var status: AgentPermissionRequestStatus
   public let createdAt: Date
   public var updatedAt: Date
@@ -388,6 +392,7 @@ public struct AgentPermissionRequest: Identifiable, Codable, Hashable, Sendable 
     detail: String,
     reason: String? = nil,
     signature: String,
+    productGrantSignature: String? = nil,
     status: AgentPermissionRequestStatus = .pending,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -405,8 +410,50 @@ public struct AgentPermissionRequest: Identifiable, Codable, Hashable, Sendable 
     self.detail = detail
     self.reason = reason
     self.signature = signature
+    self.productGrantSignature = productGrantSignature
     self.status = status
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+}
+
+public struct AgentPermissionGrant: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sourceRequestID: UUID?
+  public let method: String
+  public let kind: CodexApprovalRequestKind
+  public let title: String
+  public let detail: String
+  public let signature: String
+  public let createdAt: Date
+  public var revokedAt: Date?
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sourceRequestID: UUID? = nil,
+    method: String,
+    kind: CodexApprovalRequestKind,
+    title: String,
+    detail: String,
+    signature: String,
+    createdAt: Date = Date(),
+    revokedAt: Date? = nil
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sourceRequestID = sourceRequestID
+    self.method = method
+    self.kind = kind
+    self.title = title
+    self.detail = detail
+    self.signature = signature
+    self.createdAt = createdAt
+    self.revokedAt = revokedAt
+  }
+
+  public var isActive: Bool {
+    revokedAt == nil
   }
 }

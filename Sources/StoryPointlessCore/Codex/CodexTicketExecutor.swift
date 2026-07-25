@@ -1312,6 +1312,49 @@ public enum CodexTechLeadReviewer {
       """
   }
 
+  public static func recoveryPrompt(
+    item: WorkItem,
+    integratedSHA: String,
+    interruptedPermission: AgentPermissionRequest?
+  ) -> String {
+    let permissionContext =
+      if let interruptedPermission {
+        switch interruptedPermission.status {
+        case .allowed:
+          """
+          The Product Owner already allowed this matching capability for the existing review run:
+          \(interruptedPermission.detail)
+          Reissue it only if it is still needed; StoryPointless will apply the saved scoped decision.
+          """
+        case .interrupted:
+          """
+          The previous live permission request expired when the app stopped:
+          \(interruptedPermission.detail)
+          Reissue the same request only if it is still needed so the Product Owner can answer it.
+          """
+        case .pending, .denied:
+          "No reusable permission decision was recorded."
+        }
+      } else {
+        "No interrupted permission request was recorded."
+      }
+
+    return """
+      Continue the existing Tech Lead review for \(item.key) — \(item.title).
+
+      StoryPointless restarted while the previous turn was incomplete. The candidate has not
+      changed, and the detached workspace is still pinned to integrated revision \(integratedSHA).
+      Use the review work and evidence already present in this Conversation. Do not restart a full
+      review, widen the ticket scope, repeat checks that already completed, or redo implementation.
+
+      \(permissionContext)
+
+      Finish the remaining focused inspection and return the complete structured Tech Lead review.
+      Approve if no concrete material blocker remains; otherwise return the small actionable
+      findings required by the review contract.
+      """
+  }
+
   public static var outputSchema: JSONValue {
     .object([
       "type": .string("object"),

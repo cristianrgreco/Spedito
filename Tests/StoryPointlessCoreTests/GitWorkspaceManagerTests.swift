@@ -79,10 +79,11 @@ struct GitWorkspaceManagerTests {
     #expect(candidateDetail.files.map(\.path) == ["verification.txt"])
     #expect(candidateDetail.unifiedDiff.contains("+verification"))
 
+    let integrationCandidateID = UUID()
     let integration = try await manager.integrateCandidate(
       repositoryURL: repository,
       integrationsRootURL: integrations,
-      candidateID: UUID(),
+      candidateID: integrationCandidateID,
       headSHA: candidate.headSHA
     )
     #expect(
@@ -106,6 +107,45 @@ struct GitWorkspaceManagerTests {
     )
     #expect(integrationDetail.unifiedDiff.contains("+first implementation"))
     #expect(integrationDetail.unifiedDiff.contains("+verification"))
+
+    let reusedIntegration = try await manager.prepareIntegratedWorkspace(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: integrationCandidateID,
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integration.integratedSHA
+    )
+    #expect(reusedIntegration == integration)
+
+    try Data("unreviewed\n".utf8).write(
+      to: integration.url.appendingPathComponent("unreviewed.txt")
+    )
+    let cleanedIntegration = try await manager.prepareIntegratedWorkspace(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: integrationCandidateID,
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integration.integratedSHA
+    )
+    #expect(cleanedIntegration == integration)
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: cleanedIntegration.url.appendingPathComponent("unreviewed.txt").path
+      )
+    )
+
+    try await manager.removeWorktree(
+      repositoryURL: repository,
+      worktreeURL: integration.url
+    )
+    let restoredIntegration = try await manager.prepareIntegratedWorkspace(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: integrationCandidateID,
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integration.integratedSHA
+    )
+    #expect(restoredIntegration == integration)
 
     let previewCandidateID = UUID()
     let preview = try await manager.preparePreviewWorkspace(

@@ -4,6 +4,161 @@ import Testing
 
 @Suite("Sprint work recovery")
 struct SprintWorkRecoveryTests {
+  @Test("A paused Tech Lead review is recovered without selecting an older integration run")
+  func pausedReviewRunIsRecoverable() {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let implementerRunID = UUID()
+    let techLeadID = UUID()
+    let integrationPath = "/private/tmp/review-integration"
+    let reviewStartedAt = Date()
+    let candidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: implementerRunID,
+      version: 1,
+      branchName: "ticket/T8",
+      baseSHA: "base",
+      headSHA: "head",
+      integratedSHA: "integrated",
+      worktreePath: "/private/tmp/t8",
+      integrationWorktreePath: integrationPath,
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    let completedIntegratorRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .completed,
+      worktreePath: integrationPath,
+      createdAt: reviewStartedAt.addingTimeInterval(-2),
+      updatedAt: reviewStartedAt.addingTimeInterval(-1)
+    )
+    let pausedReviewRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .awaitingOwner,
+      codexThreadID: "review-thread",
+      worktreePath: integrationPath,
+      createdAt: reviewStartedAt.addingTimeInterval(1),
+      updatedAt: reviewStartedAt.addingTimeInterval(2)
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
+      for: candidate,
+      runs: [completedIntegratorRun, pausedReviewRun],
+      reviewerProfileIDs: [techLeadID]
+    )
+
+    #expect(recovered?.id == pausedReviewRun.id)
+    #expect(recovered?.codexThreadID == "review-thread")
+  }
+
+  @Test("A completed review run remains recoverable for an interrupted post-review handoff")
+  func completedReviewRunIsRecoverable() {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let techLeadID = UUID()
+    let reviewStartedAt = Date()
+    let candidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: UUID(),
+      version: 2,
+      branchName: "ticket/T9",
+      baseSHA: "base",
+      headSHA: "head",
+      integratedSHA: "integrated",
+      worktreePath: "/private/tmp/t9",
+      integrationWorktreePath: "/private/tmp/t9-integration",
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    let completedReviewRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .completed,
+      codexThreadID: "completed-review-thread",
+      worktreePath: "/private/tmp/t9-integration",
+      createdAt: reviewStartedAt.addingTimeInterval(1)
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
+      for: candidate,
+      runs: [completedReviewRun],
+      reviewerProfileIDs: [techLeadID]
+    )
+
+    #expect(recovered?.id == completedReviewRun.id)
+  }
+
+  @Test("Review recovery rejects a mismatched workspace")
+  func mismatchedReviewWorkspaceIsNotRecoverable() {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let techLeadID = UUID()
+    let reviewStartedAt = Date()
+    let candidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: UUID(),
+      version: 1,
+      branchName: "ticket/T10",
+      baseSHA: "base",
+      headSHA: "head",
+      integratedSHA: "integrated",
+      worktreePath: "/private/tmp/t10",
+      integrationWorktreePath: "/private/tmp/t10-integration",
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    let unrelatedRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .awaitingOwner,
+      worktreePath: "/private/tmp/other-integration",
+      createdAt: reviewStartedAt.addingTimeInterval(1)
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
+      for: candidate,
+      runs: [unrelatedRun],
+      reviewerProfileIDs: [techLeadID]
+    )
+
+    #expect(recovered == nil)
+  }
+
   @Test("An interrupted live permission decision recovers its paused run")
   func interruptedPermissionDecisionIsRecoverable() {
     let productID = UUID()

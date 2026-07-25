@@ -645,6 +645,55 @@ struct CodexAdapterTests {
     #expect(runtimePresentation.detail.contains("Additional access for this command"))
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew"))
 
+    let sameCapabilityInAnotherTicket = CodexServerRequest(
+      id: .integer(94),
+      method: "item/commandExecution/requestApproval",
+      params: .object([
+        "threadId": .string("thread-other-ticket"),
+        "turnId": .string("turn-other-ticket"),
+        "command": .string("node --test"),
+        "cwd": .string("/private/tmp/another-ticket"),
+        "additionalPermissions": runtimeRequest.params["additionalPermissions"] ?? .null,
+      ])
+    )
+    let otherTicketPresentation = try CodexAppServerClient.approvalPresentation(
+      for: sameCapabilityInAnotherTicket
+    )
+    #expect(runtimePresentation.signature != otherTicketPresentation.signature)
+    #expect(
+      runtimePresentation.productGrantSignature
+        == otherTicketPresentation.productGrantSignature
+    )
+    #expect(
+      try CodexAppServerClient.productGrantSignature(
+        for: runtimeRequest,
+        ticketWorkspaceRoot: URL(fileURLWithPath: "/private/tmp/ticket")
+      )
+        == CodexAppServerClient.productGrantSignature(
+          for: sameCapabilityInAnotherTicket,
+          ticketWorkspaceRoot: URL(fileURLWithPath: "/private/tmp/another-ticket")
+        )
+    )
+    #expect(
+      try CodexAppServerClient.productGrantSignature(
+        for: runtimeRequest,
+        ticketWorkspaceRoot: URL(fileURLWithPath: "/private/tmp/different-ticket")
+      ) == nil
+    )
+
+    let fileChangePresentation = try CodexAppServerClient.approvalPresentation(
+      for: CodexServerRequest(
+        id: .integer(95),
+        method: "item/fileChange/requestApproval",
+        params: .object([
+          "threadId": .string("thread-delivery"),
+          "turnId": .string("turn-delivery"),
+          "reason": .string("Change a file outside the ticket workspace"),
+        ])
+      )
+    )
+    #expect(fileChangePresentation.productGrantSignature == nil)
+
     try await client.resolveApprovalRequest(receivedRequest, allow: true)
     let response = try #require(await transport.response())
     #expect(response.id == .integer(91))
@@ -1660,8 +1709,9 @@ struct CodexAdapterTests {
     #expect(instructions.contains("Business Analyst — Business Analyst"))
     #expect(prompt.contains("T-4"))
     #expect(prompt.contains("Why was this colour chosen?"))
-    #expect(pausedQuestionPrompt.contains("explanatory question about paused sprint work"))
+    #expect(pausedQuestionPrompt.contains("explanatory question about sprint delivery"))
     #expect(pausedQuestionPrompt.contains("Do not resume implementation"))
+    #expect(pausedQuestionPrompt.contains("invalidate a reviewed candidate"))
     #expect(reply.message.contains("does not record a rationale"))
     #expect(reply.proposal == nil)
     #expect(proposalReply.proposal?.baseVersion == item.version)
@@ -2036,6 +2086,31 @@ struct CodexAdapterTests {
     #expect(reReviewPrompt.contains("Assume a small non-commercial demo."))
     #expect(reReviewPrompt.contains("Do not restart a full review"))
     #expect(reReviewPrompt.contains("Integrate the approved provider"))
+
+    let interruptedPermission = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: researchTicket.id,
+      agentRunID: UUID(),
+      threadID: "review-thread",
+      turnID: "review-turn",
+      serverRequestID: "91",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test --filter ResearchTests",
+      signature: "command|swift test --filter ResearchTests",
+      status: .interrupted
+    )
+    let recoveryPrompt = CodexTechLeadReviewer.recoveryPrompt(
+      item: researchTicket,
+      integratedSHA: "integrated-review-sha",
+      interruptedPermission: interruptedPermission
+    )
+    #expect(recoveryPrompt.contains("Continue the existing Tech Lead review"))
+    #expect(recoveryPrompt.contains("integrated-review-sha"))
+    #expect(recoveryPrompt.contains("swift test --filter ResearchTests"))
+    #expect(recoveryPrompt.contains("Do not restart a full"))
+    #expect(recoveryPrompt.contains("Reissue the same request only if it is still needed"))
 
     let integration = try CodexConflictIntegrator.decode(
       #"{"status":"awaiting_owner","comment":"The two branches define incompatible defaults.","question":"Which behavior should remain the default?","options":["Use the accepted trunk behavior","Use the ticket behavior"],"summary":"","checks":[]}"#

@@ -2112,7 +2112,8 @@ struct SQLiteStoreTests {
       title: "Allow this command?",
       detail: "docker compose up",
       reason: "Start the ticket's local database",
-      signature: "command|docker compose up"
+      signature: "command|docker compose up",
+      productGrantSignature: "product-command|docker compose up"
     )
     _ = try await store.saveAgentPermissionRequest(request)
     await store.close()
@@ -2122,6 +2123,7 @@ struct SQLiteStoreTests {
     #expect(requests.count == 1)
     #expect(requests.first?.status == .pending)
     #expect(requests.first?.reason == "Start the ticket's local database")
+    #expect(requests.first?.productGrantSignature == request.productGrantSignature)
 
     try await reopened.interruptPendingAgentPermissionRequests(productID: product.id)
     requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
@@ -2132,6 +2134,58 @@ struct SQLiteStoreTests {
       status: .allowed
     )
     #expect(allowed.status == .allowed)
+
+    let grant = try await reopened.saveAgentPermissionGrant(
+      AgentPermissionGrant(
+        productID: product.id,
+        sourceRequestID: request.id,
+        method: request.method,
+        kind: request.kind,
+        title: request.title,
+        detail: request.detail,
+        signature: "product-command|docker compose up"
+      )
+    )
+    var grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
+    #expect(grants == [grant])
+
+    let duplicate = try await reopened.saveAgentPermissionGrant(
+      AgentPermissionGrant(
+        productID: product.id,
+        sourceRequestID: request.id,
+        method: request.method,
+        kind: request.kind,
+        title: request.title,
+        detail: request.detail,
+        signature: grant.signature
+      )
+    )
+    #expect(duplicate.id == grant.id)
+
+    let revoked = try await reopened.revokeAgentPermissionGrant(id: grant.id)
+    #expect(revoked.revokedAt != nil)
+    grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
+    #expect(grants.isEmpty)
+    let auditGrants = try await reopened.fetchAgentPermissionGrants(
+      productID: product.id,
+      includeRevoked: true
+    )
+    #expect(auditGrants == [revoked])
+
+    let replacement = try await reopened.saveAgentPermissionGrant(
+      AgentPermissionGrant(
+        productID: product.id,
+        sourceRequestID: request.id,
+        method: request.method,
+        kind: request.kind,
+        title: request.title,
+        detail: request.detail,
+        signature: grant.signature
+      )
+    )
+    #expect(replacement.id != grant.id)
+    grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
+    #expect(grants == [replacement])
     await reopened.close()
   }
 

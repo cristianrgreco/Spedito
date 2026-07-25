@@ -628,8 +628,41 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       title: title,
       detail: detail,
       reason: reason,
-      signature: approvalSignature(method: request.method, params: request.params)
+      signature: approvalSignature(method: request.method, params: request.params),
+      productGrantSignature: productGrantSignature(
+        method: request.method,
+        params: request.params
+      )
     )
+  }
+
+  public nonisolated static func productGrantSignature(
+    for request: CodexServerRequest,
+    ticketWorkspaceRoot: URL?
+  ) throws -> String? {
+    let presentation = try approvalPresentation(for: request)
+    guard let signature = presentation.productGrantSignature else { return nil }
+    guard presentation.kind == .command else { return signature }
+    guard let ticketWorkspaceRoot else { return nil }
+    guard let requestedCWD = request.params["cwd"]?.stringValue else {
+      return signature
+    }
+
+    let workspaceURL = ticketWorkspaceRoot
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+    let requestedURL = URL(fileURLWithPath: requestedCWD)
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+    let workspacePath = workspaceURL.path
+    let requestedPath = requestedURL.path
+    guard
+      requestedPath == workspacePath
+        || requestedPath.hasPrefix(workspacePath + "/")
+    else {
+      return nil
+    }
+    return signature
   }
 
   public func resolveApprovalRequest(
@@ -865,6 +898,28 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       relevant = .object([
         "reason": params["reason"] ?? .null
       ])
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = (try? encoder.encode(relevant)) ?? Data()
+    return "\(method)|\(String(decoding: data, as: UTF8.self))"
+  }
+
+  private nonisolated static func productGrantSignature(
+    method: String,
+    params: JSONValue
+  ) -> String? {
+    let relevant: JSONValue
+    switch method {
+    case "item/commandExecution/requestApproval":
+      relevant = .object([
+        "command": params["command"] ?? .null,
+        "additionalPermissions": params["additionalPermissions"] ?? .null,
+      ])
+    case "item/permissions/requestApproval":
+      relevant = params["permissions"] ?? .object([:])
+    default:
+      return nil
     }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]

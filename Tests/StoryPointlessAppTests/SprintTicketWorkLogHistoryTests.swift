@@ -102,4 +102,218 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayedQuestion.answeredQuestions.first?.selectedOption == nil)
     #expect(displayedQuestion.answeredQuestions.first?.answer == customAnswer)
   }
+
+  @Test("Structured ticket artifacts are ordered with comments and events by occurrence")
+  func structuredArtifactsAreChronological() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 1_000)
+    let comment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "Implementer",
+      body: "Implementation is ready.",
+      createdAt: base.addingTimeInterval(30)
+    )
+    let event = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Implementer",
+      detail: "running -> integrating: Candidate ready",
+      createdAt: base.addingTimeInterval(10)
+    )
+    let permission = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: UUID(),
+      threadID: "thread-1",
+      turnID: "turn-1",
+      serverRequestID: "request-1",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "signature",
+      createdAt: base.addingTimeInterval(20),
+      updatedAt: base.addingTimeInterval(20)
+    )
+
+    let ordered = SprintTicketWorkLogTimeline.ordered([
+      .comment(comment),
+      .permission(permission),
+      .event(event),
+    ])
+
+    #expect(ordered.map(\.id) == [
+      "event-\(event.id.uuidString)",
+      "permission-\(permission.id.uuidString)",
+      "comment-\(comment.id.uuidString)",
+    ])
+  }
+
+  @Test("Each Ready for Demo transition uses the latest preceding candidate")
+  func demoTransitionsUseLatestCandidate() throws {
+    let productID = UUID()
+    let workItemID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let base = Date(timeIntervalSince1970: 2_000)
+    let firstCandidate = candidate(
+      version: 1,
+      createdAt: base.addingTimeInterval(10),
+      productID: productID,
+      workItemID: workItemID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID
+    )
+    let secondCandidate = candidate(
+      version: 2,
+      createdAt: base.addingTimeInterval(30),
+      productID: productID,
+      workItemID: workItemID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID
+    )
+    let firstDemo = ActivityEvent(
+      sequence: 2,
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Tech Lead",
+      detail: "verifying -> acceptance: Review passed",
+      createdAt: base.addingTimeInterval(20)
+    )
+    let nonDemo = ActivityEvent(
+      sequence: 1,
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Implementer",
+      detail: "running -> integrating: Candidate queued",
+      createdAt: base.addingTimeInterval(15)
+    )
+    let secondDemo = ActivityEvent(
+      sequence: 3,
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Tech Lead",
+      detail: "verifying -> acceptance: Review passed",
+      createdAt: base.addingTimeInterval(40)
+    )
+
+    let submissions = SprintTicketWorkLogTimeline.demoSubmissions(
+      events: [secondDemo, nonDemo, firstDemo],
+      candidates: [secondCandidate, firstCandidate]
+    )
+
+    #expect(submissions.map(\.event.id) == [firstDemo.id, secondDemo.id])
+    #expect(submissions.map(\.candidate.id) == [
+      firstCandidate.id,
+      secondCandidate.id,
+    ])
+  }
+
+  @Test("Ready for Demo comments prefer the assignee, recent participant, then Tech Lead")
+  func readyForDemoCommentRouting() throws {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 3_000)
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+    let techLead = AgentProfile(
+      productID: productID,
+      name: "Tech Lead",
+      role: .lead
+    )
+    let reviewer = AgentProfile(
+      productID: productID,
+      name: "Reviewer",
+      role: .reviewer
+    )
+    let comments = [
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .agent,
+        authorName: techLead.name,
+        body: "The candidate is ready.",
+        createdAt: base.addingTimeInterval(10)
+      )
+    ]
+    let runs = [
+      AgentRun(
+        productID: productID,
+        workItemID: workItemID,
+        profileID: reviewer.id,
+        status: .completed,
+        lastActivityAt: base.addingTimeInterval(20),
+        createdAt: base,
+        updatedAt: base.addingTimeInterval(20)
+      )
+    ]
+    let profiles = [techLead, reviewer, implementer]
+
+    let assigned = try #require(
+      SprintTicketCommentRouting.replyRecipient(
+        workItemID: workItemID,
+        assignedProfileID: implementer.id,
+        comments: comments,
+        runs: runs,
+        profiles: profiles
+      )
+    )
+    #expect(assigned.id == implementer.id)
+
+    let recentParticipant = try #require(
+      SprintTicketCommentRouting.replyRecipient(
+        workItemID: workItemID,
+        assignedProfileID: nil,
+        comments: comments,
+        runs: runs,
+        profiles: profiles
+      )
+    )
+    #expect(recentParticipant.id == reviewer.id)
+
+    let fallback = try #require(
+      SprintTicketCommentRouting.replyRecipient(
+        workItemID: workItemID,
+        assignedProfileID: nil,
+        comments: [],
+        runs: [],
+        profiles: profiles
+      )
+    )
+    #expect(fallback.id == techLead.id)
+  }
+
+  private func candidate(
+    version: Int,
+    createdAt: Date,
+    productID: UUID,
+    workItemID: UUID,
+    sprintID: UUID,
+    sprintItemID: UUID
+  ) -> CandidateRevision {
+    CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: UUID(),
+      version: version,
+      branchName: "ticket/T\(version)",
+      baseSHA: "base-\(version)",
+      headSHA: "head-\(version)",
+      worktreePath: "/tmp/ticket-\(version)",
+      commitCount: 1,
+      executionResultJSON: "{}",
+      createdAt: createdAt,
+      updatedAt: createdAt
+    )
+  }
 }

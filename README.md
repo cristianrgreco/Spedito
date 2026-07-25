@@ -40,15 +40,18 @@ readiness, freezes the approved contracts, creates recoverable internal executio
 records, and starts every dependency-free delivery run. Each assigned member works
 through a hidden, workspace-write Codex thread on an isolated `ticket/TN` Git branch
 and worktree. Material progress, checks, delivery
-notes, questions, and failures are written to the ticket Work log with attribution.
+notes, questions, failures, permission requests, run context, candidate revisions,
+knowledge changes, follow-up recommendations, and demo submissions are shown in
+chronological order in the ticket Work log with attribution.
 An agent that needs a Product Owner choice enters a durable attention state; its
 structured options are selectable in the Work log, with a free-form response still
 available, and the submitted owner response queues the same thread to resume. Delivery
 and Tech Lead runs use App Server approval requests rather than treating every sandbox
-boundary as a failure. The ticket shows the exact command or capability with **Allow**
-and **Deny** actions. Allow applies to the current agent run, the decision remains
-auditable after relaunch, and a repeated identical request from that same run can be
-reapplied without creating a machine-wide rule. The delivery profile grants the exact
+boundary as a failure. The ticket shows the exact command or capability with
+**Allow once**, **Always allow for this product**, and **Deny** actions where applicable.
+One-time decisions apply to the current agent run; saved product access can be
+reviewed and revoked in Product settings. Every decision remains auditable after
+relaunch. The delivery profile grants the exact
 ticket worktree plus Codex's minimal macOS runtime paths; it does not deny a parent
 directory that the worktree must traverse. Extra Homebrew, SDK, service, or other
 system access therefore becomes a scoped Product Owner permission request instead of
@@ -79,11 +82,17 @@ If the Tech Lead has approved the candidate but demo smoke preparation stops, th
 offers **Retry demo preparation** immediately. The retry reuses the exact reviewed SHA and
 does not require a comment, repeat implementation, or another Tech Lead review.
 Requested changes return it to **In Progress** and resume the original implementation
-thread with the review comment. Owner demo feedback follows the same revision loop,
+thread with the review comment. In Ready for Demo, a comment receives an explanatory
+reply without changing the reviewed candidate. It routes to the assigned Implementer,
+falling back to the latest participating team member and then the Tech Lead.
+Owner demo feedback follows the same revision loop,
 while **Approve and complete** promotes the reviewed integrated SHA to local `trunk`,
 moves the ticket to Done, and admits newly unblocked work. Interrupted runs are
-recovered from their durable records and preserved
-workspace on the next launch. Backlog and refinement are separate from the simplified
+recovered from their durable records and preserved workspace on the next launch.
+An interrupted Tech Lead permission request continues in the same Conversation against
+the same integrated SHA; StoryPointless reconstructs that exact detached checkout when
+needed and repeats integration or full review only when the recorded revision cannot be
+verified. Backlog and refinement are separate from the simplified
 active sprint board, whose owner-facing stages are In Progress, In Review, Ready for
 Demo, and Done.
 Each team profile has a role-specific default prompt and sensible model/effort

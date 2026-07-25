@@ -435,6 +435,51 @@ public actor GitWorkspaceManager {
     )
   }
 
+  public func prepareIntegratedWorkspace(
+    repositoryURL: URL,
+    integrationsRootURL: URL,
+    candidateID: UUID,
+    candidateHeadSHA: String,
+    integratedSHA: String
+  ) throws -> GitIntegrationSnapshot {
+    try fileManager.createDirectory(at: integrationsRootURL, withIntermediateDirectories: true)
+    let integrationURL = integrationsRootURL.appendingPathComponent(
+      candidateID.uuidString.lowercased(),
+      isDirectory: true
+    )
+
+    if fileManager.fileExists(atPath: integrationURL.path) {
+      do {
+        try validateIntegratedWorkspace(
+          integrationURL,
+          candidateHeadSHA: candidateHeadSHA,
+          integratedSHA: integratedSHA
+        )
+        return GitIntegrationSnapshot(url: integrationURL, integratedSHA: integratedSHA)
+      } catch {
+        try removeWorktree(repositoryURL: repositoryURL, worktreeURL: integrationURL)
+      }
+    } else {
+      _ = try? run(["worktree", "prune"], at: repositoryURL)
+    }
+
+    _ = try run(
+      ["worktree", "add", "--detach", integrationURL.path, integratedSHA],
+      at: repositoryURL
+    )
+    do {
+      try validateIntegratedWorkspace(
+        integrationURL,
+        candidateHeadSHA: candidateHeadSHA,
+        integratedSHA: integratedSHA
+      )
+    } catch {
+      try? removeWorktree(repositoryURL: repositoryURL, worktreeURL: integrationURL)
+      throw error
+    }
+    return GitIntegrationSnapshot(url: integrationURL, integratedSHA: integratedSHA)
+  }
+
   public func preparePreviewWorkspace(
     repositoryURL: URL,
     previewsRootURL: URL,
@@ -794,6 +839,34 @@ public actor GitWorkspaceManager {
         : completeDiff,
       isDiffTruncated: isTruncated
     )
+  }
+
+  private func validateIntegratedWorkspace(
+    _ workspaceURL: URL,
+    candidateHeadSHA: String,
+    integratedSHA: String
+  ) throws {
+    let currentSHA = try run(["rev-parse", "HEAD"], at: workspaceURL)
+    guard currentSHA == integratedSHA else {
+      throw GitWorkspaceError.invalidRepository(
+        "The preserved integration workspace no longer matches its reviewed revision."
+      )
+    }
+    let candidateIncluded = try runAllowingFailure(
+      ["merge-base", "--is-ancestor", candidateHeadSHA, integratedSHA],
+      at: workspaceURL
+    )
+    guard candidateIncluded.status == 0 else {
+      throw GitWorkspaceError.invalidRepository(
+        "The preserved integration revision no longer contains the ticket candidate."
+      )
+    }
+    let status = try run(["status", "--porcelain"], at: workspaceURL)
+    guard status.isEmpty else {
+      throw GitWorkspaceError.invalidRepository(
+        "The preserved integration workspace contains unreviewed changes."
+      )
+    }
   }
 
   private func configureIdentity(at repositoryURL: URL) throws {

@@ -2817,8 +2817,8 @@ public actor SQLiteStore {
       INSERT INTO agent_permission_requests (
           id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
           server_request_id, method, kind, title, detail, reason, signature,
-          status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          status, created_at, updated_at, product_grant_signature
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
           status = excluded.status,
           updated_at = excluded.updated_at;
@@ -2840,6 +2840,7 @@ public actor SQLiteStore {
       try bind(request.status.rawValue, to: 14, in: statement)
       try bind(request.createdAt.timeIntervalSince1970, to: 15, in: statement)
       try bind(request.updatedAt.timeIntervalSince1970, to: 16, in: statement)
+      try bindOptionalString(request.productGrantSignature, to: 17, in: statement)
       try stepDone(statement)
     }
     return try fetchAgentPermissionRequest(id: request.id)
@@ -2852,7 +2853,7 @@ public actor SQLiteStore {
       """
       SELECT id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
              server_request_id, method, kind, title, detail, reason, signature,
-             status, created_at, updated_at
+             status, created_at, updated_at, product_grant_signature
       FROM agent_permission_requests
       WHERE product_id = ?
       ORDER BY created_at ASC;
@@ -2874,7 +2875,7 @@ public actor SQLiteStore {
       """
       SELECT id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
              server_request_id, method, kind, title, detail, reason, signature,
-             status, created_at, updated_at
+             status, created_at, updated_at, product_grant_signature
       FROM agent_permission_requests
       WHERE id = ?;
       """
@@ -2929,6 +2930,113 @@ public actor SQLiteStore {
         try bind(productID.uuidString, to: 2, in: statement)
       }
       try stepDone(statement)
+    }
+  }
+
+  public func saveAgentPermissionGrant(
+    _ grant: AgentPermissionGrant
+  ) throws -> AgentPermissionGrant {
+    if let existing = try fetchActiveAgentPermissionGrant(
+      productID: grant.productID,
+      signature: grant.signature
+    ) {
+      return existing
+    }
+    try withStatement(
+      """
+      INSERT INTO agent_permission_grants (
+          id, product_id, source_request_id, method, kind, title, detail,
+          signature, created_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(grant.id.uuidString, to: 1, in: statement)
+      try bind(grant.productID.uuidString, to: 2, in: statement)
+      try bindOptionalUUID(grant.sourceRequestID, to: 3, in: statement)
+      try bind(grant.method, to: 4, in: statement)
+      try bind(grant.kind.rawValue, to: 5, in: statement)
+      try bind(grant.title, to: 6, in: statement)
+      try bind(grant.detail, to: 7, in: statement)
+      try bind(grant.signature, to: 8, in: statement)
+      try bind(grant.createdAt.timeIntervalSince1970, to: 9, in: statement)
+      try bindOptionalDate(grant.revokedAt, to: 10, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchAgentPermissionGrant(id: grant.id)
+  }
+
+  public func fetchAgentPermissionGrants(
+    productID: UUID,
+    includeRevoked: Bool = false
+  ) throws -> [AgentPermissionGrant] {
+    let revokedFilter = includeRevoked ? "" : "AND revoked_at IS NULL"
+    return try withStatement(
+      """
+      SELECT id, product_id, source_request_id, method, kind, title, detail,
+             signature, created_at, revoked_at
+      FROM agent_permission_grants
+      WHERE product_id = ? \(revokedFilter)
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var grants: [AgentPermissionGrant] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        grants.append(try decodeAgentPermissionGrant(statement))
+      }
+      return grants
+    }
+  }
+
+  public func revokeAgentPermissionGrant(id: UUID) throws -> AgentPermissionGrant {
+    try withStatement(
+      """
+      UPDATE agent_permission_grants
+      SET revoked_at = ?
+      WHERE id = ? AND revoked_at IS NULL;
+      """
+    ) { statement in
+      try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+      try bind(id.uuidString, to: 2, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchAgentPermissionGrant(id: id)
+  }
+
+  private func fetchActiveAgentPermissionGrant(
+    productID: UUID,
+    signature: String
+  ) throws -> AgentPermissionGrant? {
+    try withStatement(
+      """
+      SELECT id, product_id, source_request_id, method, kind, title, detail,
+             signature, created_at, revoked_at
+      FROM agent_permission_grants
+      WHERE product_id = ? AND signature = ? AND revoked_at IS NULL
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      try bind(signature, to: 2, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeAgentPermissionGrant(statement)
+    }
+  }
+
+  private func fetchAgentPermissionGrant(id: UUID) throws -> AgentPermissionGrant {
+    try withStatement(
+      """
+      SELECT id, product_id, source_request_id, method, kind, title, detail,
+             signature, created_at, revoked_at
+      FROM agent_permission_grants
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("agent permission grant \(id)")
+      }
+      return try decodeAgentPermissionGrant(statement)
     }
   }
 
@@ -5224,6 +5332,44 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    if try !migrationApplied(version: 38, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE agent_permission_requests
+            ADD COLUMN product_grant_signature TEXT;
+
+        CREATE TABLE agent_permission_grants (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            source_request_id TEXT
+              REFERENCES agent_permission_requests(id) ON DELETE SET NULL,
+            method TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            revoked_at REAL
+        );
+
+        CREATE UNIQUE INDEX idx_agent_permission_grants_active_signature
+            ON agent_permission_grants(product_id, signature)
+            WHERE revoked_at IS NULL;
+
+        CREATE INDEX idx_agent_permission_grants_product_created
+            ON agent_permission_grants(product_id, created_at);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (38, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
   }
 
   private static func migrationApplied(version: Int, database: OpaquePointer) throws -> Bool {
@@ -5472,9 +5618,35 @@ public actor SQLiteStore {
       detail: try text(statement, column: 10),
       reason: try optionalText(statement, column: 11),
       signature: try text(statement, column: 12),
+      productGrantSignature: try optionalText(statement, column: 16),
       status: status,
       createdAt: date(statement, column: 14),
       updatedAt: date(statement, column: 15)
+    )
+  }
+
+  private func decodeAgentPermissionGrant(
+    _ statement: OpaquePointer
+  ) throws -> AgentPermissionGrant {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let kind = CodexApprovalRequestKind(rawValue: try text(statement, column: 4))
+    else {
+      throw PersistenceError.corruptData("Invalid agent permission grant")
+    }
+    let sourceRequestID = try optionalText(statement, column: 2).flatMap(UUID.init(uuidString:))
+    return AgentPermissionGrant(
+      id: id,
+      productID: productID,
+      sourceRequestID: sourceRequestID,
+      method: try text(statement, column: 3),
+      kind: kind,
+      title: try text(statement, column: 5),
+      detail: try text(statement, column: 6),
+      signature: try text(statement, column: 7),
+      createdAt: date(statement, column: 8),
+      revokedAt: optionalDate(statement, column: 9)
     )
   }
 
