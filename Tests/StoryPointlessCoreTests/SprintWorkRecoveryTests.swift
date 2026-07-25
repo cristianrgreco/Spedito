@@ -235,6 +235,88 @@ struct SprintWorkRecoveryTests {
     #expect(recovered.isEmpty)
   }
 
+  @Test("Permission continuation uses the latest reusable decision for the same run")
+  func latestPermissionContinuationIsRunScoped() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let olderAllowed = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn-1",
+      serverRequestID: "request-1",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "command|swift test",
+      status: .allowed,
+      updatedAt: Date().addingTimeInterval(-2)
+    )
+    let latestInterrupted = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn-2",
+      serverRequestID: "request-2",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Network access to example.com",
+      signature: "permissions|example.com",
+      status: .interrupted,
+      updatedAt: Date().addingTimeInterval(-1)
+    )
+    let unrelated = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: UUID(),
+      threadID: "other-thread",
+      turnID: "other-turn",
+      serverRequestID: "other-request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "unrelated",
+      signature: "command|unrelated",
+      status: .allowed
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestPermissionContinuation(
+      for: runID,
+      permissionRequests: [olderAllowed, unrelated, latestInterrupted]
+    )
+
+    #expect(recovered?.id == latestInterrupted.id)
+  }
+
+  @Test("App suspension requeues implementation while a manual stop remains paused")
+  func implementationTurnStopDispositionPreservesOwnerIntent() {
+    let policy = SprintWorkRecoveryPolicy()
+
+    #expect(
+      policy.implementationRunStatusAfterTurnStops(
+        taskWasCancelled: true,
+        wasManuallyStopped: false
+      ) == .queued
+    )
+    #expect(
+      policy.implementationRunStatusAfterTurnStops(
+        taskWasCancelled: false,
+        wasManuallyStopped: true
+      ) == .interrupted
+    )
+    #expect(
+      policy.implementationRunStatusAfterTurnStops(
+        taskWasCancelled: false,
+        wasManuallyStopped: false
+      ) == .failed
+    )
+  }
+
   @Test("A failed post-review demo can retry without repeating implementation")
   func failedPostReviewDemoIsRecoverable() throws {
     let fixture = try recoveryFixture()

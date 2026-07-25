@@ -315,6 +315,22 @@ structured checkpoint, interrupts after a bounded grace period, and preserves
 the run as paused. Crash recovery creates a system note from durable events and
 filesystem state when no agent-authored checkpoint exists.
 
+Implementation recovery is run-bound. App shutdown requeues the existing
+implementation AgentRun while preserving its ticket worktree and non-ephemeral
+Conversation; a Product Owner stop leaves the run interrupted until they resume
+it. On restart StoryPointless first recovers a valid completed structured result
+when one exists. Otherwise it starts a focused continuation turn in the same
+Conversation, telling the team member to use the current workspace and prior
+context rather than restart the ticket or repeat completed work and checks. A
+live approval request cannot survive the old App Server connection, so its
+durable interrupted record is included in the continuation and is reissued only
+if it remains necessary. A missing Conversation starts a replacement with the
+full ticket contract plus an explicit preserved-workspace continuation
+instruction.
+If the recorded ticket worktree is missing, StoryPointless does not claim that
+its uncaptured changes were preserved: it records the loss in the Work log and
+prepares a fresh isolated ticket workspace.
+
 Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown,
 including one paused at a scoped permission request, retains its review run,
 non-ephemeral Conversation, integration path, and integrated SHA. On restart
@@ -385,10 +401,12 @@ must return citations or an explicit unknown.
    follow-up recommendations, and demo submissions with comments and audit
    events. It performs independent read-only Tech Lead review, returns findings
    to the original implementer, and supports owner demo feedback and approval.
-   Restart recovery requeues interrupted implementation and integration, while
-   interrupted Tech Lead review continues in the same Conversation against its
-   verified exact integrated SHA and recovers a completed structured result
-   before starting another turn.
+   Restart recovery continues interrupted implementation in its existing
+   Conversation and workspace with permission-aware recovery context, requeues
+   integration, and continues interrupted Tech Lead review in the same
+   Conversation against its verified exact integrated SHA. Implementation and
+   review both recover a completed structured result before starting another
+   turn.
 7. **Partial:** product repository bootstrap, ticket-named private branches and
    worktrees, versioned candidate commit ranges, detached integration worktrees,
    a rank-ordered serial candidate queue, internal Integrator conflict runs,

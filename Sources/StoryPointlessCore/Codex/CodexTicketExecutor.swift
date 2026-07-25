@@ -449,6 +449,71 @@ public enum CodexTicketExecutor {
       """
   }
 
+  public static func recoveryPrompt(
+    item: WorkItem,
+    interruptedPermission: AgentPermissionRequest?,
+    recentComments: [TicketComment] = [],
+    conversationIsAvailable: Bool = true
+  ) -> String {
+    let conversationContext =
+      if conversationIsAvailable {
+        """
+        Continue in the existing Conversation and ticket workspace. Use the implementation work,
+        decisions, and evidence already present there.
+        """
+      } else {
+        """
+        The previous Conversation is unavailable, but the existing ticket workspace and its changes
+        have been preserved. Treat the current workspace as the source of truth for completed work.
+        """
+      }
+    let permissionContext =
+      if let interruptedPermission {
+        switch interruptedPermission.status {
+        case .allowed:
+          """
+          The Product Owner already allowed this matching capability for the existing run:
+          \(interruptedPermission.detail)
+          Reissue it only if it is still needed; StoryPointless will apply the saved scoped decision.
+          """
+        case .interrupted:
+          """
+          The previous live permission request expired when the app stopped:
+          \(interruptedPermission.detail)
+          Reissue the same request only if it is still needed so the Product Owner can answer it.
+          """
+        case .pending, .denied:
+          "No reusable permission decision was recorded."
+        }
+      } else {
+        "No interrupted permission request was recorded."
+      }
+    let workLogContext = recentComments
+      .filter { !$0.body.hasPrefix("Permission requested:") }
+      .suffix(12)
+      .map { "- \($0.authorName): \($0.body)" }
+      .joined(separator: "\n")
+
+    return """
+      Continue the existing implementation of \(item.key) — \(item.title).
+
+      StoryPointless is starting a continuation turn after the previous turn stopped or paused.
+      \(conversationContext)
+      Do not restart the ticket, discard partial changes, redo completed work, or repeat checks
+      merely because a new turn started. Inspect the current diff and rerun a check only when needed
+      to finish or validate the remaining work.
+
+      \(permissionContext)
+
+      Recent ticket Work log:
+      \(workLogContext.isEmpty ? "No new Work log context." : workLogContext)
+
+      Apply the latest Product Owner or reviewer direction above, finish the remaining authorised
+      work, and return the complete structured execution result. If another material Product Owner
+      decision is required, return awaiting_owner under the existing contract.
+      """
+  }
+
   public static func repairPrompt(validationError: String) -> String {
     """
     Your previous execution result could not be accepted:

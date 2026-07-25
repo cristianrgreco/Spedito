@@ -2112,6 +2112,41 @@ struct CodexAdapterTests {
     #expect(recoveryPrompt.contains("Do not restart a full"))
     #expect(recoveryPrompt.contains("Reissue the same request only if it is still needed"))
 
+    let implementationRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: researchTicket,
+      interruptedPermission: interruptedPermission,
+      recentComments: [
+        TicketComment(
+          workItemID: researchTicket.id,
+          authorKind: .owner,
+          authorName: "Me",
+          body: "Use the provider without sending customer identifiers."
+        )
+      ]
+    )
+    #expect(implementationRecoveryPrompt.contains("Continue the existing implementation"))
+    #expect(implementationRecoveryPrompt.contains("existing Conversation and ticket workspace"))
+    #expect(implementationRecoveryPrompt.contains("swift test --filter ResearchTests"))
+    #expect(
+      implementationRecoveryPrompt.contains(
+        "Use the provider without sending customer identifiers."
+      )
+    )
+    #expect(implementationRecoveryPrompt.contains("Do not restart the ticket"))
+    #expect(
+      implementationRecoveryPrompt.contains(
+        "Reissue the same request only if it is still needed"
+      )
+    )
+
+    let replacementImplementationPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: researchTicket,
+      interruptedPermission: nil,
+      conversationIsAvailable: false
+    )
+    #expect(replacementImplementationPrompt.contains("previous Conversation is unavailable"))
+    #expect(replacementImplementationPrompt.contains("workspace and its changes"))
+
     let integration = try CodexConflictIntegrator.decode(
       #"{"status":"awaiting_owner","comment":"The two branches define incompatible defaults.","question":"Which behavior should remain the default?","options":["Use the accepted trunk behavior","Use the ticket behavior"],"summary":"","checks":[]}"#
     )

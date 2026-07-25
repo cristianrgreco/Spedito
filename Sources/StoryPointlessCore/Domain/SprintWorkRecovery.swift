@@ -62,6 +62,28 @@ public struct SprintWorkRecoveryPolicy: Sendable {
     }
   }
 
+  public func latestPermissionContinuation(
+    for runID: UUID,
+    permissionRequests: [AgentPermissionRequest]
+  ) -> AgentPermissionRequest? {
+    permissionRequests
+      .filter {
+        $0.agentRunID == runID
+          && ($0.status == .interrupted || $0.status == .allowed)
+      }
+      .max(by: { $0.updatedAt < $1.updatedAt })
+  }
+
+  public func implementationRunStatusAfterTurnStops(
+    taskWasCancelled: Bool,
+    wasManuallyStopped: Bool
+  ) -> AgentRunStatus {
+    if wasManuallyStopped {
+      return .interrupted
+    }
+    return taskWasCancelled ? .queued : .failed
+  }
+
   public func failedPostReviewDemoCandidate(
     workItemID: UUID,
     workItems: [WorkItem],

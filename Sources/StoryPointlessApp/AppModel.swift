@@ -3706,7 +3706,7 @@ final class AppModel: ObservableObject {
     var run = queuedRun
     do {
       let productWorkspace = try Self.productWorkspaceURL(productID: product.id)
-      let isContinuation = item.state == .running
+      var recoveredExistingWorkspace = false
       let workspace: URL
       if
         let storedPath = run.worktreePath,
@@ -3714,6 +3714,7 @@ final class AppModel: ObservableObject {
         FileManager.default.fileExists(atPath: storedPath)
       {
         workspace = URL(fileURLWithPath: storedPath, isDirectory: true)
+        recoveredExistingWorkspace = true
       } else {
         if run.codexThreadID != nil || run.worktreePath != nil {
           run = try await store.resetAgentRunExecutionContext(id: run.id)
@@ -3721,7 +3722,7 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "StoryPointless",
-            body: "The preserved work is being resumed in an isolated \(item.key) workspace."
+            body: "The previous ticket workspace was unavailable. StoryPointless prepared a fresh isolated \(item.key) workspace, so work that was not captured in a durable candidate could not be recovered."
           )
         }
         let prepared = try await gitWorkspaceManager.prepareTicketWorkspace(
@@ -3733,6 +3734,9 @@ final class AppModel: ObservableObject {
         )
         workspace = prepared.url
       }
+      let isContinuation =
+        recoveredExistingWorkspace
+          && (item.state == .running || run.codexThreadID != nil || run.worktreePath != nil)
       try await gitWorkspaceManager.configureAgentIdentity(
         at: workspace,
         authorName: assignee.name
@@ -3752,6 +3756,7 @@ final class AppModel: ObservableObject {
         personaInstructions: assignee.effectiveInstructions,
         assignee: assignee
       )
+      let reusedExistingThread = run.codexThreadID != nil
       let threadID: String
       if let existingThreadID = run.codexThreadID {
         threadID = existingThreadID
@@ -3806,6 +3811,21 @@ final class AppModel: ObservableObject {
           AgentRunKnowledgePage(runID: run.id, pageID: $0.id)
         }
       )
+      let interruptedPermission = sprintWorkRecoveryPolicy.latestPermissionContinuation(
+        for: run.id,
+        permissionRequests: permissionRequests
+      )
+      let continuationPrompt = CodexTicketExecutor.recoveryPrompt(
+        item: currentItem,
+        interruptedPermission: interruptedPermission,
+        recentComments: comments
+      )
+      let replacementContinuationPrompt = CodexTicketExecutor.recoveryPrompt(
+        item: currentItem,
+        interruptedPermission: interruptedPermission,
+        recentComments: [],
+        conversationIsAvailable: false
+      )
       let executionPrompt = CodexTicketExecutor.prompt(
         product: product,
         item: currentItem,
@@ -3817,15 +3837,17 @@ final class AppModel: ObservableObject {
         knowledgeContext: knowledgeContext,
         existingItems: workItems,
         continuationMessage: isContinuation
-          ? "Use the latest Product Owner or reviewer comment to resume the existing work."
+          ? replacementContinuationPrompt
           : nil
       )
       var activeThreadID = threadID
+      var turnPrompt =
+        reusedExistingThread ? continuationPrompt : executionPrompt
       let turnID: String
       do {
         turnID = try await client.startStructuredTurn(
           threadID: activeThreadID,
-          prompt: executionPrompt,
+          prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
           permissionProfile: CodexPermissionProfiles.delivery,
@@ -3855,9 +3877,10 @@ final class AppModel: ObservableObject {
           authorName: "StoryPointless",
           body: "The previous Codex session was no longer available. I started a replacement session in the preserved ticket workspace and continued the work."
         )
+        turnPrompt = executionPrompt
         turnID = try await client.startStructuredTurn(
           threadID: activeThreadID,
-          prompt: executionPrompt,
+          prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
           permissionProfile: CodexPermissionProfiles.delivery,
@@ -3873,7 +3896,9 @@ final class AppModel: ObservableObject {
         client: client,
         threadID: activeThreadID,
         turnID: turnID,
-        initialText: "Getting oriented in the ticket workspace…"
+        initialText: isContinuation
+          ? "Continuing work in the ticket workspace…"
+          : "Getting oriented in the ticket workspace…"
       )
       let response = try await client.waitForFinalAgentMessage(
         threadID: activeThreadID,
@@ -3906,21 +3931,36 @@ final class AppModel: ObservableObject {
       stopLiveActivityMonitoring(runID: run.id)
       activeExecutionTurns.removeValue(forKey: run.id)
       let wasManuallyStopped = manuallyStoppedRunIDs.remove(run.id) != nil
-      let status: AgentRunStatus =
-        Task.isCancelled || wasManuallyStopped ? .interrupted : .failed
+      let status = sprintWorkRecoveryPolicy.implementationRunStatusAfterTurnStops(
+        taskWasCancelled: Task.isCancelled,
+        wasManuallyStopped: wasManuallyStopped
+      )
+      let wasSuspendedByApp = Task.isCancelled && !wasManuallyStopped
+      let eventDetail: String
+      let workLogBody: String
+      if wasSuspendedByApp {
+        eventDetail = "App stopped; preserved work queued to continue"
+        workLogBody =
+          "StoryPointless paused this run while stopping. Its Conversation and ticket workspace are preserved, and it is queued to continue automatically."
+      } else if wasManuallyStopped {
+        eventDetail = "Stopped manually; ticket workspace preserved"
+        workLogBody =
+          "This run was stopped by the Product Owner. Its ticket workspace has been preserved and can be resumed with a new comment."
+      } else {
+        eventDetail = error.localizedDescription
+        workLogBody = "The agent run stopped unexpectedly: \(error.localizedDescription)"
+      }
       _ = try? await store.updateAgentRun(
         id: run.id,
         status: status,
         eventActor: "StoryPointless",
-        eventDetail: error.localizedDescription
+        eventDetail: eventDetail
       )
       _ = try? await store.appendComment(
         workItemID: item.id,
         authorKind: .system,
         authorName: "StoryPointless",
-        body: Task.isCancelled || wasManuallyStopped
-          ? "This run was stopped. Its ticket workspace has been preserved and can be retried."
-          : "The agent run stopped unexpectedly: \(error.localizedDescription)"
+        body: workLogBody
       )
       if !Task.isCancelled && !wasManuallyStopped {
         errorMessage = error.localizedDescription
@@ -4273,12 +4313,10 @@ final class AppModel: ObservableObject {
         candidateHeadSHA: candidate.headSHA,
         integratedSHA: integration.integratedSHA
       )
-      let interruptedPermission = permissionRequests
-        .filter {
-          $0.agentRunID == reviewRun.id
-            && ($0.status == .interrupted || $0.status == .allowed)
-        }
-        .max(by: { $0.updatedAt < $1.updatedAt })
+      let interruptedPermission = sprintWorkRecoveryPolicy.latestPermissionContinuation(
+        for: reviewRun.id,
+        permissionRequests: permissionRequests
+      )
 
       var threadID: String
       var turnPrompt: String

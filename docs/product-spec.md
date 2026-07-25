@@ -1289,7 +1289,10 @@ author-attributed ticket comment, records the exact question and options, and
 enters **Awaiting owner**. The Work log presents those options as selectable
 answers, keeps a free-form alternative, and places the chosen text in the
 Product Owner response for review before resuming. A Product Owner reply on that
-ticket resumes the same run and thread.
+ticket resumes the same run and thread. If StoryPointless relaunches while that
+run is active or waiting on a live permission request, it preserves the same
+Conversation and ticket workspace and starts only a focused continuation turn;
+it does not brief the team member as though the ticket were new.
 
 Before completing a prerequisite, its agent posts a concise final ticket comment
 containing the requirements, decisions, selected providers or contracts,
@@ -1762,10 +1765,23 @@ The final agent-authored comment is best effort: force quit, power loss, or a
 crash may prevent it. Progress events and filesystem changes are persisted
 throughout the run so StoryPointless can create a clearly labelled system
 recovery note from the last durable milestone, diff, and check result. On next
-launch it detects stale leases, reconciles worktrees and processes, marks runs
-as interrupted, and offers to resume or discard them. Tickets remain visibly
-paused until resumed; they do not become `Cancelled` merely because the app
-closed.
+launch it detects stale leases and reconciles worktrees and processes.
+Implementation runs suspended by the app are queued to continue automatically
+in the same Conversation and workspace; runs deliberately stopped by the
+Product Owner remain visibly paused until resumed. Neither becomes `Cancelled`
+merely because the app closed.
+
+Before starting another implementation turn, StoryPointless recovers a valid
+completed structured result if the previous turn finished after the last
+durable run update. Otherwise it sends a focused continuation instruction that
+preserves prior work, decisions, and checks. A live permission request that
+expired with the old process is included as recovery context and is requested
+again only if the capability remains necessary. If the Conversation is missing,
+a replacement receives the full ticket contract and the preserved workspace,
+with an explicit instruction not to restart completed work. If the ticket
+workspace itself is missing, uncaptured changes are not recoverable;
+StoryPointless explains that fallback in the Work log before preparing a fresh
+isolated workspace.
 
 An interrupted Tech Lead review remains bound to its exact integrated revision.
 StoryPointless preserves the review run, Conversation, integrated SHA, and
