@@ -97,6 +97,31 @@ struct SprintTicketRunTelemetryPresentationTests {
     #expect(selected.id == runningRun.id)
   }
 
+  @Test("Only actively running sprint tickets show agent work shimmer")
+  func agentWorkShimmerRequiresRunningSprintTicket() {
+    let runningSprintTicket = SprintTicketCardActivityPresentation(
+      run: run(status: .running),
+      showsWorkflowActions: false
+    )
+    let queuedSprintTicket = SprintTicketCardActivityPresentation(
+      run: run(status: .queued),
+      showsWorkflowActions: false
+    )
+    let waitingSprintTicket = SprintTicketCardActivityPresentation(
+      run: run(status: .awaitingOwner),
+      showsWorkflowActions: false
+    )
+    let runningBacklogTicket = SprintTicketCardActivityPresentation(
+      run: run(status: .running),
+      showsWorkflowActions: true
+    )
+
+    #expect(runningSprintTicket.showsAgentWorkShimmer)
+    #expect(!queuedSprintTicket.showsAgentWorkShimmer)
+    #expect(!waitingSprintTicket.showsAgentWorkShimmer)
+    #expect(!runningBacklogTicket.showsAgentWorkShimmer)
+  }
+
   private func run(
     status: AgentRunStatus,
     contextUsedTokens: Int? = nil,

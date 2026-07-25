@@ -107,6 +107,30 @@ struct GitWorkspaceManagerTests {
     #expect(integrationDetail.unifiedDiff.contains("+first implementation"))
     #expect(integrationDetail.unifiedDiff.contains("+verification"))
 
+    let previewCandidateID = UUID()
+    let preview = try await manager.preparePreviewWorkspace(
+      repositoryURL: repository,
+      previewsRootURL: root.appendingPathComponent("previews", isDirectory: true),
+      candidateID: previewCandidateID,
+      integratedSHA: integration.integratedSHA
+    )
+    #expect(try await manager.currentSHA(at: preview) == integration.integratedSHA)
+    try Data("cached build\n".utf8).write(
+      to: preview.appendingPathComponent(".demo-cache")
+    )
+    let reusedPreview = try await manager.preparePreviewWorkspace(
+      repositoryURL: repository,
+      previewsRootURL: preview.deletingLastPathComponent(),
+      candidateID: previewCandidateID,
+      integratedSHA: integration.integratedSHA
+    )
+    #expect(reusedPreview == preview)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: reusedPreview.appendingPathComponent(".demo-cache").path
+      )
+    )
+
     try await manager.promote(
       repositoryURL: repository,
       integratedSHA: integration.integratedSHA
@@ -124,6 +148,10 @@ struct GitWorkspaceManagerTests {
     try await manager.removeWorktree(
       repositoryURL: repository,
       worktreeURL: integration.url
+    )
+    try await manager.removeWorktree(
+      repositoryURL: repository,
+      worktreeURL: preview
     )
     try await manager.removeTicketWorkspace(
       repositoryURL: repository,

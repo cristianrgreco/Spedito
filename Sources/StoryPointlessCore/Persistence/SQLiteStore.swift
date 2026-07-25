@@ -2740,6 +2740,198 @@ public actor SQLiteStore {
     return try fetchCandidateRevision(id: id)
   }
 
+  public func saveDemoSession(_ session: DemoSession) throws -> DemoSession {
+    try withStatement(
+      """
+      INSERT INTO demo_sessions (
+          id, product_id, candidate_revision_id, status, preview_worktree_path,
+          allocated_port, output, error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(candidate_revision_id) DO UPDATE SET
+          status = excluded.status,
+          preview_worktree_path = excluded.preview_worktree_path,
+          allocated_port = excluded.allocated_port,
+          output = excluded.output,
+          error_message = excluded.error_message,
+          updated_at = excluded.updated_at;
+      """
+    ) { statement in
+      try bind(session.id.uuidString, to: 1, in: statement)
+      try bind(session.productID.uuidString, to: 2, in: statement)
+      try bind(session.candidateRevisionID.uuidString, to: 3, in: statement)
+      try bind(session.status.rawValue, to: 4, in: statement)
+      try bindOptionalString(session.previewWorktreePath, to: 5, in: statement)
+      try bindOptionalInt(session.allocatedPort, to: 6, in: statement)
+      try bindOptionalString(session.output, to: 7, in: statement)
+      try bindOptionalString(session.errorMessage, to: 8, in: statement)
+      try bind(session.createdAt.timeIntervalSince1970, to: 9, in: statement)
+      try bind(session.updatedAt.timeIntervalSince1970, to: 10, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchDemoSession(candidateRevisionID: session.candidateRevisionID)
+  }
+
+  public func fetchDemoSessions(productID: UUID) throws -> [DemoSession] {
+    try withStatement(
+      """
+      SELECT id, product_id, candidate_revision_id, status, preview_worktree_path,
+             allocated_port, output, error_message, created_at, updated_at
+      FROM demo_sessions
+      WHERE product_id = ?
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var sessions: [DemoSession] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        sessions.append(try decodeDemoSession(statement))
+      }
+      return sessions
+    }
+  }
+
+  public func fetchDemoSession(candidateRevisionID: UUID) throws -> DemoSession {
+    try withStatement(
+      """
+      SELECT id, product_id, candidate_revision_id, status, preview_worktree_path,
+             allocated_port, output, error_message, created_at, updated_at
+      FROM demo_sessions
+      WHERE candidate_revision_id = ?;
+      """
+    ) { statement in
+      try bind(candidateRevisionID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound(
+          "demo session for candidate \(candidateRevisionID)"
+        )
+      }
+      return try decodeDemoSession(statement)
+    }
+  }
+
+  public func saveAgentPermissionRequest(
+    _ request: AgentPermissionRequest
+  ) throws -> AgentPermissionRequest {
+    try withStatement(
+      """
+      INSERT INTO agent_permission_requests (
+          id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
+          server_request_id, method, kind, title, detail, reason, signature,
+          status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          updated_at = excluded.updated_at;
+      """
+    ) { statement in
+      try bind(request.id.uuidString, to: 1, in: statement)
+      try bind(request.productID.uuidString, to: 2, in: statement)
+      try bind(request.workItemID.uuidString, to: 3, in: statement)
+      try bind(request.agentRunID.uuidString, to: 4, in: statement)
+      try bind(request.threadID, to: 5, in: statement)
+      try bind(request.turnID, to: 6, in: statement)
+      try bind(request.serverRequestID, to: 7, in: statement)
+      try bind(request.method, to: 8, in: statement)
+      try bind(request.kind.rawValue, to: 9, in: statement)
+      try bind(request.title, to: 10, in: statement)
+      try bind(request.detail, to: 11, in: statement)
+      try bindOptionalString(request.reason, to: 12, in: statement)
+      try bind(request.signature, to: 13, in: statement)
+      try bind(request.status.rawValue, to: 14, in: statement)
+      try bind(request.createdAt.timeIntervalSince1970, to: 15, in: statement)
+      try bind(request.updatedAt.timeIntervalSince1970, to: 16, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchAgentPermissionRequest(id: request.id)
+  }
+
+  public func fetchAgentPermissionRequests(
+    productID: UUID
+  ) throws -> [AgentPermissionRequest] {
+    try withStatement(
+      """
+      SELECT id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
+             server_request_id, method, kind, title, detail, reason, signature,
+             status, created_at, updated_at
+      FROM agent_permission_requests
+      WHERE product_id = ?
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var requests: [AgentPermissionRequest] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        requests.append(try decodeAgentPermissionRequest(statement))
+      }
+      return requests
+    }
+  }
+
+  public func fetchAgentPermissionRequest(
+    id: UUID
+  ) throws -> AgentPermissionRequest {
+    try withStatement(
+      """
+      SELECT id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
+             server_request_id, method, kind, title, detail, reason, signature,
+             status, created_at, updated_at
+      FROM agent_permission_requests
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("permission request \(id)")
+      }
+      return try decodeAgentPermissionRequest(statement)
+    }
+  }
+
+  public func updateAgentPermissionRequest(
+    id: UUID,
+    status: AgentPermissionRequestStatus
+  ) throws -> AgentPermissionRequest {
+    try withStatement(
+      """
+      UPDATE agent_permission_requests
+      SET status = ?, updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(status.rawValue, to: 1, in: statement)
+      try bind(Date().timeIntervalSince1970, to: 2, in: statement)
+      try bind(id.uuidString, to: 3, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchAgentPermissionRequest(id: id)
+  }
+
+  public func interruptPendingAgentPermissionRequests(
+    productID: UUID? = nil
+  ) throws {
+    let sql =
+      if productID == nil {
+        """
+        UPDATE agent_permission_requests
+        SET status = 'interrupted', updated_at = ?
+        WHERE status = 'pending';
+        """
+      } else {
+        """
+        UPDATE agent_permission_requests
+        SET status = 'interrupted', updated_at = ?
+        WHERE status = 'pending' AND product_id = ?;
+        """
+      }
+    try withStatement(sql) { statement in
+      try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+      if let productID {
+        try bind(productID.uuidString, to: 2, in: statement)
+      }
+      try stepDone(statement)
+    }
+  }
+
   public func createKnowledgePageProposals(
     _ proposals: [KnowledgePageProposal]
   ) throws {
@@ -4961,6 +5153,77 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    if try !migrationApplied(version: 36, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE demo_sessions (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            candidate_revision_id TEXT NOT NULL
+              REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+            status TEXT NOT NULL,
+            preview_worktree_path TEXT,
+            allocated_port INTEGER,
+            output TEXT,
+            error_message TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE(candidate_revision_id)
+        );
+
+        CREATE INDEX idx_demo_sessions_product_status
+            ON demo_sessions(product_id, status, updated_at);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (36, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 37, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE agent_permission_requests (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
+            agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            server_request_id TEXT NOT NULL,
+            method TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            reason TEXT,
+            signature TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE INDEX idx_agent_permission_requests_product_status
+            ON agent_permission_requests(product_id, status, updated_at);
+
+        CREATE INDEX idx_agent_permission_requests_run_signature
+            ON agent_permission_requests(agent_run_id, signature, status);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (37, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
   }
 
   private static func migrationApplied(version: Int, database: OpaquePointer) throws -> Bool {
@@ -5156,6 +5419,62 @@ public actor SQLiteStore {
       executionResultJSON: try text(statement, column: 15),
       createdAt: date(statement, column: 16),
       updatedAt: date(statement, column: 17)
+    )
+  }
+
+  private func decodeDemoSession(_ statement: OpaquePointer) throws -> DemoSession {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let candidateRevisionID = UUID(uuidString: try text(statement, column: 2)),
+      let status = DemoSessionStatus(rawValue: try text(statement, column: 3))
+    else {
+      throw PersistenceError.corruptData("Invalid demo session")
+    }
+    return DemoSession(
+      id: id,
+      productID: productID,
+      candidateRevisionID: candidateRevisionID,
+      status: status,
+      previewWorktreePath: try optionalText(statement, column: 4),
+      allocatedPort: optionalInt(statement, column: 5),
+      output: try optionalText(statement, column: 6),
+      errorMessage: try optionalText(statement, column: 7),
+      createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
+      updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+    )
+  }
+
+  private func decodeAgentPermissionRequest(
+    _ statement: OpaquePointer
+  ) throws -> AgentPermissionRequest {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let workItemID = UUID(uuidString: try text(statement, column: 2)),
+      let agentRunID = UUID(uuidString: try text(statement, column: 3)),
+      let kind = CodexApprovalRequestKind(rawValue: try text(statement, column: 8)),
+      let status = AgentPermissionRequestStatus(rawValue: try text(statement, column: 13))
+    else {
+      throw PersistenceError.corruptData("Invalid agent permission request")
+    }
+    return AgentPermissionRequest(
+      id: id,
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: agentRunID,
+      threadID: try text(statement, column: 4),
+      turnID: try text(statement, column: 5),
+      serverRequestID: try text(statement, column: 6),
+      method: try text(statement, column: 7),
+      kind: kind,
+      title: try text(statement, column: 9),
+      detail: try text(statement, column: 10),
+      reason: try optionalText(statement, column: 11),
+      signature: try text(statement, column: 12),
+      status: status,
+      createdAt: date(statement, column: 14),
+      updatedAt: date(statement, column: 15)
     )
   }
 

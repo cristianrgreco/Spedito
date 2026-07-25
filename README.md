@@ -43,18 +43,44 @@ and worktree. Material progress, checks, delivery
 notes, questions, and failures are written to the ticket Work log with attribution.
 An agent that needs a Product Owner choice enters a durable attention state; its
 structured options are selectable in the Work log, with a free-form response still
-available, and the submitted owner response queues the same thread to resume.
+available, and the submitted owner response queues the same thread to resume. Delivery
+and Tech Lead runs use App Server approval requests rather than treating every sandbox
+boundary as a failure. The ticket shows the exact command or capability with **Allow**
+and **Deny** actions. Allow applies to the current agent run, the decision remains
+auditable after relaunch, and a repeated identical request from that same run can be
+reapplied without creating a machine-wide rule. The delivery profile grants the exact
+ticket worktree plus Codex's minimal macOS runtime paths; it does not deny a parent
+directory that the worktree must traverse. Extra Homebrew, SDK, service, or other
+system access therefore becomes a scoped Product Owner permission request instead of
+a failed workspace write or an agent-created `/tmp` copy. Agents are explicitly
+forbidden from copying a ticket workspace elsewhere to bypass that decision. They
+receive read-only access to the active product's central Git metadata, so status,
+diff, history, and conflict inspection do not need Product Owner approval. Their
+App Server process disables optional Git locks, ignores the user's global Git
+configuration, and uses a noninteractive pager. The assigned worktree remains
+writable, while StoryPointless alone owns Git mutations such as staging, commits,
+branches, integration, and promotion.
 Completed implementation becomes a
-versioned candidate that preserves every agent commit plus an exact head SHA.
+versioned candidate with a host-created commit and exact head SHA.
 StoryPointless places it in a rank-ordered serial integration queue and merges it
 against current `trunk` in a detached integration worktree. Unambiguous conflicts are
 handled by an internal Integrator turn in that preserved worktree; material choices
 pause as **Needs your input** without inventing a new board state. The exact integrated
 revision is then inspected by a separate read-only Tech Lead run. Approval moves the
-ticket to **Ready for Demo**;
-requested changes return it to **In Progress** and resume the original implementation
+ticket to **Ready for Demo** only after its typed demo recipe successfully smoke-tests
+the exact integrated revision. The ticket acceptance room then provides one **Demo**
+button. StoryPointless prepares a detached preview checkout, starts a sandboxed local
+service through the same pinned Codex App Server runtime and opens its loopback browser URL, launches a reviewed macOS app, opens a
+review artifact, or captures a bounded scenario result according to that reviewed
+recipe. Repeated web and app demo clicks reuse a healthy process. **Stop demo**,
+Product Owner feedback, approval, product switching, and app shutdown terminate the
+managed App Server command session; approval and feedback also remove the preview checkout.
+If the Tech Lead has approved the candidate but demo smoke preparation stops, the ticket
+offers **Retry demo preparation** immediately. The retry reuses the exact reviewed SHA and
+does not require a comment, repeat implementation, or another Tech Lead review.
+Requested changes return it to **In Progress** and resume the original implementation
 thread with the review comment. Owner demo feedback follows the same revision loop,
-while **Approve & complete** promotes the reviewed integrated SHA to local `trunk`,
+while **Approve and complete** promotes the reviewed integrated SHA to local `trunk`,
 moves the ticket to Done, and admits newly unblocked work. Interrupted runs are
 recovered from their durable records and preserved
 workspace on the next launch. Backlog and refinement are separate from the simplified
@@ -118,9 +144,20 @@ Candidates integrate serially against current local `trunk`; the Integrator reso
 safe conflicts in the detached merge workspace and the Tech Lead reviews the exact
 resulting SHA. Product Owner approval alone promotes that reviewed revision. One
 candidate reaches Ready for Demo at a time so acceptance remains an explicit trunk
-gate. Preview/release automation, streamed fine-grained progress, and agent-authored
-quit checkpoints remain to be implemented.
-Completed agents must now provide concrete Product Owner review instructions.
+gate. Release automation, streamed fine-grained progress, and agent-authored quit
+checkpoints remain to be implemented.
+Completed agents must now provide concrete Product Owner review instructions and a
+schema-versioned one-click demo recipe. Recipes use executable and argument arrays
+rather than shell command strings, remain inside the reviewed preview checkout, expose
+only loopback web URLs, use allocated ports, and run with external network and
+unrelated-file access denied. A candidate cannot reach Ready for Demo until its recipe
+passes structural, workspace, launch, and readiness validation.
+The managed demo profile deliberately reads ordinary system and Homebrew runtime files
+without enumerating individual binaries or library configuration paths. It can write
+only the reviewed preview and its temporary data, can reach only localhost, and denies
+credentials, `.env` files, other product workspaces, and StoryPointless's control-plane
+data. This avoids toolchain-path failures such as Node loading Homebrew OpenSSL while
+keeping exceptional access explicit.
 They also create a proposed per-ticket delivery note; Tech Lead approval verifies it
 before it is used as current knowledge. Agents may propose complete updates or new
 pages for the canonical wiki. The Tech Lead reviews those proposals with the exact

@@ -6879,6 +6879,18 @@ struct SprintTicketRunTelemetryPresentation {
   }
 }
 
+struct SprintTicketCardActivityPresentation {
+  let showsAgentWorkShimmer: Bool
+
+  init(run: AgentRun?, showsWorkflowActions: Bool) {
+    showsAgentWorkShimmer = !showsWorkflowActions && run?.status == .running
+  }
+}
+
+private enum AIActivityVisualStyle {
+  static var tint: Color { .purple }
+}
+
 struct SprintTicketRunDetailsSelection {
   static func run(
     for itemState: WorkItemState,
@@ -6965,16 +6977,16 @@ private struct SprintTicketRunSummary<Status: View>: View {
       if telemetry.showsFooter {
         Divider()
 
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .center, spacing: 8) {
           if telemetry.showsLiveActivity, let liveActivity {
             Image(systemName: liveActivity.kind.symbolName)
-              .foregroundStyle(.blue)
+              .foregroundStyle(AIActivityVisualStyle.tint)
               .frame(width: 13)
 
             liveActivityText(liveActivity.text)
           } else if let contextPercentage = telemetry.contextPercentage {
             Image(systemName: "brain.head.profile")
-              .foregroundStyle(.blue)
+              .foregroundStyle(AIActivityVisualStyle.tint)
               .frame(width: 13)
 
             Text("\(contextPercentage)% context used")
@@ -7018,20 +7030,19 @@ private struct SprintTicketRunSummary<Status: View>: View {
 
   private func contextOccupancyIndicator(fraction: Double) -> some View {
     let percentage = Int((fraction * 100).rounded())
-    let tint: Color = run?.status == .awaitingOwner ? .orange : .blue
 
     return ZStack {
       Circle()
-        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 2)
+        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 3)
       Circle()
         .trim(from: 0, to: fraction)
         .stroke(
-          tint,
-          style: StrokeStyle(lineWidth: 2, lineCap: .round)
+          AIActivityVisualStyle.tint,
+          style: StrokeStyle(lineWidth: 3, lineCap: .round)
         )
         .rotationEffect(.degrees(-90))
     }
-    .frame(width: 13, height: 13)
+    .frame(width: 12, height: 12)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("Agent context")
     .accessibilityValue("\(percentage) percent used")
@@ -7630,13 +7641,11 @@ private struct TicketColumn: View {
 private struct WorkItemCard: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.colorScheme) private var colorScheme
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let item: WorkItem
   let showsWorkflowActions: Bool
   let onOpen: ((WorkItem) -> Void)?
   private let policy = WorkflowPolicy()
   @State private var isHovering = false
-  @State private var ownerAttentionPulse = false
 
   private var sprintItem: SprintItem? {
     model.sprintPlan?.items.first { $0.workItemID == item.id }
@@ -7740,45 +7749,21 @@ private struct WorkItemCard: View {
     }
   }
 
-  private var needsOwnerInput: Bool {
-    latestRun?.status == .awaitingOwner
-  }
-
-  private var isReadyForDemo: Bool {
-    item.state == .acceptance
-  }
-
-  private var needsOwnerAction: Bool {
-    needsOwnerInput || isReadyForDemo
-  }
-
-  private var isActivelyWorkedOn: Bool {
-    latestRun?.status == .running
-  }
-
   private var isInteractiveHover: Bool {
     onOpen != nil && isHovering
   }
 
-  private var attentionAnimationEnabled: Bool {
-    needsOwnerAction && !reduceMotion
+  private var activityPresentation: SprintTicketCardActivityPresentation {
+    SprintTicketCardActivityPresentation(
+      run: latestRun,
+      showsWorkflowActions: showsWorkflowActions
+    )
   }
 
   private var cardBackground: Color {
     return colorScheme == .dark
       ? Color.white.opacity(0.06)
       : Color(nsColor: .controlBackgroundColor)
-  }
-
-  private var cardBorderColor: Color {
-    if isActivelyWorkedOn {
-      return .blue.opacity(0.32)
-    }
-    return Color(nsColor: .separatorColor).opacity(0.45)
-  }
-
-  private var cardBorderWidth: CGFloat {
-    isActivelyWorkedOn ? 1 : 0.5
   }
 
   var body: some View {
@@ -7836,30 +7821,14 @@ private struct WorkItemCard: View {
     .background {
       ZStack {
         cardBackground
+        if activityPresentation.showsAgentWorkShimmer {
+          ActiveTicketShimmer()
+        }
         if isInteractiveHover {
           Color.accentColor.opacity(0.055)
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: 11))
-    }
-    .overlay {
-      ZStack {
-        RoundedRectangle(cornerRadius: 11)
-          .stroke(cardBorderColor, lineWidth: cardBorderWidth)
-        if needsOwnerAction {
-          RoundedRectangle(cornerRadius: 11)
-            .stroke(
-              Color.orange.opacity(
-                reduceMotion ? 0.4 : (ownerAttentionPulse ? 0.72 : 0.08)
-              ),
-              lineWidth: ownerAttentionPulse ? 1.6 : 0.8
-            )
-            .shadow(
-              color: .orange.opacity(ownerAttentionPulse ? 0.24 : 0),
-              radius: 4
-            )
-        }
-      }
     }
     .contentShape(RoundedRectangle(cornerRadius: 11))
     .onTapGesture {
@@ -7869,29 +7838,6 @@ private struct WorkItemCard: View {
       guard onOpen != nil else { return }
       withAnimation(.easeOut(duration: 0.12)) {
         isHovering = hovering
-      }
-    }
-    .task(id: attentionAnimationEnabled) {
-      ownerAttentionPulse = false
-      guard attentionAnimationEnabled else { return }
-
-      while !Task.isCancelled {
-        do {
-          try await Task.sleep(for: .seconds(2.8))
-        } catch {
-          return
-        }
-        withAnimation(.easeInOut(duration: 0.45)) {
-          ownerAttentionPulse = true
-        }
-        do {
-          try await Task.sleep(for: .seconds(0.65))
-        } catch {
-          return
-        }
-        withAnimation(.easeOut(duration: 0.7)) {
-          ownerAttentionPulse = false
-        }
       }
     }
   }
@@ -7931,6 +7877,182 @@ private struct WorkItemCard: View {
   }
 }
 
+private struct ActiveTicketShimmer: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private static let travelCurve = UnitCurve.bezier(
+    startControlPoint: UnitPoint(x: 0.8, y: 0),
+    endControlPoint: UnitPoint(x: 0.2, y: 1)
+  )
+
+  var body: some View {
+    GeometryReader { geometry in
+      if !reduceMotion {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+          let cycleDuration = 3.0
+          let linearProgress =
+            timeline.date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: cycleDuration)
+            / cycleDuration
+          let position = CGFloat(
+            Self.travelCurve.value(at: linearProgress)
+          )
+          let bandWidth = max(220, geometry.size.width * 0.92)
+          let bandHeight =
+            (geometry.size.height * 1.1)
+            + (bandWidth * 0.35)
+          let startX = -bandWidth * 0.3
+          let endX = geometry.size.width + (bandWidth * 0.3)
+          let centerX =
+            startX + (position * (endX - startX))
+          let centerY = geometry.size.height * 0.5
+          let entryOpacity = min(1, linearProgress / 0.08)
+          let exitOpacity = min(1, (1 - linearProgress) / 0.14)
+          let temporalOpacity = min(entryOpacity, exitOpacity)
+
+          LinearGradient(
+            gradient: Gradient(stops: [
+              .init(color: .clear, location: 0),
+              .init(
+                color: Color.accentColor.opacity(0.008),
+                location: 0.12
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.03),
+                location: 0.28
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.075),
+                location: 0.42
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.1),
+                location: 0.48
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.1),
+                location: 0.52
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.075),
+                location: 0.58
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.03),
+                location: 0.72
+              ),
+              .init(
+                color: Color.accentColor.opacity(0.008),
+                location: 0.88
+              ),
+              .init(color: .clear, location: 1),
+            ]),
+            startPoint: .leading,
+            endPoint: .trailing
+          )
+          .frame(
+            width: bandWidth,
+            height: bandHeight
+          )
+          .rotationEffect(.degrees(15))
+          .position(x: centerX, y: centerY)
+          .opacity(temporalOpacity)
+        }
+      }
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
+  }
+}
+
+enum SprintTicketWorkLogHistory {
+  private struct PendingQuestion {
+    let displayedIndex: Int
+    let question: TicketOwnerQuestion
+  }
+
+  static func displayedComments(from comments: [TicketComment]) -> [TicketComment] {
+    var displayed: [TicketComment] = []
+    var pendingQuestions: [PendingQuestion] = []
+
+    for comment in comments {
+      if
+        comment.authorKind == .agent,
+        let presentation = TicketOwnerQuestion.presentation(
+          in: comment.body,
+          structuredQuestion: comment.ownerQuestion
+        )
+      {
+        displayed.append(comment)
+        pendingQuestions.append(
+          PendingQuestion(
+            displayedIndex: displayed.count - 1,
+            question: presentation.question
+          )
+        )
+        continue
+      }
+
+      if comment.authorKind == .owner,
+        let match = matchingAnswer(
+          in: comment,
+          pendingQuestions: pendingQuestions
+        )
+      {
+        let pending = pendingQuestions.remove(at: match.pendingIndex)
+        let questionComment = displayed[pending.displayedIndex]
+        displayed[pending.displayedIndex] = TicketComment(
+          id: questionComment.id,
+          workItemID: questionComment.workItemID,
+          authorKind: questionComment.authorKind,
+          authorName: questionComment.authorName,
+          body: questionComment.body,
+          ownerQuestion: questionComment.ownerQuestion,
+          answeredQuestions: [match.answer],
+          createdAt: questionComment.createdAt
+        )
+        continue
+      }
+
+      displayed.append(comment)
+    }
+
+    return displayed
+  }
+
+  private static func matchingAnswer(
+    in ownerComment: TicketComment,
+    pendingQuestions: [PendingQuestion]
+  ) -> (pendingIndex: Int, answer: TicketAnsweredQuestion)? {
+    for answered in ownerComment.answeredQuestions {
+      if let pendingIndex = pendingQuestions.lastIndex(where: {
+        $0.question.prompt == answered.question.prompt
+          && $0.question.options == answered.question.options
+      }) {
+        return (pendingIndex, answered)
+      }
+    }
+
+    let body = ownerComment.body.trimmingCharacters(in: .whitespacesAndNewlines)
+    for pendingIndex in pendingQuestions.indices.reversed() {
+      let pending = pendingQuestions[pendingIndex]
+      guard pending.question.options.contains(body) else { continue }
+      return (
+        pendingIndex,
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: pending.question.prompt,
+            options: pending.question.options
+          ),
+          selectedOption: body,
+          answer: body
+        )
+      )
+    }
+    return nil
+  }
+}
+
 private struct SprintTicketDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -7943,12 +8065,15 @@ private struct SprintTicketDetailView: View {
   @State private var isAskingQuestion = false
   @State private var isResumingWork = false
   @State private var isAcceptingTicket = false
+  @State private var isDemoActionRunning = false
+  @State private var decidingPermissionRequestID: UUID?
   @State private var decidingKnowledgeProposalIDs: Set<UUID> = []
   @State private var commentError: String?
   @State private var workLogScrollRequest = 0
   @State private var hasLoadedWorkLog = false
   @State private var isContextExpanded = false
-  @State private var isWritingCustomOwnerAnswer = false
+  @State private var ownerAnswerSelection: TicketOwnerAnswerSelection?
+  @State private var customOwnerAnswerDraft = ""
   @FocusState private var isCommentComposerFocused: Bool
 
   private var currentItem: WorkItem {
@@ -8016,6 +8141,15 @@ private struct SprintTicketDetailView: View {
     return try? CodexTicketExecutor.decode(candidate.executionResultJSON)
   }
 
+  private var currentDemoSession: DemoSession? {
+    guard let candidateID = currentCandidate?.id else { return nil }
+    return model.currentDemoSession(for: candidateID)
+  }
+
+  private var pendingPermissionRequest: AgentPermissionRequest? {
+    model.pendingPermissionRequest(workItemID: item.id)
+  }
+
   private var trunkPromotionValue: String {
     guard let candidate = currentCandidate else { return "No candidate" }
     switch candidate.status {
@@ -8068,6 +8202,16 @@ private struct SprintTicketDetailView: View {
     min(780, max(600, containerSize.height - 110))
   }
 
+  private var latestActivityButton: some View {
+    Button {
+      workLogScrollRequest += 1
+    } label: {
+      Label("Latest activity", systemImage: "arrow.down.to.line")
+    }
+    .disabled(workLogEntries.isEmpty)
+    .help("Jump to the latest Work log entry")
+  }
+
   private var boardStatusTitle: String {
     if model.sprintPlan?.sprint.state == .draft, let currentSprintItem {
       if currentSprintItem.estimatedTokens <= 0
@@ -8118,6 +8262,37 @@ private struct SprintTicketDetailView: View {
       && !isResumingWork
   }
 
+  private var ownerAnswer: String? {
+    switch ownerAnswerSelection {
+    case .option(let option):
+      return option
+    case .custom:
+      let answer = customOwnerAnswerDraft
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      return answer.isEmpty ? nil : answer
+    case nil:
+      return nil
+    }
+  }
+
+  private var canRetryFailedPostReviewDemo: Bool {
+    model.canRetryFailedPostReviewDemo(workItemID: item.id)
+  }
+
+  private var resumeWorkDraft: String {
+    if activeOwnerQuestionComment != nil {
+      return ownerAnswer ?? ""
+    }
+    return commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var canResumeWork: Bool {
+    (canRetryFailedPostReviewDemo || !resumeWorkDraft.isEmpty)
+      && !isPostingComment
+      && !isAskingQuestion
+      && !isResumingWork
+  }
+
   private var awaitingOwnerRun: AgentRun? {
     model.runs
       .filter { $0.workItemID == item.id && $0.status == .awaitingOwner }
@@ -8130,7 +8305,7 @@ private struct SprintTicketDetailView: View {
   }
 
   private var activeOwnerQuestionComment: TicketComment? {
-    guard awaitingOwnerRun != nil else { return nil }
+    guard awaitingOwnerRun != nil, !canRetryFailedPostReviewDemo else { return nil }
     let agentComments = comments.filter { $0.authorKind == .agent }
     if let structuredComment = agentComments.last(where: { $0.ownerQuestion != nil }) {
       return structuredComment
@@ -8143,20 +8318,6 @@ private struct SprintTicketDetailView: View {
       ) != nil
     else { return nil }
     return latestAgentComment
-  }
-
-  private var ownerAnswerSelection: TicketOwnerAnswerSelection? {
-    guard let comment = activeOwnerQuestionComment,
-      let presentation = TicketOwnerQuestion.presentation(
-        in: comment.body,
-        structuredQuestion: comment.ownerQuestion
-      )
-    else { return nil }
-    if isWritingCustomOwnerAnswer {
-      return .custom
-    }
-    let answer = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-    return presentation.question.options.contains(answer) ? .option(answer) : nil
   }
 
   private var pausedQuestionRecipient: AgentProfile? {
@@ -8187,7 +8348,7 @@ private struct SprintTicketDetailView: View {
   }
 
   private var workLogEntries: [SprintWorkLogEntry] {
-    let commentEntries = comments
+    let commentEntries = SprintTicketWorkLogHistory.displayedComments(from: comments)
       .filter(isVisibleWorkLogComment)
       .map(SprintWorkLogEntry.comment)
     let eventEntries = activityEvents
@@ -8426,6 +8587,230 @@ private struct SprintTicketDetailView: View {
   }
 
   @ViewBuilder
+  private var permissionRequestSection: some View {
+    if let request = pendingPermissionRequest {
+      VStack(alignment: .leading, spacing: 13) {
+        HStack(alignment: .top, spacing: 11) {
+          Image(systemName: "lock.shield.fill")
+            .font(.title3)
+            .foregroundStyle(.orange)
+          VStack(alignment: .leading, spacing: 3) {
+            Text(request.title)
+              .font(.headline)
+            Text("Additional access for this agent run")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          Button("Deny") {
+            decidePermissionRequest(request, allow: false)
+          }
+          .buttonStyle(.bordered)
+          .disabled(decidingPermissionRequestID != nil)
+
+          Button("Allow") {
+            decidePermissionRequest(request, allow: true)
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(decidingPermissionRequestID != nil)
+        }
+
+        Text(request.detail)
+          .font(request.kind == .command ? .system(.callout, design: .monospaced) : .callout)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+
+        if let reason = request.reason, !reason.isEmpty {
+          Text(reason)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Text(
+          "Allow grants only this requested capability for the current run. Deny returns control to the agent so it can adapt."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(17)
+      .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+      .overlay {
+        RoundedRectangle(cornerRadius: 13)
+          .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var demoSection: some View {
+    if currentItem.state == .acceptance, let candidate = currentCandidate {
+      let specification = currentExecutionResult?.demo
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(spacing: 10) {
+          Image(systemName: "play.rectangle.fill")
+            .font(.title3)
+            .foregroundStyle(.orange)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(specification?.title ?? "Demo")
+              .font(.headline)
+            Text(specification?.presentation.kind.title ?? "Demo setup unavailable")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          if currentDemoSession?.status == .ready,
+            specification?.presentation.kind == .browser
+              || specification?.presentation.kind == .macApplication
+          {
+            Button("Stop demo") {
+              stopDemo(candidate)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isDemoActionRunning)
+          }
+          Button(demoButtonTitle) {
+            launchDemo(candidate)
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(isDemoActionRunning || specification == nil)
+        }
+
+        Text(demoExplanation)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+
+        if let instructions = currentExecutionResult?.reviewInstructions,
+          !instructions.isEmpty
+        {
+          VStack(alignment: .leading, spacing: 7) {
+            Text("Things to try")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+            ForEach(instructions, id: \.self) { instruction in
+              HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "checkmark.circle")
+                  .font(.caption)
+                  .foregroundStyle(.orange)
+                  .padding(.top, 1)
+                Text(instruction)
+                  .font(.callout)
+              }
+            }
+          }
+        }
+
+        if let output = currentDemoSession?.output, !output.isEmpty {
+          VStack(alignment: .leading, spacing: 7) {
+            Text("Demo result")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+            ScrollView {
+              Text(output)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+            }
+            .frame(maxHeight: 180)
+            .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+          }
+        }
+
+        if let error = currentDemoSession?.errorMessage, !error.isEmpty {
+          Label(error, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .padding(17)
+      .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+      .overlay {
+        RoundedRectangle(cornerRadius: 13)
+          .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
+      }
+    }
+  }
+
+  private var demoButtonTitle: String {
+    if isDemoActionRunning {
+      return currentDemoSession?.status == .starting ? "Starting…" : "Preparing…"
+    }
+    switch currentDemoSession?.status {
+    case .ready:
+      return currentExecutionResult?.demo?.presentation.kind == .commandOutput
+        ? "Run demo again"
+        : "Open demo"
+    case .failed:
+      return "Retry demo"
+    default:
+      return "Demo"
+    }
+  }
+
+  private var demoExplanation: String {
+    guard let specification = currentExecutionResult?.demo else {
+      return "This candidate predates managed demos. Request changes so the assigned team member can add a one-click demo."
+    }
+    switch currentDemoSession?.status {
+    case .preparing:
+      return "StoryPointless is preparing the exact reviewed revision."
+    case .starting:
+      return "StoryPointless is starting the demo and waiting until it is ready."
+    case .ready:
+      switch specification.presentation.kind {
+      case .browser:
+        return "The local web demo is running. Open demo reuses it without starting a duplicate."
+      case .macApplication:
+        return "The reviewed macOS app is running in its managed demo session."
+      case .artifact:
+        return "The reviewed artifact has been opened."
+      case .commandOutput:
+        return "The reviewed scenario completed and its result is shown below."
+      }
+    case .failed:
+      return "The demo could not open. Retry it or describe what happened and request changes."
+    case .stopped:
+      return "The reviewed demo is ready. StoryPointless will manage its setup and cleanup."
+    case nil:
+      return "StoryPointless will open the exact reviewed result and manage any local processes it needs."
+    }
+  }
+
+  private func launchDemo(_ candidate: CandidateRevision) {
+    guard !isDemoActionRunning else { return }
+    isDemoActionRunning = true
+    Task {
+      _ = await model.launchDemo(for: candidate)
+      isDemoActionRunning = false
+    }
+  }
+
+  private func stopDemo(_ candidate: CandidateRevision) {
+    guard !isDemoActionRunning else { return }
+    isDemoActionRunning = true
+    Task {
+      await model.stopDemo(for: candidate)
+      isDemoActionRunning = false
+    }
+  }
+
+  private func decidePermissionRequest(
+    _ request: AgentPermissionRequest,
+    allow: Bool
+  ) {
+    guard decidingPermissionRequestID == nil else { return }
+    decidingPermissionRequestID = request.id
+    Task {
+      await model.decidePermissionRequest(request, allow: allow)
+      decidingPermissionRequestID = nil
+    }
+  }
+
+  @ViewBuilder
   private var followUpTicketProposalsSection: some View {
     if let proposals = currentExecutionResult?.followUpTicketProposals,
       !proposals.isEmpty
@@ -8593,14 +8978,14 @@ private struct SprintTicketDetailView: View {
         Text("Ticket details")
           .font(.title2.bold())
         Spacer()
-        Button {
-          workLogScrollRequest += 1
-        } label: {
-          Label("Latest activity", systemImage: "arrow.down.to.line")
+        if awaitingOwnerRun != nil {
+          latestActivityButton
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+        } else {
+          latestActivityButton
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(.bordered)
-        .disabled(workLogEntries.isEmpty)
-        .help("Jump to the latest Work log entry")
         Button("Close") { dismiss() }
       }
       .padding(.horizontal, 22)
@@ -8681,6 +9066,10 @@ private struct SprintTicketDetailView: View {
               }
             }
 
+            permissionRequestSection
+
+            demoSection
+
             followUpTicketProposalsSection
 
             knowledgeProposalsSection
@@ -8749,10 +9138,18 @@ private struct SprintTicketDetailView: View {
                         SprintTicketCommentRow(
                           comment: comment,
                           authorProfile: model.profiles.first { $0.name == comment.authorName },
+                          mentionedProfile: mentionedProfile(
+                            in: comment.body,
+                            profiles: model.profiles
+                          ),
                           showsBottomSeparator: showsBottomSeparator,
                           ownerAnswerSelection:
                             comment.id == activeOwnerQuestionComment?.id
                             ? ownerAnswerSelection
+                            : nil,
+                          customOwnerAnswer:
+                            comment.id == activeOwnerQuestionComment?.id
+                            ? $customOwnerAnswerDraft
                             : nil,
                           onSelectOwnerAnswer:
                             comment.id == activeOwnerQuestionComment?.id
@@ -8794,6 +9191,10 @@ private struct SprintTicketDetailView: View {
       commentComposer
     }
     .frame(width: detailWidth, height: detailHeight)
+    .onChange(of: activeOwnerQuestionComment?.id) { _, _ in
+      ownerAnswerSelection = nil
+      customOwnerAnswerDraft = ""
+    }
     .task {
       while !Task.isCancelled {
         let previousLastEntryID = workLogEntries.last?.id
@@ -8821,7 +9222,21 @@ private struct SprintTicketDetailView: View {
       .frame(width: 34, height: 34)
 
       VStack(alignment: .leading, spacing: 7) {
-        if let awaitingOwnerProfile {
+        if canRetryFailedPostReviewDemo {
+          VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 7) {
+              Image(systemName: "arrow.clockwise.circle.fill")
+              Text("Demo preparation stopped unexpectedly.")
+                .fontWeight(.semibold)
+            }
+            Text(
+              "Retry the already reviewed candidate. No new comment or repeat implementation is required."
+            )
+              .foregroundStyle(.secondary)
+          }
+          .font(.caption)
+          .foregroundStyle(.red)
+        } else if let awaitingOwnerProfile {
           VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
               Image(systemName: "pause.circle.fill")
@@ -8830,9 +9245,11 @@ private struct SprintTicketDetailView: View {
               Text("is paused and waiting for direction.")
             }
             Text(
-              activeOwnerQuestionComment == nil
-                ? "Ask a question without restarting work, or add direction and choose Resume work."
-                : "Choose an answer above or write your own, then choose Resume work."
+              pendingPermissionRequest != nil
+                ? "Use Allow or Deny on the permission request above. You can still add context here."
+                : activeOwnerQuestionComment == nil
+                  ? "Ask a question without restarting work, or add direction and choose Resume work."
+                  : "Choose an answer above or select Other, then choose Resume work."
             )
               .foregroundStyle(.secondary)
           }
@@ -8901,7 +9318,27 @@ private struct SprintTicketDetailView: View {
               .foregroundStyle(.tertiary)
           }
           Spacer()
-          if awaitingOwnerProfile != nil {
+          if pendingPermissionRequest != nil {
+            Button(isPostingComment ? "Commenting…" : "Comment") {
+              postComment()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canPostComment)
+          } else if canRetryFailedPostReviewDemo {
+            Button(isPostingComment ? "Commenting…" : "Comment") {
+              postComment()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canPostComment)
+
+            Button(
+              isResumingWork ? "Retrying…" : "Retry demo preparation"
+            ) {
+              resumeWork()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canResumeWork)
+          } else if awaitingOwnerProfile != nil {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
             }
@@ -8922,7 +9359,7 @@ private struct SprintTicketDetailView: View {
               resumeWork()
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!canPostComment)
+            .disabled(!canResumeWork)
           } else if failedDeliveryProfile != nil {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
@@ -8934,7 +9371,7 @@ private struct SprintTicketDetailView: View {
               resumeWork()
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!canPostComment)
+            .disabled(!canResumeWork)
           } else if currentItem.state == .acceptance {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
@@ -8950,7 +9387,7 @@ private struct SprintTicketDetailView: View {
               resumeWork()
             }
             .buttonStyle(.bordered)
-            .disabled(!canPostComment)
+            .disabled(!canResumeWork)
 
             Button(isAcceptingTicket ? "Completing…" : "Approve and complete") {
               acceptTicket()
@@ -9021,25 +9458,8 @@ private struct SprintTicketDetailView: View {
   }
 
   private func selectOwnerAnswer(_ selection: TicketOwnerAnswerSelection) {
-    switch selection {
-    case .option(let option):
-      commentDraft = option
-      isWritingCustomOwnerAnswer = false
-    case .custom:
-      if let comment = activeOwnerQuestionComment,
-        let presentation = TicketOwnerQuestion.presentation(
-          in: comment.body,
-          structuredQuestion: comment.ownerQuestion
-        ),
-        presentation.question.options.contains(
-          commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-      {
-        commentDraft = ""
-      }
-      isWritingCustomOwnerAnswer = true
-    }
-    isCommentComposerFocused = true
+    ownerAnswerSelection = selection
+    isCommentComposerFocused = false
     workLogScrollRequest += 1
   }
 
@@ -9083,25 +9503,88 @@ private struct SprintTicketDetailView: View {
   }
 
   private func resumeWork() {
-    let body = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    if canRetryFailedPostReviewDemo {
+      guard !isResumingWork else { return }
+      commentError = nil
+      isResumingWork = true
+      Task {
+        let didRetry = await model.retryFailedPostReviewDemo(
+          workItemID: item.id
+        )
+        if !didRetry {
+          commentError = "Demo preparation couldn't be retried. Try again."
+        }
+        comments = await model.comments(for: item.id)
+        activityEvents = await model.activityEvents(for: item.id)
+        workLogScrollRequest += 1
+        isResumingWork = false
+      }
+      return
+    }
+
+    let body = resumeWorkDraft
     guard !body.isEmpty, !isResumingWork else { return }
-    commentDraft = ""
+    let answeredQuestions = answeredOwnerQuestions(answer: body)
+    let submittedSelection = ownerAnswerSelection
+    let submittedCustomAnswer = customOwnerAnswerDraft
+    let wasAnsweringQuestion = activeOwnerQuestionComment != nil
+    if wasAnsweringQuestion {
+      ownerAnswerSelection = nil
+      customOwnerAnswerDraft = ""
+    } else {
+      commentDraft = ""
+    }
     commentError = nil
     isResumingWork = true
 
     Task {
       if let comment = await model.resumeSprintWork(
         workItemID: item.id,
-        body: body
+        body: body,
+        answeredQuestions: answeredQuestions
       ) {
         appendLocalComment(comment)
         workLogScrollRequest += 1
       } else {
-        commentDraft = body
+        if wasAnsweringQuestion {
+          ownerAnswerSelection = submittedSelection
+          customOwnerAnswerDraft = submittedCustomAnswer
+        } else {
+          commentDraft = body
+        }
         commentError = "Your direction couldn't be saved. Try again."
       }
       isResumingWork = false
     }
+  }
+
+  private func answeredOwnerQuestions(
+    answer: String
+  ) -> [TicketAnsweredQuestion] {
+    guard
+      let comment = activeOwnerQuestionComment,
+      let presentation = TicketOwnerQuestion.presentation(
+        in: comment.body,
+        structuredQuestion: comment.ownerQuestion
+      )
+    else { return [] }
+
+    let selectedOption: String? =
+      if case .option(let option) = ownerAnswerSelection {
+        option
+      } else {
+        nil
+      }
+    return [
+      TicketAnsweredQuestion(
+        question: TicketRefinementQuestion(
+          prompt: presentation.question.prompt,
+          options: presentation.question.options
+        ),
+        selectedOption: selectedOption,
+        answer: answer
+      )
+    ]
   }
 
   private func appendLocalComment(_ comment: TicketComment) {
@@ -9633,9 +10116,12 @@ private enum TicketOwnerAnswerSelection: Equatable {
 private struct SprintTicketCommentRow: View {
   let comment: TicketComment
   let authorProfile: AgentProfile?
+  let mentionedProfile: AgentProfile?
   let showsBottomSeparator: Bool
   let ownerAnswerSelection: TicketOwnerAnswerSelection?
+  let customOwnerAnswer: Binding<String>?
   let onSelectOwnerAnswer: ((TicketOwnerAnswerSelection) -> Void)?
+  @FocusState private var isCustomOwnerAnswerFocused: Bool
 
   private var accent: Color {
     switch comment.authorKind {
@@ -9665,6 +10151,23 @@ private struct SprintTicketCommentRow: View {
     )
   }
 
+  private var presentedOwnerAnswerSelection: TicketOwnerAnswerSelection? {
+    if let ownerAnswerSelection {
+      return ownerAnswerSelection
+    }
+    guard let answered = comment.answeredQuestions.first else { return nil }
+    return answered.selectedOption.map(TicketOwnerAnswerSelection.option)
+      ?? .custom
+  }
+
+  private var submittedCustomOwnerAnswer: String? {
+    guard
+      presentedOwnerAnswerSelection == .custom,
+      customOwnerAnswer == nil
+    else { return nil }
+    return comment.answeredQuestions.first?.answer
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
       ZStack {
@@ -9692,7 +10195,9 @@ private struct SprintTicketCommentRow: View {
           if !ownerQuestionPresentation.context.isEmpty {
             TicketMarkdownDocument(
               source: ownerQuestionPresentation.context,
-              baseFont: .body
+              baseFont: .body,
+              highlightedText: mentionedProfile.map { "@\($0.name)" },
+              highlightedColor: mentionedProfile?.role.tint
             )
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -9702,7 +10207,9 @@ private struct SprintTicketCommentRow: View {
         } else {
           TicketMarkdownDocument(
             source: comment.body,
-            baseFont: .body
+            baseFont: .body,
+            highlightedText: mentionedProfile.map { "@\($0.name)" },
+            highlightedColor: mentionedProfile?.role.tint
           )
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -9739,16 +10246,34 @@ private struct SprintTicketCommentRow: View {
             selection: .option(option)
           )
         }
-        if onSelectOwnerAnswer != nil {
-          ownerAnswerRow(
-            "Write another answer",
-            selection: .custom
+        ownerAnswerRow(
+          "Other",
+          selection: .custom
+        )
+      }
+
+      if presentedOwnerAnswerSelection == .custom, let customOwnerAnswer {
+        TextField("Type another answer", text: customOwnerAnswer)
+          .textFieldStyle(.roundedBorder)
+          .focused($isCustomOwnerAnswerFocused)
+          .task {
+            await Task.yield()
+            isCustomOwnerAnswerFocused = true
+          }
+      } else if let submittedCustomOwnerAnswer {
+        Text(submittedCustomOwnerAnswer)
+          .font(.callout)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 7)
+          .background(
+            accent.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 8)
           )
-        }
       }
 
       if onSelectOwnerAnswer != nil {
-        Text("Choose an answer to add it to your response below.")
+        Text("Choose an answer to continue.")
           .font(.caption2)
           .foregroundStyle(.secondary)
       }
@@ -9775,20 +10300,37 @@ private struct SprintTicketCommentRow: View {
       .buttonStyle(
         RefinementChoiceButtonStyle(
           tint: accent,
-          isSelected: ownerAnswerSelection == selection
+          isSelected: presentedOwnerAnswerSelection == selection
         )
       )
     } else {
-      ownerAnswerLabel(label, selection: selection)
-        .background(
-          Color(nsColor: .controlBackgroundColor).opacity(0.52),
-          in: RoundedRectangle(cornerRadius: 8)
-        )
-        .overlay {
-          RoundedRectangle(cornerRadius: 8)
-            .stroke(Color.primary.opacity(0.10), lineWidth: 0.8)
-        }
+      readOnlyOwnerAnswerLabel(label, selection: selection)
     }
+  }
+
+  private func readOnlyOwnerAnswerLabel(
+    _ label: String,
+    selection: TicketOwnerAnswerSelection
+  ) -> some View {
+    let isSelected = presentedOwnerAnswerSelection == selection
+    return HStack(alignment: .firstTextBaseline, spacing: 9) {
+      Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+        .font(.caption)
+        .foregroundStyle(isSelected ? accent : Color.secondary.opacity(0.65))
+      Text(label)
+        .font(.callout)
+        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      isSelected ? accent.opacity(0.14) : Color.primary.opacity(0.025),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
   }
 
   private func ownerAnswerLabel(
@@ -9798,13 +10340,13 @@ private struct SprintTicketCommentRow: View {
     HStack(alignment: .firstTextBaseline, spacing: 9) {
       Image(
         systemName:
-          ownerAnswerSelection == selection
+          presentedOwnerAnswerSelection == selection
           ? "largecircle.fill.circle"
           : "circle"
       )
       .font(.caption)
       .foregroundStyle(
-        ownerAnswerSelection == selection ? accent : Color.secondary
+        presentedOwnerAnswerSelection == selection ? accent : Color.secondary
       )
       Text(label)
         .font(.callout)

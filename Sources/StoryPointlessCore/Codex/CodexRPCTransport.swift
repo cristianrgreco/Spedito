@@ -70,24 +70,59 @@ public enum CodexInboundMessage: Equatable, Sendable {
 public protocol CodexRPCTransport: Sendable {
   func start() async throws
   func request(method: String, params: JSONValue) async throws -> JSONValue
+  func request(
+    method: String,
+    params: JSONValue,
+    responseTimeout: Duration
+  ) async throws -> JSONValue
   func notify(method: String, params: JSONValue) async throws
+  func respond(id: JSONValue, result: JSONValue) async throws
+  func respondError(id: JSONValue, error: CodexRPCError) async throws
   func inboundMessages() async -> AsyncStream<CodexInboundMessage>
   func stop() async
+}
+
+extension CodexRPCTransport {
+  public func request(
+    method: String,
+    params: JSONValue,
+    responseTimeout: Duration
+  ) async throws -> JSONValue {
+    try await request(method: method, params: params)
+  }
+
+  public func respond(id: JSONValue, result: JSONValue) async throws {
+    throw CodexTransportError.writeFailed(
+      "This transport cannot answer Codex App Server requests."
+    )
+  }
+
+  public func respondError(id: JSONValue, error: CodexRPCError) async throws {
+    throw CodexTransportError.writeFailed(
+      "This transport cannot reject Codex App Server requests."
+    )
+  }
 }
 
 public actor CodexJSONLTransport: CodexRPCTransport {
   public struct Configuration: Equatable, Sendable {
     public let executableURL: URL
     public let arguments: [String]
+    public let currentDirectoryURL: URL?
+    public let environmentOverrides: [String: String]
     public let requestTimeout: Duration
 
     public init(
       executableURL: URL,
-      arguments: [String] = ["app-server", "--listen", "stdio://"],
+      arguments: [String] = CodexPermissionProfiles.appServerArguments,
+      currentDirectoryURL: URL? = nil,
+      environmentOverrides: [String: String] = [:],
       requestTimeout: Duration = .seconds(15)
     ) {
       self.executableURL = executableURL
       self.arguments = arguments
+      self.currentDirectoryURL = currentDirectoryURL
+      self.environmentOverrides = environmentOverrides
       self.requestTimeout = requestTimeout
     }
   }
@@ -129,6 +164,14 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     let errorPipe = Pipe()
     process.executableURL = configuration.executableURL
     process.arguments = configuration.arguments
+    process.currentDirectoryURL = configuration.currentDirectoryURL
+    if !configuration.environmentOverrides.isEmpty {
+      process.environment = ProcessInfo.processInfo.environment.merging(
+        configuration.environmentOverrides
+      ) { _, configuredValue in
+        configuredValue
+      }
+    }
     process.standardInput = input
     process.standardOutput = output
     process.standardError = errorPipe
@@ -160,14 +203,38 @@ public actor CodexJSONLTransport: CodexRPCTransport {
   }
 
   public func request(method: String, params: JSONValue) async throws -> JSONValue {
+    try await performRequest(
+      method: method,
+      params: params,
+      responseTimeout: configuration.requestTimeout
+    )
+  }
+
+  public func request(
+    method: String,
+    params: JSONValue,
+    responseTimeout: Duration
+  ) async throws -> JSONValue {
+    try await performRequest(
+      method: method,
+      params: params,
+      responseTimeout: responseTimeout
+    )
+  }
+
+  private func performRequest(
+    method: String,
+    params: JSONValue,
+    responseTimeout: Duration
+  ) async throws -> JSONValue {
     guard process?.isRunning == true else { throw CodexTransportError.notStarted }
     let id = nextRequestID
     nextRequestID += 1
 
     return try await withCheckedThrowingContinuation { continuation in
-      let timeout = Task { [weak self, configuration] in
+      let timeout = Task { [weak self] in
         do {
-          try await Task.sleep(for: configuration.requestTimeout)
+          try await Task.sleep(for: responseTimeout)
         } catch {
           return
         }
@@ -196,6 +263,33 @@ public actor CodexJSONLTransport: CodexRPCTransport {
       .object([
         "method": .string(method),
         "params": params,
+      ])
+    )
+  }
+
+  public func respond(id: JSONValue, result: JSONValue) throws {
+    guard process?.isRunning == true else { throw CodexTransportError.notStarted }
+    try send(
+      .object([
+        "id": id,
+        "result": result,
+      ])
+    )
+  }
+
+  public func respondError(id: JSONValue, error: CodexRPCError) throws {
+    guard process?.isRunning == true else { throw CodexTransportError.notStarted }
+    var payload: [String: JSONValue] = [
+      "code": .integer(Int64(error.code)),
+      "message": .string(error.message),
+    ]
+    if let data = error.data {
+      payload["data"] = data
+    }
+    try send(
+      .object([
+        "id": id,
+        "error": .object(payload),
       ])
     )
   }
@@ -292,17 +386,6 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     }
     let params = object["params"] ?? .object([:])
     if let id = object["id"] {
-      try? send(
-        .object([
-          "id": id,
-          "error": .object([
-            "code": .integer(-32_601),
-            "message": .string(
-              "This StoryPointless build does not support the requested client action."
-            ),
-          ]),
-        ])
-      )
       streamContinuation.yield(.request(CodexServerRequest(id: id, method: method, params: params)))
     } else {
       streamContinuation.yield(.notification(CodexNotification(method: method, params: params)))

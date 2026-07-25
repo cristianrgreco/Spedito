@@ -84,6 +84,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
   public let tests: [String]
   public let knowledgeNotes: [String]
   public let reviewInstructions: [String]
+  public let demo: DemoLaunchSpecification?
   public let retrospectiveWentWell: [String]
   public let retrospectiveCouldImprove: [String]
   public let retrospectiveActions: [RetrospectiveActionProposal]
@@ -100,6 +101,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     tests: [String],
     knowledgeNotes: [String],
     reviewInstructions: [String],
+    demo: DemoLaunchSpecification? = nil,
     retrospectiveWentWell: [String],
     retrospectiveCouldImprove: [String],
     retrospectiveActions: [RetrospectiveActionProposal],
@@ -115,6 +117,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     self.tests = tests
     self.knowledgeNotes = knowledgeNotes
     self.reviewInstructions = reviewInstructions
+    self.demo = demo
     self.retrospectiveWentWell = retrospectiveWentWell
     self.retrospectiveCouldImprove = retrospectiveCouldImprove
     self.retrospectiveActions = retrospectiveActions
@@ -141,6 +144,9 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
         sections.append(
           "How to review:\n\(reviewInstructions.map { "- \($0)" }.joined(separator: "\n"))"
         )
+      }
+      if let demo {
+        sections.append("Demo: \(demo.title) · \(demo.presentation.kind.title)")
       }
       if !followUpTicketProposals.isEmpty {
         sections.append(
@@ -195,11 +201,22 @@ public enum CodexTicketExecutor {
     Implement the smallest coherent change that satisfies the ticket and its acceptance criteria.
     Run relevant deterministic checks. Update relevant project documentation as part of the same
     change, including concise rationale or operational notes that a later agent will need.
+    You may use read-only Git inspection such as status, diff, log, show, and blame. StoryPointless
+    owns every Git mutation, including staging, commits, branches, integration, and promotion. Do
+    not run Git commands that change repository state. Inspect and edit the supplied product files
+    directly; StoryPointless will capture the resulting change. Product Git reads and their
+    noninteractive environment are already available inside the sandbox. Run them normally without
+    requesting permission or adding environment prefixes.
 
     The ticket and its attributed comments are the source of truth. Do not silently invent product
     requirements, credentials, providers, destructive operations, or network permission. The
-    workspace-write sandbox has no interactive approval channel. If a material Product Owner choice,
-    secret, network action, or unavailable external system is required, stop safely and return
+    ticket workspace starts with no external network or access to secrets and unrelated products.
+    When the authorised implementation genuinely needs a capability outside that boundary, request
+    the narrowest exact filesystem, network, or command permission through the available approval
+    channel and explain why it is needed. Never copy, mirror, archive, or stage the ticket workspace
+    in /tmp or another location to work around a permission boundary. Never request general access
+    when a narrower capability will work. If a material Product Owner choice, secret, credential, or
+    unavailable external system is required instead of a permission, stop safely and return
     awaiting_owner with one concise question and two to four concrete options. Do not claim work is
     complete unless every acceptance criterion is addressed or explicitly shown to be inapplicable.
 
@@ -216,6 +233,21 @@ public enum CodexTicketExecutor {
     Owner exactly how to inspect the outcome. Mention a URL, file, command, endpoint, or evidence
     only when it actually exists. If the outcome is not independently interactive, say which
     evidence to inspect and what result to expect.
+
+    A completed result must also include a typed demo recipe in demo so StoryPointless can give the
+    Product Owner one Demo button. Use presentation kind browser for a local web service,
+    mac_application for a built .app bundle, artifact for a workspace-relative document, image,
+    HTML file, or other reviewable file, and command_output for a bounded command whose captured
+    result is the demonstration. preparationCommands are bounded build or generation steps.
+    launchCommand is the long-running service for browser demos or the bounded scenario for
+    command_output. Use executable plus argument arrays; never use sh, bash, zsh, osascript,
+    redirection, pipelines, or a compound shell command. Every working directory and presentation
+    path is relative to the ticket workspace. Browser presentation and readiness paths begin with
+    "/" and never contain a host; StoryPointless allocates a loopback port, substitutes {{PORT}} in
+    arguments, and provides it through portEnvironmentVariable (or PORT when that field is null).
+    Use HTTP readiness for browser demos. Use no launchCommand for app and artifact demos. If a
+    completed outcome is not interactive, present its primary durable artefact or a bounded
+    command_output demonstration. awaiting_owner results must set demo to null.
 
     Capture evidence for the sprint retrospective in retrospectiveWentWell,
     retrospectiveCouldImprove, and retrospectiveActions. Write for a non-technical Product Owner
@@ -335,9 +367,12 @@ public enum CodexTicketExecutor {
           """
       }
       .joined(separator: "\n")
-    let history = ticketComments.isEmpty
+    let relevantTicketComments = ticketComments.filter {
+      !$0.body.hasPrefix("Permission requested:")
+    }
+    let history = relevantTicketComments.isEmpty
       ? "No ticket comments."
-      : ticketComments.suffix(40).map { "- \($0.authorName): \($0.body)" }
+      : relevantTicketComments.suffix(40).map { "- \($0.authorName): \($0.body)" }
         .joined(separator: "\n")
     let knowledge = knowledgeContext.isEmpty
       ? "No verified knowledge pages were selected."
@@ -395,7 +430,10 @@ public enum CodexTicketExecutor {
     feedback: String,
     recentComments: [TicketComment]
   ) -> String {
-    let history = recentComments.suffix(20).map { "- \($0.authorName): \($0.body)" }
+    let history = recentComments
+      .filter { !$0.body.hasPrefix("Permission requested:") }
+      .suffix(20)
+      .map { "- \($0.authorName): \($0.body)" }
       .joined(separator: "\n")
     return """
       Continue work on \(item.key): \(item.title).
@@ -439,6 +477,7 @@ public enum CodexTicketExecutor {
         .string("tests"),
         .string("knowledgeNotes"),
         .string("reviewInstructions"),
+        .string("demo"),
         .string("retrospectiveWentWell"),
         .string("retrospectiveCouldImprove"),
         .string("retrospectiveActions"),
@@ -482,6 +521,7 @@ public enum CodexTicketExecutor {
           "maxItems": .number(6),
           "items": .object(["type": .string("string")]),
         ]),
+        "demo": nullableDemoLaunchSpecificationSchema,
         "retrospectiveWentWell": .object([
           "type": .string("array"),
           "items": .object(["type": .string("string")]),
@@ -569,6 +609,11 @@ public enum CodexTicketExecutor {
           "Awaiting-owner results cannot propose follow-up tickets."
         )
       }
+      guard generated.demo == nil else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "Awaiting-owner results cannot include a demo recipe."
+        )
+      }
     }
     let summary = generated.summary.trimmingCharacters(in: .whitespacesAndNewlines)
     let changedFiles = clean(generated.changedFiles)
@@ -598,6 +643,13 @@ public enum CodexTicketExecutor {
     }
     if reviewInstructions.count > 6 {
       reviewInstructions = Array(reviewInstructions.prefix(6))
+    }
+    if let demo = generated.demo {
+      do {
+        try DemoLaunchSpecificationValidator.validate(demo)
+      } catch {
+        throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
+      }
     }
 
     let proposals = try generated.knowledgePageProposals.prefix(4).map { proposal in
@@ -648,6 +700,7 @@ public enum CodexTicketExecutor {
       tests: tests,
       knowledgeNotes: clean(generated.knowledgeNotes),
       reviewInstructions: reviewInstructions,
+      demo: generated.demo,
       retrospectiveWentWell: Array(clean(generated.retrospectiveWentWell).prefix(2)),
       retrospectiveCouldImprove: Array(clean(generated.retrospectiveCouldImprove).prefix(2)),
       retrospectiveActions: cleanActions(generated.retrospectiveActions),
@@ -696,6 +749,120 @@ public enum CodexTicketExecutor {
           ]),
         ]),
       ]),
+    ])
+  }
+
+  private static var nullableDemoLaunchSpecificationSchema: JSONValue {
+    let command = JSONValue.object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([
+        .string("executable"),
+        .string("arguments"),
+        .string("workingDirectory"),
+        .string("timeoutSeconds"),
+      ]),
+      "properties": .object([
+        "executable": .object(["type": .string("string")]),
+        "arguments": .object([
+          "type": .string("array"),
+          "maxItems": .integer(64),
+          "items": .object(["type": .string("string")]),
+        ]),
+        "workingDirectory": .object(["type": .string("string")]),
+        "timeoutSeconds": .object([
+          "type": .string("integer"),
+          "minimum": .integer(1),
+          "maximum": .integer(900),
+        ]),
+      ]),
+    ])
+    let nullableString = JSONValue.object([
+      "anyOf": .array([
+        .object(["type": .string("string")]),
+        .object(["type": .string("null")]),
+      ])
+    ])
+    let nullableCommand = JSONValue.object([
+      "anyOf": .array([
+        command,
+        .object(["type": .string("null")]),
+      ])
+    ])
+    let readiness = JSONValue.object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([
+        .string("kind"),
+        .string("path"),
+        .string("timeoutSeconds"),
+      ]),
+      "properties": .object([
+        "kind": .object([
+          "type": .string("string"),
+          "enum": .array(DemoReadinessKind.allCases.map { .string($0.rawValue) }),
+        ]),
+        "path": nullableString,
+        "timeoutSeconds": .object([
+          "type": .string("integer"),
+          "minimum": .integer(1),
+          "maximum": .integer(120),
+        ]),
+      ]),
+    ])
+    let specification = JSONValue.object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([
+        .string("schemaVersion"),
+        .string("title"),
+        .string("preparationCommands"),
+        .string("launchCommand"),
+        .string("portEnvironmentVariable"),
+        .string("readiness"),
+        .string("presentation"),
+      ]),
+      "properties": .object([
+        "schemaVersion": .object([
+          "type": .string("integer"),
+          "enum": .array([.integer(1)]),
+        ]),
+        "title": .object(["type": .string("string")]),
+        "preparationCommands": .object([
+          "type": .string("array"),
+          "maxItems": .integer(6),
+          "items": command,
+        ]),
+        "launchCommand": nullableCommand,
+        "portEnvironmentVariable": nullableString,
+        "readiness": .object([
+          "anyOf": .array([
+            readiness,
+            .object(["type": .string("null")]),
+          ])
+        ]),
+        "presentation": .object([
+          "type": .string("object"),
+          "additionalProperties": .bool(false),
+          "required": .array([
+            .string("kind"),
+            .string("path"),
+          ]),
+          "properties": .object([
+            "kind": .object([
+              "type": .string("string"),
+              "enum": .array(DemoPresentationKind.allCases.map { .string($0.rawValue) }),
+            ]),
+            "path": nullableString,
+          ]),
+        ]),
+      ]),
+    ])
+    return .object([
+      "anyOf": .array([
+        specification,
+        .object(["type": .string("null")]),
+      ])
     ])
   }
 
@@ -884,6 +1051,7 @@ private struct GeneratedTicketExecutionResult: Codable {
   let tests: [String]
   let knowledgeNotes: [String]
   let reviewInstructions: [String]
+  let demo: DemoLaunchSpecification?
   let retrospectiveWentWell: [String]
   let retrospectiveCouldImprove: [String]
   let retrospectiveActions: [RetrospectiveActionProposal]
@@ -981,6 +1149,14 @@ public enum CodexTechLeadReviewer {
     rather than attempting a second implementation. The purpose of review is to catch material
     omissions and risks, not to replace the assigned specialist with a stronger model.
 
+    Confirm that the typed demo recipe truthfully opens the delivered outcome from the exact
+    integrated workspace. Inspect its executable, arguments, working directory, readiness path, and
+    presentation path. Request changes when the recipe points outside the workspace, invokes a shell
+    or unrelated tool, needs an undeclared external dependency, opens a non-loopback web address, or
+    would demonstrate something other than the reviewed candidate. For a non-interactive outcome,
+    approve an artifact or captured command result when it gives the Product Owner meaningful
+    acceptance evidence.
+
     If requesting changes, return at most three small, actionable blocking findings. Do not use
     findings for non-blocking suggestions. Return only the JSON required by the output schema. The
     comment is an attributed ticket Work log entry. Confirm the Product Owner review instructions
@@ -1055,6 +1231,15 @@ public enum CodexTechLeadReviewer {
           Rationale: \(proposal.rationale)
         """
       }.joined(separator: "\n")
+    let demoRecipe: String
+    if let demo = implementation.demo,
+      let encoded = try? JSONEncoder().encode(demo),
+      let json = String(data: encoded, encoding: .utf8)
+    {
+      demoRecipe = json
+    } else {
+      demoRecipe = "No managed demo recipe was supplied."
+    }
     let reviewMode: String
     if reviewCycle > 0 {
       reviewMode = """
@@ -1073,7 +1258,10 @@ public enum CodexTechLeadReviewer {
         """
     }
     let history = recentComments
-      .filter { $0.body != "I’m reviewing the implementation and its evidence against the ticket." }
+      .filter {
+        $0.body != "I’m reviewing the implementation and its evidence against the ticket."
+          && !$0.body.hasPrefix("Permission requested:")
+      }
       .suffix(12)
       .map { "- \($0.authorName): \($0.body)" }
       .joined(separator: "\n")
@@ -1102,6 +1290,9 @@ public enum CodexTechLeadReviewer {
 
       Product Owner review instructions:
       \(implementation.reviewInstructions.map { "- \($0)" }.joined(separator: "\n"))
+
+      Managed demo recipe:
+      \(demoRecipe)
 
       Proposed durable knowledge:
       \(implementation.knowledgeNotes.map { "- \($0)" }.joined(separator: "\n"))

@@ -435,6 +435,31 @@ public actor GitWorkspaceManager {
     )
   }
 
+  public func preparePreviewWorkspace(
+    repositoryURL: URL,
+    previewsRootURL: URL,
+    candidateID: UUID,
+    integratedSHA: String
+  ) throws -> URL {
+    try fileManager.createDirectory(at: previewsRootURL, withIntermediateDirectories: true)
+    let previewURL = previewsRootURL.appendingPathComponent(
+      candidateID.uuidString.lowercased(),
+      isDirectory: true
+    )
+    if fileManager.fileExists(atPath: previewURL.path) {
+      let currentRevision = try? run(["rev-parse", "HEAD"], at: previewURL)
+      if currentRevision == integratedSHA {
+        return previewURL
+      }
+      try removeWorktree(repositoryURL: repositoryURL, worktreeURL: previewURL)
+    }
+    _ = try run(
+      ["worktree", "add", "--detach", previewURL.path, integratedSHA],
+      at: repositoryURL
+    )
+    return previewURL
+  }
+
   public func completeConflictResolution(
     integrationWorkspaceURL: URL,
     candidateHeadSHA: String? = nil

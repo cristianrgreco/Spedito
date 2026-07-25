@@ -25,6 +25,7 @@ struct CodexAdapterTests {
     #expect(calls.map(\.kind) == [.start, .request, .notification])
     #expect(calls[1].method == "initialize")
     #expect(calls[1].params?["clientInfo"]?["name"]?.stringValue == "storypointless")
+    #expect(calls[1].params?["capabilities"]?["experimentalApi"]?.boolValue == true)
     #expect(calls[2].method == "initialized")
 
     await client.disconnect()
@@ -53,13 +54,14 @@ struct CodexAdapterTests {
   func jsonlRoundTrip() async throws {
     let script = #"""
       IFS= read -r request
-      printf '%s\n' '{"id":1,"result":{"ready":true}}'
+      printf '{"id":1,"result":{"ready":true,"gitLocks":"%s","gitConfig":"%s","gitPager":"%s"}}\n' "$GIT_OPTIONAL_LOCKS" "$GIT_CONFIG_GLOBAL" "$GIT_PAGER"
       IFS= read -r notification
       """#
     let transport = CodexJSONLTransport(
       configuration: .init(
         executableURL: URL(fileURLWithPath: "/bin/sh"),
         arguments: ["-c", script],
+        environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment,
         requestTimeout: .seconds(2)
       )
     )
@@ -67,6 +69,9 @@ struct CodexAdapterTests {
     try await transport.start()
     let response = try await transport.request(method: "initialize", params: .object([:]))
     #expect(response["ready"] == .bool(true))
+    #expect(response["gitLocks"] == .string("0"))
+    #expect(response["gitConfig"] == .string("/dev/null"))
+    #expect(response["gitPager"] == .string("cat"))
     try await transport.notify(method: "initialized", params: .object([:]))
     await transport.stop()
   }
@@ -125,8 +130,18 @@ struct CodexAdapterTests {
     #expect(turnID == "turn-1")
     #expect(final == #"{"suggestions":[]}"#)
     #expect(requests.map(\.method) == ["initialize", "thread/start", "turn/start"])
-    #expect(requests[1].params["sandbox"]?.stringValue == "read-only")
+    #expect(
+      requests[1].params["permissions"]?.stringValue
+        == CodexPermissionProfiles.readOnly
+    )
+    #expect(
+      requests[1].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
+        == ["/private/tmp/storypointless-product"]
+    )
+    #expect(requests[1].params["permissionProfile"] == nil)
+    #expect(requests[1].params["sandbox"] == nil)
     #expect(requests[1].params["approvalPolicy"]?.stringValue == "never")
+    #expect(requests[2].params["approvalPolicy"] == nil)
     #expect(requests[2].params["outputSchema"] != nil)
     #expect(requests[2].params["summary"]?.stringValue == "concise")
   }
@@ -218,7 +233,7 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("Execution threads are workspace-write and never hide approval prompts")
+  @Test("Execution threads use the delivery profile and surface approval prompts")
   func workspaceExecutionThread() async throws {
     let transport = SuggestionTransport()
     let client = CodexAppServerClient(transport: transport)
@@ -227,15 +242,438 @@ struct CodexAdapterTests {
     let threadID = try await client.startWorkspaceThread(
       workingDirectory: URL(fileURLWithPath: "/private/tmp/storypointless-product"),
       developerInstructions: "Execute one ticket",
-      model: "gpt-5.6-terra"
+      model: "gpt-5.6-terra",
+      readOnlyGitDirectory: URL(
+        fileURLWithPath: "/private/tmp/storypointless-canonical-product/.git"
+      )
+    )
+    let turnID = try await client.startStructuredTurn(
+      threadID: threadID,
+      prompt: "Deliver the ticket",
+      effort: "medium",
+      outputSchema: CodexTicketExecutor.outputSchema,
+      permissionProfile: CodexPermissionProfiles.delivery,
+      runtimeWorkspaceRoots: [
+        URL(fileURLWithPath: "/private/tmp/storypointless-product")
+      ]
     )
     let requests = await transport.requests()
 
     #expect(threadID == "thread-1")
-    #expect(requests.map(\.method) == ["initialize", "thread/start"])
-    #expect(requests[1].params["sandbox"]?.stringValue == "workspace-write")
-    #expect(requests[1].params["approvalPolicy"]?.stringValue == "never")
+    #expect(turnID == "turn-1")
+    #expect(requests.map(\.method) == ["initialize", "thread/start", "turn/start"])
+    #expect(
+      requests[1].params["permissions"]?.stringValue
+        == CodexPermissionProfiles.delivery
+    )
+    #expect(
+      requests[1].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
+        == ["/private/tmp/storypointless-product"]
+    )
+    #expect(requests[1].params["permissionProfile"] == nil)
+    #expect(requests[1].params["sandbox"] == nil)
+    #expect(requests[1].params["approvalPolicy"]?.stringValue == "on-request")
     #expect(requests[1].params["model"]?.stringValue == "gpt-5.6-terra")
+    let deliveryConfig =
+      requests[1].params["config"]?["permissions.storypointless-delivery"]
+    #expect(
+      deliveryConfig?["filesystem"]?[
+        "/private/tmp/storypointless-canonical-product/.git"
+      ]?.stringValue == "read"
+    )
+    #expect(
+      deliveryConfig?["filesystem"]?[":workspace_roots"]?["."]?.stringValue
+        == "write"
+    )
+    #expect(
+      requests[2].params["permissions"]?.stringValue
+        == CodexPermissionProfiles.delivery
+    )
+    #expect(
+      requests[2].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
+        == ["/private/tmp/storypointless-product"]
+    )
+    #expect(requests[2].params["permissionProfile"] == nil)
+  }
+
+  @Test("Delivery isolates the ticket while demos retain reviewed runtime reads")
+  func managedPermissionProfiles() {
+    let arguments = CodexPermissionProfiles.appServerArguments.joined(separator: " ")
+    #expect(arguments.contains(#"":minimal"="read""#))
+    #expect(arguments.contains(#"":root"="read""#))
+    #expect(arguments.contains(#""~/.codex"="deny""#))
+    #expect(arguments.contains(#""~/Library/Application Support/StoryPointless"="deny""#))
+    #expect(
+      arguments.contains(
+        #""~/Library/Application Support/StoryPointless/storypointless.sqlite"="deny""#
+      )
+    )
+    #expect(
+      !CodexPermissionProfiles.deliveryProfileOverride.contains(
+        #""~/Library/Application Support/StoryPointless"="deny""#
+      )
+    )
+    #expect(!CodexPermissionProfiles.deliveryProfileOverride.contains(#"":root"="read""#))
+    #expect(arguments.contains(#""localhost"="allow""#))
+    #expect(!arguments.contains("openssl.cnf"))
+    #expect(!arguments.contains("/opt/homebrew/bin"))
+
+    let demoWorkspace = URL(
+      fileURLWithPath: "/Users/example/Library/Caches/StoryPointless/PreviewWorktrees/candidate"
+    )
+    let scopedArguments = CodexPermissionProfiles.appServerArguments(
+      demoWorkspaceRoot: demoWorkspace
+    ).joined(separator: " ")
+    #expect(scopedArguments.contains(#"workspace_roots={"/Users/example/Library/Caches/StoryPointless/PreviewWorktrees/candidate"=true}"#))
+    #expect(!arguments.contains(demoWorkspace.path))
+  }
+
+  @Test("Delivery can use its nested ticket root without reading a sibling")
+  func deliveryFilesystemBoundary() async throws {
+    let codexURL = URL(
+      fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
+    )
+    guard FileManager.default.isExecutableFile(atPath: codexURL.path) else {
+      return
+    }
+    let applicationSupport = try #require(
+      FileManager.default.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+      ).first
+    )
+    let boundaryRoot = applicationSupport.appendingPathComponent(
+      "StoryPointlessBoundaryTests-\(UUID())",
+      isDirectory: true
+    )
+    let workspace = boundaryRoot
+      .appendingPathComponent("Run Worktrees", isDirectory: true)
+      .appendingPathComponent("product", isDirectory: true)
+      .appendingPathComponent("ticket", isDirectory: true)
+    let sibling = boundaryRoot.appendingPathComponent("control-plane.txt")
+    defer { try? FileManager.default.removeItem(at: boundaryRoot) }
+    try FileManager.default.createDirectory(
+      at: workspace,
+      withIntermediateDirectories: true
+    )
+    try Data("ticket\n".utf8).write(
+      to: workspace.appendingPathComponent("ticket.txt")
+    )
+    try Data("private\n".utf8).write(to: sibling)
+
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = codexURL
+    process.arguments = [
+      "-c",
+      #"default_permissions="\#(CodexPermissionProfiles.delivery)""#,
+      "-c",
+      CodexPermissionProfiles.deliveryProfileOverride,
+      "sandbox",
+      "-P",
+      CodexPermissionProfiles.delivery,
+      "-C",
+      workspace.path,
+      "/bin/zsh",
+      "-c",
+      """
+      test "$(cat ticket.txt)" = ticket || exit 2
+      printf ready > proof.txt || exit 3
+      cat "\(sibling.path)" >/dev/null 2>&1 && exit 4
+      exit 0
+      """,
+    ]
+    process.currentDirectoryURL = workspace
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    #expect(
+      process.terminationStatus == 0,
+      Comment(rawValue: String(decoding: data, as: UTF8.self))
+    )
+    #expect(
+      try String(
+        contentsOf: workspace.appendingPathComponent("proof.txt"),
+        encoding: .utf8
+      ) == "ready"
+    )
+  }
+
+  @Test("Delivery can inspect product Git without changing Git state")
+  func deliveryGitBoundary() async throws {
+    let codexURL = URL(
+      fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
+    )
+    guard FileManager.default.isExecutableFile(atPath: codexURL.path) else {
+      return
+    }
+    let applicationSupport = try #require(
+      FileManager.default.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+      ).first
+    )
+    let boundaryRoot = applicationSupport.appendingPathComponent(
+      "StoryPointlessGitBoundaryTests-\(UUID())",
+      isDirectory: true
+    )
+    let repository = boundaryRoot
+      .appendingPathComponent("Product Workspaces", isDirectory: true)
+      .appendingPathComponent("product", isDirectory: true)
+    let worktrees = boundaryRoot
+      .appendingPathComponent("Run Worktrees", isDirectory: true)
+      .appendingPathComponent("product", isDirectory: true)
+    let otherProductGit = boundaryRoot
+      .appendingPathComponent("Product Workspaces", isDirectory: true)
+      .appendingPathComponent("other-product", isDirectory: true)
+      .appendingPathComponent(".git", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: boundaryRoot) }
+
+    try FileManager.default.createDirectory(
+      at: repository,
+      withIntermediateDirectories: true
+    )
+    try Data("accepted\n".utf8).write(
+      to: repository.appendingPathComponent("product.txt")
+    )
+    try FileManager.default.createDirectory(
+      at: otherProductGit,
+      withIntermediateDirectories: true
+    )
+    try Data("other product\n".utf8).write(
+      to: otherProductGit.appendingPathComponent("private-object")
+    )
+
+    let manager = GitWorkspaceManager()
+    _ = try await manager.ensureRepository(at: repository)
+    let ticket = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: worktrees,
+      ticketKey: "T1",
+      runID: UUID(),
+      authorName: "Delivery agent"
+    )
+    let gitDirectory = repository.appendingPathComponent(".git", isDirectory: true)
+
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = codexURL
+    process.arguments = [
+      "-c",
+      #"default_permissions="\#(CodexPermissionProfiles.delivery)""#,
+      "-c",
+      CodexPermissionProfiles.deliveryProfileOverrideValue(
+        readOnlyGitDirectory: gitDirectory
+      ),
+      "sandbox",
+      "-P",
+      CodexPermissionProfiles.delivery,
+      "-C",
+      ticket.url.path,
+      "/bin/zsh",
+      "-c",
+      """
+      test "$GIT_OPTIONAL_LOCKS" = 0 || exit 2
+      test "$GIT_CONFIG_GLOBAL" = /dev/null || exit 3
+      test "$GIT_PAGER" = cat || exit 4
+      /usr/bin/git status --short >/dev/null || exit 5
+      /usr/bin/git log --oneline -1 >/dev/null || exit 6
+      test "$(/usr/bin/git show HEAD:product.txt)" = accepted || exit 7
+      printf changed >> product.txt || exit 8
+      /usr/bin/git diff -- product.txt | /usr/bin/grep -q changed || exit 9
+      /usr/bin/git add product.txt >/dev/null 2>&1 && exit 10
+      /usr/bin/git diff --cached --quiet || exit 11
+      cat "\(otherProductGit.appendingPathComponent("private-object").path)" \
+        >/dev/null 2>&1 && exit 12
+      exit 0
+      """,
+    ]
+    process.currentDirectoryURL = ticket.url
+    process.environment = ProcessInfo.processInfo.environment.merging(
+      CodexPermissionProfiles.agentProcessEnvironment
+    ) { _, configuredValue in
+      configuredValue
+    }
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    #expect(
+      process.terminationStatus == 0,
+      Comment(rawValue: String(decoding: data, as: UTF8.self))
+    )
+  }
+
+  @Test("Candidate-scoped commands materialize the exact standalone workspace root")
+  func candidateScopedManagedCommand() async throws {
+    let codexURL = URL(
+      fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
+    )
+    guard
+      FileManager.default.isExecutableFile(atPath: codexURL.path),
+      FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/node")
+    else {
+      return
+    }
+    let workspace = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "storypointless-scoped-command-\(UUID())",
+        isDirectory: true
+      )
+    try FileManager.default.createDirectory(
+      at: workspace,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: workspace) }
+
+    let executor = CodexWorkspaceCommandExecutor(executableURL: codexURL)
+    let result = try await executor.runManagedCommand(
+      CodexManagedCommandRequest(
+        command: [
+          "/opt/homebrew/bin/node",
+          "--eval",
+          "const fs=require('node:fs');fs.readFileSync('/opt/homebrew/etc/openssl@3/openssl.cnf');fs.writeFileSync('proof.txt','ready');process.stdout.write('ready')",
+        ],
+        workingDirectory: workspace,
+        workspaceRoot: workspace,
+        timeoutSeconds: 10
+      )
+    )
+
+    #expect(result.exitCode == 0)
+    #expect(result.standardOutput == "ready")
+    #expect(
+      try String(
+        contentsOf: workspace.appendingPathComponent("proof.txt"),
+        encoding: .utf8
+      ) == "ready"
+    )
+  }
+
+  @Test("Standalone commands use App Server command exec and the demo profile")
+  func managedCommandExec() async throws {
+    let transport = ManagedCommandTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    let result = try await client.runManagedCommand(
+      CodexManagedCommandRequest(
+        command: ["python3", "-m", "compileall", "."],
+        workingDirectory: URL(fileURLWithPath: "/private/tmp/storypointless-preview"),
+        environment: ["TMPDIR": "/private/tmp/storypointless-demo"],
+        timeoutSeconds: 30
+      )
+    )
+    let command = try #require(await transport.commandRequest())
+
+    #expect(result.exitCode == 0)
+    #expect(result.standardOutput == "compiled")
+    #expect(command["command"]?.arrayValue?.compactMap(\.stringValue) == [
+      "python3", "-m", "compileall", ".",
+    ])
+    #expect(command["permissionProfile"]?.stringValue == CodexPermissionProfiles.demo)
+    #expect(command["timeoutMs"]?.integerValue == 30_000)
+  }
+
+  @Test("App Server approval requests can be allowed or denied through the client")
+  func interactiveApprovalResponse() async throws {
+    let transport = ApprovalTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let messages = await client.inboundMessages(replayRecent: false)
+    let request = CodexServerRequest(
+      id: .integer(91),
+      method: "item/commandExecution/requestApproval",
+      params: .object([
+        "threadId": .string("thread-delivery"),
+        "turnId": .string("turn-delivery"),
+        "itemId": .string("item-command"),
+        "command": .string("docker compose up"),
+        "cwd": .string("/private/tmp/ticket"),
+        "reason": .string("Start the ticket's local database"),
+      ])
+    )
+    await transport.send(request)
+
+    let received = await messages.first { message in
+      if case .request = message { return true }
+      return false
+    }
+    guard let received, case .request(let receivedRequest) = received else {
+      Issue.record("Expected an approval request")
+      return
+    }
+    let presentation = try CodexAppServerClient.approvalPresentation(for: receivedRequest)
+    #expect(presentation.title == "Allow this command?")
+    #expect(presentation.detail == "docker compose up")
+    #expect(presentation.reason == "Start the ticket's local database")
+
+    let runtimeRequest = CodexServerRequest(
+      id: .integer(93),
+      method: "item/commandExecution/requestApproval",
+      params: .object([
+        "threadId": .string("thread-delivery"),
+        "turnId": .string("turn-delivery"),
+        "itemId": .string("item-runtime"),
+        "command": .string("node --test"),
+        "cwd": .string("/private/tmp/ticket"),
+        "additionalPermissions": .object([
+          "fileSystem": .object([
+            "entries": .array([
+              .object([
+                "access": .string("read"),
+                "path": .object([
+                  "type": .string("path"),
+                  "path": .string("/opt/homebrew"),
+                ]),
+              ])
+            ])
+          ])
+        ]),
+        "reason": .string("Run the project tests with its installed Node runtime"),
+      ])
+    )
+    let runtimePresentation = try CodexAppServerClient.approvalPresentation(
+      for: runtimeRequest
+    )
+    #expect(runtimePresentation.detail.contains("node --test"))
+    #expect(runtimePresentation.detail.contains("Additional access for this command"))
+    #expect(runtimePresentation.detail.contains("Read /opt/homebrew"))
+
+    try await client.resolveApprovalRequest(receivedRequest, allow: true)
+    let response = try #require(await transport.response())
+    #expect(response.id == .integer(91))
+    #expect(response.result["decision"]?.stringValue == "accept")
+
+    let permissionRequest = CodexServerRequest(
+      id: .integer(92),
+      method: "item/permissions/requestApproval",
+      params: .object([
+        "threadId": .string("thread-delivery"),
+        "turnId": .string("turn-delivery"),
+        "itemId": .string("item-permission"),
+        "permissions": .object([
+          "network": .object([
+            "enabled": .bool(true)
+          ])
+        ]),
+        "reason": .string("Download a declared dependency"),
+      ])
+    )
+    try await client.resolveApprovalRequest(permissionRequest, allow: true)
+    let permissionResponse = try #require(await transport.response())
+    #expect(permissionResponse.id == .integer(92))
+    #expect(permissionResponse.result["scope"]?.stringValue == "turn")
+    #expect(permissionResponse.result["permissions"] == permissionRequest.params["permissions"])
+
+    try await client.resolveApprovalRequest(receivedRequest, allow: false)
+    let deniedResponse = try #require(await transport.response())
+    #expect(deniedResponse.result["decision"]?.stringValue == "decline")
   }
 
   @Test("A hung turn times out and is interrupted")
@@ -336,6 +774,34 @@ struct CodexAdapterTests {
     let responses = try await (first, second)
     #expect(responses.0 == #"{"ticket":"first"}"#)
     #expect(responses.1 == #"{"ticket":"second"}"#)
+  }
+
+  @Test("Interim commentary is not mistaken for the turn's final structured result")
+  func interimCommentaryDoesNotCompleteTurn() async throws {
+    let transport = ConcurrentTurnTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    async let result = client.waitForFinalAgentMessage(
+      threadID: "thread-commentary",
+      turnID: "turn-commentary"
+    )
+
+    await transport.comment(
+      threadID: "thread-commentary",
+      turnID: "turn-commentary",
+      text: #"{"status":"awaiting_owner","summary":"Work in progress."}"#
+    )
+    await transport.complete(
+      threadID: "thread-commentary",
+      turnID: "turn-commentary",
+      text: #"{"status":"completed","summary":"Ready for review."}"#
+    )
+
+    #expect(
+      try await result
+        == #"{"status":"completed","summary":"Ready for review."}"#
+    )
   }
 
   @Test("Suggestion decoder validates roles and dependency references")
@@ -1279,6 +1745,12 @@ struct CodexAdapterTests {
       authorName: "Business Analyst",
       body: "Completion handoff: Do not send customer search terms to the provider."
     )
+    let expiredPermissionComment = TicketComment(
+      workItemID: research.id,
+      authorKind: .system,
+      authorName: "StoryPointless",
+      body: "Permission requested: git status\n\nUse Allow or Deny on this ticket."
+    )
     let prompt = CodexTicketExecutor.prompt(
       product: product,
       item: research,
@@ -1286,7 +1758,7 @@ struct CodexAdapterTests {
       prerequisites: [prerequisite],
       dependants: [implementation],
       prerequisiteComments: [prerequisite.id: [prerequisiteComment]],
-      ticketComments: [],
+      ticketComments: [expiredPermissionComment],
       knowledgeContext: [],
       existingItems: [prerequisite, research, implementation]
     )
@@ -1304,10 +1776,27 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Do not send customer search terms to the provider"))
     #expect(prompt.contains("Do not duplicate, replace,"))
     #expect(prompt.contains("Return an empty"))
+    #expect(!prompt.contains("Permission requested:"))
     #expect(instructions.contains("self-contained completion handoff"))
     #expect(instructions.contains("Planned direct dependants"))
     #expect(instructions.contains("materially conflicts with an existing ticket contract"))
     #expect(instructions.contains("genuinely new scope"))
+    #expect(instructions.contains("Never copy, mirror, archive, or stage"))
+    #expect(instructions.contains("You may use read-only Git inspection"))
+    #expect(instructions.contains("owns every Git mutation"))
+    #expect(instructions.contains("already available inside the sandbox"))
+
+    let integrationPrompt = CodexConflictIntegrator.prompt(
+      product: product,
+      item: research,
+      conflictedFiles: ["knowledge/provider.md"],
+      recentComments: [expiredPermissionComment]
+    )
+    let integrationInstructions = CodexConflictIntegrator.developerInstructions(
+      productInstructions: ""
+    )
+    #expect(!integrationPrompt.contains("Permission requested:"))
+    #expect(integrationInstructions.contains("already available inside the sandbox"))
   }
 
   @Test("Ticket execution and Tech Lead review results are validated")
@@ -1324,6 +1813,20 @@ struct CodexAdapterTests {
         "tests":["swift test — passed"],
         "knowledgeNotes":["Location input is normalized before lookup."],
         "reviewInstructions":["Open the location form, enter London, and confirm the forecast appears."],
+        "demo":{
+          "schemaVersion":1,
+          "title":"Location form",
+          "preparationCommands":[],
+          "launchCommand":{
+            "executable":"python3",
+            "arguments":["-m","http.server","{{PORT}}","--bind","127.0.0.1"],
+            "workingDirectory":".",
+            "timeoutSeconds":180
+          },
+          "portEnvironmentVariable":"PORT",
+          "readiness":{"kind":"http","path":"/","timeoutSeconds":30},
+          "presentation":{"kind":"browser","path":"/location"}
+        },
         "retrospectiveWentWell":["The existing form boundary made validation straightforward."],
         "retrospectiveCouldImprove":[],
         "retrospectiveActions":[
@@ -1339,10 +1842,13 @@ struct CodexAdapterTests {
     )
     #expect(completed.status == .completed)
     #expect(completed.changedFiles == ["Sources/LocationForm.swift"])
+    #expect(completed.demo?.presentation.kind == .browser)
     #expect(completed.retrospectiveActions.first?.destination == .teamPractice)
     #expect(completed.workLogComment.contains("Completion handoff"))
     #expect(completed.workLogComment.contains("Delivery notes"))
     #expect(completed.workLogComment.contains("How to review"))
+    #expect(completed.workLogComment.contains("Demo: Location form"))
+    #expect(CodexTicketExecutor.outputSchema["required"]?.arrayValue?.contains(.string("demo")) == true)
 
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.decode(
@@ -1539,6 +2045,81 @@ struct CodexAdapterTests {
   }
 }
 
+private actor ManagedCommandTransport: CodexRPCTransport {
+  private let stream = AsyncStream<CodexInboundMessage> { _ in }
+  private var commandParams: JSONValue?
+
+  func start() {}
+
+  func request(method: String, params: JSONValue) throws -> JSONValue {
+    switch method {
+    case "initialize":
+      return .object([
+        "userAgent": .string("codex-cli/test"),
+        "codexHome": .string("/private/tmp/codex"),
+        "platformFamily": .string("unix"),
+        "platformOs": .string("macos"),
+      ])
+    case "command/exec":
+      commandParams = params
+      return .object([
+        "exitCode": .integer(0),
+        "stdout": .string("compiled"),
+        "stderr": .string(""),
+      ])
+    default:
+      throw CodexRPCError(code: -32_601, message: "Unexpected request")
+    }
+  }
+
+  func notify(method: String, params: JSONValue) {}
+  func inboundMessages() -> AsyncStream<CodexInboundMessage> { stream }
+  func stop() {}
+  func commandRequest() -> JSONValue? { commandParams }
+}
+
+private actor ApprovalTransport: CodexRPCTransport {
+  struct Response: Sendable {
+    let id: JSONValue
+    let result: JSONValue
+  }
+
+  private let stream: AsyncStream<CodexInboundMessage>
+  private let continuation: AsyncStream<CodexInboundMessage>.Continuation
+  private var recordedResponse: Response?
+
+  init() {
+    let pair = AsyncStream<CodexInboundMessage>.makeStream()
+    stream = pair.stream
+    continuation = pair.continuation
+  }
+
+  func start() {}
+
+  func request(method: String, params: JSONValue) throws -> JSONValue {
+    guard method == "initialize" else {
+      throw CodexRPCError(code: -32_601, message: "Unexpected request")
+    }
+    return .object([
+      "userAgent": .string("codex-cli/test"),
+      "codexHome": .string("/private/tmp/codex"),
+      "platformFamily": .string("unix"),
+      "platformOs": .string("macos"),
+    ])
+  }
+
+  func notify(method: String, params: JSONValue) {}
+
+  func respond(id: JSONValue, result: JSONValue) {
+    recordedResponse = Response(id: id, result: result)
+  }
+
+  func inboundMessages() -> AsyncStream<CodexInboundMessage> { stream }
+  func stop() { continuation.finish() }
+  func send(_ request: CodexServerRequest) { continuation.yield(.request(request)) }
+  func response() -> Response? { recordedResponse }
+}
+
 private actor ConcurrentTurnTransport: CodexRPCTransport {
   private let stream: AsyncStream<CodexInboundMessage>
   private let continuation: AsyncStream<CodexInboundMessage>.Continuation
@@ -1568,6 +2149,29 @@ private actor ConcurrentTurnTransport: CodexRPCTransport {
   func stop() { continuation.finish() }
 
   func complete(threadID: String, turnID: String, text: String) {
+    sendAgentMessage(
+      threadID: threadID,
+      turnID: turnID,
+      phase: "final_answer",
+      text: text
+    )
+  }
+
+  func comment(threadID: String, turnID: String, text: String) {
+    sendAgentMessage(
+      threadID: threadID,
+      turnID: turnID,
+      phase: "commentary",
+      text: text
+    )
+  }
+
+  private func sendAgentMessage(
+    threadID: String,
+    turnID: String,
+    phase: String,
+    text: String
+  ) {
     continuation.yield(
       .notification(
         CodexNotification(
@@ -1578,6 +2182,7 @@ private actor ConcurrentTurnTransport: CodexRPCTransport {
             "item": .object([
               "id": .string("message-\(turnID)"),
               "type": .string("agentMessage"),
+              "phase": .string(phase),
               "text": .string(text),
             ]),
           ])
@@ -1649,6 +2254,7 @@ private actor SuggestionTransport: CodexRPCTransport {
               "item": .object([
                 "id": .string("item-1"),
                 "type": .string("agentMessage"),
+                "phase": .string("final_answer"),
                 "text": .string(#"{"suggestions":[]}"#),
               ]),
             ])

@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
   @Published private(set) var retrospectiveNotes: [RetrospectiveNote] = []
   @Published private(set) var knowledgePages: [KnowledgePage] = []
   @Published private(set) var candidateRevisions: [CandidateRevision] = []
+  @Published private(set) var demoSessions: [DemoSession] = []
+  @Published private(set) var permissionRequests: [AgentPermissionRequest] = []
   @Published private(set) var knowledgePageProposals: [KnowledgePageProposal] = []
   @Published private(set) var agentRunKnowledgeContext: [AgentRunKnowledgePage] = []
   @Published private(set) var liveRunActivities: [UUID: CodexLiveActivity] = [:]
@@ -96,6 +98,8 @@ final class AppModel: ObservableObject {
 
   private let store: SQLiteStore?
   private let gitWorkspaceManager = GitWorkspaceManager()
+  private let demoLauncher = MacOSDemoLauncher()
+  private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
   private var codexClient: CodexAppServerClient?
   private var suggestionTask: Task<Void, Never>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
@@ -115,6 +119,8 @@ final class AppModel: ObservableObject {
     }
 
   private var activeExecutionTurns: [UUID: ActiveExecutionTurn] = [:]
+  private var liveApprovalRequests: [UUID: CodexServerRequest] = [:]
+  private var approvalRoutingTask: Task<Void, Never>?
   private var manuallyStoppedRunIDs: Set<UUID> = []
   private var liveActivityTasks: [UUID: Task<Void, Never>] = [:]
   private var liveActivityMonitorIDs: [UUID: UUID] = [:]
@@ -243,7 +249,9 @@ final class AppModel: ObservableObject {
   func load() async {
     guard !didLoad else { return }
     didLoad = true
+    try? await store?.interruptPendingAgentPermissionRequests()
     await reload()
+    await recoverDemoSessions()
     await connectCodex()
     await recoverInterruptedSuggestionSession()
     scheduleSprintExecution()
@@ -275,6 +283,7 @@ final class AppModel: ObservableObject {
   }
 
   func selectProduct(_ product: Product) async {
+    await stopAllDemoSessions()
     await suspendSprintExecution()
     suggestionTask?.cancel()
     planningThreadIDs.removeAll()
@@ -1028,13 +1037,363 @@ final class AppModel: ObservableObject {
 
   func resumeSprintWork(
     workItemID: UUID,
-    body: String
+    body: String,
+    answeredQuestions: [TicketAnsweredQuestion] = []
   ) async -> TicketComment? {
-    guard let comment = await appendOwnerComment(workItemID: workItemID, body: body) else {
+    guard
+      let comment = await appendOwnerComment(
+        workItemID: workItemID,
+        body: body,
+        answeredQuestions: answeredQuestions
+      )
+    else {
       return nil
     }
     await handleSprintOwnerComment(workItemID: workItemID, body: comment.body)
     return comment
+  }
+
+  func canRetryFailedPostReviewDemo(workItemID: UUID) -> Bool {
+    sprintWorkRecoveryPolicy.failedPostReviewDemoCandidate(
+      workItemID: workItemID,
+      workItems: workItems,
+      candidates: candidateRevisions,
+      runs: runs,
+      profiles: profiles
+    ) != nil
+  }
+
+  func retryFailedPostReviewDemo(workItemID: UUID) async -> Bool {
+    guard
+      let store,
+      let recoverableCandidate = sprintWorkRecoveryPolicy.failedPostReviewDemoCandidate(
+        workItemID: workItemID,
+        workItems: workItems,
+        candidates: candidateRevisions,
+        runs: runs,
+        profiles: profiles
+      ),
+      let integratedSHA = recoverableCandidate.integratedSHA,
+      let implementationRun = runs.first(where: {
+        $0.id == recoverableCandidate.implementationRunID
+      }),
+      let result = try? CodexTicketExecutor.decode(
+        recoverableCandidate.executionResultJSON
+      ),
+      let specification = result.demo
+    else {
+      return false
+    }
+
+    let reviewerName = profiles.first { profile in
+      guard profile.role == .lead else { return false }
+      return runs.contains {
+        $0.workItemID == workItemID
+          && $0.profileID == profile.id
+          && $0.status == .completed
+          && $0.worktreePath == recoverableCandidate.integrationWorktreePath
+      }
+    }?.name ?? "Tech Lead"
+
+    do {
+      let candidate = try await store.fetchCandidateRevision(
+        id: recoverableCandidate.id
+      )
+      guard
+        candidate.status == .failed,
+        let item = try await store.fetchWorkItems(productID: candidate.productID)
+          .first(where: { $0.id == workItemID }),
+        item.state == .running
+      else {
+        return false
+      }
+
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: .reviewing
+      )
+      _ = try await store.updateAgentRun(
+        id: implementationRun.id,
+        status: .running,
+        eventActor: "StoryPointless",
+        eventDetail: "Retrying demo preparation for the reviewed candidate"
+      )
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: .integrating,
+        actor: "StoryPointless",
+        reason: "Retrying the reviewed candidate handoff"
+      )
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: .verifying,
+        actor: "StoryPointless",
+        reason: "Re-running demo preparation against the reviewed revision"
+      )
+      await reloadSelectedProduct()
+
+      try await prepareDemoForAcceptance(
+        candidate: candidate,
+        integratedSHA: integratedSHA,
+        specification: specification
+      )
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: .readyForDemo
+      )
+      _ = try await store.updateAgentRun(
+        id: implementationRun.id,
+        status: .completed,
+        eventActor: "StoryPointless",
+        eventDetail: "Demo preparation succeeded on retry"
+      )
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: .acceptance,
+        actor: reviewerName,
+        reason: "Reviewed candidate prepared successfully for Product Owner demo"
+      )
+      _ = try? await store.appendComment(
+        workItemID: item.id,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: "Demo preparation succeeded on retry. The already reviewed candidate was preserved; implementation and Tech Lead review were not repeated."
+      )
+      await reloadSelectedProduct()
+      return true
+    } catch {
+      _ = try? await store.updateCandidateRevision(
+        id: recoverableCandidate.id,
+        status: .failed
+      )
+      _ = try? await store.updateAgentRun(
+        id: implementationRun.id,
+        status: .awaitingOwner,
+        eventActor: "StoryPointless",
+        eventDetail: "Demo preparation retry could not complete"
+      )
+      if
+        let item = try? await store.fetchWorkItems(
+          productID: recoverableCandidate.productID
+        ).first(where: { $0.id == workItemID }),
+        item.state == .integrating || item.state == .verifying
+      {
+        _ = try? await store.transitionWorkItem(
+          id: item.id,
+          to: .running,
+          actor: "StoryPointless",
+          reason: "Demo preparation retry stopped; preserving the reviewed candidate"
+        )
+      }
+      _ = try? await store.appendComment(
+        workItemID: workItemID,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: "Demo preparation stopped unexpectedly again: \(error.localizedDescription)\n\nChoose Retry demo preparation to try the preserved reviewed candidate again."
+      )
+      errorMessage = error.localizedDescription
+      await reloadSelectedProduct()
+      return false
+    }
+  }
+
+  func launchDemo(for candidate: CandidateRevision) async -> Bool {
+    guard
+      let store,
+      candidate.status == .readyForDemo,
+      let integratedSHA = candidate.integratedSHA
+    else { return false }
+    do {
+      let result = try CodexTicketExecutor.decode(candidate.executionResultJSON)
+      guard let specification = result.demo else {
+        throw DemoLaunchValidationError.invalid(
+          "this older candidate has no managed demo recipe. Request changes so the delivery agent can add one."
+        )
+      }
+      try DemoLaunchSpecificationValidator.validate(specification)
+      let previewURL = try await prepareCandidatePreview(
+        candidate: candidate,
+        integratedSHA: integratedSHA
+      )
+      var session = currentDemoSession(for: candidate.id) ?? DemoSession(
+        productID: candidate.productID,
+        candidateRevisionID: candidate.id,
+        status: .preparing
+      )
+      session.status = .preparing
+      session.previewWorktreePath = previewURL.path
+      session.errorMessage = nil
+      session.updatedAt = Date()
+      session = try await store.saveDemoSession(session)
+      replaceDemoSession(session)
+
+      session.status = .starting
+      session.updatedAt = Date()
+      session = try await store.saveDemoSession(session)
+      replaceDemoSession(session)
+
+      let outcome = try await demoLauncher.launch(
+        candidateID: candidate.id,
+        specification: specification,
+        workspaceURL: previewURL
+      )
+      session.status = .ready
+      session.allocatedPort = outcome.allocatedPort
+      session.output = outcome.output.map { String($0.suffix(80_000)) }
+      session.errorMessage = nil
+      session.updatedAt = Date()
+      session = try await store.saveDemoSession(session)
+      replaceDemoSession(session)
+      return true
+    } catch {
+      var session = currentDemoSession(for: candidate.id) ?? DemoSession(
+        productID: candidate.productID,
+        candidateRevisionID: candidate.id,
+        status: .failed
+      )
+      session.status = .failed
+      session.errorMessage = error.localizedDescription
+      session.updatedAt = Date()
+      if let saved = try? await store.saveDemoSession(session) {
+        replaceDemoSession(saved)
+      }
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  func stopDemo(for candidate: CandidateRevision) async {
+    await stopDemoSession(candidate, removesPreview: false)
+  }
+
+  func currentDemoSession(for candidateRevisionID: UUID) -> DemoSession? {
+    demoSessions.first { $0.candidateRevisionID == candidateRevisionID }
+  }
+
+  private func replaceDemoSession(_ session: DemoSession) {
+    demoSessions.removeAll { $0.candidateRevisionID == session.candidateRevisionID }
+    demoSessions.append(session)
+    demoSessions.sort { $0.createdAt < $1.createdAt }
+  }
+
+  private func stopDemoSession(
+    _ candidate: CandidateRevision,
+    removesPreview: Bool
+  ) async {
+    await demoLauncher.stop(candidateID: candidate.id)
+    guard let store, var session = currentDemoSession(for: candidate.id) else { return }
+    if
+      removesPreview,
+      let previewPath = session.previewWorktreePath,
+      let repositoryURL = try? Self.productWorkspaceURL(productID: candidate.productID)
+    {
+      try? await gitWorkspaceManager.removeWorktree(
+        repositoryURL: repositoryURL,
+        worktreeURL: URL(fileURLWithPath: previewPath, isDirectory: true)
+      )
+      session.previewWorktreePath = nil
+    }
+    session.status = .stopped
+    session.allocatedPort = nil
+    session.errorMessage = nil
+    session.updatedAt = Date()
+    if let saved = try? await store.saveDemoSession(session) {
+      replaceDemoSession(saved)
+    }
+  }
+
+  private func stopAllDemoSessions() async {
+    await demoLauncher.stopAll()
+    guard let store else { return }
+    let activeSessions = demoSessions.filter {
+      $0.status == .preparing || $0.status == .starting || $0.status == .ready
+    }
+    for var session in activeSessions {
+      session.status = .stopped
+      session.allocatedPort = nil
+      session.errorMessage = nil
+      session.updatedAt = Date()
+      if let saved = try? await store.saveDemoSession(session) {
+        replaceDemoSession(saved)
+      }
+    }
+  }
+
+  private func recoverDemoSessions() async {
+    await stopAllDemoSessions()
+  }
+
+  private func prepareCandidatePreview(
+    candidate: CandidateRevision,
+    integratedSHA: String
+  ) async throws -> URL {
+    let repositoryURL = try Self.productWorkspaceURL(productID: candidate.productID)
+    let previewsRootURL = try Self.previewWorktreesRootURL(
+      productID: candidate.productID
+    )
+    let expectedPreviewURL = previewsRootURL.appendingPathComponent(
+      candidate.id.uuidString.lowercased(),
+      isDirectory: true
+    )
+    if
+      let existingPath = currentDemoSession(for: candidate.id)?.previewWorktreePath,
+      URL(fileURLWithPath: existingPath).standardizedFileURL
+        != expectedPreviewURL.standardizedFileURL
+    {
+      try? await gitWorkspaceManager.removeWorktree(
+        repositoryURL: repositoryURL,
+        worktreeURL: URL(fileURLWithPath: existingPath, isDirectory: true)
+      )
+    }
+    return try await gitWorkspaceManager.preparePreviewWorkspace(
+      repositoryURL: repositoryURL,
+      previewsRootURL: previewsRootURL,
+      candidateID: candidate.id,
+      integratedSHA: integratedSHA
+    )
+  }
+
+  private func prepareDemoForAcceptance(
+    candidate: CandidateRevision,
+    integratedSHA: String,
+    specification: DemoLaunchSpecification
+  ) async throws {
+    guard let store else { return }
+    let previewURL = try await prepareCandidatePreview(
+      candidate: candidate,
+      integratedSHA: integratedSHA
+    )
+    var session = currentDemoSession(for: candidate.id) ?? DemoSession(
+      productID: candidate.productID,
+      candidateRevisionID: candidate.id,
+      status: .preparing
+    )
+    session.status = .preparing
+    session.previewWorktreePath = previewURL.path
+    session.output = nil
+    session.errorMessage = nil
+    session.updatedAt = Date()
+    session = try await store.saveDemoSession(session)
+    replaceDemoSession(session)
+    do {
+      let output = try await demoLauncher.smokeTest(
+        candidateID: candidate.id,
+        specification: specification,
+        workspaceURL: previewURL
+      )
+      session.status = .stopped
+      session.output = output.map { String($0.suffix(80_000)) }
+      session.updatedAt = Date()
+      session = try await store.saveDemoSession(session)
+      replaceDemoSession(session)
+    } catch {
+      session.status = .failed
+      session.errorMessage = error.localizedDescription
+      session.updatedAt = Date()
+      session = try await store.saveDemoSession(session)
+      replaceDemoSession(session)
+      throw error
+    }
   }
 
   func acceptSprintTicket(_ item: WorkItem) async -> Bool {
@@ -1083,6 +1442,7 @@ final class AppModel: ObservableObject {
           "Accept or reject every canonical knowledge proposal before completing the ticket."
         )
       }
+      await stopDemoSession(candidate, removesPreview: true)
       let repositoryURL = try Self.productWorkspaceURL(productID: item.productID)
       try await gitWorkspaceManager.promote(
         repositoryURL: repositoryURL,
@@ -2709,6 +3069,34 @@ final class AppModel: ObservableObject {
         item.implementerProfileID.map { (item.workItemID, $0) }
       }
     )
+    let expiredPermissionRuns = sprintWorkRecoveryPolicy.runsWithExpiredPermissionDecisions(
+      runs: runs.filter { $0.productID == productID },
+      permissionRequests: permissionRequests.filter { $0.productID == productID }
+    )
+    for run in expiredPermissionRuns {
+      let isImplementer = implementerByItemID[run.workItemID] == run.profileID
+      let latestCandidate = storedCandidates
+        .filter { $0.workItemID == run.workItemID }
+        .max(by: { $0.version < $1.version })
+      let canResumeConflict =
+        !isImplementer && latestCandidate?.status == .resolvingConflict
+      _ = try? await store.updateAgentRun(
+        id: run.id,
+        status: isImplementer || canResumeConflict ? .queued : .interrupted,
+        eventActor: "StoryPointless",
+        eventDetail: isImplementer || canResumeConflict
+          ? "Expired permission decision queued to resume in the preserved workspace"
+          : "Permission request expired when the app stopped"
+      )
+      _ = try? await store.appendComment(
+        workItemID: run.workItemID,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: isImplementer || canResumeConflict
+          ? "The previous permission request expired when StoryPointless stopped. The ticket workspace is preserved and work has been queued to resume automatically. If the capability is still needed, a new permission request will appear with live Allow and Deny buttons."
+          : "The previous permission request expired when StoryPointless stopped. The interrupted review will restart against the preserved candidate."
+      )
+    }
     for candidate in storedCandidates where candidate.status == .readyForDemo {
       guard
         let item = workItems.first(where: { $0.id == candidate.workItemID }),
@@ -3154,7 +3542,11 @@ final class AppModel: ObservableObject {
         threadID = try await client.startWorkspaceThread(
           workingDirectory: workspace,
           developerInstructions: developerInstructions,
-          model: assignee.model
+          model: assignee.model,
+          readOnlyGitDirectory: productWorkspace.appendingPathComponent(
+            ".git",
+            isDirectory: true
+          )
         )
       }
       run = try await store.updateAgentRun(
@@ -3218,13 +3610,19 @@ final class AppModel: ObservableObject {
           threadID: activeThreadID,
           prompt: executionPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema
+          outputSchema: CodexTicketExecutor.outputSchema,
+          permissionProfile: CodexPermissionProfiles.delivery,
+          runtimeWorkspaceRoots: [workspace]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         activeThreadID = try await client.startWorkspaceThread(
           workingDirectory: workspace,
           developerInstructions: developerInstructions,
-          model: assignee.model
+          model: assignee.model,
+          readOnlyGitDirectory: productWorkspace.appendingPathComponent(
+            ".git",
+            isDirectory: true
+          )
         )
         run = try await store.updateAgentRun(
           id: run.id,
@@ -3244,7 +3642,9 @@ final class AppModel: ObservableObject {
           threadID: activeThreadID,
           prompt: executionPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema
+          outputSchema: CodexTicketExecutor.outputSchema,
+          permissionProfile: CodexPermissionProfiles.delivery,
+          runtimeWorkspaceRoots: [workspace]
         )
       }
       activeExecutionTurns[run.id] = ActiveExecutionTurn(
@@ -3335,7 +3735,9 @@ final class AppModel: ObservableObject {
           validationError: validationError.localizedDescription
         ),
         effort: assignee.reasoningEffort,
-        outputSchema: CodexTicketExecutor.outputSchema
+        outputSchema: CodexTicketExecutor.outputSchema,
+        permissionProfile: CodexPermissionProfiles.delivery,
+        runtimeWorkspaceRoots: [workspaceURL]
       )
       activeExecutionTurns[runID] = ActiveExecutionTurn(
         threadID: threadID,
@@ -3376,6 +3778,32 @@ final class AppModel: ObservableObject {
     workspaceURL: URL
   ) async throws {
     guard result.status == .completed else { return }
+    guard let demo = result.demo else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Completed work needs a managed demo recipe for the Product Owner."
+      )
+    }
+    do {
+      try DemoLaunchSpecificationValidator.validate(demo)
+      let commands = demo.preparationCommands + [demo.launchCommand].compactMap { $0 }
+      for command in commands {
+        let directory = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+          command.workingDirectory,
+          in: workspaceURL
+        )
+        var isDirectory: ObjCBool = false
+        guard
+          FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+          isDirectory.boolValue
+        else {
+          throw DemoLaunchValidationError.invalid(
+            "the working directory “\(command.workingDirectory)” does not exist."
+          )
+        }
+      }
+    } catch {
+      throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
+    }
     let actualChangePaths = try await gitWorkspaceManager.ticketChangePaths(
       ticketWorkspaceURL: workspaceURL
     )
@@ -3654,7 +4082,8 @@ final class AppModel: ObservableObject {
           personaInstructions: techLead.effectiveInstructions,
           reviewer: techLead
         ),
-        model: techLead.model
+        model: techLead.model,
+        allowsApprovals: true
       )
       _ = try await store.updateAgentRun(
         id: reviewRun.id,
@@ -3687,7 +4116,9 @@ final class AppModel: ObservableObject {
           integratedSHA: integration.integratedSHA
         ),
         effort: techLead.reasoningEffort,
-        outputSchema: CodexTechLeadReviewer.outputSchema
+        outputSchema: CodexTechLeadReviewer.outputSchema,
+        permissionProfile: CodexPermissionProfiles.readOnly,
+        runtimeWorkspaceRoots: [workspace]
       )
       activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
         threadID: threadID,
@@ -3718,9 +4149,11 @@ final class AppModel: ObservableObject {
             Correct the structured review now. If there is no concrete material blocker under the
             supplied review policy, approve. Otherwise include one to three small, actionable
             findings that name the violated criterion or defect. Return only the required JSON.
-            """,
+          """,
           effort: techLead.reasoningEffort,
-          outputSchema: CodexTechLeadReviewer.outputSchema
+          outputSchema: CodexTechLeadReviewer.outputSchema,
+          permissionProfile: CodexPermissionProfiles.readOnly,
+          runtimeWorkspaceRoots: [workspace]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
           threadID: threadID,
@@ -3777,6 +4210,20 @@ final class AppModel: ObservableObject {
             authorName: "StoryPointless"
           )
         }
+        let reviewedCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+        guard
+          let integratedSHA = reviewedCandidate.integratedSHA,
+          let demo = implementation.demo
+        else {
+          throw DemoLaunchValidationError.invalid(
+            "the reviewed candidate has no managed demo recipe."
+          )
+        }
+        try await prepareDemoForAcceptance(
+          candidate: reviewedCandidate,
+          integratedSHA: integratedSHA,
+          specification: demo
+        )
         _ = try await store.updateCandidateRevision(
           id: candidate.id,
           status: .readyForDemo
@@ -3865,7 +4312,11 @@ final class AppModel: ObservableObject {
           revisionThreadID = try await client.startWorkspaceThread(
             workingDirectory: revisionWorkspace,
             developerInstructions: developerInstructions,
-            model: implementer.model
+            model: implementer.model,
+            readOnlyGitDirectory: repositoryURL.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
           )
           _ = try await store.updateAgentRun(
             id: implementationRun.id,
@@ -3881,13 +4332,19 @@ final class AppModel: ObservableObject {
             threadID: revisionThreadID,
             prompt: revisionPrompt,
             effort: implementer.reasoningEffort,
-            outputSchema: CodexTicketExecutor.outputSchema
+            outputSchema: CodexTicketExecutor.outputSchema,
+            permissionProfile: CodexPermissionProfiles.delivery,
+            runtimeWorkspaceRoots: [revisionWorkspace]
           )
         } catch let error as CodexRPCError where error.isThreadNotFound {
           revisionThreadID = try await client.startWorkspaceThread(
             workingDirectory: revisionWorkspace,
             developerInstructions: developerInstructions,
-            model: implementer.model
+            model: implementer.model,
+            readOnlyGitDirectory: repositoryURL.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
           )
           _ = try await store.updateAgentRun(
             id: implementationRun.id,
@@ -3907,7 +4364,9 @@ final class AppModel: ObservableObject {
             threadID: revisionThreadID,
             prompt: revisionPrompt,
             effort: implementer.reasoningEffort,
-            outputSchema: CodexTicketExecutor.outputSchema
+            outputSchema: CodexTicketExecutor.outputSchema,
+            permissionProfile: CodexPermissionProfiles.delivery,
+            runtimeWorkspaceRoots: [revisionWorkspace]
           )
         }
         activeExecutionTurns[implementationRun.id] = ActiveExecutionTurn(
@@ -3944,6 +4403,7 @@ final class AppModel: ObservableObject {
         )
       }
     } catch {
+      await stopDemoSession(candidate, removesPreview: true)
       if let activeReviewRunID {
         stopLiveActivityMonitoring(runID: activeReviewRunID)
         activeExecutionTurns.removeValue(forKey: activeReviewRunID)
@@ -4124,19 +4584,18 @@ final class AppModel: ObservableObject {
 
     do {
       let workspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
+      let productGitDirectory = try Self.productWorkspaceURL(
+        productID: product.id
+      ).appendingPathComponent(".git", isDirectory: true)
       let developerInstructions = CodexConflictIntegrator.developerInstructions(
         productInstructions: inheritedAgentInstructions(for: product)
       )
-      var threadID: String
-      if let existingThreadID = resolutionRun.codexThreadID {
-        threadID = existingThreadID
-      } else {
-        threadID = try await client.startWorkspaceThread(
-          workingDirectory: workspace,
-          developerInstructions: developerInstructions,
-          model: techLead.model
-        )
-      }
+      var threadID = try await client.startWorkspaceThread(
+        workingDirectory: workspace,
+        developerInstructions: developerInstructions,
+        model: techLead.model,
+        readOnlyGitDirectory: productGitDirectory
+      )
       _ = try await store.updateAgentRun(
         id: resolutionRun.id,
         status: .running,
@@ -4157,13 +4616,16 @@ final class AppModel: ObservableObject {
           threadID: threadID,
           prompt: resolutionPrompt,
           effort: techLead.reasoningEffort,
-          outputSchema: CodexConflictIntegrator.outputSchema
+          outputSchema: CodexConflictIntegrator.outputSchema,
+          permissionProfile: CodexPermissionProfiles.delivery,
+          runtimeWorkspaceRoots: [workspace]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         threadID = try await client.startWorkspaceThread(
           workingDirectory: workspace,
           developerInstructions: developerInstructions,
-          model: techLead.model
+          model: techLead.model,
+          readOnlyGitDirectory: productGitDirectory
         )
         _ = try await store.updateAgentRun(
           id: resolutionRun.id,
@@ -4183,7 +4645,9 @@ final class AppModel: ObservableObject {
           threadID: threadID,
           prompt: resolutionPrompt,
           effort: techLead.reasoningEffort,
-          outputSchema: CodexConflictIntegrator.outputSchema
+          outputSchema: CodexConflictIntegrator.outputSchema,
+          permissionProfile: CodexPermissionProfiles.delivery,
+          runtimeWorkspaceRoots: [workspace]
         )
       }
       activeExecutionTurns[resolutionRun.id] = ActiveExecutionTurn(
@@ -4367,6 +4831,7 @@ final class AppModel: ObservableObject {
           candidate.workItemID == item.id && candidate.status == .readyForDemo
         }
         if let candidate = readyCandidates.max(by: { $0.version < $1.version }) {
+          await stopDemoSession(candidate, removesPreview: true)
           _ = try await store.updateCandidateRevision(
             id: candidate.id,
             status: .superseded
@@ -4556,6 +5021,17 @@ final class AppModel: ObservableObject {
     sprintExecutionTask = nil
     activeImplementationTasks.removeAll()
     activeExecutionTurns.removeAll()
+    if let store {
+      for requestID in liveApprovalRequests.keys {
+        if let updated = try? await store.updateAgentPermissionRequest(
+          id: requestID,
+          status: .interrupted
+        ) {
+          replacePermissionRequest(updated)
+        }
+      }
+    }
+    liveApprovalRequests.removeAll()
     for task in liveActivityTasks.values {
       task.cancel()
     }
@@ -4567,7 +5043,10 @@ final class AppModel: ObservableObject {
   func shutdown() async {
     suggestionTask?.cancel()
     suggestionTask = nil
+    await stopAllDemoSessions()
     await suspendSprintExecution()
+    approvalRoutingTask?.cancel()
+    approvalRoutingTask = nil
     await codexClient?.disconnect()
     codexClient = nil
   }
@@ -4656,6 +5135,9 @@ final class AppModel: ObservableObject {
     let files = result.changedFiles.isEmpty
       ? "- No changed file was reported."
       : result.changedFiles.map { "- `\($0)`" }.joined(separator: "\n")
+    let demo = result.demo.map {
+      "- **\($0.title)** — \($0.presentation.kind.title)"
+    } ?? "- No managed demo recipe was recorded."
     let followUps = result.followUpTicketProposals.isEmpty
       ? "- No follow-up tickets were recommended."
       : result.followUpTicketProposals.map {
@@ -4681,6 +5163,9 @@ final class AppModel: ObservableObject {
 
       ## How the Product Owner can review it
       \(review)
+
+      ## One-click demo
+      \(demo)
 
       ## Recommended follow-up work
       \(followUps)
@@ -4854,6 +5339,8 @@ final class AppModel: ObservableObject {
       retrospectiveNotes = []
       knowledgePages = []
       candidateRevisions = []
+      demoSessions = []
+      permissionRequests = []
       knowledgePageProposals = []
       agentRunKnowledgeContext = []
       return
@@ -4872,6 +5359,8 @@ final class AppModel: ObservableObject {
         productID: productID
       )
       candidateRevisions = try await store.fetchCandidateRevisions(productID: productID)
+      demoSessions = try await store.fetchDemoSessions(productID: productID)
+      permissionRequests = try await store.fetchAgentPermissionRequests(productID: productID)
       knowledgePageProposals = try await store.fetchKnowledgePageProposals(productID: productID)
       sprintPlan = try await store.fetchCurrentSprint(productID: productID)
       sprintHistory = try await store.fetchSprintHistory(productID: productID)
@@ -4900,11 +5389,18 @@ final class AppModel: ObservableObject {
         try CodexRuntimeResolver().resolve(candidates: candidates)
       }.value
       let transport = CodexJSONLTransport(
-        configuration: .init(executableURL: descriptor.executableURL)
+        configuration: .init(
+          executableURL: descriptor.executableURL,
+          environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment
+        )
       )
       let client = CodexAppServerClient(transport: transport)
       let info = try await client.connect()
       codexClient = client
+      demoLauncher.useExecutor(
+        CodexWorkspaceCommandExecutor(executableURL: descriptor.executableURL)
+      )
+      startApprovalRouting(client: client)
       codexConnectionState = .connected(version: descriptor.version, userAgent: info.userAgent)
       codexModels = (try? await client.listModels()) ?? []
     } catch let error as CodexRuntimeError {
@@ -4917,6 +5413,166 @@ final class AppModel: ObservableObject {
     } catch {
       codexConnectionState = .unavailable(error.localizedDescription)
     }
+  }
+
+  func pendingPermissionRequest(workItemID: UUID) -> AgentPermissionRequest? {
+    permissionRequests
+      .filter { $0.workItemID == workItemID && $0.status == .pending }
+      .max(by: { $0.createdAt < $1.createdAt })
+  }
+
+  func decidePermissionRequest(_ request: AgentPermissionRequest, allow: Bool) async {
+    guard
+      request.status == .pending,
+      let store,
+      let client = codexClient,
+      let serverRequest = liveApprovalRequests[request.id]
+    else {
+      errorMessage =
+        "This permission request is no longer attached to a live agent turn. Retry the ticket so the agent can request it again."
+      return
+    }
+    do {
+      try await client.resolveApprovalRequest(serverRequest, allow: allow)
+      liveApprovalRequests.removeValue(forKey: request.id)
+      let updated = try await store.updateAgentPermissionRequest(
+        id: request.id,
+        status: allow ? .allowed : .denied
+      )
+      replacePermissionRequest(updated)
+      let decision = allow ? "Allowed for this run" : "Denied"
+      _ = try await store.appendComment(
+        workItemID: request.workItemID,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "\(decision): \(request.detail)"
+      )
+      if let run = try? await store.fetchAgentRun(id: request.agentRunID),
+        run.status == .awaitingOwner
+      {
+        _ = try await store.updateAgentRun(
+          id: request.agentRunID,
+          status: .running,
+          eventActor: "Product Owner",
+          eventDetail: allow
+            ? "Allowed the requested capability for this run"
+            : "Denied the requested capability; the agent will adapt"
+        )
+      }
+      await reloadSelectedProduct()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func startApprovalRouting(client: CodexAppServerClient) {
+    approvalRoutingTask?.cancel()
+    approvalRoutingTask = Task { [weak self] in
+      let messages = await client.inboundMessages(replayRecent: false)
+      for await message in messages {
+        guard !Task.isCancelled else { return }
+        guard case .request(let request) = message else { continue }
+        await self?.handleServerRequest(request, client: client)
+      }
+    }
+  }
+
+  private func handleServerRequest(
+    _ request: CodexServerRequest,
+    client: CodexAppServerClient
+  ) async {
+    guard let store else {
+      await client.rejectUnsupportedServerRequest(request)
+      return
+    }
+    let presentation: CodexApprovalPresentation
+    do {
+      presentation = try CodexAppServerClient.approvalPresentation(for: request)
+    } catch {
+      await client.rejectUnsupportedServerRequest(request)
+      return
+    }
+    let runID = activeExecutionTurns.first(where: {
+        $0.value.threadID == presentation.threadID
+          && $0.value.turnID == presentation.turnID
+      })?.key
+      ?? runs
+        .filter {
+          $0.codexThreadID == presentation.threadID
+            && ($0.status == .running || $0.status == .awaitingOwner)
+        }
+        .max(by: { $0.createdAt < $1.createdAt })?
+        .id
+    guard
+      let runID,
+      let run = try? await store.fetchAgentRun(id: runID)
+    else {
+      await client.rejectUnsupportedServerRequest(request)
+      return
+    }
+
+    if permissionRequests.contains(where: {
+      $0.agentRunID == runID
+        && $0.signature == presentation.signature
+        && $0.status == .allowed
+    }) {
+      try? await client.resolveApprovalRequest(request, allow: true)
+      return
+    }
+
+    let record = AgentPermissionRequest(
+      productID: run.productID,
+      workItemID: run.workItemID,
+      agentRunID: run.id,
+      threadID: presentation.threadID,
+      turnID: presentation.turnID,
+      serverRequestID: Self.serverRequestID(request.id),
+      method: request.method,
+      kind: presentation.kind,
+      title: presentation.title,
+      detail: presentation.detail,
+      reason: presentation.reason,
+      signature: presentation.signature
+    )
+    do {
+      let saved = try await store.saveAgentPermissionRequest(record)
+      liveApprovalRequests[saved.id] = request
+      replacePermissionRequest(saved)
+      _ = try await store.updateAgentRun(
+        id: run.id,
+        status: .awaitingOwner,
+        eventActor: "StoryPointless",
+        eventDetail: "Waiting for a scoped permission decision"
+      )
+      _ = try await store.appendComment(
+        workItemID: run.workItemID,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: [
+          "Permission requested: \(presentation.detail)",
+          presentation.reason.map { "Reason: \($0)" },
+          "Use Allow or Deny on this ticket. Allow applies only to this agent run.",
+        ]
+        .compactMap { $0 }
+        .joined(separator: "\n\n")
+      )
+      await reloadSelectedProduct()
+    } catch {
+      await client.rejectUnsupportedServerRequest(request)
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func replacePermissionRequest(_ request: AgentPermissionRequest) {
+    permissionRequests.removeAll { $0.id == request.id }
+    permissionRequests.append(request)
+    permissionRequests.sort { $0.createdAt < $1.createdAt }
+  }
+
+  private static func serverRequestID(_ id: JSONValue) -> String {
+    if let string = id.stringValue { return string }
+    if let integer = id.integerValue { return String(integer) }
+    return String(describing: id)
   }
 
   private func recoverInterruptedSuggestionSession() async {
@@ -4987,6 +5643,23 @@ final class AppModel: ObservableObject {
   private static func integrationWorktreesRootURL(productID: UUID) throws -> URL {
     let url = try applicationSupportURL()
       .appendingPathComponent("Integration Worktrees", isDirectory: true)
+      .appendingPathComponent(productID.uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+  }
+
+  private static func previewWorktreesRootURL(productID: UUID) throws -> URL {
+    guard
+      let cachesURL = FileManager.default.urls(
+        for: .cachesDirectory,
+        in: .userDomainMask
+      ).first
+    else {
+      throw CocoaError(.fileNoSuchFile)
+    }
+    let url = cachesURL
+      .appendingPathComponent("StoryPointless", isDirectory: true)
+      .appendingPathComponent("PreviewWorktrees", isDirectory: true)
       .appendingPathComponent(productID.uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url

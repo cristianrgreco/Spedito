@@ -1997,6 +1997,144 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Managed demo sessions are durable and candidate-bound")
+  func managedDemoSessions() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Demo delivery",
+      vision: "Open reviewed outcomes without a terminal"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Launch a preview"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Review the real result",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    let run = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: 1,
+        branchName: "ticket/T1",
+        baseSHA: "base",
+        headSHA: "head",
+        integratedSHA: "integrated",
+        worktreePath: "/tmp/t1",
+        status: .readyForDemo,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+    var session = DemoSession(
+      productID: product.id,
+      candidateRevisionID: candidate.id,
+      status: .starting,
+      previewWorktreePath: "/tmp/preview",
+      allocatedPort: 8123
+    )
+    session = try await store.saveDemoSession(session)
+    session.status = .ready
+    session.output = "Ready"
+    session.updatedAt = Date()
+    _ = try await store.saveDemoSession(session)
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let sessions = try await reopened.fetchDemoSessions(productID: product.id)
+    #expect(sessions.count == 1)
+    #expect(sessions.first?.candidateRevisionID == candidate.id)
+    #expect(sessions.first?.status == .ready)
+    #expect(sessions.first?.allocatedPort == 8123)
+    #expect(sessions.first?.output == "Ready")
+    await reopened.close()
+  }
+
+  @Test("Agent permission decisions are durable and pending requests recover safely")
+  func agentPermissionRequests() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Permission-aware delivery",
+      vision: "Let the owner unblock an agent without opening a terminal"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Use a local service"
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        workItemID: item.id,
+        profileID: implementer.id,
+        status: .running,
+        codexThreadID: "thread-permission",
+        worktreePath: "/tmp/ticket"
+      )
+    )
+    let request = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: item.id,
+      agentRunID: run.id,
+      threadID: "thread-permission",
+      turnID: "turn-permission",
+      serverRequestID: "41",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "docker compose up",
+      reason: "Start the ticket's local database",
+      signature: "command|docker compose up"
+    )
+    _ = try await store.saveAgentPermissionRequest(request)
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    var requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
+    #expect(requests.count == 1)
+    #expect(requests.first?.status == .pending)
+    #expect(requests.first?.reason == "Start the ticket's local database")
+
+    try await reopened.interruptPendingAgentPermissionRequests(productID: product.id)
+    requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
+    #expect(requests.first?.status == .interrupted)
+
+    let allowed = try await reopened.updateAgentPermissionRequest(
+      id: request.id,
+      status: .allowed
+    )
+    #expect(allowed.status == .allowed)
+    await reopened.close()
+  }
+
   @Test("Candidate revisions own reviewable canonical knowledge proposals")
   func candidateKnowledgeProposals() async throws {
     let fixture = try DatabaseFixture()

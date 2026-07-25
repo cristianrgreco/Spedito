@@ -92,6 +92,13 @@ Initial tables cover:
 - decision records and knowledge claims; and
 - schema migrations.
 
+Candidate execution results also retain a schema-versioned demo launch
+specification. Durable demo-session rows record the candidate, state, preview
+worktree, allocated loopback port, bounded captured output, and recoverable
+failure explanation. The process object itself remains an in-memory operating
+system resource and is never inferred to be alive merely because SQLite says it
+was running.
+
 Every consequential state transition and its audit event are written in one
 transaction. Source, worktrees, previews, screenshots, build outputs, and large
 logs are files referenced by stable paths and hashes. Secrets use Keychain or
@@ -170,18 +177,99 @@ Git implementation is behind a protocol. The spike may use a known executable;
 the distributed product must provide its own compatible Git implementation and
 must not depend on Xcode Command Line Tools being installed.
 
+### 6.1 Managed candidate demos
+
+Every newly completed delivery includes a typed demo recipe. The supported
+presentations are a loopback browser preview, a reviewed macOS application, a
+workspace-relative artifact, or captured output from a bounded scenario. Recipes
+contain executable and argument arrays, never shell command strings. Working
+directories and artifacts resolve inside the reviewed checkout, browser URLs
+contain only a path, and StoryPointless allocates and injects the loopback port.
+
+After Tech Lead approval, StoryPointless creates or reuses a detached preview
+worktree pinned to the current integrated SHA and smoke-tests the recipe without
+opening its presentation. A candidate enters **Ready for Demo** only after that
+test succeeds. The Product Owner's **Demo** action prepares the same exact
+revision, starts or reuses the managed process, waits for typed readiness, and
+opens the browser, app, artifact, or captured result.
+
+If review succeeds but smoke preparation fails, the failed candidate retains its
+integrated SHA and completed-review provenance. The ticket presents **Retry demo
+preparation** without requiring a new owner comment. That action reruns only the
+candidate-bound smoke preparation and, on success, advances the existing reviewed
+candidate to **Ready for Demo**; it does not resume implementation or repeat review.
+
+Demo commands use the pinned App Server's standalone `command/exec` API; the app
+does not maintain a second `sandbox-exec` implementation. Each demo command gets
+a candidate-scoped App Server connection whose dynamically materialized
+permission profile names the exact preview root. Preview worktrees live under
+the app's cache directory, separate from the denied StoryPointless control plane
+and ticket worktrees. The profile grants broad read access for normal macOS,
+Homebrew, compiler, SDK, and runtime dependencies without enumerating binaries
+or configuration files, while only the current candidate is writable and
+credentials and `.env` files remain denied. Demo networking is enabled only for
+`localhost` and `127.0.0.1`.
+
+Bounded commands disconnect their candidate-scoped App Server after capturing
+the result. Long-running commands retain that connection and use its process
+identifier while streaming output. Recipes must remain in the foreground;
+detached or daemonized services are invalid because they cannot provide reliable ownership.
+**Stop demo**, feedback, approval, product switching, shutdown, and App Server
+disconnection terminate the managed command session. Feedback and approval
+additionally remove the preview worktree. On restart, a previously active durable
+session is marked stopped rather than being mistaken for a live process. Browser
+tabs and shared document-viewer windows are not force-closed because they may
+belong to the Product Owner rather than the demo session.
+
 ## 7. Codex adapter boundary
 
 The current adapter pins Codex `0.144.0-alpha.4`, resolves only explicit bundled
 or debug-fixture candidates, performs the required `initialize` / `initialized`
-handshake over JSONL stdio, and fails closed on mismatched versions and
+handshake over JSONL stdio, opts into the pinned experimental protocol fields
+used by permission profiles, and fails closed on mismatched versions and
 unsupported server-initiated requests. Read-only, schema-constrained threads
-power backlog suggestions, refinement, planning conversations, and independent
-Tech Lead review. Delivery uses a non-ephemeral workspace-write thread with
-`approvalPolicy: never`: ordinary workspace edits can proceed without exposing
-Codex, while an action outside that boundary fails closed and must be surfaced as
-a Product Owner question. The durable run stores the thread identifier and
-workspace path so an owner answer or review finding can resume the same
+power backlog suggestions, refinement, and planning conversations. Delivery and
+independent Tech Lead review use `approvalPolicy: on-request`.
+
+Delivery selects the named `storypointless-delivery` profile: Codex's minimal
+platform/runtime reads, one writable ticket worktree, exact database and
+credential exclusions, and no network. The profile deliberately does not deny
+the ticket worktree's StoryPointless ancestor: the pinned macOS runtime denies
+metadata traversal at that ancestor before a more specific runtime workspace
+root can take effect. Other products, sibling ticket worktrees, and the control
+plane instead remain inaccessible because delivery has no broad host read
+grant. Homebrew, compiler, SDK, local service, and other system capabilities
+outside the minimal runtime are requested through App Server approvals for the
+current turn. Delivery instructions prohibit copying or staging the workspace
+under `/tmp` or another root as a permission workaround. Each delivery thread
+overrides that named profile with read-only access to the exact active product's
+central `.git` directory. The assigned worktree remains read/write, but Git
+metadata is not writable. The StoryPointless-owned App Server process supplies
+`GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_PAGER=cat`, so
+read-only status, diff, history, and conflict inspection is noninteractive and
+does not attempt optional index refreshes. Agents may inspect Git but cannot
+stage, commit, create or change branches, integrate, or promote; the host-side
+Git workspace manager owns those mutations and validates candidate ancestry.
+Git's object store is product-wide, so this explicitly chooses the product as
+the read boundary while retaining ticket-scoped writes and denying every other
+product.
+When the App Server sends `item/commandExecution/requestApproval`,
+`item/fileChange/requestApproval`, or `item/permissions/requestApproval`, the
+adapter preserves the bidirectional JSON-RPC request instead of rejecting it.
+Application coordination maps its thread and turn to the durable AgentRun,
+projects **Needs your input**, and stores the exact scope, rationale, signature,
+and decision. **Allow** accepts only the exact command or file change, or grants
+the requested capability for the current turn; it never creates a connection-wide
+App Server rule. **Deny** declines without cancelling the turn so the agent can
+adapt. The turn timeout does not advance while a supported permission request
+is outstanding. StoryPointless may transparently reapply an identical recorded
+decision when the same durable AgentRun requests it again, but a new run does
+not inherit the decision. If the app restarts, the connection-scoped request
+becomes interrupted and the resumed run can request it again.
+
+The same adapter owns buffered and streaming `command/exec`, output deltas, and
+termination for candidate demos. The durable run stores the thread identifier
+and workspace path so an owner answer or review finding can resume the same
 implementation context. It also reads `model/list`; the UI uses each returned
 model's advertised effort options instead of maintaining a speculative catalog.
 Authentication UI and usage telemetry remain subsequent adapter work.
@@ -195,6 +283,12 @@ The adapter owns:
 - approvals, questions, tool/file changes, diffs, and typed artifacts;
 - token/context, compaction, and account-rate-limit telemetry; and
 - termination and recovery normalization.
+
+Permission profiles are a beta App Server surface in the pinned runtime.
+StoryPointless therefore supplies its definitions as process-local config
+overrides, enables the matching experimental capability explicitly, and covers
+the exact pinned schema with adapter and local runtime contract tests. It never
+falls back to full access or the retired custom Seatbelt allow-list.
 
 Unknown protocol versions fail closed. Runtime updates use contract tests,
 atomic activation, and rollback to the previous known-good version.

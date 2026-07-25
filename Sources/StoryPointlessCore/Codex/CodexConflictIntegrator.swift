@@ -59,9 +59,13 @@ public enum CodexConflictIntegrator {
     path. Resolve only the mechanical or semantically unambiguous integration needed to preserve
     both compatible intentions. Do not broaden scope, redesign the feature, or conceal lost work.
 
-    You may edit files in the supplied integration worktree and run deterministic local checks.
-    Remove every conflict marker and leave a coherent working tree, but do not commit or run Git
-    commands that alter another worktree or branch. StoryPointless owns the final merge commit.
+    You may use read-only Git inspection such as status, diff, log, show, ls-files, and blame. You
+    may edit files in the supplied integration worktree and run deterministic local checks. Remove
+    every conflict marker and leave a coherent working tree, but do not stage, commit, merge,
+    checkout, reset, rebase, change branches, or otherwise mutate Git state. StoryPointless owns
+    those operations and the final merge commit. Product Git reads and their noninteractive
+    environment are already available inside the sandbox. Run them normally without requesting
+    permission or adding environment prefixes.
 
     If the competing changes represent a material product decision, incompatible public behavior,
     unavailable secret, destructive choice, or ambiguity that cannot be resolved from the ticket
@@ -93,7 +97,9 @@ public enum CodexConflictIntegrator {
     let criteria = item.acceptanceCriteria.isEmpty
       ? "No acceptance criteria supplied."
       : item.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
-    let history = recentComments.suffix(30)
+    let history = recentComments
+      .filter { !$0.body.hasPrefix("Permission requested:") }
+      .suffix(30)
       .map { "- \($0.authorName): \($0.body)" }
       .joined(separator: "\n")
     let conflicts = conflictedFiles.isEmpty
