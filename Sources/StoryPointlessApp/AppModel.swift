@@ -3031,9 +3031,9 @@ final class AppModel: ObservableObject {
       sprintExecutionTask = nil
     }
     await recoverOrphanedExecutionRuns(productID: productID)
+    await reloadSelectedProduct()
 
     while !Task.isCancelled, selectedProductID == productID {
-      await reloadSelectedProduct()
       guard
         let plan = sprintPlan,
         plan.sprint.productID == productID,
@@ -3053,6 +3053,9 @@ final class AppModel: ObservableObject {
       if activeImplementationTasks.isEmpty && eligibleRuns.isEmpty && !processedIntegration {
         return
       }
+      // Each worker and integration path reloads after a durable transition. Poll
+      // their in-memory results without refetching every product collection while
+      // a long-running Codex turn is otherwise idle.
       try? await Task.sleep(for: .milliseconds(300))
     }
   }

@@ -9462,7 +9462,7 @@ private struct SprintTicketDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
               } else {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                   ForEach(workLogRows) { row in
                     Group {
                       switch row.entry {
