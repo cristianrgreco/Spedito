@@ -174,14 +174,19 @@ public actor SQLiteStore {
     }
     let firstLine = goal.split(whereSeparator: \.isNewline).first.map(String.init) ?? goal
     let provisionalTitle = String(firstLine.prefix(72))
-    let epic = Epic(productID: productID, title: provisionalTitle, goal: goal)
+    let epic = Epic(
+      productID: productID,
+      title: provisionalTitle,
+      goal: goal,
+      rank: try nextEpicRank(productID: productID)
+    )
     try transaction {
       try withStatement(
         """
         INSERT INTO epics (
             id, product_id, title, goal, success_criteria_json, constraints,
-            status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            status, rank, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(epic.id.uuidString, to: 1, in: statement)
@@ -191,8 +196,9 @@ public actor SQLiteStore {
         try bind(try encodeStringArray(epic.successCriteria), to: 5, in: statement)
         try bind(epic.constraints, to: 6, in: statement)
         try bind(epic.status.rawValue, to: 7, in: statement)
-        try bind(epic.createdAt.timeIntervalSince1970, to: 8, in: statement)
-        try bind(epic.updatedAt.timeIntervalSince1970, to: 9, in: statement)
+        try bind(Int64(epic.rank), to: 8, in: statement)
+        try bind(epic.createdAt.timeIntervalSince1970, to: 9, in: statement)
+        try bind(epic.updatedAt.timeIntervalSince1970, to: 10, in: statement)
         try stepDone(statement)
       }
       _ = try insertEvent(
@@ -209,10 +215,10 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, title, goal, success_criteria_json, constraints,
-             status, created_at, updated_at
+             status, rank, created_at, updated_at
       FROM epics
       WHERE product_id = ?
-      ORDER BY created_at ASC;
+      ORDER BY rank ASC, created_at ASC;
       """
     ) { statement in
       try bind(productID.uuidString, to: 1, in: statement)
@@ -221,6 +227,62 @@ public actor SQLiteStore {
         epics.append(try decodeEpic(statement))
       }
       return epics
+    }
+  }
+
+  public func saveEpicPlanningConversation(
+    _ snapshot: EpicPlanningConversationSnapshot
+  ) throws {
+    let data = try encoder.encode(snapshot)
+    guard let json = String(data: data, encoding: .utf8) else {
+      throw PersistenceError.corruptData("Could not encode the epic conversation")
+    }
+    try withStatement(
+      """
+      INSERT INTO epic_planning_conversations (epic_id, snapshot_json, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(epic_id) DO UPDATE SET
+          snapshot_json = excluded.snapshot_json,
+          updated_at = excluded.updated_at;
+      """
+    ) { statement in
+      try bind(snapshot.epicID.uuidString, to: 1, in: statement)
+      try bind(json, to: 2, in: statement)
+      try bind(snapshot.updatedAt.timeIntervalSince1970, to: 3, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  public func fetchEpicPlanningConversation(
+    epicID: UUID
+  ) throws -> EpicPlanningConversationSnapshot? {
+    try withStatement(
+      """
+      SELECT snapshot_json
+      FROM epic_planning_conversations
+      WHERE epic_id = ?;
+      """
+    ) { statement in
+      try bind(epicID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      let json = try text(statement, column: 0)
+      guard let data = json.data(using: .utf8) else {
+        throw PersistenceError.corruptData("Could not decode the epic conversation")
+      }
+      let snapshot = try decoder.decode(EpicPlanningConversationSnapshot.self, from: data)
+      guard snapshot.epicID == epicID else {
+        throw PersistenceError.corruptData("Epic conversation belongs to another epic")
+      }
+      return snapshot
+    }
+  }
+
+  public func deleteEpicPlanningConversation(epicID: UUID) throws {
+    try withStatement(
+      "DELETE FROM epic_planning_conversations WHERE epic_id = ?;"
+    ) { statement in
+      try bind(epicID.uuidString, to: 1, in: statement)
+      try stepDone(statement)
     }
   }
 
@@ -261,12 +323,158 @@ public actor SQLiteStore {
     return try fetchEpic(id: id)
   }
 
+  public func moveEpics(ids: [UUID], before targetID: UUID?) throws -> [Epic] {
+    let movingIDs = Set(ids)
+    guard !movingIDs.isEmpty, let firstID = ids.first else { return [] }
+    let firstEpic = try fetchEpic(id: firstID)
+    var epics = try fetchEpics(productID: firstEpic.productID)
+      .filter { $0.status != .archived }
+    let epicsByID = Dictionary(uniqueKeysWithValues: epics.map { ($0.id, $0) })
+
+    for id in movingIDs {
+      guard let epic = epicsByID[id], epic.productID == firstEpic.productID else {
+        throw PersistenceError.corruptData("Only active epics in this product can be reordered")
+      }
+    }
+
+    let movingEpics = epics.filter { movingIDs.contains($0.id) }
+    epics.removeAll { movingIDs.contains($0.id) }
+    let insertionIndex: Int
+    if let targetID {
+      guard let targetIndex = epics.firstIndex(where: { $0.id == targetID }) else {
+        throw PersistenceError.corruptData("The epic drop target is no longer available")
+      }
+      insertionIndex = targetIndex
+    } else {
+      insertionIndex = epics.endIndex
+    }
+    epics.insert(contentsOf: movingEpics, at: insertionIndex)
+
+    try transaction {
+      for (index, epic) in epics.enumerated() {
+        try withStatement(
+          "UPDATE epics SET rank = ?, updated_at = ? WHERE id = ?;"
+        ) { statement in
+          try bind(Int64((index + 1) * 1_000), to: 1, in: statement)
+          try bind(Date().timeIntervalSince1970, to: 2, in: statement)
+          try bind(epic.id.uuidString, to: 3, in: statement)
+          try stepDone(statement)
+        }
+      }
+      for epic in movingEpics {
+        _ = try insertEvent(
+          productID: epic.productID,
+          kind: "epic.ranked",
+          actor: "Product Owner",
+          detail: targetID == nil ? "\(epic.title) moved to bottom" : "\(epic.title) reordered"
+        )
+      }
+    }
+    return try fetchEpics(productID: firstEpic.productID)
+  }
+
+  public func archiveEpic(id: UUID) throws {
+    let epic = try fetchEpic(id: id)
+    guard epic.status != .archived else { return }
+    let childTickets = try fetchWorkItems(productID: epic.productID)
+      .filter { $0.epicID == epic.id }
+    let planningStates: Set<WorkItemState> = [.backlog, .refining, .ready]
+    let unfinishedTickets = childTickets.filter {
+      $0.state != .released && $0.state != .cancelled
+    }
+    let deliveryTickets = unfinishedTickets.filter {
+      !planningStates.contains($0.state)
+    }
+    guard deliveryTickets.isEmpty else {
+      let ticketKeys = deliveryTickets.map(\.key).sorted().joined(separator: ", ")
+      throw PersistenceError.corruptData(
+        "Finish or remove \(ticketKeys) from active delivery before archiving this epic"
+      )
+    }
+    let ticketsToArchive = try prepareWorkItemsForArchival(
+      ids: Set(unfinishedTickets.map(\.id))
+    )
+    let updatedAt = Date()
+    let proposedSuggestionTitles = try withStatement(
+      """
+      SELECT suggestions.title
+      FROM ticket_suggestions AS suggestions
+      JOIN suggestion_sessions AS sessions ON sessions.id = suggestions.session_id
+      WHERE sessions.epic_id = ? AND suggestions.status = 'proposed'
+      ORDER BY sessions.created_at ASC, suggestions.position ASC;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      var titles: [String] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        titles.append(try text(statement, column: 0))
+      }
+      return titles
+    }
+    try transaction {
+      try archivePreparedWorkItems(ticketsToArchive)
+      try withStatement(
+        """
+        UPDATE ticket_suggestions
+        SET status = ?, accepted_work_item_id = NULL, updated_at = ?
+        WHERE status = 'proposed'
+          AND session_id IN (
+            SELECT id FROM suggestion_sessions WHERE epic_id = ?
+          );
+        """
+      ) { statement in
+        try bind(TicketSuggestionStatus.rejected.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      try withStatement(
+        """
+        UPDATE suggestion_sessions
+        SET status = ?, error_message = NULL, updated_at = ?
+        WHERE epic_id = ? AND status != ?;
+        """
+      ) { statement in
+        try bind(SuggestionSessionStatus.cancelled.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try bind(SuggestionSessionStatus.cancelled.rawValue, to: 4, in: statement)
+        try stepDone(statement)
+      }
+      for title in proposedSuggestionTitles {
+        _ = try insertEvent(
+          productID: epic.productID,
+          kind: "ticket_suggestion.rejected",
+          actor: "Product Owner",
+          detail: title
+        )
+      }
+      try withStatement(
+        "UPDATE epics SET status = ?, updated_at = ? WHERE id = ?;"
+      ) { statement in
+        try bind(EpicStatus.archived.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: epic.productID,
+        kind: "epic.archived",
+        actor: "Product Owner",
+        detail: epic.title
+      )
+    }
+  }
+
   public func assignWorkItemToEpic(id: UUID, epicID: UUID?) throws -> WorkItem {
     let item = try fetchWorkItem(id: id)
     if let epicID {
       let epic = try fetchEpic(id: epicID)
       guard epic.productID == item.productID else {
         throw PersistenceError.corruptData("Epic and ticket must belong to the same product")
+      }
+      guard epic.status != .archived else {
+        throw PersistenceError.corruptData("Tickets cannot be assigned to an archived epic")
       }
     }
     try withStatement(
@@ -641,26 +849,62 @@ public actor SQLiteStore {
   }
 
   public func archiveWorkItem(id: UUID) throws {
-    var workItem = try fetchWorkItem(id: id)
+    try archiveWorkItems(ids: [id])
+  }
+
+  public func archiveWorkItems(ids: [UUID]) throws {
+    let workItems = try prepareWorkItemsForArchival(ids: Set(ids))
+    guard !workItems.isEmpty else { return }
+    try transaction {
+      try archivePreparedWorkItems(workItems)
+    }
+  }
+
+  private func prepareWorkItemsForArchival(ids archiveIDs: Set<UUID>) throws -> [WorkItem] {
+    guard !archiveIDs.isEmpty else { return [] }
+    var workItems = try archiveIDs.map { try fetchWorkItem(id: $0) }
+    guard let productID = workItems.first?.productID,
+      workItems.allSatisfy({ $0.productID == productID })
+    else {
+      throw PersistenceError.corruptData("Archived tickets must belong to one product")
+    }
     let planningStates: Set<WorkItemState> = [.backlog, .refining, .ready]
-    guard planningStates.contains(workItem.state) else {
+    guard workItems.allSatisfy({ planningStates.contains($0.state) }) else {
       throw PersistenceError.corruptData("Only backlog tickets can be archived")
     }
-    let dependencies = try fetchWorkItemDependencies(productID: workItem.productID)
+    let dependencies = try fetchWorkItemDependencies(productID: productID)
     let activeDependent = dependencies
-      .filter { $0.dependsOnWorkItemID == id }
+      .filter {
+        archiveIDs.contains($0.dependsOnWorkItemID)
+          && !archiveIDs.contains($0.workItemID)
+      }
       .compactMap { try? fetchWorkItem(id: $0.workItemID) }
       .first { planningStates.contains($0.state) }
     if let activeDependent {
+      let prerequisiteKey = dependencies
+        .first { dependency in
+          dependency.workItemID == activeDependent.id
+            && archiveIDs.contains(dependency.dependsOnWorkItemID)
+        }
+        .flatMap { dependency in
+          workItems.first { $0.id == dependency.dependsOnWorkItemID }?.key
+        } ?? "the selected ticket"
       throw PersistenceError.corruptData(
-        "Remove the relationship from \(activeDependent.key) before archiving \(workItem.key)"
+        "Remove the relationship from \(activeDependent.key) before archiving \(prerequisiteKey)"
       )
     }
 
-    workItem.state = .cancelled
-    workItem.version += 1
-    workItem.updatedAt = Date()
-    try transaction {
+    let archivedAt = Date()
+    for index in workItems.indices {
+      workItems[index].state = .cancelled
+      workItems[index].version += 1
+      workItems[index].updatedAt = archivedAt
+    }
+    return workItems
+  }
+
+  private func archivePreparedWorkItems(_ workItems: [WorkItem]) throws {
+    for workItem in workItems {
       try withStatement(
         """
         DELETE FROM sprint_items
@@ -723,20 +967,21 @@ public actor SQLiteStore {
       try withStatement(
         """
         INSERT INTO suggestion_sessions (
-            id, product_id, epic_id, status, codex_thread_id, codex_turn_id,
+            id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
             error_message, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(session.id.uuidString, to: 1, in: statement)
         try bind(session.productID.uuidString, to: 2, in: statement)
         try bindOptionalUUID(session.epicID, to: 3, in: statement)
-        try bind(session.status.rawValue, to: 4, in: statement)
-        try bindNull(to: 5, in: statement)
+        try bindNull(to: 4, in: statement)
+        try bind(session.status.rawValue, to: 5, in: statement)
         try bindNull(to: 6, in: statement)
         try bindNull(to: 7, in: statement)
-        try bind(session.createdAt.timeIntervalSince1970, to: 8, in: statement)
-        try bind(session.updatedAt.timeIntervalSince1970, to: 9, in: statement)
+        try bindNull(to: 8, in: statement)
+        try bind(session.createdAt.timeIntervalSince1970, to: 9, in: statement)
+        try bind(session.updatedAt.timeIntervalSince1970, to: 10, in: statement)
         try stepDone(statement)
       }
       _ = try insertEvent(
@@ -782,97 +1027,18 @@ public actor SQLiteStore {
     }
 
     let now = Date()
-    let idsByReference = Dictionary(
-      uniqueKeysWithValues: drafts.map { ($0.reference, UUID()) }
+    let insertContext = try ticketSuggestionInsertContext(
+      productID: session.productID,
+      drafts: drafts
     )
-    guard idsByReference.count == drafts.count else {
-      throw PersistenceError.corruptData("Suggestion references must be unique")
-    }
-    let existingItemsByKey = Dictionary(
-      uniqueKeysWithValues: try fetchWorkItems(productID: session.productID).map { ($0.key, $0) }
-    )
-    for dependencyKey in drafts.flatMap(\.dependsOnExistingWorkItemKeys) {
-      guard existingItemsByKey[dependencyKey] != nil else {
-        throw PersistenceError.corruptData(
-          "Unknown existing backlog dependency \(dependencyKey)"
-        )
-      }
-    }
-
     try transaction {
-      for (position, draft) in drafts.enumerated() {
-        guard let suggestionID = idsByReference[draft.reference] else {
-          throw PersistenceError.corruptData("Missing suggestion reference")
-        }
-        try withStatement(
-          """
-          INSERT INTO ticket_suggestions (
-              id, session_id, reference, position, title, body,
-              acceptance_criteria_json, suggested_role, priority, rationale,
-              status, accepted_work_item_id, created_at, updated_at, ticket_type
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-          """
-        ) { statement in
-          try bind(suggestionID.uuidString, to: 1, in: statement)
-          try bind(sessionID.uuidString, to: 2, in: statement)
-          try bind(draft.reference, to: 3, in: statement)
-          try bind(Int64(position), to: 4, in: statement)
-          try bind(draft.title, to: 5, in: statement)
-          try bind(draft.body, to: 6, in: statement)
-          try bind(try encodeStringArray(draft.acceptanceCriteria), to: 7, in: statement)
-          try bind(draft.suggestedRole.rawValue, to: 8, in: statement)
-          try bind(Int64(draft.priority.rawValue), to: 9, in: statement)
-          try bind(draft.rationale, to: 10, in: statement)
-          try bind(TicketSuggestionStatus.proposed.rawValue, to: 11, in: statement)
-          try bindNull(to: 12, in: statement)
-          try bind(now.timeIntervalSince1970, to: 13, in: statement)
-          try bind(now.timeIntervalSince1970, to: 14, in: statement)
-          try bind(draft.type.rawValue, to: 15, in: statement)
-          try stepDone(statement)
-        }
-      }
-
-      for draft in drafts {
-        guard let suggestionID = idsByReference[draft.reference] else { continue }
-        for dependencyReference in Set(draft.dependsOnReferences) {
-          guard let dependencyID = idsByReference[dependencyReference] else {
-            throw PersistenceError.corruptData(
-              "Unknown dependency reference \(dependencyReference)"
-            )
-          }
-          guard dependencyID != suggestionID else {
-            throw PersistenceError.corruptData("A suggestion cannot depend on itself")
-          }
-          try withStatement(
-            """
-            INSERT INTO suggestion_dependencies (suggestion_id, depends_on_suggestion_id)
-            VALUES (?, ?);
-            """
-          ) { statement in
-            try bind(suggestionID.uuidString, to: 1, in: statement)
-            try bind(dependencyID.uuidString, to: 2, in: statement)
-            try stepDone(statement)
-          }
-        }
-        for dependencyKey in Set(draft.dependsOnExistingWorkItemKeys) {
-          guard let dependency = existingItemsByKey[dependencyKey] else {
-            throw PersistenceError.corruptData(
-              "Unknown existing backlog dependency \(dependencyKey)"
-            )
-          }
-          try withStatement(
-            """
-            INSERT INTO suggestion_existing_dependencies (
-                suggestion_id, depends_on_work_item_id
-            ) VALUES (?, ?);
-            """
-          ) { statement in
-            try bind(suggestionID.uuidString, to: 1, in: statement)
-            try bind(dependency.id.uuidString, to: 2, in: statement)
-            try stepDone(statement)
-          }
-        }
-      }
+      try insertTicketSuggestionDrafts(
+        drafts,
+        sessionID: sessionID,
+        idsByReference: insertContext.idsByReference,
+        existingItemsByKey: insertContext.existingItemsByKey,
+        now: now
+      )
 
       try withStatement(
         """
@@ -893,6 +1059,180 @@ public actor SQLiteStore {
       )
     }
     return try fetchTicketSuggestionBatch(sessionID: sessionID)
+  }
+
+  public func createFollowUpTicketSuggestionSession(
+    sourceWorkItemID: UUID,
+    drafts: [TicketSuggestionDraft]
+  ) throws -> TicketSuggestionBatch {
+    guard !drafts.isEmpty else {
+      throw PersistenceError.corruptData("Follow-up suggestions cannot be empty")
+    }
+    if let existingSession = try fetchSuggestionSession(
+      sourceWorkItemID: sourceWorkItemID
+    ) {
+      return try fetchTicketSuggestionBatch(sessionID: existingSession.id)
+    }
+    let source = try fetchWorkItem(id: sourceWorkItemID)
+    let now = Date()
+    let session = SuggestionSession(
+      productID: source.productID,
+      epicID: source.epicID,
+      sourceWorkItemID: source.id,
+      status: .ready,
+      createdAt: now,
+      updatedAt: now
+    )
+    let insertContext = try ticketSuggestionInsertContext(
+      productID: source.productID,
+      drafts: drafts
+    )
+    try transaction {
+      try withStatement(
+        """
+        INSERT INTO suggestion_sessions (
+            id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
+            error_message, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+      ) { statement in
+        try bind(session.id.uuidString, to: 1, in: statement)
+        try bind(session.productID.uuidString, to: 2, in: statement)
+        try bindOptionalUUID(session.epicID, to: 3, in: statement)
+        try bind(source.id.uuidString, to: 4, in: statement)
+        try bind(session.status.rawValue, to: 5, in: statement)
+        try bindNull(to: 6, in: statement)
+        try bindNull(to: 7, in: statement)
+        try bindNull(to: 8, in: statement)
+        try bind(now.timeIntervalSince1970, to: 9, in: statement)
+        try bind(now.timeIntervalSince1970, to: 10, in: statement)
+        try stepDone(statement)
+      }
+      try insertTicketSuggestionDrafts(
+        drafts,
+        sessionID: session.id,
+        idsByReference: insertContext.idsByReference,
+        existingItemsByKey: insertContext.existingItemsByKey,
+        now: now
+      )
+      _ = try insertEvent(
+        productID: source.productID,
+        workItemID: source.id,
+        kind: "ticket_suggestions.created_from_research",
+        actor: "Business Analyst",
+        detail: "\(drafts.count) follow-up proposals"
+      )
+    }
+    return try fetchTicketSuggestionBatch(sessionID: session.id)
+  }
+
+  private func ticketSuggestionInsertContext(
+    productID: UUID,
+    drafts: [TicketSuggestionDraft]
+  ) throws -> (
+    idsByReference: [String: UUID],
+    existingItemsByKey: [String: WorkItem]
+  ) {
+    var idsByReference: [String: UUID] = [:]
+    for draft in drafts {
+      guard idsByReference[draft.reference] == nil else {
+        throw PersistenceError.corruptData("Suggestion references must be unique")
+      }
+      idsByReference[draft.reference] = UUID()
+    }
+    let existingItemsByKey = Dictionary(
+      uniqueKeysWithValues: try fetchWorkItems(productID: productID).map { ($0.key, $0) }
+    )
+    for dependencyKey in drafts.flatMap(\.dependsOnExistingWorkItemKeys) {
+      guard existingItemsByKey[dependencyKey] != nil else {
+        throw PersistenceError.corruptData(
+          "Unknown existing backlog dependency \(dependencyKey)"
+        )
+      }
+    }
+    return (idsByReference, existingItemsByKey)
+  }
+
+  private func insertTicketSuggestionDrafts(
+    _ drafts: [TicketSuggestionDraft],
+    sessionID: UUID,
+    idsByReference: [String: UUID],
+    existingItemsByKey: [String: WorkItem],
+    now: Date
+  ) throws {
+    for (position, draft) in drafts.enumerated() {
+      guard let suggestionID = idsByReference[draft.reference] else {
+        throw PersistenceError.corruptData("Missing suggestion reference")
+      }
+      try withStatement(
+        """
+        INSERT INTO ticket_suggestions (
+            id, session_id, reference, position, title, body,
+            acceptance_criteria_json, suggested_role, priority, rationale,
+            status, accepted_work_item_id, created_at, updated_at, ticket_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+      ) { statement in
+        try bind(suggestionID.uuidString, to: 1, in: statement)
+        try bind(sessionID.uuidString, to: 2, in: statement)
+        try bind(draft.reference, to: 3, in: statement)
+        try bind(Int64(position), to: 4, in: statement)
+        try bind(draft.title, to: 5, in: statement)
+        try bind(draft.body, to: 6, in: statement)
+        try bind(try encodeStringArray(draft.acceptanceCriteria), to: 7, in: statement)
+        try bind(draft.suggestedRole.rawValue, to: 8, in: statement)
+        try bind(Int64(draft.priority.rawValue), to: 9, in: statement)
+        try bind(draft.rationale, to: 10, in: statement)
+        try bind(TicketSuggestionStatus.proposed.rawValue, to: 11, in: statement)
+        try bindNull(to: 12, in: statement)
+        try bind(now.timeIntervalSince1970, to: 13, in: statement)
+        try bind(now.timeIntervalSince1970, to: 14, in: statement)
+        try bind(draft.type.rawValue, to: 15, in: statement)
+        try stepDone(statement)
+      }
+    }
+
+    for draft in drafts {
+      guard let suggestionID = idsByReference[draft.reference] else { continue }
+      for dependencyReference in Set(draft.dependsOnReferences) {
+        guard let dependencyID = idsByReference[dependencyReference] else {
+          throw PersistenceError.corruptData(
+            "Unknown dependency reference \(dependencyReference)"
+          )
+        }
+        guard dependencyID != suggestionID else {
+          throw PersistenceError.corruptData("A suggestion cannot depend on itself")
+        }
+        try withStatement(
+          """
+          INSERT INTO suggestion_dependencies (suggestion_id, depends_on_suggestion_id)
+          VALUES (?, ?);
+          """
+        ) { statement in
+          try bind(suggestionID.uuidString, to: 1, in: statement)
+          try bind(dependencyID.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+      for dependencyKey in Set(draft.dependsOnExistingWorkItemKeys) {
+        guard let dependency = existingItemsByKey[dependencyKey] else {
+          throw PersistenceError.corruptData(
+            "Unknown existing backlog dependency \(dependencyKey)"
+          )
+        }
+        try withStatement(
+          """
+          INSERT INTO suggestion_existing_dependencies (
+              suggestion_id, depends_on_work_item_id
+          ) VALUES (?, ?);
+          """
+        ) { statement in
+          try bind(suggestionID.uuidString, to: 1, in: statement)
+          try bind(dependency.id.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+    }
   }
 
   public func failTicketSuggestionSession(sessionID: UUID, message: String) throws {
@@ -948,11 +1288,30 @@ public actor SQLiteStore {
   ) throws -> TicketSuggestionBatch? {
     let session: SuggestionSession? = try withStatement(
       """
-      SELECT id, product_id, epic_id, status, codex_thread_id, codex_turn_id,
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
              error_message, created_at, updated_at
-      FROM suggestion_sessions
+      FROM suggestion_sessions AS sessions
       WHERE product_id = ?
-      ORDER BY created_at DESC
+      ORDER BY
+        CASE
+          WHEN status = 'generating' THEN 0
+          WHEN EXISTS (
+            SELECT 1
+            FROM ticket_suggestions
+            WHERE session_id = sessions.id AND status = 'proposed'
+          ) THEN 1
+          WHEN status = 'failed' THEN 2
+          ELSE 3
+        END,
+        CASE
+          WHEN status = 'generating' THEN created_at
+          WHEN EXISTS (
+            SELECT 1
+            FROM ticket_suggestions
+            WHERE session_id = sessions.id AND status = 'proposed'
+          ) THEN created_at
+          ELSE -created_at
+        END ASC
       LIMIT 1;
       """
     ) { statement in
@@ -971,25 +1330,32 @@ public actor SQLiteStore {
     guard decision == .accepted || decision == .rejected else {
       throw PersistenceError.corruptData("A proposal must be accepted or rejected")
     }
+    if decision == .rejected {
+      return try rejectTicketSuggestionCascade(id: id)
+    }
     let suggestion = try fetchTicketSuggestion(id: id)
     let session = try fetchSuggestionSession(id: suggestion.sessionID)
     guard suggestion.status == .proposed else {
       return try fetchTicketSuggestionBatch(sessionID: session.id)
     }
+    let batch = try fetchTicketSuggestionBatch(sessionID: session.id)
+    let suggestionsToAccept = try suggestedPrerequisiteClosure(
+      including: suggestion,
+      in: batch
+    )
+    let acceptedAt = Date()
 
     try transaction {
-      var acceptedWorkItemID: UUID?
-      if decision == .accepted {
+      for affected in suggestionsToAccept {
         let workItem = try insertWorkItem(
           productID: session.productID,
-          title: suggestion.title,
-          type: suggestion.type,
-          body: suggestion.body,
-          acceptanceCriteria: suggestion.acceptanceCriteria,
-          priority: suggestion.priority,
+          title: affected.title,
+          type: affected.type,
+          body: affected.body,
+          acceptanceCriteria: affected.acceptanceCriteria,
+          priority: affected.priority,
           epicID: session.epicID
         )
-        acceptedWorkItemID = workItem.id
         _ = try insertEvent(
           productID: session.productID,
           workItemID: workItem.id,
@@ -997,32 +1363,149 @@ public actor SQLiteStore {
           actor: "owner",
           detail: workItem.key
         )
-      }
 
-      try withStatement(
-        """
-        UPDATE ticket_suggestions
-        SET status = ?, accepted_work_item_id = ?, updated_at = ?
-        WHERE id = ? AND status = 'proposed';
-        """
-      ) { statement in
-        try bind(decision.rawValue, to: 1, in: statement)
-        try bindOptionalUUID(acceptedWorkItemID, to: 2, in: statement)
-        try bind(Date().timeIntervalSince1970, to: 3, in: statement)
-        try bind(id.uuidString, to: 4, in: statement)
-        try stepDone(statement)
+        try withStatement(
+          """
+          UPDATE ticket_suggestions
+          SET status = ?, accepted_work_item_id = ?, updated_at = ?
+          WHERE id = ? AND status = 'proposed';
+          """
+        ) { statement in
+          try bind(TicketSuggestionStatus.accepted.rawValue, to: 1, in: statement)
+          try bind(workItem.id.uuidString, to: 2, in: statement)
+          try bind(acceptedAt.timeIntervalSince1970, to: 3, in: statement)
+          try bind(affected.id.uuidString, to: 4, in: statement)
+          try stepDone(statement)
+        }
+        _ = try insertEvent(
+          productID: session.productID,
+          kind: "ticket_suggestion.accepted",
+          actor: "owner",
+          detail: affected.title
+        )
       }
+      try reconcileAcceptedSuggestionDependencies(sessionID: session.id)
+      try normalizePlanningRanks(productID: session.productID)
+    }
+    return try fetchTicketSuggestionBatch(sessionID: session.id)
+  }
 
-      if decision == .accepted {
-        try reconcileAcceptedSuggestionDependencies(sessionID: session.id)
-        try normalizePlanningRanks(productID: session.productID)
+  private func suggestedPrerequisiteClosure(
+    including suggestion: TicketSuggestion,
+    in batch: TicketSuggestionBatch
+  ) throws -> [TicketSuggestion] {
+    let suggestionsByID = Dictionary(
+      uniqueKeysWithValues: batch.suggestions.map { ($0.id, $0) }
+    )
+    var closureIDs: Set<UUID> = [suggestion.id]
+    var frontier = [suggestion.id]
+
+    while let candidateID = frontier.popLast() {
+      guard let candidate = suggestionsByID[candidateID] else {
+        throw PersistenceError.corruptData("A ticket suggestion dependency is missing")
       }
-      _ = try insertEvent(
-        productID: session.productID,
-        kind: "ticket_suggestion.\(decision.rawValue)",
-        actor: "owner",
-        detail: suggestion.title
-      )
+      for dependencyID in candidate.dependencyIDs {
+        guard let dependency = suggestionsByID[dependencyID] else {
+          throw PersistenceError.corruptData("A ticket suggestion dependency is missing")
+        }
+        guard dependency.status != .rejected else {
+          throw PersistenceError.corruptData(
+            "A ticket suggestion depends on a rejected prerequisite"
+          )
+        }
+        if closureIDs.insert(dependencyID).inserted {
+          frontier.append(dependencyID)
+        }
+      }
+    }
+
+    var remaining = Dictionary(
+      uniqueKeysWithValues: batch.suggestions
+        .filter { closureIDs.contains($0.id) && $0.status == .proposed }
+        .map { ($0.id, $0) }
+    )
+    var ordered: [TicketSuggestion] = []
+    while !remaining.isEmpty {
+      let ready = remaining.values
+        .filter { candidate in
+          candidate.dependencyIDs.allSatisfy { remaining[$0] == nil }
+        }
+        .sorted { $0.position < $1.position }
+      guard !ready.isEmpty else {
+        throw PersistenceError.corruptData("Ticket suggestion dependencies contain a cycle")
+      }
+      ordered.append(contentsOf: ready)
+      for candidate in ready {
+        remaining.removeValue(forKey: candidate.id)
+      }
+    }
+    return ordered
+  }
+
+  public func rejectTicketSuggestionCascade(id: UUID) throws -> TicketSuggestionBatch {
+    let suggestion = try fetchTicketSuggestion(id: id)
+    let session = try fetchSuggestionSession(id: suggestion.sessionID)
+    guard suggestion.status == .proposed else {
+      return try fetchTicketSuggestionBatch(sessionID: session.id)
+    }
+
+    let batch = try fetchTicketSuggestionBatch(sessionID: session.id)
+    var cascadeIDs: Set<UUID> = [suggestion.id]
+    var foundDependent = true
+    while foundDependent {
+      foundDependent = false
+      for candidate in batch.suggestions where !cascadeIDs.contains(candidate.id) {
+        if candidate.dependencyIDs.contains(where: cascadeIDs.contains) {
+          cascadeIDs.insert(candidate.id)
+          foundDependent = true
+        }
+      }
+    }
+
+    let affectedSuggestions = batch.suggestions
+      .filter { cascadeIDs.contains($0.id) }
+      .sorted { $0.position < $1.position }
+    let proposedSuggestions = affectedSuggestions.filter { $0.status == .proposed }
+    var acceptedWorkItemIDs: Set<UUID> = []
+    for dependent in affectedSuggestions where dependent.status == .accepted {
+      guard let workItemID = dependent.acceptedWorkItemID else {
+        throw PersistenceError.corruptData(
+          "An accepted dependent suggestion has no backlog ticket"
+        )
+      }
+      let workItem = try fetchWorkItem(id: workItemID)
+      if workItem.state != .cancelled {
+        acceptedWorkItemIDs.insert(workItemID)
+      }
+    }
+    let workItemsToArchive = try prepareWorkItemsForArchival(ids: acceptedWorkItemIDs)
+    let decidedAt = Date()
+
+    try transaction {
+      try archivePreparedWorkItems(workItemsToArchive)
+      for affected in proposedSuggestions {
+        try withStatement(
+          """
+          UPDATE ticket_suggestions
+          SET status = ?, accepted_work_item_id = NULL, updated_at = ?
+          WHERE id = ? AND status = 'proposed';
+          """
+        ) { statement in
+          try bind(TicketSuggestionStatus.rejected.rawValue, to: 1, in: statement)
+          try bind(decidedAt.timeIntervalSince1970, to: 2, in: statement)
+          try bind(affected.id.uuidString, to: 3, in: statement)
+          try stepDone(statement)
+        }
+        _ = try insertEvent(
+          productID: session.productID,
+          kind:
+            affected.id == suggestion.id
+              ? "ticket_suggestion.rejected"
+              : "ticket_suggestion.rejected_cascade",
+          actor: "owner",
+          detail: affected.title
+        )
+      }
     }
     return try fetchTicketSuggestionBatch(sessionID: session.id)
   }
@@ -1099,22 +1582,44 @@ public actor SQLiteStore {
     workItemID: UUID,
     authorKind: CommentAuthorKind,
     authorName: String,
-    body: String
+    body: String,
+    ownerQuestion: TicketOwnerQuestion? = nil,
+    answeredQuestions: [TicketAnsweredQuestion] = []
   ) throws -> TicketComment {
     let workItem = try fetchWorkItem(id: workItemID)
     let comment = TicketComment(
       workItemID: workItemID,
       authorKind: authorKind,
       authorName: authorName,
-      body: body
+      body: body,
+      ownerQuestion: ownerQuestion,
+      answeredQuestions: answeredQuestions
     )
+    let ownerQuestionJSON = try ownerQuestion.map { question in
+      let data = try encoder.encode(question)
+      guard let json = String(data: data, encoding: .utf8) else {
+        throw PersistenceError.corruptData("Could not encode the Product Owner question")
+      }
+      return json
+    }
+    let answeredQuestionsJSON: String?
+    if answeredQuestions.isEmpty {
+      answeredQuestionsJSON = nil
+    } else {
+      let data = try encoder.encode(answeredQuestions)
+      guard let json = String(data: data, encoding: .utf8) else {
+        throw PersistenceError.corruptData("Could not encode answered questions")
+      }
+      answeredQuestionsJSON = json
+    }
 
     try transaction {
       try withStatement(
         """
         INSERT INTO ticket_comments (
-            id, work_item_id, author_kind, author_name, body, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?);
+            id, work_item_id, author_kind, author_name, body, owner_question_json,
+            answered_questions_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(comment.id.uuidString, to: 1, in: statement)
@@ -1122,7 +1627,9 @@ public actor SQLiteStore {
         try bind(comment.authorKind.rawValue, to: 3, in: statement)
         try bind(comment.authorName, to: 4, in: statement)
         try bind(comment.body, to: 5, in: statement)
-        try bind(comment.createdAt.timeIntervalSince1970, to: 6, in: statement)
+        try bindOptionalString(ownerQuestionJSON, to: 6, in: statement)
+        try bindOptionalString(answeredQuestionsJSON, to: 7, in: statement)
+        try bind(comment.createdAt.timeIntervalSince1970, to: 8, in: statement)
         try stepDone(statement)
       }
 
@@ -1141,7 +1648,8 @@ public actor SQLiteStore {
   public func fetchComments(workItemID: UUID) throws -> [TicketComment] {
     try withStatement(
       """
-      SELECT id, work_item_id, author_kind, author_name, body, created_at
+      SELECT id, work_item_id, author_kind, author_name, body, owner_question_json,
+             answered_questions_json, created_at
       FROM ticket_comments
       WHERE work_item_id = ?
       ORDER BY created_at ASC;
@@ -1164,7 +1672,19 @@ public actor SQLiteStore {
             authorKind: authorKind,
             authorName: try text(statement, column: 3),
             body: try text(statement, column: 4),
-            createdAt: date(statement, column: 5)
+            ownerQuestion: try optionalText(statement, column: 5).map { json in
+              guard let data = json.data(using: .utf8) else {
+                throw PersistenceError.corruptData("Invalid Product Owner question text")
+              }
+              return try decoder.decode(TicketOwnerQuestion.self, from: data)
+            },
+            answeredQuestions: try optionalText(statement, column: 6).map { json in
+              guard let data = json.data(using: .utf8) else {
+                throw PersistenceError.corruptData("Invalid answered question text")
+              }
+              return try decoder.decode([TicketAnsweredQuestion].self, from: data)
+            } ?? [],
+            createdAt: date(statement, column: 7)
           )
         )
       }
@@ -2501,32 +3021,60 @@ public actor SQLiteStore {
     guard !notes.isEmpty else { return }
     try transaction {
       for note in notes {
-        try withStatement(
-          """
-          INSERT OR IGNORE INTO retrospective_notes (
-              id, product_id, sprint_id, work_item_id, profile_id, author_name,
-              category, body, action_status, action_destination, accepted_work_item_id,
-              created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-          """
-        ) { statement in
-          try bind(note.id.uuidString, to: 1, in: statement)
-          try bind(note.productID.uuidString, to: 2, in: statement)
-          try bind(note.sprintID.uuidString, to: 3, in: statement)
-          try bindOptionalUUID(note.workItemID, to: 4, in: statement)
-          try bindOptionalUUID(note.profileID, to: 5, in: statement)
-          try bind(note.authorName, to: 6, in: statement)
-          try bind(note.category.rawValue, to: 7, in: statement)
-          try bind(note.body, to: 8, in: statement)
-          try bindOptionalString(note.actionStatus?.rawValue, to: 9, in: statement)
-          try bindOptionalString(note.actionDestination?.rawValue, to: 10, in: statement)
-          try bindOptionalUUID(note.acceptedWorkItemID, to: 11, in: statement)
-          try bind(note.createdAt.timeIntervalSince1970, to: 12, in: statement)
-          try bind(note.updatedAt.timeIntervalSince1970, to: 13, in: statement)
-          try stepDone(statement)
-        }
+        try insertRetrospectiveNoteIfNeeded(note)
       }
     }
+  }
+
+  public func proposeRetrospectiveAction(
+    productID: UUID,
+    sprintID: UUID,
+    body: String,
+    destination: RetrospectiveActionDestination
+  ) throws -> RetrospectiveNote {
+    let sprint = try fetchSprint(id: sprintID)
+    guard sprint.productID == productID else {
+      throw PersistenceError.corruptData(
+        "The retrospective does not belong to the selected product."
+      )
+    }
+    guard sprint.state == .completed else {
+      throw PersistenceError.corruptData(
+        "Retrospective changes can only be proposed after the sprint is complete."
+      )
+    }
+    guard sprint.retrospectiveConcludedAt == nil else {
+      throw PersistenceError.corruptData(
+        "This retrospective has already been concluded."
+      )
+    }
+
+    let proposal = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !proposal.isEmpty else {
+      throw PersistenceError.corruptData(
+        "A retrospective proposal needs a description."
+      )
+    }
+
+    let note = RetrospectiveNote(
+      productID: productID,
+      sprintID: sprintID,
+      authorName: "Product Owner",
+      category: .suggestedAction,
+      body: proposal,
+      actionStatus: .proposed,
+      actionDestination: destination
+    )
+    try transaction {
+      try insertRetrospectiveNoteIfNeeded(note)
+      _ = try insertEvent(
+        productID: productID,
+        kind: "retrospective.action_proposed",
+        actor: "Product Owner",
+        detail: note.id.uuidString
+      )
+    }
+    return note
   }
 
   public func fetchRetrospectiveNotes(productID: UUID) throws -> [RetrospectiveNote] {
@@ -2621,6 +3169,33 @@ public actor SQLiteStore {
         createdAt: date(statement, column: 11),
         updatedAt: date(statement, column: 12)
       )
+    }
+  }
+
+  private func insertRetrospectiveNoteIfNeeded(_ note: RetrospectiveNote) throws {
+    try withStatement(
+      """
+      INSERT OR IGNORE INTO retrospective_notes (
+          id, product_id, sprint_id, work_item_id, profile_id, author_name,
+          category, body, action_status, action_destination, accepted_work_item_id,
+          created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(note.id.uuidString, to: 1, in: statement)
+      try bind(note.productID.uuidString, to: 2, in: statement)
+      try bind(note.sprintID.uuidString, to: 3, in: statement)
+      try bindOptionalUUID(note.workItemID, to: 4, in: statement)
+      try bindOptionalUUID(note.profileID, to: 5, in: statement)
+      try bind(note.authorName, to: 6, in: statement)
+      try bind(note.category.rawValue, to: 7, in: statement)
+      try bind(note.body, to: 8, in: statement)
+      try bindOptionalString(note.actionStatus?.rawValue, to: 9, in: statement)
+      try bindOptionalString(note.actionDestination?.rawValue, to: 10, in: statement)
+      try bindOptionalUUID(note.acceptedWorkItemID, to: 11, in: statement)
+      try bind(note.createdAt.timeIntervalSince1970, to: 12, in: statement)
+      try bind(note.updatedAt.timeIntervalSince1970, to: 13, in: statement)
+      try stepDone(statement)
     }
   }
 
@@ -4191,6 +4766,201 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    if try !migrationApplied(version: 27, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE epics
+        ADD COLUMN rank INTEGER NOT NULL DEFAULT 0;
+
+        UPDATE epics
+        SET rank = rowid * 1000
+        WHERE rank = 0;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (27, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 28, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE work_items
+        SET epic_id = NULL,
+            version = version + 1,
+            updated_at = unixepoch()
+        WHERE state NOT IN ('released', 'cancelled')
+          AND epic_id IN (
+            SELECT id
+            FROM epics
+            WHERE status = 'archived'
+          );
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (28, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 29, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE epic_planning_conversations (
+            epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE,
+            snapshot_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (29, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 30, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE epics
+        SET status = 'active',
+            updated_at = unixepoch()
+        WHERE status = 'draft';
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (30, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 31, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE ticket_suggestions
+        SET reference = '__proposal__' || id;
+
+        UPDATE ticket_suggestions
+        SET reference = 'S' || CAST(position + 1 AS TEXT);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (31, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 32, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE suggestion_sessions
+        ADD COLUMN source_work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL;
+
+        CREATE UNIQUE INDEX idx_suggestion_sessions_source_work_item
+            ON suggestion_sessions(source_work_item_id)
+            WHERE source_work_item_id IS NOT NULL;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (32, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 33, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE ticket_suggestions
+        SET status = 'rejected',
+            accepted_work_item_id = NULL,
+            updated_at = unixepoch()
+        WHERE status = 'proposed'
+          AND session_id IN (
+            SELECT sessions.id
+            FROM suggestion_sessions AS sessions
+            JOIN epics ON epics.id = sessions.epic_id
+            WHERE epics.status = 'archived'
+          );
+
+        UPDATE suggestion_sessions
+        SET status = 'cancelled',
+            error_message = NULL,
+            updated_at = unixepoch()
+        WHERE status != 'cancelled'
+          AND epic_id IN (
+            SELECT id FROM epics WHERE status = 'archived'
+          );
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (33, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 34, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE ticket_comments
+        ADD COLUMN owner_question_json TEXT;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (34, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 35, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE ticket_comments
+        ADD COLUMN answered_questions_json TEXT;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (35, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
   }
 
   private static func migrationApplied(version: Int, database: OpaquePointer) throws -> Bool {
@@ -4787,7 +5557,7 @@ public actor SQLiteStore {
   private func fetchSuggestionSession(id: UUID) throws -> SuggestionSession {
     try withStatement(
       """
-      SELECT id, product_id, epic_id, status, codex_thread_id, codex_turn_id,
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
              error_message, created_at, updated_at
       FROM suggestion_sessions WHERE id = ?;
       """
@@ -4806,7 +5576,7 @@ public actor SQLiteStore {
   ) throws -> SuggestionSession? {
     try withStatement(
       """
-      SELECT id, product_id, epic_id, status, codex_thread_id, codex_turn_id,
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
              error_message, created_at, updated_at
       FROM suggestion_sessions
       WHERE product_id = ? AND status = ?
@@ -4820,11 +5590,29 @@ public actor SQLiteStore {
     }
   }
 
+  private func fetchSuggestionSession(
+    sourceWorkItemID: UUID
+  ) throws -> SuggestionSession? {
+    try withStatement(
+      """
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
+             error_message, created_at, updated_at
+      FROM suggestion_sessions
+      WHERE source_work_item_id = ?
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(sourceWorkItemID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeSuggestionSession(statement)
+    }
+  }
+
   private func decodeSuggestionSession(_ statement: OpaquePointer) throws -> SuggestionSession {
     guard
       let id = UUID(uuidString: try text(statement, column: 0)),
       let productID = UUID(uuidString: try text(statement, column: 1)),
-      let status = SuggestionSessionStatus(rawValue: try text(statement, column: 3))
+      let status = SuggestionSessionStatus(rawValue: try text(statement, column: 4))
     else {
       throw PersistenceError.corruptData("Invalid suggestion session")
     }
@@ -4832,12 +5620,13 @@ public actor SQLiteStore {
       id: id,
       productID: productID,
       epicID: try optionalText(statement, column: 2).flatMap(UUID.init(uuidString:)),
+      sourceWorkItemID: try optionalText(statement, column: 3).flatMap(UUID.init(uuidString:)),
       status: status,
-      codexThreadID: try optionalText(statement, column: 4),
-      codexTurnID: try optionalText(statement, column: 5),
-      errorMessage: try optionalText(statement, column: 6),
-      createdAt: date(statement, column: 7),
-      updatedAt: date(statement, column: 8)
+      codexThreadID: try optionalText(statement, column: 5),
+      codexTurnID: try optionalText(statement, column: 6),
+      errorMessage: try optionalText(statement, column: 7),
+      createdAt: date(statement, column: 8),
+      updatedAt: date(statement, column: 9)
     )
   }
 
@@ -5175,6 +5964,18 @@ public actor SQLiteStore {
     }
   }
 
+  private func nextEpicRank(productID: UUID) throws -> Int {
+    try withStatement(
+      "SELECT COALESCE(MAX(rank), 0) + 1000 FROM epics WHERE product_id = ?;"
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw currentSQLiteError()
+      }
+      return Int(sqlite3_column_int64(statement, 0))
+    }
+  }
+
   @discardableResult
   private func insertEvent(
     productID: UUID,
@@ -5236,7 +6037,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, title, goal, success_criteria_json, constraints,
-             status, created_at, updated_at
+             status, rank, created_at, updated_at
       FROM epics WHERE id = ?;
       """
     ) { statement in
@@ -5264,8 +6065,9 @@ public actor SQLiteStore {
       successCriteria: try decodeStringArray(try text(statement, column: 4)),
       constraints: try text(statement, column: 5),
       status: status,
-      createdAt: date(statement, column: 7),
-      updatedAt: date(statement, column: 8)
+      rank: Int(sqlite3_column_int64(statement, 7)),
+      createdAt: date(statement, column: 8),
+      updatedAt: date(statement, column: 9)
     )
   }
 

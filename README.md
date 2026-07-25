@@ -41,8 +41,10 @@ records, and starts every dependency-free delivery run. Each assigned member wor
 through a hidden, workspace-write Codex thread on an isolated `ticket/TN` Git branch
 and worktree. Material progress, checks, delivery
 notes, questions, and failures are written to the ticket Work log with attribution.
-An agent that needs a Product Owner choice enters a durable attention state; an owner
-comment queues the same thread to resume. Completed implementation becomes a
+An agent that needs a Product Owner choice enters a durable attention state; its
+structured options are selectable in the Work log, with a free-form response still
+available, and the submitted owner response queues the same thread to resume.
+Completed implementation becomes a
 versioned candidate that preserves every agent commit plus an exact head SHA.
 StoryPointless places it in a rank-ordered serial integration queue and merges it
 against current `trunk` in a detached integration worktree. Unambiguous conflicts are
@@ -105,10 +107,9 @@ executable ticket types; their grouped backlog UX is a follow-on slice.
 An **Improve** sidebar section now separates sprint Retrospectives from
 longitudinal Reports. Both are evidence-first: the UI shows current operational
 counts but withholds trend claims until comparable completed sprints exist.
-Owners can also add custom team members from a template library—or start
-blank—with a free-form title, governed capability, live model/effort selection,
-and custom instructions. Custom team members are archived rather than destructively
-deleted.
+Custom team-member creation is currently hidden from Team settings while that
+workflow is deferred. Existing custom team members remain configurable and are
+archived rather than destructively deleted.
 
 The execution path now admits every dependency-free ticket in parallel. Implementation
 is isolated in ticket-named Git worktrees, concurrent Codex notifications are routed
@@ -132,23 +133,39 @@ Product Owner decisions must still pause the ticket and cannot be smuggled throu
 knowledge proposal. The Knowledge view provides a seeded page
 tree, Markdown editing, search, breadcrumbs, contents, backlinks, version history,
 provenance metadata, and citation-backed **Ask Knowledge** over verified pages only.
+
+An approved Business Analyst research ticket normally hands its decision to already
+planned dependant tickets through its completion Work log and verified Product
+knowledge. It may publish fully formed follow-up ticket proposals only for genuinely
+new work that is absent from the active Backlog. Those exceptional proposals appear
+as a labelled suggestion batch, inherit the source epic and research dependency when
+accepted, and remain outside committed scope until the Product Owner reviews them.
 Bounded verified pages are selected for future execution prompts rather than sending
 the whole wiki. Normal app termination interrupts the active turn, persists the
 interruption, and preserves its workspace for recovery.
 
 Execution and Tech Lead results also record at most two concrete observations in
 each retrospective category. The Retrospectives view presents these as attributed,
-ticket-linked sticky notes for **Went well**, **Could improve**, and **Suggested
-backlog**; the Product Owner can dismiss an action or create an unrefined backlog
-task from it.
+ticket-linked evidence for **Went well** and **Could improve**, plus a reviewable
+decision queue. After a sprint completes and before its retrospective is concluded,
+the Product Owner can add their own attributed proposal for **Ways of working** or a
+**Backlog ticket** alongside the agents’ suggestions. Accepting a ways-of-working
+proposal updates inherited team guidance; accepting a ticket creates it in the
+Backlog and opens the normal automatic Business Analyst refinement flow. Concluded
+retrospectives retain a read-only list of the accepted decisions rather than
+collapsing them into an empty decision state.
 
 AI ticket suggestions now appear as compact purple rows inside the ranked Backlog
 rather than as a separate card gallery. Connected dependency paths can be accepted
-or rejected as a group. Harmless reference formatting is normalized, a malformed
-dependency graph receives one automatic Business Analyst repair attempt, and a
-persisted failure can always be retried or dismissed. A missing-work proposal may
-also depend on an existing active backlog ticket; accepting it creates the real
-cross-batch ordering constraint rather than reducing it to explanatory prose.
+or rejected as a group. Accepting a dependent ticket names and atomically accepts
+its still-proposed transitive prerequisites. Rejecting a prerequisite previews the
+transitive cascade; confirmation rejects its remaining dependent proposals and
+archives dependent tickets already accepted into the backlog. Harmless reference formatting is
+normalized, a malformed dependency graph receives one automatic Business Analyst
+repair attempt, and a persisted failure can always be retried or dismissed. A
+missing-work proposal may also depend on an existing active backlog ticket;
+accepting it creates the real cross-batch ordering constraint rather than reducing
+it to explanatory prose.
 
 ## Start here
 

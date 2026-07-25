@@ -20,7 +20,7 @@ public struct TicketRefinementRelatedWork: Codable, Equatable, Sendable {
   }
 }
 
-public struct TicketRefinementQuestion: Codable, Equatable, Sendable {
+public struct TicketRefinementQuestion: Codable, Hashable, Sendable {
   public let prompt: String
   public let options: [String]
 

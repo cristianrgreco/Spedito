@@ -103,9 +103,36 @@ private enum WorkspaceDestination: String, Hashable {
   case codebase
 }
 
+enum SprintBoardSelectionDefaults {
+  private static let prefix = "sprintBoardSelection"
+
+  static func selectedSprintID(for productID: UUID) -> UUID? {
+    UserDefaults.standard.string(forKey: key(for: productID))
+      .flatMap(UUID.init(uuidString:))
+  }
+
+  static func select(_ sprintID: UUID?, for productID: UUID) {
+    if let sprintID {
+      UserDefaults.standard.set(sprintID.uuidString, forKey: key(for: productID))
+    } else {
+      UserDefaults.standard.removeObject(forKey: key(for: productID))
+    }
+  }
+
+  private static func key(for productID: UUID) -> String {
+    "\(prefix).\(productID.uuidString)"
+  }
+}
+
 private struct TicketDetailPresentation: Identifiable {
+  enum Mode {
+    case editable
+    case delivery
+  }
+
   let item: WorkItem
   let startRefinementOnAppear: Bool
+  let mode: Mode
 
   var id: UUID { item.id }
 }
@@ -119,6 +146,7 @@ private struct ProductWorkspaceView: View {
   @State private var showingSprintPlanning = false
   @State private var showingProductLibrary = false
   @State private var ticketDetailPresentation: TicketDetailPresentation?
+  @State private var selectedSprintID: UUID?
 
   private static let destinationDefaultsPrefix = "workspaceDestination"
 
@@ -144,6 +172,7 @@ private struct ProductWorkspaceView: View {
           )
         case .sprint:
           SprintBoardView(
+            selectedSprintID: $selectedSprintID,
             onShowBacklog: { destination = .backlog },
             onEditPlan: { showingSprintPlanning = true },
             onShowRetrospective: { destination = .retrospectives },
@@ -151,7 +180,14 @@ private struct ProductWorkspaceView: View {
           )
         case .retrospectives:
           RetrospectivesView(
-            onConcluded: { destination = .backlog }
+            onConcluded: { destination = .backlog },
+            onOpenRefiningTicket: { item in
+              ticketDetailPresentation = TicketDetailPresentation(
+                item: item,
+                startRefinementOnAppear: true,
+                mode: .editable
+              )
+            }
           )
         case .reports:
           ReportsView()
@@ -162,7 +198,8 @@ private struct ProductWorkspaceView: View {
             onOpenTicket: { item in
               ticketDetailPresentation = TicketDetailPresentation(
                 item: item,
-                startRefinementOnAppear: false
+                startRefinementOnAppear: false,
+                mode: .delivery
               )
             }
           )
@@ -196,7 +233,8 @@ private struct ProductWorkspaceView: View {
             guard !Task.isCancelled else { return }
             ticketDetailPresentation = TicketDetailPresentation(
               item: item,
-              startRefinementOnAppear: shouldRefine
+              startRefinementOnAppear: shouldRefine,
+              mode: .editable
             )
           }
         }
@@ -206,17 +244,22 @@ private struct ProductWorkspaceView: View {
       NewEpicView(isPresented: $showingNewEpic)
     }
     .sheet(item: $ticketDetailPresentation) { presentation in
-      TicketDetailView(
-        item: presentation.item,
-        dependsOnWorkItemIDs: [],
-        startRefinementOnAppear: presentation.startRefinementOnAppear
-      )
+      switch presentation.mode {
+      case .editable:
+        TicketDetailView(
+          item: presentation.item,
+          dependsOnWorkItemIDs: [],
+          startRefinementOnAppear: presentation.startRefinementOnAppear
+        )
+      case .delivery:
+        SprintTicketDetailView(item: presentation.item)
+      }
     }
     .sheet(isPresented: $showingSprintPlanning) {
       SprintPlanningView(
         isPresented: $showingSprintPlanning,
-        onSaved: {
-          destination = model.sprintPlan?.sprint.state == .active ? .backlog : .sprint
+        onSaved: { sprintID in
+          openSprintBoard(sprintID: sprintID)
         }
       )
     }
@@ -266,10 +309,18 @@ private struct ProductWorkspaceView: View {
     "\(Self.destinationDefaultsPrefix).\(productID.uuidString)"
   }
 
+  private func openSprintBoard(sprintID: UUID) {
+    selectedSprintID = sprintID
+    if let productID = model.selectedProductID {
+      SprintBoardSelectionDefaults.select(sprintID, for: productID)
+    }
+    destination = .sprint
+  }
+
   private func presentInitialEpicIfNeeded() {
     guard
       let productID = model.selectedProductID,
-      model.epics.isEmpty,
+      model.activeEpics.isEmpty,
       model.workItems.isEmpty,
       !showingProductLibrary
     else { return }
@@ -374,7 +425,7 @@ private struct TeamSidebar: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 2)
-                .background(.orange, in: Capsule())
+                .background(Color.accentColor, in: Capsule())
                 .accessibilityLabel(
                   "\(sprintAttentionCount) sprint ticket\(sprintAttentionCount == 1 ? "" : "s") need your input"
                 )
@@ -818,56 +869,46 @@ private struct ProductContextView: View {
   @State private var description = ""
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
+    VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 4) {
         Text("Product context")
-          .font(.title2.bold())
+          .font(.title.bold())
         Text("The durable product description supplied to planning and delivery agents.")
           .foregroundStyle(.secondary)
       }
+      .padding(24)
 
-      EditableTextField(
-        title: "Product name",
-        prompt: "Product name",
-        text: $name
-      )
+      Divider()
 
-      VStack(alignment: .leading, spacing: 7) {
-        HStack {
-          Text("Product description")
-            .font(.headline)
-          Spacer()
-          Text("\(description.count.formatted()) characters")
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-        TextEditor(text: $description)
-          .scrollContentBackground(.hidden)
-          .multilineTextAlignment(.leading)
-          .font(.body)
-          .frame(minHeight: 250)
-          .padding(8)
-          .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-          .overlay {
-            RoundedRectangle(cornerRadius: 8)
-              .stroke(.separator.opacity(0.7), lineWidth: 1)
-          }
-      }
+      VStack(alignment: .leading, spacing: 18) {
+        EditableTextField(
+          title: "Product name",
+          prompt: "Product name",
+          text: $name
+        )
 
-      HStack(alignment: .top, spacing: 9) {
-        Image(systemName: "brain.head.profile")
-          .foregroundStyle(.purple)
-        Text(
-          "This description forms part of agent context. Changes affect future analysis and runs; an already-started turn keeps the context it began with. Shared behavioural guidance remains under Team Settings."
+        EditableTextArea(
+          title: "Product description",
+          prompt: "Describe who it is for, the problem it solves, and the outcome you want.",
+          text: $description,
+          minHeight: 140
+        )
+
+        Label(
+          "Changes become context for future agent work. Active work keeps the context it started with.",
+          systemImage: "brain.head.profile"
         )
         .font(.caption)
         .foregroundStyle(.secondary)
       }
+      .padding(24)
 
+      Spacer(minLength: 0)
+      Divider()
       HStack {
         Spacer()
         Button("Cancel") { isPresented = false }
-        Button("Save product context") {
+        Button("Save") {
           model.updateProductDetails(name: name, vision: description)
           isPresented = false
         }
@@ -877,9 +918,10 @@ private struct ProductContextView: View {
             || description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
       }
+      .padding(20)
     }
-    .padding(24)
-    .frame(width: 720, height: 610)
+    .background(InitialFocusClearer())
+    .frame(width: 660, height: 500)
     .onAppear {
       name = model.selectedProduct?.name ?? ""
       description = model.selectedProduct?.vision ?? ""
@@ -1019,9 +1061,8 @@ private struct TeamPromptsView: View {
   @State private var personaInstructions: [UUID: String] = [:]
   @State private var personaModels: [UUID: String] = [:]
   @State private var personaEfforts: [UUID: String] = [:]
-  @State private var showingAddPersona = false
   @State private var selection: TeamSettingsSelection? = .shared
-  @State private var isHoveringAddMember = false
+  @State private var hoveredSelection: TeamSettingsSelection?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -1040,91 +1081,46 @@ private struct TeamPromptsView: View {
 
       HStack(spacing: 0) {
         VStack(spacing: 0) {
-          List(selection: $selection) {
-            Section("Product") {
-              HStack(spacing: 10) {
-                Image(systemName: "person.3")
-                  .foregroundStyle(.secondary)
-                  .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text("Shared guidance")
-                  Text("Applies to everyone")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-              }
-              .padding(.vertical, 7)
-              .listRowInsets(
-                EdgeInsets(top: 2, leading: 18, bottom: 2, trailing: 18)
+          ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+              Text("Product")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 13)
+                .padding(.bottom, 5)
+
+              settingsNavigationRow(
+                selectionValue: .shared,
+                icon: "person.3",
+                tint: .secondary,
+                title: "Shared guidance",
+                subtitle: "Applies to everyone",
+                verticalPadding: 10
               )
-              .listRowSeparator(.hidden)
-              .tag(TeamSettingsSelection.shared)
-            }
 
-            Section("Team members") {
+              Text("Team members")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 14)
+                .padding(.bottom, 5)
+
               ForEach(model.profiles) { profile in
-                HStack(spacing: 10) {
-                  Image(systemName: profile.role.symbolName)
-                    .foregroundStyle(profile.role.tint)
-                    .frame(width: 18)
-                  VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name)
-                      .lineLimit(1)
-                    Text(profile.role.capabilityTitle)
-                      .font(.caption)
-                      .foregroundStyle(.secondary)
-                      .lineLimit(1)
-                  }
-                }
-                .padding(.vertical, 7)
-                .listRowInsets(
-                  EdgeInsets(top: 2, leading: 18, bottom: 2, trailing: 18)
+                settingsNavigationRow(
+                  selectionValue: .profile(profile.id),
+                  icon: profile.role.symbolName,
+                  tint: profile.role.tint,
+                  title: profile.name,
+                  subtitle: profile.role.capabilityTitle,
+                  verticalPadding: 9
                 )
-                .listRowSeparator(.hidden)
-                .tag(TeamSettingsSelection.profile(profile.id))
               }
             }
+            .padding(.bottom, 10)
           }
-          .listStyle(.plain)
-          .scrollContentBackground(.hidden)
-          .background(Color(nsColor: .textBackgroundColor))
-
-          Divider()
-
-          Button {
-            showingAddPersona = true
-          } label: {
-            HStack(spacing: 10) {
-              Image(systemName: "person.badge.plus")
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 18)
-              Text("Add team member")
-                .font(.callout.weight(.medium))
-              Spacer()
-            }
-            .foregroundStyle(Color.primary)
-            .padding(.horizontal, 10)
-            .frame(height: 38)
-            .background(
-              isHoveringAddMember
-                ? Color.accentColor.opacity(0.1)
-                : Color.clear,
-              in: RoundedRectangle(cornerRadius: 7)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 7))
-          }
-          .buttonStyle(.plain)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 8)
-          .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) {
-              isHoveringAddMember = hovering
-            }
-          }
-          .help("Add a custom team member")
         }
         .frame(width: 248)
-        .background(Color(nsColor: .textBackgroundColor))
 
         Divider()
 
@@ -1155,9 +1151,6 @@ private struct TeamPromptsView: View {
       .frame(height: 62)
     }
     .frame(width: 840, height: 740)
-    .sheet(isPresented: $showingAddPersona) {
-      AddPersonaView(isPresented: $showingAddPersona)
-    }
     .onAppear {
       synchronisePromptState(includeShared: true)
     }
@@ -1167,6 +1160,55 @@ private struct TeamPromptsView: View {
         !model.profiles.contains(where: { $0.id == profileID })
       {
         selection = .shared
+      }
+    }
+  }
+
+  private func settingsNavigationRow(
+    selectionValue: TeamSettingsSelection,
+    icon: String,
+    tint: Color,
+    title: String,
+    subtitle: String,
+    verticalPadding: CGFloat
+  ) -> some View {
+    let isSelected = selection == selectionValue
+    let isHovering = hoveredSelection == selectionValue
+
+    return Button {
+      selection = selectionValue
+    } label: {
+      HStack(spacing: 10) {
+        Image(systemName: icon)
+          .foregroundStyle(tint)
+          .frame(width: 18)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 4)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, verticalPadding)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        isSelected
+          ? Color.accentColor.opacity(0.1)
+          : (isHovering ? tint.opacity(0.09) : Color.clear),
+        in: RoundedRectangle(cornerRadius: 7)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 7))
+    }
+    .buttonStyle(.plain)
+    .padding(.horizontal, 10)
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        hoveredSelection = hovering ? selectionValue : nil
       }
     }
   }
@@ -1192,13 +1234,7 @@ private struct TeamPromptsView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
 
-          TextEditor(text: $sharedInstructions)
-            .font(.body)
-            .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
-            .overlay {
-              RoundedRectangle(cornerRadius: 6)
-                .stroke(.separator.opacity(0.7), lineWidth: 1)
-            }
+          instructionsEditor(text: $sharedInstructions)
         }
 
         Label {
@@ -1300,23 +1336,31 @@ private struct TeamPromptsView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
 
-          TextEditor(
+          instructionsEditor(
             text: Binding(
               get: { personaInstructions[profile.id] ?? profile.effectiveInstructions },
               set: { personaInstructions[profile.id] = $0 }
             )
           )
-            .font(.body)
-            .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
-            .overlay {
-              RoundedRectangle(cornerRadius: 6)
-                .stroke(.separator.opacity(0.7), lineWidth: 1)
-            }
         }
       }
       .padding(28)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+  }
+
+  private func instructionsEditor(text: Binding<String>) -> some View {
+    TextEditor(text: text)
+      .scrollContentBackground(.hidden)
+      .multilineTextAlignment(.leading)
+      .font(.body)
+      .padding(8)
+      .frame(maxWidth: .infinity, minHeight: 300, alignment: .topLeading)
+      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      .overlay {
+        RoundedRectangle(cornerRadius: 8)
+          .stroke(.separator.opacity(0.7), lineWidth: 1)
+      }
   }
 
   private func synchronisePromptState(includeShared: Bool) {
@@ -1575,12 +1619,6 @@ private struct PlanningDropTarget: Equatable {
   let index: Int
 }
 
-private enum BacklogEpicFilter: Hashable {
-  case all
-  case unassigned
-  case epic(UUID)
-}
-
 private struct BacklogView: View {
   @EnvironmentObject private var model: AppModel
   let onNewTicket: (UUID?) -> Void
@@ -1589,7 +1627,6 @@ private struct BacklogView: View {
   let onOpenSprint: () -> Void
   @State private var selectedTicket: WorkItem?
   @State private var selectedEpic: Epic?
-  @State private var epicFilter = BacklogEpicFilter.all
   @State private var selectedWorkItemIDs: Set<UUID> = []
   @State private var draggedWorkItemIDs: Set<UUID> = []
   @State private var planningDropTarget: PlanningDropTarget?
@@ -1600,22 +1637,12 @@ private struct BacklogView: View {
     model.workItems.filter { [.backlog, .refining, .ready].contains($0.state) }
   }
 
-  private var planningItems: [WorkItem] {
-    allPlanningItems.filter { item in
-      switch epicFilter {
-      case .all: true
-      case .unassigned: item.epicID == nil
-      case .epic(let id): item.epicID == id
-      }
-    }
-  }
-
   private var candidateIDs: Set<UUID> {
     Set(model.candidateSprintPlan?.items.map(\.workItemID) ?? [])
   }
 
   private var candidateItems: [WorkItem] {
-    planningItems.filter { candidateIDs.contains($0.id) }
+    allPlanningItems.filter { candidateIDs.contains($0.id) }
   }
 
   private var allCandidateItems: [WorkItem] {
@@ -1623,7 +1650,7 @@ private struct BacklogView: View {
   }
 
   private var backlogItems: [WorkItem] {
-    planningItems.filter { !candidateIDs.contains($0.id) }
+    allPlanningItems.filter { !candidateIDs.contains($0.id) }
   }
 
   private var candidateSprintNumber: Int {
@@ -1635,15 +1662,10 @@ private struct BacklogView: View {
 
   private var visibleSuggestionBatch: TicketSuggestionBatch? {
     guard let batch = model.suggestionBatch else { return nil }
-    guard let epicID = batch.session.epicID else { return nil }
-    switch epicFilter {
-    case .all:
-      break
-    case .unassigned:
-      return nil
-    case .epic(let selectedID):
-      guard selectedID == epicID else { return nil }
-    }
+    guard
+      batch.session.epicID != nil
+        || batch.session.sourceWorkItemID != nil
+    else { return nil }
     if batch.session.status == .cancelled {
       return nil
     }
@@ -1653,11 +1675,6 @@ private struct BacklogView: View {
       return nil
     }
     return batch
-  }
-
-  private var focusedEpic: Epic? {
-    guard case .epic(let id) = epicFilter else { return nil }
-    return model.epics.first { $0.id == id }
   }
 
   private var planningIsComplete: Bool {
@@ -1678,100 +1695,120 @@ private struct BacklogView: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
-        HStack(spacing: 8) {
-          Button(action: onNewEpic) {
-            Label("Add epic", systemImage: "wand.and.stars")
+        if let plan = model.sprintPlan, plan.sprint.state == .active {
+          Button(action: onOpenSprint) {
+            Label("Sprint \(plan.sprint.number) active", systemImage: "bolt.fill")
           }
-          .buttonStyle(.borderedProminent)
-          .tint(.purple)
-          .help("Plan a substantial product outcome with the Business Analyst")
-
-          Button {
-            onPlanSprint()
-          } label: {
-            Label(
-              planningIsComplete ? "Review sprint plan" : "Start sprint planning",
-              systemImage: "calendar.badge.plus"
-            )
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(allCandidateItems.isEmpty)
-
-          if let plan = model.sprintPlan, plan.sprint.state == .active {
-            Divider()
-              .frame(height: 22)
-              .padding(.horizontal, 2)
-
-            Button(action: onOpenSprint) {
-              Label("Sprint \(plan.sprint.number) active", systemImage: "bolt.fill")
-            }
-            .buttonStyle(.bordered)
-            .help("Open the active sprint board")
-          }
+          .buttonStyle(.bordered)
+          .help("Open the active sprint board")
         }
       }
       .padding(.horizontal, 24)
       .padding(.top, 24)
       .padding(.bottom, 12)
 
-      EpicFilterBar(
-        selection: $epicFilter,
-        planningItems: allPlanningItems,
-        onOpenEpic: { selectedEpic = $0 }
-      )
-      .padding(.horizontal, 24)
-      .padding(.bottom, 24)
-
       Divider()
 
       GeometryReader { proxy in
-        let sectionSpacing: CGFloat = 18
+        let horizontalPadding: CGFloat = 24
+        let columnGutter: CGFloat = 18
+        let dividerThickness: CGFloat = 1
+        let sectionDividerHeight = (columnGutter * 2) + dividerThickness
         let topPadding: CGFloat = 18
         let bottomPadding: CGFloat = 28
-        let availableHeight = max(
-          0,
-          proxy.size.height - sectionSpacing - topPadding - bottomPadding
+        let availableWidth = max(0, proxy.size.width - (horizontalPadding * 2))
+        let availableHeight = max(0, proxy.size.height - topPadding - bottomPadding)
+        let leftWidth = floor((availableWidth - dividerThickness) * 0.59)
+        let sprintWidth = max(0, availableWidth - leftWidth - dividerThickness)
+        let epicHeight = model.activeEpics.isEmpty
+          ? CGFloat(166)
+          : min(CGFloat(model.activeEpics.count * 49 + 66), 250)
+        let suggestionCount = visibleSuggestionBatch?.suggestions
+          .filter { $0.status == .proposed }
+          .count ?? 0
+        let backlogRowCount = backlogItems.count + suggestionCount
+        let backlogContentHeight = CGFloat(backlogRowCount * 54 + 132)
+        let backlogHeight = max(
+          260,
+          max(
+            availableHeight - epicHeight - sectionDividerHeight,
+            min(backlogContentHeight, 420)
+          )
         )
 
-        ScrollView(.vertical) {
-          VStack(alignment: .leading, spacing: sectionSpacing) {
-            PlanningTicketList(
-              title: "Sprint \(candidateSprintNumber)",
-              subtitle: "Selected for the next sprint",
-              items: candidateItems,
-              isCandidateSection: true,
-              minimumHeight: availableHeight / 3,
-              selectedWorkItemIDs: $selectedWorkItemIDs,
-              draggedWorkItemIDs: $draggedWorkItemIDs,
-              activeDropTarget: $planningDropTarget,
-              onDragBegan: beginDragging,
-              onDragCompleted: finishDragging,
-              onOpen: { selectedTicket = $0 },
-              onAddTicket: nil,
-              suggestionBatch: nil
-            )
+        HStack(alignment: .top, spacing: 0) {
+          ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 0) {
+              EpicPlanningList(
+                epics: model.activeEpics,
+                workItems: model.workItems,
+                minimumHeight: epicHeight,
+                onAddEpic: onNewEpic,
+                onOpen: { selectedEpic = $0 }
+              )
+              .padding(.leading, horizontalPadding)
+              .padding(.trailing, columnGutter)
 
-            PlanningTicketList(
-              title: "Backlog",
-              subtitle: "Ranked work not yet planned",
-              items: backlogItems,
-              isCandidateSection: false,
-              minimumHeight: availableHeight * 2 / 3,
-              selectedWorkItemIDs: $selectedWorkItemIDs,
-              draggedWorkItemIDs: $draggedWorkItemIDs,
-              activeDropTarget: $planningDropTarget,
-              onDragBegan: beginDragging,
-              onDragCompleted: finishDragging,
-              onOpen: { selectedTicket = $0 },
-              onAddTicket: { onNewTicket(focusedEpic?.id) },
-              suggestionBatch: visibleSuggestionBatch
-            )
+              Divider()
+                .frame(height: dividerThickness)
+                .padding(.vertical, columnGutter)
+
+              PlanningTicketList(
+                title: "Backlog",
+                items: backlogItems,
+                isCandidateSection: false,
+                minimumHeight: backlogHeight,
+                selectedWorkItemIDs: $selectedWorkItemIDs,
+                draggedWorkItemIDs: $draggedWorkItemIDs,
+                activeDropTarget: $planningDropTarget,
+                onDragBegan: beginDragging,
+                onDragCompleted: finishDragging,
+                onOpen: { selectedTicket = $0 },
+                onAddTicket: { onNewTicket(nil) },
+                suggestionBatch: visibleSuggestionBatch
+              )
+              .padding(.leading, horizontalPadding)
+              .padding(.trailing, columnGutter)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
           }
-          .padding(.horizontal, 24)
+          .frame(
+            width: horizontalPadding + leftWidth,
+            height: availableHeight,
+            alignment: .topLeading
+          )
+          .clipped()
           .padding(.top, topPadding)
           .padding(.bottom, bottomPadding)
-          .frame(maxWidth: .infinity, alignment: .leading)
+
+          Divider()
+            .frame(maxHeight: .infinity)
+
+          CandidateSprintPanel(
+            sprintNumber: candidateSprintNumber,
+            items: candidateItems,
+            planningIsComplete: planningIsComplete,
+            availableHeight: availableHeight,
+            selectedWorkItemIDs: $selectedWorkItemIDs,
+            draggedWorkItemIDs: $draggedWorkItemIDs,
+            activeDropTarget: $planningDropTarget,
+            onDragBegan: beginDragging,
+            onDragCompleted: finishDragging,
+            onOpen: { selectedTicket = $0 },
+            onPlanSprint: onPlanSprint
+          )
+          .padding(.leading, columnGutter)
+          .padding(.trailing, horizontalPadding)
+          .frame(
+            width: sprintWidth + horizontalPadding,
+            height: availableHeight,
+            alignment: .top
+          )
+          .clipped()
+          .padding(.top, topPadding)
+          .padding(.bottom, bottomPadding)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
       }
     }
     .sheet(item: $selectedTicket) { item in
@@ -1787,7 +1824,7 @@ private struct BacklogView: View {
     .sheet(item: $selectedEpic) { epic in
       EpicDetailView(epic: epic)
     }
-    .onChange(of: Set(planningItems.map(\.id))) { _, availableIDs in
+    .onChange(of: Set(allPlanningItems.map(\.id))) { _, availableIDs in
       selectedWorkItemIDs.formIntersection(availableIDs)
     }
     .onChange(of: planningDropTarget) { _, target in
@@ -1804,8 +1841,7 @@ private struct BacklogView: View {
       dropExitResetTask?.cancel()
     }
     .onChange(of: model.backlogFocusEpicID) { _, epicID in
-      guard let epicID else { return }
-      epicFilter = .epic(epicID)
+      guard epicID != nil else { return }
       model.backlogFocusEpicID = nil
     }
   }
@@ -1837,94 +1873,839 @@ private struct BacklogView: View {
 
 }
 
-private struct EpicFilterBar: View {
+private struct EpicPlanningList: View {
   @EnvironmentObject private var model: AppModel
-  @Binding var selection: BacklogEpicFilter
-  let planningItems: [WorkItem]
-  let onOpenEpic: (Epic) -> Void
+  @Environment(\.colorScheme) private var colorScheme
+  let epics: [Epic]
+  let workItems: [WorkItem]
+  let minimumHeight: CGFloat
+  let onAddEpic: () -> Void
+  let onOpen: (Epic) -> Void
+  @State private var targetedEpicID: UUID?
+  @State private var isBottomTargeted = false
+  @State private var confirmingArchive: Epic?
 
   var body: some View {
-    HStack(spacing: 10) {
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 7) {
-          EpicFilterChip(
-            title: "All work",
-            count: planningItems.count,
-            isSelected: selection == .all
-          ) {
-            selection = .all
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 7) {
+        Text("Epics")
+          .font(.title3.weight(.semibold))
+        Text(epics.count.formatted())
+          .font(.caption2.weight(.semibold).monospacedDigit())
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 3)
+          .background(.quaternary, in: Capsule())
+        Spacer()
+        Button(action: onAddEpic) {
+          Label("Add epic", systemImage: "wand.and.stars")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.purple)
+        .help("Plan a substantial product outcome with the Business Analyst")
+      }
+      .padding(.horizontal, 2)
+
+      VStack(spacing: 0) {
+        EpicPlanningTableHeader()
+          .background(PlanningDropSurfaceStyle.tableHeaderBackground)
+        Divider()
+
+        if epics.isEmpty {
+          VStack(spacing: 6) {
+            Image(systemName: "flag.checkered")
+              .font(.title3)
+              .foregroundStyle(.tertiary)
+            Text("No open epics")
+              .font(.subheadline.weight(.medium))
+            Text("Add an epic to plan a substantial product outcome with AI.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
           }
-          EpicFilterChip(
-            title: "No epic",
-            count: planningItems.filter { $0.epicID == nil }.count,
-            isSelected: selection == .unassigned
-          ) {
-            selection = .unassigned
-          }
-          ForEach(model.epics) { epic in
-            EpicFilterChip(
-              title: epic.title,
-              count: planningItems.filter { $0.epicID == epic.id }.count,
-              isSelected: selection == .epic(epic.id)
-            ) {
-              selection = .epic(epic.id)
+          .frame(maxWidth: .infinity, minHeight: 86, maxHeight: .infinity)
+        } else {
+          ForEach(epics) { epic in
+            EpicPlanningRow(
+              epic: epic,
+              tickets: workItems.filter {
+                $0.epicID == epic.id && $0.state != .cancelled
+              },
+              isDropTargeted: targetedEpicID == epic.id,
+              onOpen: { onOpen(epic) },
+              onRefine: {
+                model.planEpic(epic)
+                onOpen(epic)
+              },
+              onMoveTop: { model.moveEpics([epic], before: epics.first?.id) },
+              onMoveBottom: { model.moveEpics([epic], before: nil) },
+              onArchive: { confirmingArchive = epic }
+            )
+            .dropDestination(
+              for: String.self,
+              action: { values, _ in move(values, before: epic.id) },
+              isTargeted: { targeted in
+                withAnimation(.easeOut(duration: 0.12)) {
+                  targetedEpicID = targeted ? epic.id : nil
+                }
+              }
+            )
+            if epic.id != epics.last?.id {
+              Divider()
             }
           }
         }
       }
-      if
-        case .epic(let epicID) = selection,
-        let epic = model.epics.first(where: { $0.id == epicID })
-      {
-        Divider()
-          .frame(height: 22)
-        Button {
-          onOpenEpic(epic)
-        } label: {
-          Label("Epic details", systemImage: "sidebar.right")
+      .frame(
+        maxWidth: .infinity,
+        maxHeight: epics.isEmpty ? .infinity : nil,
+        alignment: .top
+      )
+      .background(PlanningDropSurfaceStyle.restingBackground(for: colorScheme))
+      .clipShape(RoundedRectangle(cornerRadius: 14))
+      .overlay {
+        RoundedRectangle(cornerRadius: 14)
+          .stroke(Color.secondary.opacity(colorScheme == .dark ? 0.32 : 0.2), lineWidth: 1)
+      }
+      .overlay(alignment: .bottom) {
+        if !epics.isEmpty {
+          Color.clear
+            .frame(height: 12)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+              if isBottomTargeted {
+                Rectangle()
+                  .fill(Color.accentColor)
+                  .frame(height: 2)
+              }
+            }
+            .dropDestination(
+              for: String.self,
+              action: { values, _ in move(values, before: nil) },
+              isTargeted: { isBottomTargeted = $0 }
+            )
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .fixedSize()
-        .help("Open the epic and resume its Business Analyst conversation")
       }
     }
+    .frame(minHeight: minimumHeight, alignment: .top)
+    .confirmationDialog(
+      "Archive \(confirmingArchive?.title ?? "epic")?",
+      isPresented: Binding(
+        get: { confirmingArchive != nil },
+        set: { if !$0 { confirmingArchive = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      if let epic = confirmingArchive {
+        Button("Archive epic", role: .destructive) {
+          model.archiveEpic(epic)
+          confirmingArchive = nil
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        confirmingArchive = nil
+      }
+    } message: {
+      Text(
+        "All unfinished Backlog tickets and proposed tickets in this epic will also be archived. Delivered tickets and history remain available."
+      )
+    }
+  }
+
+  private func move(_ values: [String], before targetID: UUID?) -> Bool {
+    let ids = values.compactMap { value -> UUID? in
+      guard value.hasPrefix("epic:") else { return nil }
+      return UUID(uuidString: String(value.dropFirst(5)))
+    }
+    let moving = epics.filter { ids.contains($0.id) }
+    guard !moving.isEmpty else { return false }
+    if moving.count == 1, moving.first?.id == targetID {
+      return true
+    }
+    model.moveEpics(moving, before: targetID)
+    return true
   }
 }
 
-private struct EpicFilterChip: View {
-  let title: String
-  let count: Int
-  let isSelected: Bool
+private struct EpicPlanningTableHeader: View {
+  var body: some View {
+    Grid(horizontalSpacing: 0) {
+      GridRow {
+        Text("Epic")
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .gridColumnAlignment(.leading)
+        Text("Tickets")
+          .frame(width: 92, alignment: .leading)
+          .gridColumnAlignment(.leading)
+        Text("Progress")
+          .frame(width: 150, alignment: .leading)
+          .gridColumnAlignment(.leading)
+        Text("Status")
+          .frame(width: 120, alignment: .leading)
+          .gridColumnAlignment(.leading)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .frame(height: 32)
+    }
+    .padding(.horizontal, 16)
+  }
+}
+
+private struct EpicPlanningRow: View {
+  let epic: Epic
+  let tickets: [WorkItem]
+  let isDropTargeted: Bool
+  let onOpen: () -> Void
+  let onRefine: () -> Void
+  let onMoveTop: () -> Void
+  let onMoveBottom: () -> Void
+  let onArchive: () -> Void
+  @State private var isHovering = false
+
+  private var completedCount: Int {
+    tickets.filter { $0.state == .released }.count
+  }
+
+  private var displayStatus: String {
+    if epic.status != .complete, !tickets.isEmpty, completedCount == tickets.count {
+      return "Ready to complete"
+    }
+    return epic.status.title
+  }
+
+  private var isReadyToComplete: Bool {
+    epic.status != .complete && !tickets.isEmpty && completedCount == tickets.count
+  }
+
+  private var statusColor: Color {
+    if isReadyToComplete {
+      return .purple
+    }
+    switch epic.status {
+    case .active:
+      return .blue
+    case .complete:
+      return .green
+    case .archived:
+      return .secondary
+    }
+  }
+
+  private var archiveTitle: AttributedString {
+    var title = AttributedString("Archive epic…")
+    title.foregroundColor = .red
+    return title
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      Grid(horizontalSpacing: 0) {
+        GridRow(alignment: .center) {
+          Text(epic.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
+            .lineLimit(2)
+            .layoutPriority(1)
+            .help(epic.goal.isEmpty ? epic.title : epic.goal)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .gridColumnAlignment(.leading)
+
+          Text(tickets.count.formatted())
+            .font(.caption)
+            .foregroundStyle(tickets.isEmpty ? .secondary : .primary)
+            .frame(width: 92, alignment: .leading)
+            .gridColumnAlignment(.leading)
+
+          Text(
+            tickets.isEmpty
+              ? "Not started"
+              : "\(completedCount) of \(tickets.count) delivered"
+          )
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .frame(width: 150, alignment: .leading)
+          .gridColumnAlignment(.leading)
+
+          Text(displayStatus)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(statusColor)
+            .lineLimit(1)
+            .frame(width: 120, alignment: .leading)
+            .gridColumnAlignment(.leading)
+            .help(displayStatus)
+        }
+      }
+      .padding(.horizontal, 16)
+      .frame(minHeight: 48)
+      .contentShape(Rectangle())
+      .background(
+        isDropTargeted
+          ? Color.accentColor.opacity(0.12)
+          : (isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
+      )
+      .overlay(alignment: .top) {
+        if isDropTargeted {
+          Rectangle()
+            .fill(Color.accentColor)
+            .frame(height: 2)
+        }
+      }
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        isHovering = hovering
+      }
+    }
+    .onDrag {
+      NSItemProvider(object: "epic:\(epic.id.uuidString)" as NSString)
+    } preview: {
+      Label(epic.title, systemImage: "flag.checkered")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+    .contextMenu {
+      Button(action: onOpen) {
+        Label("Open epic", systemImage: "flag.checkered")
+      }
+      Button(action: onRefine) {
+        Label("Refine with AI", systemImage: "wand.and.stars")
+      }
+      Divider()
+      Button(action: onMoveTop) {
+        Label("Move to top", systemImage: "arrow.up.to.line")
+      }
+      Button(action: onMoveBottom) {
+        Label("Move to bottom", systemImage: "arrow.down.to.line")
+      }
+      Divider()
+      Button(role: .destructive, action: onArchive) {
+        Label {
+          Text(archiveTitle)
+        } icon: {
+          Image(systemName: "archivebox")
+            .foregroundStyle(.red)
+        }
+      }
+      .tint(.red)
+    }
+    .animation(.easeOut(duration: 0.12), value: isHovering)
+  }
+}
+
+private enum PlanningDropSurfaceStyle {
+  static let targetedBackground = Color.accentColor.opacity(0.11)
+  static let tableHeaderBackground = AnyShapeStyle(.quaternary.opacity(0.18))
+
+  static func restingBackground(for colorScheme: ColorScheme) -> Color {
+    Color.secondary.opacity(colorScheme == .dark ? 0.075 : 0.035)
+  }
+}
+
+private struct CandidateSprintPanel: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.colorScheme) private var colorScheme
+  let sprintNumber: Int
+  let items: [WorkItem]
+  let planningIsComplete: Bool
+  let availableHeight: CGFloat
+  @Binding var selectedWorkItemIDs: Set<UUID>
+  @Binding var draggedWorkItemIDs: Set<UUID>
+  @Binding var activeDropTarget: PlanningDropTarget?
+  let onDragBegan: (Set<UUID>) -> Void
+  let onDragCompleted: () -> Void
+  let onOpen: (WorkItem) -> Void
+  let onPlanSprint: () -> Void
+
+  private var section: PlanningDropSection { .candidateSprint }
+  private var itemIDs: Set<UUID> { Set(items.map(\.id)) }
+  private var selectedItemCount: Int {
+    selectedWorkItemIDs.intersection(itemIDs).count
+  }
+  private var isDropTargeted: Bool {
+    activeDropTarget?.section == .candidateSprint
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 7) {
+            Text("Sprint \(sprintNumber)")
+              .font(.title3.weight(.semibold))
+            Text(items.count.formatted())
+              .font(.caption2.weight(.semibold).monospacedDigit())
+              .foregroundStyle(.secondary)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 3)
+              .background(.quaternary, in: Capsule())
+          }
+        }
+        Spacer(minLength: 4)
+        Button(action: onPlanSprint) {
+          Label(
+            planningIsComplete ? "Review plan" : "Plan sprint",
+            systemImage: "calendar.badge.plus"
+          )
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(items.isEmpty)
+      }
+      .padding(.horizontal, 2)
+
+      VStack(spacing: 0) {
+        CandidateSprintTableHeader(
+          itemCount: items.count,
+          selectedItemCount: selectedItemCount,
+          onToggleSelection: toggleAllItems
+        )
+          .padding(.horizontal, PlanningTicketTableMetrics.horizontalPadding)
+          .background(PlanningDropSurfaceStyle.tableHeaderBackground)
+          .dropDestination(
+            for: String.self,
+            action: { values, _ in performDrop(values, at: 0) },
+            isTargeted: { setDropTarget($0, index: 0) }
+          )
+
+        Divider()
+
+        if items.isEmpty {
+          VStack(spacing: 7) {
+            Image(systemName: "tray.and.arrow.down")
+              .font(.title2)
+              .foregroundStyle(.tertiary)
+            Text("Drag backlog tickets here")
+              .font(.subheadline.weight(.medium))
+            Text("Only scoped work enters sprint planning.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .contentShape(Rectangle())
+          .dropDestination(
+            for: String.self,
+            action: { values, _ in performDrop(values, at: 0) },
+            isTargeted: { setDropTarget($0, index: 0) }
+          )
+        } else {
+          ScrollView {
+            LazyVStack(spacing: 0) {
+              ForEach(0...items.count, id: \.self) { index in
+                PlanningTicketDropSlot(
+                  section: section,
+                  index: index,
+                  showsRestingDivider: index > 0,
+                  showsInsertionIndicator: !isNoOpDrop(
+                    ids: draggedWorkItemIDs,
+                    at: index
+                  ),
+                  activeDropTarget: $activeDropTarget,
+                  onDrop: { values in performDrop(values, at: index) }
+                )
+
+                if index < items.count {
+                  let item = items[index]
+                  let dragSelection = selectedWorkItemIDs.contains(item.id)
+                    ? selectedWorkItemIDs.intersection(itemIDs)
+                    : [item.id]
+                  CandidateSprintRow(
+                    item: item,
+                    isSelected: selectedWorkItemIDs.contains(item.id),
+                    dragSelection: dragSelection,
+                    isBeingDragged: draggedWorkItemIDs.contains(item.id),
+                    onToggleSelection: {
+                      if selectedWorkItemIDs.contains(item.id) {
+                        selectedWorkItemIDs.remove(item.id)
+                      } else {
+                        selectedWorkItemIDs.insert(item.id)
+                      }
+                    },
+                    onDragBegan: { onDragBegan(dragSelection) },
+                    onDrop: { values in performDrop(values, at: index + 1) },
+                    onDropTargeted: { targeted in
+                      setDropTarget(targeted, index: index + 1)
+                    },
+                    onOpen: { onOpen(item) }
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .background(
+        isDropTargeted
+          ? PlanningDropSurfaceStyle.targetedBackground
+          : PlanningDropSurfaceStyle.restingBackground(for: colorScheme)
+      )
+      .clipShape(RoundedRectangle(cornerRadius: 14))
+      .overlay {
+        RoundedRectangle(cornerRadius: 14)
+          .stroke(
+            Color.secondary.opacity(colorScheme == .dark ? 0.45 : 0.28),
+            style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])
+          )
+      }
+      .contentShape(Rectangle())
+      .dropDestination(
+        for: String.self,
+        action: { values, _ in performDrop(values, at: items.count) },
+        isTargeted: { setDropTarget($0, index: items.count) }
+      )
+      .animation(.snappy(duration: 0.18), value: isDropTargeted)
+      .animation(.snappy(duration: 0.22), value: items.map(\.id))
+    }
+    .frame(height: availableHeight, alignment: .top)
+  }
+
+  private func toggleAllItems() {
+    if !itemIDs.isEmpty, itemIDs.isSubset(of: selectedWorkItemIDs) {
+      selectedWorkItemIDs.subtract(itemIDs)
+    } else {
+      selectedWorkItemIDs.formUnion(itemIDs)
+    }
+  }
+
+  private func performDrop(_ values: [String], at index: Int) -> Bool {
+    guard model.canEditCandidateSprint else { return false }
+    let ids = Set(
+      values.flatMap { payload in
+        payload.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+      }
+    )
+    let movingItems = model.workItems.filter { ids.contains($0.id) }
+    guard !movingItems.isEmpty else { return false }
+    let safeIndex = min(max(index, 0), items.count)
+    if isNoOpDrop(ids: ids, at: safeIndex) {
+      onDragCompleted()
+      return true
+    }
+    let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
+    model.dropPlanningItems(
+      movingItems,
+      intoCandidateSprint: true,
+      before: targetID
+    )
+    onDragCompleted()
+    return true
+  }
+
+  private func setDropTarget(_ targeted: Bool, index: Int) {
+    let target = PlanningDropTarget(section: section, index: index)
+    withAnimation(.snappy(duration: 0.16)) {
+      if targeted && !isNoOpDrop(ids: draggedWorkItemIDs, at: index) {
+        activeDropTarget = target
+      } else if activeDropTarget == target {
+        activeDropTarget = nil
+      }
+    }
+  }
+
+  private func isNoOpDrop(ids: Set<UUID>, at index: Int) -> Bool {
+    guard !ids.isEmpty, ids.isSubset(of: itemIDs) else { return false }
+    let safeIndex = min(max(index, 0), items.count)
+    let movingItems = items.filter { ids.contains($0.id) }
+    var reorderedItems = items.filter { !ids.contains($0.id) }
+    let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
+    let insertionIndex = targetID.flatMap { targetID in
+      reorderedItems.firstIndex { $0.id == targetID }
+    } ?? reorderedItems.endIndex
+    reorderedItems.insert(contentsOf: movingItems, at: insertionIndex)
+    return reorderedItems.map(\.id) == items.map(\.id)
+  }
+}
+
+private enum PlanningTicketTableMetrics {
+  static let rowHeight: CGFloat = 48
+  static let columnSpacing: CGFloat = 6
+  static let horizontalPadding: CGFloat = 10
+  static let ticketLeadingSpacing: CGFloat = 10
+  static let selectionWidth: CGFloat = 30
+  static let referenceWidth: CGFloat = 34
+  static let assigneeWidth: CGFloat = 54
+  static let readinessWidth: CGFloat = 58
+  static let priorityWidth: CGFloat = 44
+}
+
+private struct PlanningSelectionCheckbox: View {
+  let symbol: String
+  let isActive: Bool
+  let isDisabled: Bool
+  let helpText: String
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 6) {
-        Text(title)
-          .fixedSize(horizontal: true, vertical: false)
-        Text(count.formatted())
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(.secondary)
-      }
-      .font(.caption.weight(.semibold))
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
+      Image(systemName: symbol)
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(
+          isActive ? Color.blue : Color(nsColor: .tertiaryLabelColor)
+        )
+        .frame(
+          width: PlanningTicketTableMetrics.selectionWidth,
+          height: 32
+        )
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .foregroundStyle(Color.primary)
-    .background(
-      isSelected ? Color.secondary.opacity(0.18) : Color.secondary.opacity(0.07),
-      in: Capsule()
+    .disabled(isDisabled)
+    .help(helpText)
+    .frame(width: PlanningTicketTableMetrics.selectionWidth, alignment: .center)
+  }
+}
+
+private struct PlanningAssigneeIcon: View {
+  let profile: AgentProfile?
+
+  var body: some View {
+    Image(
+      systemName: profile?.role.symbolName
+        ?? "person.crop.circle.badge.questionmark"
     )
-    .overlay {
-      Capsule()
-        .stroke(
-          isSelected ? Color.secondary.opacity(0.24) : Color.clear,
-          lineWidth: 1
-        )
+    .font(.system(size: 13, weight: .semibold))
+    .foregroundStyle(profile?.role.tint ?? Color.secondary)
+    .frame(width: PlanningTicketTableMetrics.assigneeWidth, alignment: .center)
+    .accessibilityLabel(profile?.name ?? "Unassigned")
+    .help(profile?.name ?? "Unassigned")
+  }
+}
+
+private enum CandidateSprintTableLayout {
+  static let columnSpacing = PlanningTicketTableMetrics.columnSpacing
+  static let selectionWidth = PlanningTicketTableMetrics.selectionWidth
+  static let referenceWidth = PlanningTicketTableMetrics.referenceWidth
+  static let assigneeWidth = PlanningTicketTableMetrics.assigneeWidth
+  static let readinessWidth = PlanningTicketTableMetrics.readinessWidth
+  static let priorityWidth = PlanningTicketTableMetrics.priorityWidth
+}
+
+private struct CandidateSprintTableHeader: View {
+  let itemCount: Int
+  let selectedItemCount: Int
+  let onToggleSelection: () -> Void
+
+  private var selectionSymbol: String {
+    if itemCount > 0, selectedItemCount == itemCount {
+      return "checkmark.square.fill"
     }
-    .help(title)
+    if selectedItemCount > 0 {
+      return "minus.square.fill"
+    }
+    return "square"
+  }
+
+  private var selectionHelp: String {
+    itemCount > 0 && selectedItemCount == itemCount
+      ? "Deselect all sprint tickets"
+      : "Select all sprint tickets"
+  }
+
+  var body: some View {
+    Grid(horizontalSpacing: 0) {
+      GridRow(alignment: .center) {
+        PlanningSelectionCheckbox(
+          symbol: selectionSymbol,
+          isActive: selectedItemCount > 0,
+          isDisabled: itemCount == 0,
+          helpText: selectionHelp,
+          action: onToggleSelection
+        )
+
+        Text("Ticket")
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+          .gridColumnAlignment(.leading)
+
+        Text("Assignee")
+          .frame(
+            width: CandidateSprintTableLayout.assigneeWidth,
+            alignment: .center
+          )
+          .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+          .gridColumnAlignment(.center)
+
+        Text("Readiness")
+          .frame(
+            width: CandidateSprintTableLayout.readinessWidth,
+            alignment: .center
+          )
+          .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+          .gridColumnAlignment(.center)
+
+        Text("Priority")
+          .frame(
+            width: CandidateSprintTableLayout.priorityWidth,
+            alignment: .center
+          )
+          .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+          .gridColumnAlignment(.center)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .frame(height: 32)
+    }
+    .frame(maxWidth: .infinity)
+  }
+}
+
+private struct CandidateSprintRow: View {
+  @EnvironmentObject private var model: AppModel
+  let item: WorkItem
+  let isSelected: Bool
+  let dragSelection: Set<UUID>
+  let isBeingDragged: Bool
+  let onToggleSelection: () -> Void
+  let onDragBegan: () -> Void
+  let onDrop: ([String]) -> Bool
+  let onDropTargeted: (Bool) -> Void
+  let onOpen: () -> Void
+  @State private var isHovering = false
+
+  private var sprintItem: SprintItem? {
+    model.candidateSprintPlan?.items
+      .first { $0.workItemID == item.id }
+  }
+
+  private var owner: AgentProfile? {
+    guard let ownerID = sprintItem?.implementerProfileID else { return nil }
+    return model.profiles.first { $0.id == ownerID }
+  }
+
+  private var readinessProblems: [String] {
+    var problems: [String] = []
+    if item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      problems.append("Add ticket context")
+    }
+    if item.acceptanceCriteria.isEmpty {
+      problems.append("Add acceptance criteria")
+    }
+    if owner == nil {
+      problems.append("Choose a delivery assignee")
+    }
+    problems.append(
+      contentsOf: model.sprintReadinessIssues
+        .filter {
+          $0.workItemID == item.id
+            && !$0.id.hasSuffix(".acceptance")
+            && !$0.id.hasSuffix(".implementer")
+        }
+        .map(\.message)
+    )
+    return problems
+  }
+
+  private var readinessLabel: String {
+    if readinessProblems.isEmpty {
+      let count = item.acceptanceCriteria.count
+      return "Ready · \(count) \(count == 1 ? "criterion" : "criteria")"
+    }
+    return readinessProblems.joined(separator: ". ")
+  }
+
+  private var isReady: Bool {
+    readinessProblems.isEmpty
+  }
+
+  private var targetItems: [WorkItem] {
+    model.workItems.filter { dragSelection.contains($0.id) }
+  }
+
+  var body: some View {
+    Grid(horizontalSpacing: 0) {
+      GridRow(alignment: .center) {
+        PlanningSelectionCheckbox(
+          symbol: isSelected ? "checkmark.square.fill" : "square",
+          isActive: isSelected,
+          isDisabled: false,
+          helpText: isSelected ? "Deselect ticket" : "Select ticket",
+          action: onToggleSelection
+        )
+
+        HStack(spacing: 8) {
+          Image(systemName: item.type.symbolName)
+            .foregroundStyle(item.type.tint)
+            .frame(width: 16)
+          Text(item.key)
+            .font(.caption.monospaced().weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(
+              width: CandidateSprintTableLayout.referenceWidth,
+              alignment: .leading
+            )
+          Text(item.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
+            .lineLimit(2)
+            .layoutPriority(1)
+          Spacer(minLength: 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+
+        PlanningAssigneeIcon(profile: owner)
+          .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+
+        Image(
+          systemName: isReady
+            ? "checkmark.circle.fill" : "exclamationmark.circle"
+        )
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(isReady ? .green : .orange)
+        .frame(
+          width: CandidateSprintTableLayout.readinessWidth,
+          alignment: .center
+        )
+        .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+        .accessibilityLabel(readinessLabel)
+        .help(readinessLabel)
+
+        SprintPriorityIndicator(priority: item.priority)
+          .frame(
+            width: CandidateSprintTableLayout.priorityWidth,
+            alignment: .center
+          )
+          .padding(.leading, CandidateSprintTableLayout.columnSpacing)
+      }
+    }
+    .padding(.horizontal, PlanningTicketTableMetrics.horizontalPadding)
+    .frame(minHeight: PlanningTicketTableMetrics.rowHeight)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      isSelected
+        ? Color.accentColor.opacity(0.1)
+        : (isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
+    )
+    .contentShape(Rectangle())
+    .opacity(isBeingDragged ? 0.28 : 1)
+    .onTapGesture(perform: onOpen)
+    .onHover { isHovering = $0 }
+    .onDrag {
+      onDragBegan()
+      let payload = dragSelection.map(\.uuidString).sorted().joined(separator: ",")
+      return NSItemProvider(object: payload as NSString)
+    } preview: {
+      PlanningTicketDragPreview(item: item, count: dragSelection.count)
+    }
+    .dropDestination(
+      for: String.self,
+      action: { values, _ in onDrop(values) },
+      isTargeted: onDropTargeted
+    )
+    .contextMenu {
+      Button(action: onOpen) {
+        Label("Open ticket", systemImage: "doc.text.magnifyingglass")
+      }
+      Button {
+        model.removeFromCandidateSprint(targetItems)
+      } label: {
+        Label(
+          targetItems.count > 1 ? "Return selected to backlog" : "Return to backlog",
+          systemImage: "arrow.uturn.backward"
+        )
+      }
+    }
   }
 }
 
@@ -1932,7 +2713,6 @@ private struct PlanningTicketList: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.colorScheme) private var colorScheme
   let title: String
-  let subtitle: String
   let items: [WorkItem]
   let isCandidateSection: Bool
   let minimumHeight: CGFloat
@@ -1965,8 +2745,17 @@ private struct PlanningTicketList: View {
     selectedWorkItemIDs.intersection(itemIDs).count
   }
 
+  private var proposedSuggestionCount: Int {
+    guard !isCandidateSection, suggestionBatch?.session.status == .ready else { return 0 }
+    return suggestionBatch?.suggestions.filter { $0.status == .proposed }.count ?? 0
+  }
+
+  private var visibleItemCount: Int {
+    items.count + proposedSuggestionCount
+  }
+
   private var restingBackground: Color {
-    return Color.secondary.opacity(colorScheme == .dark ? 0.075 : 0.035)
+    PlanningDropSurfaceStyle.restingBackground(for: colorScheme)
   }
 
   var body: some View {
@@ -1976,16 +2765,13 @@ private struct PlanningTicketList: View {
           HStack(alignment: .center, spacing: 7) {
             Text(title)
               .font(.title3.weight(.semibold))
-            Text(items.count.formatted())
+            Text(visibleItemCount.formatted())
               .font(.caption2.weight(.semibold).monospacedDigit())
               .foregroundStyle(.secondary)
               .padding(.horizontal, 6)
               .padding(.vertical, 3)
               .background(.quaternary, in: Capsule())
           }
-          Text(subtitle)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
         }
         Spacer()
         if let onAddTicket {
@@ -1994,7 +2780,6 @@ private struct PlanningTicketList: View {
           }
           .buttonStyle(.borderedProminent)
           .tint(.purple)
-          .controlSize(.small)
         }
       }
       .padding(.horizontal, 2)
@@ -2036,7 +2821,7 @@ private struct PlanningTicketList: View {
             maxHeight: .infinity,
             alignment: .center
           )
-          .gridCellColumns(7)
+          .gridCellColumns(6)
           .dropDestination(
             for: String.self,
             action: { values, _ in performDrop(values, at: 0) },
@@ -2055,7 +2840,7 @@ private struct PlanningTicketList: View {
               activeDropTarget: $activeDropTarget,
               onDrop: { values in performDrop(values, at: index) }
             )
-            .gridCellColumns(7)
+            .gridCellColumns(6)
 
             if index < items.count {
               let item = items[index]
@@ -2085,17 +2870,19 @@ private struct PlanningTicketList: View {
 
           if let suggestionBatch {
             InlineBacklogSuggestions(batch: suggestionBatch)
-              .gridCellColumns(7)
+              .gridCellColumns(6)
           }
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       .background(alignment: .top) {
         Rectangle()
-          .fill(.quaternary.opacity(0.18))
+          .fill(PlanningDropSurfaceStyle.tableHeaderBackground)
           .frame(height: 32)
       }
-      .background(isDropTargeted ? Color.accentColor.opacity(0.11) : Color.clear)
+      .background(
+        isDropTargeted ? PlanningDropSurfaceStyle.targetedBackground : Color.clear
+      )
       .background(restingBackground)
       .clipShape(RoundedRectangle(cornerRadius: 14))
       .overlay {
@@ -2177,13 +2964,13 @@ private struct PlanningTicketList: View {
 }
 
 private enum PlanningTicketTableLayout {
-  static let columnSpacing: CGFloat = 12
-  static let selectionWidth: CGFloat = 32
-  static let epicWidth: CGFloat = 150
-  static let dependenciesWidth: CGFloat = 124
-  static let assigneeWidth: CGFloat = 138
-  static let readinessWidth: CGFloat = 116
-  static let priorityWidth: CGFloat = 72
+  static let columnSpacing = PlanningTicketTableMetrics.columnSpacing
+  static let selectionWidth = PlanningTicketTableMetrics.selectionWidth
+  static let referenceWidth = PlanningTicketTableMetrics.referenceWidth
+  static let dependenciesWidth: CGFloat = 76
+  static let assigneeWidth = PlanningTicketTableMetrics.assigneeWidth
+  static let readinessWidth = PlanningTicketTableMetrics.readinessWidth
+  static let priorityWidth = PlanningTicketTableMetrics.priorityWidth
 }
 
 private struct PlanningTicketTableHeader: View {
@@ -2209,33 +2996,17 @@ private struct PlanningTicketTableHeader: View {
 
   var body: some View {
     GridRow(alignment: .center) {
-      Button(action: onToggleSelection) {
-        Image(systemName: selectionSymbol)
-          .font(.system(size: 14, weight: .medium))
-          .foregroundStyle(
-            selectedItemCount > 0
-              ? Color.blue
-              : Color(nsColor: .tertiaryLabelColor)
-          )
-          .frame(width: 18, height: 24)
-      }
-      .buttonStyle(.plain)
-      .disabled(itemCount == 0)
-      .help(selectionHelp)
-      .frame(
-        width: PlanningTicketTableLayout.selectionWidth,
-        alignment: .trailing
+      PlanningSelectionCheckbox(
+        symbol: selectionSymbol,
+        isActive: selectedItemCount > 0,
+        isDisabled: itemCount == 0,
+        helpText: selectionHelp,
+        action: onToggleSelection
       )
+      .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
       Text("Ticket")
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.leading)
-      Text("Epic")
-        .frame(
-          width: PlanningTicketTableLayout.epicWidth,
-          alignment: .leading
-        )
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+        .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
         .gridColumnAlignment(.leading)
       Text("Dependencies")
         .frame(
@@ -2247,24 +3018,25 @@ private struct PlanningTicketTableHeader: View {
       Text("Assignee")
         .frame(
           width: PlanningTicketTableLayout.assigneeWidth,
-          alignment: .leading
+          alignment: .center
         )
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.leading)
+        .gridColumnAlignment(.center)
       Text("Readiness")
         .frame(
           width: PlanningTicketTableLayout.readinessWidth,
-          alignment: .leading
+          alignment: .center
         )
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.leading)
+        .gridColumnAlignment(.center)
       Text("Priority")
         .frame(
           width: PlanningTicketTableLayout.priorityWidth,
-          alignment: .leading
+          alignment: .center
         )
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.leading)
+        .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
+        .gridColumnAlignment(.center)
     }
     .font(.caption.weight(.semibold))
     .foregroundStyle(.secondary)
@@ -2314,7 +3086,7 @@ private struct PlanningTicketDropSlot: View {
           .padding(.horizontal, 1)
       }
     }
-    .frame(height: isActive ? 22 : 1)
+    .frame(height: isActive ? 22 : (showsRestingDivider ? 1 : 0))
     .contentShape(Rectangle())
     .dropDestination(
       for: String.self,
@@ -2357,8 +3129,8 @@ private struct PlanningTicketRow: View {
     return model.workItems.filter { ids.contains($0.id) }
   }
 
-  private var dependentsCount: Int {
-    model.dependencies.filter { $0.dependsOnWorkItemID == item.id }.count
+  private var activePrerequisites: [WorkItem] {
+    prerequisites.filter { $0.state != .released }
   }
 
   private var sprintItem: SprintItem? {
@@ -2368,11 +3140,6 @@ private struct PlanningTicketRow: View {
   private var assignedImplementer: AgentProfile? {
     guard let ownerID = sprintItem?.implementerProfileID ?? item.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
-  }
-
-  private var epic: Epic? {
-    guard let epicID = item.epicID else { return nil }
-    return model.epics.first { $0.id == epicID }
   }
 
   private var missingReadinessFields: [String] {
@@ -2401,75 +3168,63 @@ private struct PlanningTicketRow: View {
   }
 
   private var archiveMenuTitle: AttributedString {
-    var title = AttributedString("Archive ticket…")
+    var title = AttributedString(
+      targetItems.count == 1
+        ? "Archive ticket…"
+        : "Archive \(targetItems.count) tickets…"
+    )
     title.foregroundColor = .red
     return title
   }
 
+  private var targetItems: [WorkItem] {
+    model.workItems.filter { dragSelection.contains($0.id) }
+  }
+
+  private var targetsMultipleTickets: Bool {
+    targetItems.count > 1
+  }
+
   var body: some View {
     GridRow(alignment: .center) {
-      Button(action: onToggleSelection) {
-        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-          .font(.system(size: 14, weight: .medium))
-          .foregroundStyle(
-            isSelected ? Color.blue : Color(nsColor: .tertiaryLabelColor)
-          )
-          .frame(width: 18, height: 24)
-      }
-      .buttonStyle(.plain)
-      .help(isSelected ? "Deselect ticket" : "Select ticket")
-      .frame(
-        width: PlanningTicketTableLayout.selectionWidth,
-        alignment: .trailing
+      PlanningSelectionCheckbox(
+        symbol: isSelected ? "checkmark.square.fill" : "square",
+        isActive: isSelected,
+        isDisabled: false,
+        helpText: isSelected ? "Deselect ticket" : "Select ticket",
+        action: onToggleSelection
       )
+      .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
 
-      HStack(spacing: 12) {
+      HStack(spacing: 8) {
         Image(systemName: item.type.symbolName)
           .foregroundStyle(item.type.tint)
-          .frame(width: 18)
+          .frame(width: 16)
         Text(item.key)
           .font(.caption.monospaced().weight(.semibold))
           .foregroundStyle(.secondary)
-          .frame(width: 54, alignment: .leading)
+          .frame(width: PlanningTicketTableLayout.referenceWidth, alignment: .leading)
         Text(item.title)
-          .font(.body.weight(.medium))
+          .font(.subheadline.weight(.semibold))
           .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
-          .lineLimit(1)
-        Spacer(minLength: 12)
+          .lineLimit(2)
+          .layoutPriority(1)
+        Spacer(minLength: 4)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+      .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
       .contentShape(Rectangle())
 
       Group {
-        if let epic {
-          Label(epic.title, systemImage: "flag.checkered")
-            .foregroundStyle(.purple)
-            .help(epic.title)
-        } else {
-          Text("No epic")
-            .foregroundStyle(.tertiary)
-        }
-      }
-      .font(.caption.weight(.medium))
-      .lineLimit(2)
-      .frame(
-        width: PlanningTicketTableLayout.epicWidth,
-        alignment: .leading
-      )
-      .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-
-      Group {
-        if !prerequisites.isEmpty {
+        if !activePrerequisites.isEmpty {
           Label(
-            prerequisites.map(\.key).joined(separator: ", "),
+            activePrerequisites.map(\.key).joined(separator: ", "),
             systemImage: "arrow.turn.down.right"
           )
           .foregroundStyle(.indigo)
-          .help("Depends on \(prerequisites.map(\.key).joined(separator: ", "))")
-        } else if dependentsCount > 0 {
-          Label("Blocks \(dependentsCount)", systemImage: "link")
-            .foregroundStyle(.secondary)
+          .help(
+            "Waiting for \(activePrerequisites.map(\.key).joined(separator: ", "))"
+          )
         } else {
           Text("None")
             .foregroundStyle(.tertiary)
@@ -2483,38 +3238,36 @@ private struct PlanningTicketRow: View {
       )
       .padding(.leading, PlanningTicketTableLayout.columnSpacing)
 
-      PlanningAssignmentSummary(item: item, implementer: assignedImplementer)
+      PlanningAssigneeIcon(profile: assignedImplementer)
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
 
-      Label(
-        readinessLabel,
-        systemImage: missingReadinessFields.isEmpty
+      Image(
+        systemName: missingReadinessFields.isEmpty
           ? "checkmark.circle.fill" : "exclamationmark.circle"
       )
-      .font(.caption.weight(.medium))
+      .font(.system(size: 13, weight: .semibold))
       .foregroundStyle(missingReadinessFields.isEmpty ? .green : .orange)
-      .lineLimit(1)
       .frame(
         width: PlanningTicketTableLayout.readinessWidth,
-        alignment: .leading
+        alignment: .center
       )
       .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+      .accessibilityLabel(readinessLabel)
       .help(
         missingReadinessFields.isEmpty
           ? "The ticket has context and acceptance criteria."
           : "Add \(missingReadinessFields.joined(separator: " and ")) before sprint execution."
       )
 
-      Text(item.priority.title)
-        .font(.caption.weight(.medium))
-        .foregroundStyle(item.priority.tint)
+      SprintPriorityIndicator(priority: item.priority)
         .frame(
           width: PlanningTicketTableLayout.priorityWidth,
-          alignment: .leading
+          alignment: .center
         )
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+        .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
     }
-    .frame(minHeight: 48)
+    .frame(minHeight: PlanningTicketTableMetrics.rowHeight)
     .background {
       Rectangle()
         .fill(rowBackground)
@@ -2558,28 +3311,40 @@ private struct PlanningTicketRow: View {
       }
       if isCandidate {
         Button {
-          model.removeFromCandidateSprint(item)
+          model.removeFromCandidateSprint(targetItems)
         } label: {
-          Label("Return to backlog", systemImage: "arrow.uturn.backward")
+          Label(
+            targetsMultipleTickets ? "Return selected to backlog" : "Return to backlog",
+            systemImage: "arrow.uturn.backward"
+          )
         }
       } else {
         Button {
-          model.addToCandidateSprint(item)
+          model.addToCandidateSprint(targetItems)
         } label: {
-          Label("Add to next sprint", systemImage: "calendar.badge.plus")
+          Label(
+            targetsMultipleTickets ? "Add selected to next sprint" : "Add to next sprint",
+            systemImage: "calendar.badge.plus"
+          )
         }
         .disabled(!model.canEditCandidateSprint)
       }
       Divider()
       Button {
-        model.moveWorkItem(item, to: .top)
+        model.moveWorkItems(targetItems, to: .top)
       } label: {
-        Label("Move to top", systemImage: "arrow.up.to.line")
+        Label(
+          targetsMultipleTickets ? "Move selected to top" : "Move to top",
+          systemImage: "arrow.up.to.line"
+        )
       }
       Button {
-        model.moveWorkItem(item, to: .bottom)
+        model.moveWorkItems(targetItems, to: .bottom)
       } label: {
-        Label("Move to bottom", systemImage: "arrow.down.to.line")
+        Label(
+          targetsMultipleTickets ? "Move selected to bottom" : "Move to bottom",
+          systemImage: "arrow.down.to.line"
+        )
       }
       Divider()
       Button(role: .destructive) {
@@ -2595,16 +3360,25 @@ private struct PlanningTicketRow: View {
       .tint(.red)
     }
     .confirmationDialog(
-      "Archive \(item.key)?",
+      targetsMultipleTickets
+        ? "Archive \(targetItems.count) tickets?"
+        : "Archive \(item.key)?",
       isPresented: $confirmingArchive,
       titleVisibility: .visible
     ) {
-      Button("Archive ticket", role: .destructive) {
-        model.archiveWorkItem(item)
+      Button(
+        targetsMultipleTickets ? "Archive tickets" : "Archive ticket",
+        role: .destructive
+      ) {
+        model.archiveWorkItems(targetItems)
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("The ticket leaves the backlog but its history remains in the local workspace.")
+      Text(
+        targetsMultipleTickets
+          ? "The tickets leave the backlog but their history remains in the local workspace."
+          : "The ticket leaves the backlog but its history remains in the local workspace."
+      )
     }
   }
 
@@ -2652,57 +3426,136 @@ private struct PlanningTicketDragPreview: View {
   }
 }
 
-private struct PlanningAssignmentSummary: View {
-  @EnvironmentObject private var model: AppModel
-  let item: WorkItem
-  let implementer: AgentProfile?
+private enum ProposedTicketVisualStyle {
+  static var surface: Color { .purple.opacity(0.09) }
+  static var emphasizedSurface: Color { .purple.opacity(0.14) }
+  static var border: Color { .purple.opacity(0.42) }
+}
 
-  var body: some View {
-    Menu {
-      ForEach(model.profiles.filter(\.role.canOwnDelivery)) { candidate in
-        Button {
-          Task {
-            _ = await model.assignTicketOwner(
-              workItemID: item.id,
-              to: candidate.id
-            )
-          }
-        } label: {
-          HStack {
-            Label(candidate.name, systemImage: candidate.role.symbolName)
-            if candidate.id == implementer?.id {
-              Image(systemName: "checkmark")
-            }
-          }
-        }
-      }
-    } label: {
-      HStack(spacing: 6) {
-        Image(
-          systemName: implementer?.role.symbolName
-            ?? "person.crop.circle.badge.questionmark"
-        )
-        .foregroundStyle(implementer?.role.tint ?? Color.secondary)
-        Text(implementer?.name ?? "Unassigned")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(implementer?.role.tint ?? Color.secondary)
-          .lineLimit(1)
-        Image(systemName: "chevron.down")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
-      }
+private func transitiveSuggestionDependents(
+  of suggestion: TicketSuggestion,
+  in suggestions: [TicketSuggestion]
+) -> [TicketSuggestion] {
+  var dependentIDs: Set<UUID> = []
+  var dependencyFrontier: Set<UUID> = [suggestion.id]
+  while !dependencyFrontier.isEmpty {
+    let next = suggestions.filter { candidate in
+      !dependentIDs.contains(candidate.id)
+        && candidate.id != suggestion.id
+        && candidate.dependencyIDs.contains(where: dependencyFrontier.contains)
     }
-    .menuStyle(.borderlessButton)
-    .frame(width: 150, alignment: .leading)
-    .help("Choose the ticket's delivery owner")
+    dependentIDs.formUnion(next.map(\.id))
+    dependencyFrontier = Set(next.map(\.id))
+  }
+  return suggestions
+    .filter { dependentIDs.contains($0.id) && $0.status != .rejected }
+    .sorted { $0.position < $1.position }
+}
+
+private func transitiveSuggestedPrerequisites(
+  of suggestion: TicketSuggestion,
+  in suggestions: [TicketSuggestion]
+) -> [TicketSuggestion] {
+  let suggestionsByID = Dictionary(uniqueKeysWithValues: suggestions.map { ($0.id, $0) })
+  var prerequisiteIDs: Set<UUID> = []
+  var dependencyFrontier = suggestion.dependencyIDs
+  while let dependencyID = dependencyFrontier.popLast() {
+    guard
+      prerequisiteIDs.insert(dependencyID).inserted,
+      let dependency = suggestionsByID[dependencyID]
+    else { continue }
+    dependencyFrontier.append(contentsOf: dependency.dependencyIDs)
+  }
+  return suggestions
+    .filter { prerequisiteIDs.contains($0.id) && $0.status == .proposed }
+    .sorted { $0.position < $1.position }
+}
+
+private struct SuggestionAcceptanceImpact {
+  let suggestion: TicketSuggestion
+  let prerequisites: [TicketSuggestion]
+
+  var requiresConfirmation: Bool {
+    !prerequisites.isEmpty
+  }
+
+  var dialogTitle: String {
+    "Accept \(suggestion.reference) and its prerequisites?"
+  }
+
+  var actionTitle: String {
+    let count = prerequisites.count + 1
+    return "Accept \(count) \(count == 1 ? "ticket" : "tickets")"
+  }
+
+  var buttonTitle: String {
+    guard requiresConfirmation else { return "Accept ticket" }
+    return "Accept ticket and \(prerequisites.count) "
+      + (prerequisites.count == 1 ? "prerequisite…" : "prerequisites…")
+  }
+
+  var message: String {
+    let references = prerequisites.map(\.reference).joined(separator: ", ")
+    return
+      "This also accepts \(prerequisites.count) suggested "
+      + (prerequisites.count == 1 ? "prerequisite" : "prerequisites")
+      + " (\(references)). All \(prerequisites.count + 1) tickets will be added to the "
+      + "Backlog with their dependency relationships. This does not add them to a Sprint."
+  }
+}
+
+private struct SuggestionRejectionImpact {
+  let suggestion: TicketSuggestion
+  let dependents: [TicketSuggestion]
+
+  var proposedDependentCount: Int {
+    dependents.filter { $0.status == .proposed }.count
+  }
+
+  var acceptedDependentCount: Int {
+    dependents.filter { $0.status == .accepted }.count
+  }
+
+  var requiresConfirmation: Bool {
+    !dependents.isEmpty
+  }
+
+  var dialogTitle: String {
+    "Reject \(suggestion.reference) and its dependent work?"
+  }
+
+  var actionTitle: String {
+    if acceptedDependentCount > 0 {
+      return "Reject and archive dependent work"
+    }
+    let count = proposedDependentCount + 1
+    return "Reject \(count) \(count == 1 ? "suggestion" : "suggestions")"
+  }
+
+  var message: String {
+    var sentences: [String] = []
+    if proposedDependentCount > 0 {
+      sentences.append(
+        "This will also reject \(proposedDependentCount) dependent "
+          + (proposedDependentCount == 1 ? "suggestion." : "suggestions.")
+      )
+    }
+    if acceptedDependentCount > 0 {
+      sentences.append(
+        "It will archive \(acceptedDependentCount) dependent "
+          + (acceptedDependentCount == 1
+            ? "ticket already added to the backlog."
+            : "tickets already added to the backlog.")
+      )
+    }
+    sentences.append("The decisions and archived tickets remain in history.")
+    return sentences.joined(separator: " ")
   }
 }
 
 private struct InlineBacklogSuggestions: View {
   @EnvironmentObject private var model: AppModel
   let batch: TicketSuggestionBatch
-  @State private var confirmingAcceptAll = false
-  @State private var confirmingRejectAll = false
   @State private var selectedSuggestion: TicketSuggestion?
 
   var body: some View {
@@ -2717,35 +3570,6 @@ private struct InlineBacklogSuggestions: View {
       case .cancelled:
         EmptyView()
       }
-    }
-    .confirmationDialog(
-      "Accept all remaining AI suggestions?",
-      isPresented: $confirmingAcceptAll,
-      titleVisibility: .visible
-    ) {
-      Button(
-        "Accept \(orderedSuggestions.count) \(orderedSuggestions.count == 1 ? "suggestion" : "suggestions")"
-      ) {
-        model.decideTicketSuggestionGroup(orderedSuggestions, accept: true)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("They will become normal backlog tickets and retain their dependency relationships.")
-    }
-    .confirmationDialog(
-      "Reject all remaining AI suggestions?",
-      isPresented: $confirmingRejectAll,
-      titleVisibility: .visible
-    ) {
-      Button(
-        "Reject \(orderedSuggestions.count) \(orderedSuggestions.count == 1 ? "suggestion" : "suggestions")",
-        role: .destructive
-      ) {
-        model.decideTicketSuggestionGroup(orderedSuggestions, accept: false)
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("The decisions remain useful context for the next backlog analysis.")
     }
     .sheet(item: $selectedSuggestion) { suggestion in
       TicketSuggestionDetailView(
@@ -2811,10 +3635,13 @@ private struct InlineBacklogSuggestions: View {
         model.dismissFailedTicketSuggestions()
       }
       .buttonStyle(.bordered)
-      Button("Try again") {
+      Button {
         model.retryCurrentEpicPlan()
+      } label: {
+        Label("Try again", systemImage: "wand.and.stars")
       }
       .buttonStyle(.borderedProminent)
+      .tint(.purple)
       .disabled(!model.canPlanEpic)
     }
     .padding(14)
@@ -2823,37 +3650,46 @@ private struct InlineBacklogSuggestions: View {
 
   private var readyRows: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 9) {
-        Label("Epic plan", systemImage: "wand.and.stars")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.purple)
-        Text(
-          "\(orderedSuggestions.count) \(orderedSuggestions.count == 1 ? "suggestion" : "suggestions") to review"
-        )
-          .font(.caption.monospacedDigit())
-          .foregroundStyle(.secondary)
-        Spacer()
-        if orderedSuggestions.count > 1 {
-          Button("Reject all") { confirmingRejectAll = true }
-            .buttonStyle(.bordered)
-          Button("Accept all") { confirmingAcceptAll = true }
-            .buttonStyle(.borderedProminent)
+      if let sourceTicket {
+        HStack(spacing: 8) {
+          Image(systemName: "arrow.triangle.branch")
+            .foregroundStyle(.purple)
+          Text("Follow-up work proposed from \(sourceTicket.key) research")
+            .font(.caption.weight(.semibold))
+          Spacer()
+          Text("Review before adding to the backlog")
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-      }
-      .controlSize(.small)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-
-      ForEach(dependencyGroups) { group in
+        .padding(.horizontal, 14)
+        .frame(minHeight: 36)
+        .background(.purple.opacity(0.055))
         Divider()
-        InlineSuggestionDependencyGroup(
-          group: group,
-          batch: batch,
-          onOpen: { selectedSuggestion = $0 }
+      }
+      ForEach(orderedSuggestions) { suggestion in
+        InlineTicketSuggestionRow(
+          suggestion: suggestion,
+          dependencies: relatedSuggestions(for: suggestion.dependencyIDs),
+          existingDependencies: suggestion.existingDependencyWorkItemIDs.compactMap { id in
+            model.workItems.first { $0.id == id }
+          },
+          cascadeDependents: transitiveSuggestionDependents(
+            of: suggestion,
+            in: batch.suggestions
+          ),
+          cascadePrerequisites: transitiveSuggestedPrerequisites(
+            of: suggestion,
+            in: batch.suggestions
+          ),
+          onOpen: { selectedSuggestion = suggestion }
         )
       }
     }
-    .background(.purple.opacity(0.04))
+  }
+
+  private var sourceTicket: WorkItem? {
+    guard let sourceID = batch.session.sourceWorkItemID else { return nil }
+    return model.workItems.first { $0.id == sourceID }
   }
 
   private var orderedSuggestions: [TicketSuggestion] {
@@ -2865,33 +3701,8 @@ private struct InlineBacklogSuggestions: View {
       }
   }
 
-  private var dependencyGroups: [InlineSuggestionGroup] {
-    let proposals = orderedSuggestions
-    let proposedIDs = Set(proposals.map(\.id))
-    var adjacency: [UUID: Set<UUID>] = [:]
-    for suggestion in proposals {
-      for dependencyID in suggestion.dependencyIDs where proposedIDs.contains(dependencyID) {
-        adjacency[suggestion.id, default: []].insert(dependencyID)
-        adjacency[dependencyID, default: []].insert(suggestion.id)
-      }
-    }
-
-    var unvisited = proposedIDs
-    var groups: [InlineSuggestionGroup] = []
-    for suggestion in proposals where unvisited.contains(suggestion.id) {
-      var pending = [suggestion.id]
-      var component: Set<UUID> = []
-      while let id = pending.popLast() {
-        guard unvisited.remove(id) != nil else { continue }
-        component.insert(id)
-        pending.append(contentsOf: adjacency[id, default: []])
-      }
-      let members = proposals.filter { component.contains($0.id) }
-      if let first = members.first {
-        groups.append(InlineSuggestionGroup(id: first.id, suggestions: members))
-      }
-    }
-    return groups
+  private func relatedSuggestions(for ids: [UUID]) -> [TicketSuggestion] {
+    ids.compactMap { id in batch.suggestions.first { $0.id == id } }
   }
 
   private func dependencyDepth(
@@ -2909,143 +3720,127 @@ private struct InlineBacklogSuggestions: View {
   }
 }
 
-private struct InlineSuggestionGroup: Identifiable {
-  let id: UUID
-  let suggestions: [TicketSuggestion]
-}
-
-private struct InlineSuggestionDependencyGroup: View {
-  @EnvironmentObject private var model: AppModel
-  let group: InlineSuggestionGroup
-  let batch: TicketSuggestionBatch
-  let onOpen: (TicketSuggestion) -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      if group.suggestions.count > 1 {
-        HStack(spacing: 8) {
-          Label(
-            "Dependency path · \(group.suggestions.count) tickets",
-            systemImage: "point.3.connected.trianglepath.dotted"
-          )
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.purple)
-          Spacer()
-          Button("Reject group") {
-            model.decideTicketSuggestionGroup(group.suggestions, accept: false)
-          }
-          .buttonStyle(.bordered)
-          Button("Accept group") {
-            model.decideTicketSuggestionGroup(group.suggestions, accept: true)
-          }
-          .buttonStyle(.borderedProminent)
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(.purple.opacity(0.045))
-      }
-
-      ForEach(group.suggestions) { suggestion in
-        InlineTicketSuggestionRow(
-          suggestion: suggestion,
-          dependencies: relatedSuggestions(for: suggestion.dependencyIDs),
-          existingDependencies: suggestion.existingDependencyWorkItemIDs.compactMap { id in
-            model.workItems.first { $0.id == id }
-          },
-          dependents: batch.suggestions.filter { $0.dependencyIDs.contains(suggestion.id) },
-          onOpen: { onOpen(suggestion) }
-        )
-      }
-    }
-  }
-
-  private func relatedSuggestions(for ids: [UUID]) -> [TicketSuggestion] {
-    ids.compactMap { id in batch.suggestions.first { $0.id == id } }
-  }
-}
-
 private struct InlineTicketSuggestionRow: View {
   @EnvironmentObject private var model: AppModel
   let suggestion: TicketSuggestion
   let dependencies: [TicketSuggestion]
   let existingDependencies: [WorkItem]
-  let dependents: [TicketSuggestion]
+  let cascadeDependents: [TicketSuggestion]
+  let cascadePrerequisites: [TicketSuggestion]
   let onOpen: () -> Void
   @State private var isHovering = false
+  @State private var confirmingCascadeAcceptance = false
+  @State private var confirmingCascadeRejection = false
+
+  private var acceptanceImpact: SuggestionAcceptanceImpact {
+    SuggestionAcceptanceImpact(
+      suggestion: suggestion,
+      prerequisites: cascadePrerequisites
+    )
+  }
+
+  private var rejectionImpact: SuggestionRejectionImpact {
+    SuggestionRejectionImpact(
+      suggestion: suggestion,
+      dependents: cascadeDependents
+    )
+  }
+
+  private var rejectMenuTitle: AttributedString {
+    var title = AttributedString("Reject ticket…")
+    title.foregroundColor = .red
+    return title
+  }
 
   var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      Image(systemName: "wand.and.stars")
-        .font(.callout.weight(.semibold))
-        .foregroundStyle(.purple)
-        .frame(width: 26)
+    Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+      GridRow(alignment: .center) {
+        Color.clear
+          .frame(
+            width: PlanningTicketTableLayout.selectionWidth,
+            height: 24
+          )
+          .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
 
-      Text(suggestion.reference)
-        .font(.caption.monospaced().weight(.semibold))
-        .foregroundStyle(.purple)
-        .frame(width: 36, alignment: .leading)
-
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 7) {
-          Text(suggestion.title)
-            .font(.body.weight(.semibold))
-            .foregroundStyle(isHovering ? Color.purple : Color.primary)
-            .lineLimit(1)
-          Label(suggestion.type.title, systemImage: suggestion.type.symbolName)
-            .font(.caption2.weight(.semibold))
+        HStack(alignment: .center, spacing: 8) {
+          Image(systemName: suggestion.type.symbolName)
             .foregroundStyle(suggestion.type.tint)
+            .frame(width: 16)
+          Text(suggestion.reference)
+            .font(.caption.monospaced().weight(.semibold))
+            .foregroundStyle(.purple)
+            .frame(width: PlanningTicketTableLayout.referenceWidth, alignment: .leading)
+          Text(suggestion.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isHovering ? Color.purple : Color.primary)
+            .lineLimit(2)
+            .layoutPriority(1)
+          Spacer(minLength: 4)
         }
-        HStack(spacing: 9) {
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+
+        Group {
           if !blockerKeys.isEmpty {
             Label(
-              "Blocked by \(blockerKeys.joined(separator: ", "))",
-              systemImage: "arrow.turn.up.left"
+              blockerKeys.joined(separator: ", "),
+              systemImage: "arrow.turn.down.right"
             )
             .foregroundStyle(.indigo)
-          } else if !dependents.isEmpty {
-            Label(
-              "Blocks \(dependents.map(\.reference).joined(separator: ", "))",
-              systemImage: "link"
-            )
-            .foregroundStyle(.purple)
+            .help("Waiting for \(blockerKeys.joined(separator: ", "))")
           } else {
-            Text(suggestion.rationale)
-              .lineLimit(1)
+            Text("None")
+              .foregroundStyle(.tertiary)
           }
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
-      }
-
-      Spacer(minLength: 10)
-
-      Label(suggestion.suggestedRole.title, systemImage: suggestion.suggestedRole.symbolName)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(suggestion.suggestedRole.tint)
         .lineLimit(1)
+        .frame(
+          width: PlanningTicketTableLayout.dependenciesWidth,
+          alignment: .leading
+        )
+        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
 
-      Text(suggestion.priority.title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(suggestion.priority.tint)
-        .frame(width: 52, alignment: .trailing)
+        Image(systemName: suggestion.suggestedRole.symbolName)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(suggestion.suggestedRole.tint)
+          .frame(
+            width: PlanningTicketTableLayout.assigneeWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .accessibilityLabel(suggestion.suggestedRole.title)
+          .help(suggestion.suggestedRole.title)
 
-      HStack(spacing: 6) {
-        Button("Reject") {
-          model.decideTicketSuggestion(suggestion, accept: false)
-        }
-        .buttonStyle(.bordered)
-        Button("Accept") {
-          model.decideTicketSuggestion(suggestion, accept: true)
-        }
-        .buttonStyle(.borderedProminent)
+        Image(systemName: "checkmark.circle.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(.green)
+          .frame(
+            width: PlanningTicketTableLayout.readinessWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .accessibilityLabel(
+            "\(suggestion.acceptanceCriteria.count) acceptance criteria"
+          )
+          .help("\(suggestion.acceptanceCriteria.count) acceptance criteria")
+
+        SprintPriorityIndicator(priority: suggestion.priority)
+          .frame(
+            width: PlanningTicketTableLayout.priorityWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
       }
-      .controlSize(.small)
-      .disabled(model.isDecidingSuggestions)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .background(.purple.opacity(isHovering ? 0.09 : 0.025))
+    .frame(maxWidth: .infinity)
+    .frame(minHeight: PlanningTicketTableMetrics.rowHeight)
+    .background(
+      isHovering
+        ? ProposedTicketVisualStyle.emphasizedSurface
+        : ProposedTicketVisualStyle.surface
+    )
     .overlay(alignment: .bottom) {
       Divider()
     }
@@ -3058,18 +3853,88 @@ private struct InlineTicketSuggestionRow: View {
     }
     .animation(.easeOut(duration: 0.12), value: isHovering)
     .help("Open suggested ticket details")
+    .contextMenu {
+      Button {
+        if acceptanceImpact.requiresConfirmation {
+          confirmingCascadeAcceptance = true
+        } else {
+          model.decideTicketSuggestion(suggestion, accept: true)
+        }
+      } label: {
+        Label(acceptanceImpact.buttonTitle, systemImage: "checkmark.circle")
+      }
+      .disabled(model.isDecidingSuggestions)
+
+      Button(role: .destructive) {
+        if rejectionImpact.requiresConfirmation {
+          confirmingCascadeRejection = true
+        } else {
+          model.rejectTicketSuggestion(suggestion)
+        }
+      } label: {
+        Label {
+          Text(rejectMenuTitle)
+        } icon: {
+          Image(systemName: "xmark.circle")
+            .foregroundStyle(.red)
+        }
+      }
+      .tint(.red)
+      .disabled(model.isDecidingSuggestions)
+    }
+    .confirmationDialog(
+      acceptanceImpact.dialogTitle,
+      isPresented: $confirmingCascadeAcceptance,
+      titleVisibility: .visible
+    ) {
+      Button(acceptanceImpact.actionTitle) {
+        model.decideTicketSuggestion(suggestion, accept: true)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(acceptanceImpact.message)
+    }
+    .confirmationDialog(
+      rejectionImpact.dialogTitle,
+      isPresented: $confirmingCascadeRejection,
+      titleVisibility: .visible
+    ) {
+      Button(rejectionImpact.actionTitle, role: .destructive) {
+        model.rejectTicketSuggestion(suggestion)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(rejectionImpact.message)
+    }
   }
 
   private var blockerKeys: [String] {
-    dependencies.map(\.reference) + existingDependencies.map(\.key)
+    dependencies.map(\.reference) + activeExistingDependencies.map(\.key)
+  }
+
+  private var activeExistingDependencies: [WorkItem] {
+    existingDependencies.filter { $0.state != .released }
   }
 }
 
 private struct TicketSuggestionDetailView: View {
   @EnvironmentObject private var model: AppModel
+  @Environment(\.workspaceContainerSize) private var containerSize
   let suggestion: TicketSuggestion
   let batch: TicketSuggestionBatch
   let onClose: () -> Void
+  @State private var confirmingCascadeAcceptance = false
+  @State private var confirmingCascadeRejection = false
+
+  init(
+    suggestion: TicketSuggestion,
+    batch: TicketSuggestionBatch,
+    onClose: @escaping () -> Void
+  ) {
+    self.suggestion = suggestion
+    self.batch = batch
+    self.onClose = onClose
+  }
 
   private var proposedDependencies: [TicketSuggestion] {
     suggestion.dependencyIDs.compactMap { dependencyID in
@@ -3083,20 +3948,58 @@ private struct TicketSuggestionDetailView: View {
     }
   }
 
+  private var activeExistingDependencies: [WorkItem] {
+    existingDependencies.filter { $0.state != .released }
+  }
+
   private var dependents: [TicketSuggestion] {
     batch.suggestions.filter { $0.dependencyIDs.contains(suggestion.id) }
+  }
+
+  private var acceptanceImpact: SuggestionAcceptanceImpact {
+    SuggestionAcceptanceImpact(
+      suggestion: suggestion,
+      prerequisites: transitiveSuggestedPrerequisites(
+        of: suggestion,
+        in: batch.suggestions
+      )
+    )
+  }
+
+  private var rejectionImpact: SuggestionRejectionImpact {
+    SuggestionRejectionImpact(
+      suggestion: suggestion,
+      dependents: transitiveSuggestionDependents(
+        of: suggestion,
+        in: batch.suggestions
+      )
+    )
+  }
+
+  private var detailWidth: CGFloat {
+    min(900, max(700, containerSize.width - 140))
+  }
+
+  private var detailHeight: CGFloat {
+    min(780, max(600, containerSize.height - 110))
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 10) {
-        Image(systemName: "wand.and.stars")
-          .foregroundStyle(.purple)
+        Image(systemName: suggestion.type.symbolName)
+          .foregroundStyle(suggestion.type.tint)
         Text(suggestion.reference)
           .font(.callout.monospaced().weight(.semibold))
           .foregroundStyle(.secondary)
-        Text("Suggested ticket")
+        Text("Ticket details")
           .font(.title2.bold())
+        Text("Suggested")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.purple)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 4)
+          .background(.purple.opacity(0.1), in: Capsule())
         Spacer()
         Button("Close", action: onClose)
       }
@@ -3106,67 +4009,89 @@ private struct TicketSuggestionDetailView: View {
       Divider()
 
       ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          VStack(alignment: .leading, spacing: 9) {
-            Text(suggestion.title)
-              .font(.title2.weight(.semibold))
-              .textSelection(.enabled)
-            Text(suggestion.body)
-              .foregroundStyle(.secondary)
-              .textSelection(.enabled)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-          HStack(spacing: 10) {
-            SuggestionDetailMetadata(
-              title: "Type",
-              value: suggestion.type.title,
-              symbol: suggestion.type.symbolName,
-              tint: suggestion.type.tint
-            )
-            SuggestionDetailMetadata(
-              title: "Priority",
-              value: suggestion.priority.title,
-              symbol: "chevron.up",
-              tint: suggestion.priority.tint
-            )
-            SuggestionDetailMetadata(
-              title: "Suggested owner",
-              value: suggestion.suggestedRole.title,
-              symbol: suggestion.suggestedRole.symbolName,
-              tint: suggestion.suggestedRole.tint
-            )
-          }
-
-          VStack(alignment: .leading, spacing: 10) {
-            Text("Acceptance criteria")
-              .font(.headline)
-            ForEach(suggestion.acceptanceCriteria, id: \.self) { criterion in
-              HStack(alignment: .top, spacing: 9) {
-                Text("•")
+        VStack(alignment: .leading, spacing: 22) {
+          SprintTicketSectionCard(title: "Summary") {
+            VStack(alignment: .leading, spacing: 9) {
+              Text(suggestion.title)
+                .font(.title2.weight(.semibold))
+                .textSelection(.enabled)
+              if suggestion.body.isEmpty {
+                Text("No additional context was proposed.")
                   .foregroundStyle(.secondary)
-                  .frame(width: 16, alignment: .center)
-                Text(criterion)
+              } else {
+                Text(suggestion.body)
                   .textSelection(.enabled)
               }
             }
           }
-          .padding(15)
-          .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+
+          SprintTicketSectionCard(title: "Details") {
+            LazyVGrid(
+              columns: Array(
+                repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
+                count: 4
+              ),
+              alignment: .leading,
+              spacing: 12
+            ) {
+              SprintTicketMetadata(
+                title: "Status",
+                value: "Suggested",
+                symbol: "wand.and.stars",
+                tint: .purple
+              )
+              SprintTicketMetadata(
+                title: "Suggested owner",
+                value: suggestion.suggestedRole.title,
+                symbol: suggestion.suggestedRole.symbolName,
+                tint: suggestion.suggestedRole.tint
+              )
+              SprintTicketMetadata(
+                title: "Type",
+                value: suggestion.type.title,
+                symbol: suggestion.type.symbolName,
+                tint: suggestion.type.tint
+              )
+              SprintTicketMetadata(
+                title: "Priority",
+                value: suggestion.priority.title,
+                symbol: "flag.fill",
+                tint: suggestion.priority.tint
+              )
+            }
+          }
+
+          SprintTicketSectionCard(title: "Acceptance criteria") {
+            if suggestion.acceptanceCriteria.isEmpty {
+              Label("No acceptance criteria proposed", systemImage: "exclamationmark.circle")
+                .foregroundStyle(.secondary)
+            } else {
+              VStack(alignment: .leading, spacing: 10) {
+                ForEach(suggestion.acceptanceCriteria, id: \.self) { criterion in
+                  HStack(alignment: .top, spacing: 9) {
+                    Text("•")
+                      .foregroundStyle(.secondary)
+                      .frame(width: 16, alignment: .center)
+                    Text(criterion)
+                      .textSelection(.enabled)
+                  }
+                }
+              }
+            }
+          }
 
           if !proposedDependencies.isEmpty
-            || !existingDependencies.isEmpty
+            || !activeExistingDependencies.isEmpty
             || !dependents.isEmpty
           {
-            VStack(alignment: .leading, spacing: 11) {
-              Text("Relationships")
-                .font(.headline)
-              if !proposedDependencies.isEmpty || !existingDependencies.isEmpty {
+            SprintTicketSectionCard(title: "Relationships") {
+              VStack(alignment: .leading, spacing: 14) {
+              if !proposedDependencies.isEmpty || !activeExistingDependencies.isEmpty {
                 SuggestionDetailRelationship(
                   title: "Blocked by",
                   values: proposedDependencies.map {
                     "\($0.reference) · \($0.title)"
-                  } + existingDependencies.map {
+                  } + activeExistingDependencies.map {
                     "\($0.key) · \($0.title)"
                   },
                   symbol: "arrow.turn.up.left",
@@ -3181,37 +4106,43 @@ private struct TicketSuggestionDetailView: View {
                   tint: .purple
                 )
               }
+              }
             }
-            .padding(15)
-            .background(.indigo.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
           }
 
-          VStack(alignment: .leading, spacing: 6) {
-            Text("Why this work")
-              .font(.headline)
+          SprintTicketSectionCard(title: "Why this work") {
             Text(suggestion.rationale)
-              .foregroundStyle(.secondary)
               .textSelection(.enabled)
           }
         }
-        .padding(22)
+        .padding(24)
       }
 
       Divider()
 
       HStack {
-        Text("Nothing enters the backlog until you accept it.")
+        Text(
+          acceptanceImpact.requiresConfirmation
+            ? "Accepting this ticket also accepts its suggested prerequisites."
+            : "Nothing enters the Backlog until you accept it."
+        )
           .font(.caption)
           .foregroundStyle(.secondary)
         Spacer()
         Button("Reject", role: .destructive) {
-          model.decideTicketSuggestion(suggestion, accept: false)
-          onClose()
+          if rejectionImpact.requiresConfirmation {
+            confirmingCascadeRejection = true
+          } else {
+            rejectSuggestion()
+          }
         }
         .disabled(model.isDecidingSuggestions)
-        Button("Accept") {
-          model.decideTicketSuggestion(suggestion, accept: true)
-          onClose()
+        Button(acceptanceImpact.buttonTitle) {
+          if acceptanceImpact.requiresConfirmation {
+            confirmingCascadeAcceptance = true
+          } else {
+            acceptSuggestion()
+          }
         }
         .buttonStyle(.borderedProminent)
         .disabled(model.isDecidingSuggestions)
@@ -3219,33 +4150,40 @@ private struct TicketSuggestionDetailView: View {
       .padding(.horizontal, 22)
       .frame(height: 64)
     }
-    .frame(width: 760, height: 680)
-  }
-}
-
-private struct SuggestionDetailMetadata: View {
-  let title: String
-  let value: String
-  let symbol: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 9) {
-      Image(systemName: symbol)
-        .foregroundStyle(tint)
-        .frame(width: 18)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-        Text(value)
-          .font(.caption.weight(.semibold))
-          .lineLimit(1)
+    .frame(width: detailWidth, height: detailHeight)
+    .confirmationDialog(
+      acceptanceImpact.dialogTitle,
+      isPresented: $confirmingCascadeAcceptance,
+      titleVisibility: .visible
+    ) {
+      Button(acceptanceImpact.actionTitle) {
+        acceptSuggestion()
       }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(acceptanceImpact.message)
     }
-    .padding(11)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+    .confirmationDialog(
+      rejectionImpact.dialogTitle,
+      isPresented: $confirmingCascadeRejection,
+      titleVisibility: .visible
+    ) {
+      Button(rejectionImpact.actionTitle, role: .destructive) {
+        rejectSuggestion()
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(rejectionImpact.message)
+    }
+  }
+
+  private func acceptSuggestion() {
+    model.decideTicketSuggestion(suggestion, accept: true)
+    onClose()
+  }
+
+  private func rejectSuggestion() {
+    model.rejectTicketSuggestion(suggestion, completion: onClose)
   }
 }
 
@@ -3256,14 +4194,11 @@ private struct SuggestionDetailRelationship: View {
   let tint: Color
 
   var body: some View {
-    HStack(alignment: .top, spacing: 9) {
-      Image(systemName: symbol)
-        .foregroundStyle(tint)
-        .frame(width: 18)
-      VStack(alignment: .leading, spacing: 4) {
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(tint)
+    VStack(alignment: .leading, spacing: 4) {
+      Label(title, systemImage: symbol)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 6) {
         ForEach(values, id: \.self) { value in
           Text(value)
             .font(.caption)
@@ -3271,6 +4206,7 @@ private struct SuggestionDetailRelationship: View {
         }
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
@@ -3284,9 +4220,16 @@ private struct BacklogSuggestionStack: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
         VStack(alignment: .leading, spacing: 3) {
-          Label("Suggested work", systemImage: "wand.and.stars")
+          Label(
+            sourceTicket.map { "Follow-up work from \($0.key)" } ?? "Suggested work",
+            systemImage: "wand.and.stars"
+          )
             .font(.headline)
-          Text("One Business Analyst proposal · roles are planning hints; team members are assigned in Sprint Planning")
+          Text(
+            sourceTicket == nil
+              ? "One Business Analyst proposal · roles are planning hints; team members are assigned in Sprint Planning"
+              : "Proposed from approved research · review each ticket before it enters the backlog"
+          )
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -3326,9 +4269,14 @@ private struct BacklogSuggestionStack: View {
           Text(batch.session.errorMessage ?? "The proposal did not complete.")
             .font(.caption)
             .foregroundStyle(.secondary)
-          Button("Try again") { model.retryCurrentEpicPlan() }
-            .buttonStyle(.bordered)
-            .disabled(!model.canPlanEpic || batch.session.epicID == nil)
+          Button {
+            model.retryCurrentEpicPlan()
+          } label: {
+            Label("Try again", systemImage: "wand.and.stars")
+          }
+          .buttonStyle(.borderedProminent)
+          .tint(.purple)
+          .disabled(!model.canPlanEpic || batch.session.epicID == nil)
         }
         .padding(12)
         .background(.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
@@ -3345,7 +4293,15 @@ private struct BacklogSuggestionStack: View {
               TicketSuggestionCard(
                 suggestion: suggestion,
                 dependencies: dependencies(for: suggestion),
-                dependents: dependents(for: suggestion)
+                dependents: dependents(for: suggestion),
+                cascadeDependents: transitiveSuggestionDependents(
+                  of: suggestion,
+                  in: batch.suggestions
+                ),
+                cascadePrerequisites: transitiveSuggestedPrerequisites(
+                  of: suggestion,
+                  in: batch.suggestions
+                )
               )
             }
           }
@@ -3393,7 +4349,7 @@ private struct BacklogSuggestionStack: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("The decisions will be retained as feedback for future backlog analysis.")
+      Text(rejectAllMessage)
     }
   }
 
@@ -3401,10 +4357,38 @@ private struct BacklogSuggestionStack: View {
     batch.suggestions.filter { $0.status == .proposed }.count
   }
 
+  private var sourceTicket: WorkItem? {
+    guard let sourceID = batch.session.sourceWorkItemID else { return nil }
+    return model.workItems.first { $0.id == sourceID }
+  }
+
   private var reviewedSummary: String {
     let accepted = batch.suggestions.filter { $0.status == .accepted }.count
     let rejected = batch.suggestions.filter { $0.status == .rejected }.count
     return "Proposal reviewed · \(accepted) added · \(rejected) rejected"
+  }
+
+  private var acceptedCascadeTicketCount: Int {
+    let acceptedIDs = batch.suggestions
+      .filter { $0.status == .proposed }
+      .flatMap {
+        transitiveSuggestionDependents(of: $0, in: batch.suggestions)
+      }
+      .filter { $0.status == .accepted }
+      .map(\.id)
+    return Set(acceptedIDs).count
+  }
+
+  private var rejectAllMessage: String {
+    if acceptedCascadeTicketCount > 0 {
+      return
+        "This also archives \(acceptedCascadeTicketCount) dependent "
+        + (acceptedCascadeTicketCount == 1
+          ? "ticket already added to the backlog. "
+          : "tickets already added to the backlog. ")
+        + "The decisions and archived tickets remain in history."
+    }
+    return "The decisions will be retained as feedback for future backlog analysis."
   }
 
   private var orderedSuggestions: [TicketSuggestion] {
@@ -3478,6 +4462,24 @@ private struct TicketSuggestionCard: View {
   let suggestion: TicketSuggestion
   let dependencies: [TicketSuggestion]
   let dependents: [TicketSuggestion]
+  let cascadeDependents: [TicketSuggestion]
+  let cascadePrerequisites: [TicketSuggestion]
+  @State private var confirmingCascadeAcceptance = false
+  @State private var confirmingCascadeRejection = false
+
+  private var acceptanceImpact: SuggestionAcceptanceImpact {
+    SuggestionAcceptanceImpact(
+      suggestion: suggestion,
+      prerequisites: cascadePrerequisites
+    )
+  }
+
+  private var rejectionImpact: SuggestionRejectionImpact {
+    SuggestionRejectionImpact(
+      suggestion: suggestion,
+      dependents: cascadeDependents
+    )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -3551,10 +4553,22 @@ private struct TicketSuggestionCard: View {
       case .proposed:
         HStack(spacing: 8) {
           Spacer()
-          Button("Reject") { model.decideTicketSuggestion(suggestion, accept: false) }
+          Button("Reject") {
+            if rejectionImpact.requiresConfirmation {
+              confirmingCascadeRejection = true
+            } else {
+              model.rejectTicketSuggestion(suggestion)
+            }
+          }
             .buttonStyle(.bordered)
             .disabled(model.isDecidingSuggestions)
-          Button("Accept") { model.decideTicketSuggestion(suggestion, accept: true) }
+          Button(acceptanceImpact.requiresConfirmation ? acceptanceImpact.buttonTitle : "Accept") {
+            if acceptanceImpact.requiresConfirmation {
+              confirmingCascadeAcceptance = true
+            } else {
+              model.decideTicketSuggestion(suggestion, accept: true)
+            }
+          }
             .buttonStyle(.borderedProminent)
             .disabled(model.isDecidingSuggestions)
         }
@@ -3570,12 +4584,39 @@ private struct TicketSuggestionCard: View {
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .topLeading)
-    .background(.background, in: RoundedRectangle(cornerRadius: 12))
+    .background(
+      ProposedTicketVisualStyle.surface,
+      in: RoundedRectangle(cornerRadius: 12)
+    )
     .overlay {
       RoundedRectangle(cornerRadius: 12)
-        .stroke(suggestion.suggestedRole.tint.opacity(0.16))
+        .stroke(ProposedTicketVisualStyle.border)
     }
     .opacity(suggestion.status == .rejected ? 0.58 : 1)
+    .confirmationDialog(
+      acceptanceImpact.dialogTitle,
+      isPresented: $confirmingCascadeAcceptance,
+      titleVisibility: .visible
+    ) {
+      Button(acceptanceImpact.actionTitle) {
+        model.decideTicketSuggestion(suggestion, accept: true)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(acceptanceImpact.message)
+    }
+    .confirmationDialog(
+      rejectionImpact.dialogTitle,
+      isPresented: $confirmingCascadeRejection,
+      titleVisibility: .visible
+    ) {
+      Button(rejectionImpact.actionTitle, role: .destructive) {
+        model.rejectTicketSuggestion(suggestion)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(rejectionImpact.message)
+    }
   }
 
   private var rejectedDependencies: [TicketSuggestion] {
@@ -3659,15 +4700,13 @@ private struct PlanningSlot: View {
 
 private struct SprintBoardView: View {
   @EnvironmentObject private var model: AppModel
+  @Binding var selectedSprintID: UUID?
   let onShowBacklog: () -> Void
   let onEditPlan: () -> Void
   let onShowRetrospective: () -> Void
   let onShowReports: () -> Void
   @State private var selectedTicket: WorkItem?
-  @State private var selectedSprintID: UUID?
   @Namespace private var ticketMotionNamespace
-
-  private static let selectedSprintDefaultsPrefix = "sprintBoardSelection"
 
   private let lanes = [
     SprintLane(title: "Ready to Pick", states: [.queued]),
@@ -3679,7 +4718,7 @@ private struct SprintBoardView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(alignment: .center, spacing: 12) {
+      HStack(alignment: .center, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
           HStack(spacing: 9) {
             Text("Sprint Board")
@@ -3697,62 +4736,65 @@ private struct SprintBoardView: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
-        if availablePlans.count > 1 {
-          Picker("Sprint", selection: selectedSprintBinding) {
-            ForEach(availablePlans, id: \.sprint.id) { plan in
-              Text(
-                "Sprint \(plan.sprint.number) · \(sprintSelectorTitle(for: plan))"
+        HStack(spacing: 0) {
+          if availablePlans.count > 1 {
+            Picker("Sprint", selection: selectedSprintBinding) {
+              ForEach(availablePlans, id: \.sprint.id) { plan in
+                Text(
+                  "Sprint \(plan.sprint.number) · \(sprintSelectorTitle(for: plan))"
+                )
+                .tag(plan.sprint.id)
+              }
+            }
+            .labelsHidden()
+            .frame(width: 190, alignment: .trailing)
+          }
+
+          if availablePlans.count > 1, hasHeaderActions {
+            Divider()
+              .frame(height: 22)
+              .padding(.horizontal, 12)
+          }
+
+          HStack(spacing: 10) {
+            if let plan = selectedPlan, plan.sprint.state == .completed {
+              Button("View report", action: onShowReports)
+              Button(
+                plan.sprint.retrospectiveConcludedAt == nil
+                  ? "Continue to retrospective"
+                  : "View retrospective",
+                action: onShowRetrospective
               )
-              .tag(plan.sprint.id)
+              .buttonStyle(.borderedProminent)
             }
-          }
-          .labelsHidden()
-          .frame(width: 190)
-        }
-        if availablePlans.count > 1, selectedPlan != nil {
-          Divider()
-            .frame(height: 22)
-            .padding(.horizontal, 2)
-        }
-        if let plan = selectedPlan, plan.sprint.state == .completed {
-          Button("View report", action: onShowReports)
-          Button(
-            plan.sprint.retrospectiveConcludedAt == nil
-              ? "Continue to retrospective"
-              : "View retrospective",
-            action: onShowRetrospective
-          )
-          .buttonStyle(.borderedProminent)
-        }
-        if let plan = selectedPlan, plan.sprint.state == .active {
-          SprintTeamActivity(plan: plan)
-        }
-        if let draftPlan = selectedDraftPlan {
-          if model.sprintReadinessIssues.isEmpty {
-            Button("Review plan", action: onEditPlan)
-              .buttonStyle(.bordered)
-              .help("Review the sprint plan")
-          } else {
-            Button(action: onEditPlan) {
-              Label(
-                "Review plan · \(model.sprintReadinessIssues.count) \(model.sprintReadinessIssues.count == 1 ? "issue" : "issues")",
-                systemImage: "exclamationmark.triangle.fill"
+            if let draftPlan = selectedDraftPlan {
+              if model.sprintReadinessIssues.isEmpty {
+                Button("Review plan", action: onEditPlan)
+                  .buttonStyle(.bordered)
+                  .help("Review the sprint plan")
+              } else {
+                Button(action: onEditPlan) {
+                  Label(
+                    "Review plan · \(model.sprintReadinessIssues.count) \(model.sprintReadinessIssues.count == 1 ? "issue" : "issues")",
+                    systemImage: "exclamationmark.triangle.fill"
+                  )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .help(model.sprintReadinessIssues.map(\.message).joined(separator: "\n"))
+              }
+              Button("Start sprint") {
+                Task {
+                  _ = await model.startSprint()
+                }
+              }
+              .buttonStyle(.borderedProminent)
+              .disabled(
+                !draftPlan.items.allSatisfy { $0.estimatedTokens > 0 }
+                  || !model.sprintReadinessIssues.isEmpty
               )
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.orange)
-            .help(model.sprintReadinessIssues.map(\.message).joined(separator: "\n"))
           }
-          Button("Start sprint") {
-            Task {
-              _ = await model.startSprint()
-            }
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(
-            !draftPlan.items.allSatisfy { $0.estimatedTokens > 0 }
-              || !model.sprintReadinessIssues.isEmpty
-          )
         }
       }
       .padding(24)
@@ -3770,14 +4812,14 @@ private struct SprintBoardView: View {
                 - (interColumnSpacing * CGFloat(max(0, lanes.count - 1)))
             let columnWidth = min(
               270,
-              max(244, availableForColumns / CGFloat(max(1, lanes.count)))
+              max(210, availableForColumns / CGFloat(max(1, lanes.count)))
             )
 
             ScrollView(.horizontal) {
               HStack(alignment: .top, spacing: interColumnSpacing) {
                 ForEach(lanes) { lane in
                   SprintBoardColumn(
-                    title: lane.title,
+                    title: boardLaneTitle(for: lane, plan: plan),
                     items: boardItems(
                       for: lane,
                       plan: plan,
@@ -3798,7 +4840,6 @@ private struct SprintBoardView: View {
             }
             .frame(maxHeight: .infinity)
           }
-          .background(Color(nsColor: .windowBackgroundColor))
         }
       } else {
         ContentUnavailableView {
@@ -3818,8 +4859,24 @@ private struct SprintBoardView: View {
     .onChange(of: availablePlanSignature) { _, _ in
       selectPreferredPlanIfNeeded()
     }
+    .onChange(of: model.isLoading) { _, isLoading in
+      if !isLoading {
+        selectPreferredPlanIfNeeded()
+      }
+    }
     .sheet(item: $selectedTicket) { item in
-      SprintTicketDetailView(item: item)
+      if selectedPlan?.sprint.state == .draft {
+        TicketDetailView(
+          item: item,
+          dependsOnWorkItemIDs: Set(
+            model.dependencies
+              .filter { $0.workItemID == item.id }
+              .map(\.dependsOnWorkItemID)
+          )
+        )
+      } else {
+        SprintTicketDetailView(item: item)
+      }
     }
   }
 
@@ -3847,6 +4904,10 @@ private struct SprintBoardView: View {
   private var selectedDraftPlan: SprintPlan? {
     guard let plan = selectedPlan, plan.sprint.state == .draft else { return nil }
     return plan
+  }
+
+  private var hasHeaderActions: Bool {
+    selectedPlan?.sprint.state == .completed || selectedDraftPlan != nil
   }
 
   private var preferredPlan: SprintPlan? {
@@ -3878,32 +4939,21 @@ private struct SprintBoardView: View {
       selectedSprintID = restoredSprintID
       return
     }
+    guard !model.isLoading, !availablePlans.isEmpty else {
+      return
+    }
     selectSprint(preferredPlan?.sprint.id)
   }
 
   private var restoredSprintID: UUID? {
-    guard
-      let productID = model.selectedProductID,
-      let rawValue = UserDefaults.standard.string(
-        forKey: selectedSprintDefaultsKey(for: productID)
-      )
-    else { return nil }
-    return UUID(uuidString: rawValue)
+    guard let productID = model.selectedProductID else { return nil }
+    return SprintBoardSelectionDefaults.selectedSprintID(for: productID)
   }
 
   private func selectSprint(_ sprintID: UUID?) {
     selectedSprintID = sprintID
     guard let productID = model.selectedProductID else { return }
-    let key = selectedSprintDefaultsKey(for: productID)
-    if let sprintID {
-      UserDefaults.standard.set(sprintID.uuidString, forKey: key)
-    } else {
-      UserDefaults.standard.removeObject(forKey: key)
-    }
-  }
-
-  private func selectedSprintDefaultsKey(for productID: UUID) -> String {
-    "\(Self.selectedSprintDefaultsPrefix).\(productID.uuidString)"
+    SprintBoardSelectionDefaults.select(sprintID, for: productID)
   }
 
   private func boardItems(
@@ -3919,6 +4969,13 @@ private struct SprintBoardView: View {
     return model.workItems.filter {
       itemIDs.contains($0.id) && lane.states.contains($0.state)
     }
+  }
+
+  private func boardLaneTitle(for lane: SprintLane, plan: SprintPlan) -> String {
+    guard plan.sprint.state == .draft, lane.states == [.queued] else {
+      return lane.title
+    }
+    return isReadyToStart(plan) ? lane.title : "Planning"
   }
 
   private func sprintSelectorTitle(for plan: SprintPlan) -> String {
@@ -4083,7 +5140,7 @@ private struct SprintDraftOverview: View {
               .foregroundStyle(.secondary)
           }
           Spacer()
-          Text("Saved Sprint \(plan.sprint.number) plan")
+          Text("Saved sprint \(plan.sprint.number) plan")
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
         }
@@ -4127,6 +5184,7 @@ private struct SprintDraftOverview: View {
 private struct RetrospectivesView: View {
   @EnvironmentObject private var model: AppModel
   let onConcluded: () -> Void
+  let onOpenRefiningTicket: (WorkItem) -> Void
   @State private var selectedSprintID: UUID?
   @State private var isConcluding = false
 
@@ -4302,7 +5360,9 @@ private struct RetrospectivesView: View {
         Divider()
 
         RetrospectiveActionPanel(
-          notes: selectedNotes.filter { $0.category == .suggestedAction }
+          sprint: selectedPlan?.sprint,
+          notes: selectedNotes.filter { $0.category == .suggestedAction },
+          onOpenRefiningTicket: onOpenRefiningTicket
         )
         .frame(width: decisionWidth)
         .frame(maxHeight: .infinity)
@@ -4332,26 +5392,30 @@ private struct RetrospectivesView: View {
 
   private func retrospectiveFooter(_ plan: SprintPlan) -> some View {
     HStack(spacing: 10) {
-      Image(
-        systemName: plan.sprint.retrospectiveConcludedAt == nil
-          ? "arrow.triangle.2.circlepath"
-          : "checkmark.seal.fill"
-      )
-      .foregroundStyle(
-        plan.sprint.retrospectiveConcludedAt == nil ? .purple : .green
-      )
-      if plan.sprint.state == .active {
-        Text("This retrospective becomes concludable when the sprint is complete.")
-      } else if let concludedAt = plan.sprint.retrospectiveConcludedAt {
-        Text(
-          "Concluded \(concludedAt.formatted(date: .abbreviated, time: .shortened))"
+      if
+        plan.sprint.state == .active
+          || plan.sprint.retrospectiveConcludedAt != nil
+          || !unresolvedActions.isEmpty
+      {
+        Image(
+          systemName: plan.sprint.retrospectiveConcludedAt == nil
+            ? "arrow.triangle.2.circlepath"
+            : "checkmark.seal.fill"
         )
-      } else if unresolvedActions.isEmpty {
-        Text("All suggested actions have been reviewed.")
-      } else {
-        Text(
-          "\(unresolvedActions.count) suggested action\(unresolvedActions.count == 1 ? "" : "s") still need a decision."
+        .foregroundStyle(
+          plan.sprint.retrospectiveConcludedAt == nil ? .purple : .green
         )
+        if plan.sprint.state == .active {
+          Text("This retrospective becomes concludable when the sprint is complete.")
+        } else if let concludedAt = plan.sprint.retrospectiveConcludedAt {
+          Text(
+            "Concluded \(concludedAt.formatted(date: .abbreviated, time: .shortened))"
+          )
+        } else {
+          Text(
+            "\(unresolvedActions.count) suggested action\(unresolvedActions.count == 1 ? "" : "s") still need a decision."
+          )
+        }
       }
       Spacer()
       Text("\(selectedNotes.count) observations")
@@ -4398,14 +5462,27 @@ private struct RetrospectiveTheme: Identifiable {
 
 private struct RetrospectiveActionPanel: View {
   @EnvironmentObject private var model: AppModel
+  let sprint: Sprint?
   let notes: [RetrospectiveNote]
+  let onOpenRefiningTicket: (WorkItem) -> Void
   @State private var isDecidingAll = false
   @State private var selectedNoteID: UUID?
+  @State private var showingProposal = false
 
   private var proposedNotes: [RetrospectiveNote] {
     notes
       .filter { $0.actionStatus == .proposed }
       .sorted { $0.createdAt < $1.createdAt }
+  }
+
+  private var acceptedNotes: [RetrospectiveNote] {
+    notes
+      .filter { $0.actionStatus == .accepted }
+      .sorted { $0.updatedAt < $1.updatedAt }
+  }
+
+  private var dismissedCount: Int {
+    notes.count { $0.actionStatus == .dismissed }
   }
 
   private var reviewedCount: Int {
@@ -4421,6 +5498,30 @@ private struct RetrospectiveActionPanel: View {
     return proposedNotes.filter { $0.id != selectedNote.id }
   }
 
+  private var canPropose: Bool {
+    guard let sprint else { return false }
+    return sprint.state == .completed && sprint.retrospectiveConcludedAt == nil
+  }
+
+  private var isHistorical: Bool {
+    sprint?.retrospectiveConcludedAt != nil
+  }
+
+  private var decisionSummary: String {
+    if isHistorical {
+      let accepted = "\(acceptedNotes.count) accepted"
+      guard dismissedCount > 0 else { return accepted }
+      return "\(accepted) · \(dismissedCount) dismissed"
+    }
+    return proposedNotes.isEmpty
+      ? "\(reviewedCount) reviewed"
+      : "\(proposedNotes.count) remaining · \(reviewedCount) reviewed"
+  }
+
+  private var canAcceptAll: Bool {
+    proposedNotes.allSatisfy { $0.actionDestination != .backlog }
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 9) {
@@ -4429,21 +5530,28 @@ private struct RetrospectiveActionPanel: View {
         VStack(alignment: .leading, spacing: 2) {
           Text("Decisions")
             .font(.title3.bold())
-          Text(
-            proposedNotes.isEmpty
-              ? "\(reviewedCount) reviewed"
-              : "\(proposedNotes.count) remaining · \(reviewedCount) reviewed"
-          )
+          Text(decisionSummary)
           .font(.caption)
           .foregroundStyle(.secondary)
         }
         Spacer()
+        if canPropose {
+          Button {
+            showingProposal = true
+          } label: {
+            Label("Propose change", systemImage: "plus")
+          }
+          .controlSize(.small)
+          .help("Add your own retrospective proposal")
+        }
         if proposedNotes.count > 1 {
           Menu {
-            Button {
-              decideAll(accept: true)
-            } label: {
-              Label("Accept all", systemImage: "checkmark.circle")
+            if canAcceptAll {
+              Button {
+                decideAll(accept: true)
+              } label: {
+                Label("Accept all", systemImage: "checkmark.circle")
+              }
             }
             Button(role: .destructive) {
               decideAll(accept: false)
@@ -4463,10 +5571,15 @@ private struct RetrospectiveActionPanel: View {
 
       Divider()
 
-      if let selectedNote {
+      if isHistorical {
+        historicalDecisions
+      } else if let selectedNote {
         ScrollView(.vertical) {
           VStack(alignment: .leading, spacing: 18) {
-            RetrospectiveActionDecisionDetail(note: selectedNote)
+            RetrospectiveActionDecisionDetail(
+              note: selectedNote,
+              onOpenRefiningTicket: onOpenRefiningTicket
+            )
 
             if !queuedNotes.isEmpty {
               VStack(alignment: .leading, spacing: 0) {
@@ -4490,12 +5603,12 @@ private struct RetrospectiveActionPanel: View {
           .padding(16)
         }
       } else {
-        VStack(spacing: 7) {
-          Image(systemName: "checkmark.circle.fill")
-            .font(.title2)
-            .foregroundStyle(Color.green.opacity(0.68))
+        VStack(spacing: 6) {
+          Image(systemName: "checkmark.circle")
+            .font(.title3)
+            .foregroundStyle(.tertiary)
           Text("Decisions complete")
-            .font(.subheadline.weight(.semibold))
+            .font(.subheadline.weight(.medium))
           Text(
             reviewedCount == 0
               ? "The team did not suggest a change."
@@ -4510,6 +5623,57 @@ private struct RetrospectiveActionPanel: View {
     }
     .frame(maxHeight: .infinity, alignment: .top)
     .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+    .sheet(isPresented: $showingProposal) {
+      if let sprint {
+        RetrospectiveProposalView(
+          sprintID: sprint.id,
+          isPresented: $showingProposal
+        )
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var historicalDecisions: some View {
+    if acceptedNotes.isEmpty {
+      VStack(spacing: 6) {
+        Image(systemName: "checkmark.circle")
+          .font(.title3)
+          .foregroundStyle(.tertiary)
+        Text("No changes were accepted")
+          .font(.subheadline.weight(.medium))
+        Text(historicalEmptyStateDetail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+      .padding(16)
+    } else {
+      ScrollView(.vertical) {
+        LazyVStack(alignment: .leading, spacing: 0) {
+          ForEach(Array(acceptedNotes.enumerated()), id: \.element.id) { index, note in
+            RetrospectiveAcceptedDecisionRow(note: note)
+              .overlay(alignment: .bottom) {
+                if index < acceptedNotes.count - 1 {
+                  Divider()
+                    .padding(.leading, 43)
+                    .padding(.trailing, 4)
+                }
+              }
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+      }
+    }
+  }
+
+  private var historicalEmptyStateDetail: String {
+    if dismissedCount > 0 {
+      return "\(dismissedCount) suggested change\(dismissedCount == 1 ? " was" : "s were") dismissed."
+    }
+    return "No changes were proposed in this retrospective."
   }
 
   private func decideAll(accept: Bool) {
@@ -4521,9 +5685,132 @@ private struct RetrospectiveActionPanel: View {
   }
 }
 
+private struct RetrospectiveProposalView: View {
+  @EnvironmentObject private var model: AppModel
+  let sprintID: UUID
+  @Binding var isPresented: Bool
+  @State private var destination = RetrospectiveActionDestination.teamPractice
+  @State private var proposal = ""
+  @State private var isSubmitting = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Propose a retrospective change")
+          .font(.title.bold())
+        Text(
+          "Add your own improvement to the same reviewable decision queue as the team’s suggestions."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .padding(24)
+
+      Divider()
+
+      VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 7) {
+          Text("Change type")
+            .font(.subheadline.weight(.semibold))
+          Picker("Change type", selection: $destination) {
+            ForEach(RetrospectiveActionDestination.allCases, id: \.rawValue) { destination in
+              Text(destination.title).tag(destination)
+            }
+          }
+          .labelsHidden()
+          .pickerStyle(.segmented)
+        }
+
+        EditableTextArea(
+          title: proposalTitle,
+          prompt: proposalPrompt,
+          text: $proposal,
+          minHeight: 140,
+          focusOnAppear: true
+        )
+
+        Label(guidance, systemImage: "checkmark.shield")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .padding(24)
+
+      Spacer(minLength: 0)
+      Divider()
+
+      HStack(spacing: 10) {
+        Spacer()
+        Button("Cancel") {
+          isPresented = false
+        }
+        Button {
+          submit()
+        } label: {
+          Label(
+            isSubmitting ? "Adding…" : "Add proposal",
+            systemImage: "plus.circle"
+          )
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!canSubmit)
+      }
+      .padding(20)
+    }
+    .frame(width: 620, height: 480)
+  }
+
+  private var proposalTitle: String {
+    switch destination {
+    case .teamPractice:
+      "What should change in the ways of working?"
+    case .backlog:
+      "What outcome should the ticket deliver?"
+    }
+  }
+
+  private var proposalPrompt: String {
+    switch destination {
+    case .teamPractice:
+      "e.g. Confirm the preview evidence before asking for Product Owner approval."
+    case .backlog:
+      "e.g. Make sprint forecast changes visible in the retrospective."
+    }
+  }
+
+  private var guidance: String {
+    switch destination {
+    case .teamPractice:
+      "If accepted, this is added to Ways of working and inherited by future team runs."
+    case .backlog:
+      "If accepted, this creates a backlog ticket and opens it for automatic Business Analyst refinement."
+    }
+  }
+
+  private var canSubmit: Bool {
+    !proposal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !isSubmitting
+  }
+
+  private func submit() {
+    guard canSubmit else { return }
+    isSubmitting = true
+    Task {
+      let note = await model.proposeRetrospectiveAction(
+        sprintID: sprintID,
+        body: proposal,
+        destination: destination
+      )
+      isSubmitting = false
+      if note != nil {
+        isPresented = false
+      }
+    }
+  }
+}
+
 private struct RetrospectiveActionDecisionDetail: View {
   @EnvironmentObject private var model: AppModel
   let note: RetrospectiveNote
+  let onOpenRefiningTicket: (WorkItem) -> Void
 
   private var ticket: WorkItem? {
     guard let workItemID = note.workItemID else { return nil }
@@ -4583,7 +5870,15 @@ private struct RetrospectiveActionDecisionDetail: View {
           Task { await model.decideRetrospectiveAction(note, accept: false) }
         }
         Button {
-          Task { await model.decideRetrospectiveAction(note, accept: true) }
+          Task {
+            let createdItem = await model.decideRetrospectiveAction(
+              note,
+              accept: true
+            )
+            if let createdItem {
+              onOpenRefiningTicket(createdItem)
+            }
+          }
         } label: {
           Label("Accept", systemImage: "checkmark.circle")
         }
@@ -4662,6 +5957,77 @@ private struct RetrospectiveActionQueueRow: View {
         isHovering = hovering
       }
     }
+  }
+
+  private var destinationSymbol: String {
+    switch destination {
+    case .teamPractice: "person.2.badge.gearshape"
+    case .backlog: "list.bullet.clipboard"
+    }
+  }
+}
+
+private struct RetrospectiveAcceptedDecisionRow: View {
+  @EnvironmentObject private var model: AppModel
+  let note: RetrospectiveNote
+
+  private var destination: RetrospectiveActionDestination {
+    note.actionDestination ?? .teamPractice
+  }
+
+  private var profile: AgentProfile? {
+    guard let profileID = note.profileID else { return nil }
+    return model.profiles.first { $0.id == profileID }
+  }
+
+  private var acceptedTicket: WorkItem? {
+    guard let workItemID = note.acceptedWorkItemID else { return nil }
+    return model.workItems.first { $0.id == workItemID }
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 11) {
+      Image(systemName: destinationSymbol)
+        .foregroundStyle(destinationTint)
+        .frame(width: 28, height: 28)
+        .background(destinationTint.opacity(0.1), in: Circle())
+
+      VStack(alignment: .leading, spacing: 5) {
+        Text(note.body)
+          .font(.callout.weight(.medium))
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 5) {
+          Label("Accepted", systemImage: "checkmark.circle.fill")
+            .foregroundStyle(.green)
+          Text("·")
+          Text(destination.title)
+          if let acceptedTicket {
+            Text("·")
+            Text(acceptedTicket.key)
+          }
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+
+        HStack(spacing: 5) {
+          Image(systemName: profile?.role.symbolName ?? "person.crop.circle")
+            .foregroundStyle(profile?.role.tint ?? .secondary)
+          Text(note.authorName)
+          Text("·")
+          Text(note.updatedAt.formatted(date: .abbreviated, time: .omitted))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+    }
+    .padding(.horizontal, 4)
+    .padding(.vertical, 10)
+  }
+
+  private var destinationTint: Color {
+    destination == .teamPractice ? .purple : .blue
   }
 
   private var destinationSymbol: String {
@@ -4966,8 +6332,6 @@ private struct ReportsView: View {
 
       ScrollView {
         VStack(alignment: .leading, spacing: 22) {
-          trendReadiness
-
           VStack(alignment: .leading, spacing: 12) {
             Text("Measured delivery signals")
               .font(.title3.bold())
@@ -5072,7 +6436,7 @@ private struct ReportsView: View {
     let value = durations.count.isMultiple(of: 2)
       ? (durations[middle - 1] + durations[middle]) / 2
       : durations[middle]
-    return RunHealthLabel.duration(value)
+    return RunDurationFormatter.duration(value)
   }
 
   private var totalAgentTime: TimeInterval {
@@ -5083,7 +6447,7 @@ private struct ReportsView: View {
 
   private var agentTimePerOutcome: String? {
     guard deliveredOutcomes > 0, totalAgentTime > 0 else { return nil }
-    return RunHealthLabel.duration(totalAgentTime / Double(deliveredOutcomes))
+    return RunDurationFormatter.duration(totalAgentTime / Double(deliveredOutcomes))
   }
 
   private var firstPassRate: String {
@@ -5120,44 +6484,6 @@ private struct ReportsView: View {
     }
   }
 
-  private var trendReadiness: some View {
-    HStack(alignment: .top, spacing: 14) {
-      Image(systemName: completedSprints.count >= 2 ? "chart.line.uptrend.xyaxis" : "scope")
-        .font(.title2)
-        .foregroundStyle(completedSprints.count >= 2 ? .green : .blue)
-      VStack(alignment: .leading, spacing: 4) {
-        Text(trendTitle)
-          .font(.headline)
-        Text(trendDetail)
-          .foregroundStyle(.secondary)
-      }
-    }
-    .padding(18)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      (completedSprints.count >= 2 ? Color.green : Color.blue).opacity(0.07),
-      in: RoundedRectangle(cornerRadius: 14)
-    )
-  }
-
-  private var trendTitle: String {
-    switch completedSprints.count {
-    case 0: "Collecting the first baseline"
-    case 1: "Baseline established"
-    default: "Improvement trends available"
-    }
-  }
-
-  private var trendDetail: String {
-    switch completedSprints.count {
-    case 0:
-      "Complete a sprint before drawing conclusions. Current operational values are shown, but no trend is claimed."
-    case 1:
-      "One completed sprint provides a baseline. A second comparable sprint can begin showing direction, with uncertainty kept visible."
-    default:
-      "Compare similar work across sprints and connect changes to retrospective experiments before attributing an improvement."
-    }
-  }
 }
 
 private struct SprintReportDatum: Identifiable {
@@ -5189,13 +6515,13 @@ private struct SprintPerformanceChart: View {
             .font(.headline)
           ReportBar(
             title: "Cycle time",
-            value: RunHealthLabel.duration(sprint.cycleTime),
+            value: RunDurationFormatter.duration(sprint.cycleTime),
             fraction: sprint.cycleTime / maximumTime,
             tint: .purple
           )
           ReportBar(
             title: "Agent time",
-            value: RunHealthLabel.duration(sprint.activeAgentTime),
+            value: RunDurationFormatter.duration(sprint.activeAgentTime),
             fraction: sprint.activeAgentTime / maximumTime,
             tint: .indigo
           )
@@ -5390,95 +6716,6 @@ private struct SprintLane: Identifiable {
   var id: String { title }
 }
 
-private struct SprintTeamActivity: View {
-  @EnvironmentObject private var model: AppModel
-  let plan: SprintPlan
-
-  private var sprintRuns: [AgentRun] {
-    model.runs.filter { $0.sprintID == plan.sprint.id }
-  }
-
-  private var activeRuns: [AgentRun] {
-    sprintRuns.filter { $0.status == .running }
-  }
-
-  private var involvedProfiles: [AgentProfile] {
-    var ids = Set(plan.items.compactMap(\.implementerProfileID))
-    ids.formUnion(plan.items.compactMap(\.reviewerProfileID))
-    ids.formUnion(sprintRuns.map(\.profileID))
-    return model.profiles.filter { ids.contains($0.id) }
-  }
-
-  private func activeRuns(for profile: AgentProfile) -> [AgentRun] {
-    activeRuns
-      .filter { $0.profileID == profile.id }
-      .sorted { $0.updatedAt > $1.updatedAt }
-  }
-
-  private func helpText(for profile: AgentProfile) -> String {
-    let profileRuns = activeRuns(for: profile)
-    guard !profileRuns.isEmpty else {
-      return "\(profile.name) — idle"
-    }
-    let lines = profileRuns.map { run in
-      let item = model.workItems.first { $0.id == run.workItemID }
-      let candidate = model.candidateRevisions
-        .filter { $0.workItemID == run.workItemID }
-        .max { $0.version < $1.version }
-      let action = switch candidate?.status {
-      case .resolvingConflict: "Resolving conflict on"
-      case .reviewing: "Reviewing"
-      default: "Working on"
-      }
-      return "\(action) \(item?.key ?? "a ticket")"
-    }
-    return "\(profile.name)\n\(lines.joined(separator: "\n"))"
-  }
-
-  var body: some View {
-    HStack(spacing: 7) {
-      ForEach(involvedProfiles, id: \.id) { profile in
-        let runCount = activeRuns(for: profile).count
-        let isActive = runCount > 0
-        HStack(spacing: 6) {
-          Image(systemName: profile.role.symbolName)
-            .font(.caption2.weight(.bold))
-          Text(profile.name)
-            .font(.caption.weight(.semibold))
-            .lineLimit(1)
-          if isActive {
-            Text(runCount.formatted())
-              .font(.caption2.monospacedDigit().weight(.bold))
-              .foregroundStyle(.white)
-              .padding(.horizontal, 5)
-              .padding(.vertical, 1)
-              .background(profile.role.tint, in: Capsule())
-          }
-        }
-        .foregroundStyle(
-          isActive ? profile.role.tint : Color(nsColor: .secondaryLabelColor)
-        )
-        .padding(.horizontal, 9)
-        .frame(height: 28)
-        .background(
-          isActive ? profile.role.tint.opacity(0.13) : Color.clear,
-          in: Capsule()
-        )
-        .overlay {
-          Capsule().stroke(
-            isActive
-              ? profile.role.tint.opacity(0.7)
-              : Color(nsColor: .separatorColor).opacity(0.8),
-            lineWidth: isActive ? 1.2 : 1
-          )
-        }
-        .opacity(isActive ? 1 : 0.58)
-        .help(helpText(for: profile))
-      }
-    }
-  }
-}
-
 private struct SprintBanner: View {
   @EnvironmentObject private var model: AppModel
   let plan: SprintPlan
@@ -5616,125 +6853,218 @@ private struct SprintBoardColumn: View {
   }
 }
 
-private struct SprintTicketRunSummary: View {
-  let profile: AgentProfile?
-  let run: AgentRun?
-  let liveActivity: CodexLiveActivity?
-  let onStop: ((AgentRun) -> Void)?
-  @State private var showsRunDetails = false
+struct SprintTicketRunTelemetryPresentation {
+  let contextFraction: Double?
+  let showsLiveActivity: Bool
 
-  private var contextFraction: Double? {
-    guard
-      run?.status == .running || run?.status == .awaitingOwner,
+  var contextPercentage: Int? {
+    contextFraction.map { Int(($0 * 100).rounded()) }
+  }
+
+  var showsFooter: Bool {
+    showsLiveActivity || contextFraction != nil
+  }
+
+  init(run: AgentRun?, hasLiveActivity: Bool) {
+    if
       let used = run?.contextUsedTokens,
       let window = run?.contextWindowTokens,
       window > 0
-    else { return nil }
-    return min(1, max(0, Double(used) / Double(window)))
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 7) {
-        if let profile {
-          Label(profile.name, systemImage: profile.role.symbolName)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(profile.role.tint)
-            .lineLimit(1)
-        } else {
-          Image(systemName: "person.crop.circle.badge.questionmark")
-            .foregroundStyle(.secondary)
-          Text("Assignment unavailable")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-        }
-        Spacer()
-        if run != nil {
-          Button {
-            showsRunDetails.toggle()
-          } label: {
-            Image(systemName: "info.circle")
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(.secondary)
-          .help("Show run details")
-          .popover(isPresented: $showsRunDetails, arrowEdge: .trailing) {
-            SprintRunDetailsPopover(
-              profile: profile,
-              run: run,
-              liveActivity: liveActivity,
-              onStop: onStop
-            )
-          }
-        }
-      }
-
-      if let contextFraction {
-        HStack(spacing: 7) {
-          ProgressView(value: contextFraction)
-            .progressViewStyle(.linear)
-          Text("\(Int((contextFraction * 100).rounded()))% context")
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
-          if let compactions = run?.compactionCount, compactions > 0 {
-            Text("· \(compactions) compacted")
-              .font(.caption2.monospacedDigit())
-              .foregroundStyle(.tertiary)
-          }
-        }
-        .help("Current context-window occupancy; compaction can reduce it during a run.")
-      }
-
-      if run?.status == .running, let liveActivity {
-        HStack(alignment: .top, spacing: 7) {
-          Image(systemName: liveActivity.kind.symbolName)
-            .frame(width: 13)
-          Text(liveActivity.text)
-            .lineLimit(2, reservesSpace: true)
-            .truncationMode(.tail)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(.blue)
-        .clipped()
-      }
-
-      if run?.status == .running {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-          RunHealthLabel(run: run, now: timeline.date)
-        }
-      }
+    {
+      contextFraction = min(1, max(0, Double(used) / Double(window)))
+    } else {
+      contextFraction = nil
     }
+    showsLiveActivity = run?.status == .running && hasLiveActivity
   }
 }
 
-private struct RunHealthLabel: View {
-  let run: AgentRun?
-  let now: Date
-
-  var body: some View {
-    let lastActivityAt = run?.lastActivityAt
-    let age = lastActivityAt.map { max(0, now.timeIntervalSince($0)) }
-    HStack(spacing: 5) {
-      Image(systemName: "clock")
-      if let age, age > 180, let lastActivityAt {
-        Text("Working · telemetry quiet since \(lastActivityAt, style: .relative)")
-      } else if let startedAt = run?.turnStartedAt {
-        Text("Active · \(Self.duration(now.timeIntervalSince(startedAt))) elapsed")
-      } else {
-        Text("Waiting for activity")
-      }
+struct SprintTicketRunDetailsSelection {
+  static func run(
+    for itemState: WorkItemState,
+    latestRun: AgentRun?,
+    allRuns: [AgentRun]
+  ) -> AgentRun? {
+    guard
+      itemState == .acceptance
+        || itemState == .readyToRelease
+        || itemState == .released
+    else {
+      return latestRun
     }
-    .font(.caption2)
-    .foregroundStyle(.secondary)
-    .help(
-      "Codex telemetry is event-driven. A quiet interval does not mean the run has stopped."
+
+    return allRuns
+      .filter(hasContextTelemetry)
+      .max { lhs, rhs in
+        if lhs.updatedAt == rhs.updatedAt {
+          return lhs.createdAt < rhs.createdAt
+        }
+        return lhs.updatedAt < rhs.updatedAt
+      }
+      ?? latestRun
+  }
+
+  private static func hasContextTelemetry(_ run: AgentRun) -> Bool {
+    guard
+      run.contextUsedTokens != nil,
+      let window = run.contextWindowTokens
+    else {
+      return false
+    }
+    return window > 0
+  }
+}
+
+private struct SprintTicketRunSummary<Status: View>: View {
+  let profile: AgentProfile?
+  let detailsProfile: AgentProfile?
+  let run: AgentRun?
+  let liveActivity: CodexLiveActivity?
+  let status: Status
+  @State private var showsContextDetails = false
+
+  private var telemetry: SprintTicketRunTelemetryPresentation {
+    SprintTicketRunTelemetryPresentation(
+      run: run,
+      hasLiveActivity: liveActivity != nil
     )
   }
 
+  init(
+    profile: AgentProfile?,
+    detailsProfile: AgentProfile?,
+    run: AgentRun?,
+    liveActivity: CodexLiveActivity?,
+    @ViewBuilder status: () -> Status
+  ) {
+    self.profile = profile
+    self.detailsProfile = detailsProfile
+    self.run = run
+    self.liveActivity = liveActivity
+    self.status = status()
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) {
+          status
+          Spacer(minLength: 4)
+          teamMemberLabel
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 8) {
+            status
+            Spacer(minLength: 4)
+          }
+          teamMemberLabel
+        }
+      }
+
+      if telemetry.showsFooter {
+        Divider()
+
+        HStack(alignment: .center, spacing: 6) {
+          if telemetry.showsLiveActivity, let liveActivity {
+            Image(systemName: liveActivity.kind.symbolName)
+              .foregroundStyle(.blue)
+              .frame(width: 13)
+
+            liveActivityText(liveActivity.text)
+          } else if let contextPercentage = telemetry.contextPercentage {
+            Image(systemName: "brain.head.profile")
+              .foregroundStyle(.blue)
+              .frame(width: 13)
+
+            Text("\(contextPercentage)% context used")
+              .foregroundStyle(.primary)
+              .lineLimit(1)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+
+          if let contextFraction = telemetry.contextFraction {
+            contextOccupancyIndicator(fraction: contextFraction)
+          }
+        }
+        .font(.caption.weight(.medium))
+        .accessibilityElement(children: .combine)
+      }
+    }
+  }
+
+  private func liveActivityText(_ text: String) -> some View {
+    ViewThatFits(in: .horizontal) {
+      Text(text)
+        .lineLimit(1)
+        .allowsTightening(true)
+        .fixedSize(horizontal: true, vertical: false)
+
+      Text(text)
+        .lineLimit(2)
+        .truncationMode(.tail)
+        .allowsTightening(true)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .foregroundStyle(.primary)
+    .frame(
+      maxWidth: .infinity,
+      minHeight: 24,
+      maxHeight: 24,
+      alignment: .leading
+    )
+    .layoutPriority(1)
+  }
+
+  private func contextOccupancyIndicator(fraction: Double) -> some View {
+    let percentage = Int((fraction * 100).rounded())
+    let tint: Color = run?.status == .awaitingOwner ? .orange : .blue
+
+    return ZStack {
+      Circle()
+        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 2)
+      Circle()
+        .trim(from: 0, to: fraction)
+        .stroke(
+          tint,
+          style: StrokeStyle(lineWidth: 2, lineCap: .round)
+        )
+        .rotationEffect(.degrees(-90))
+    }
+    .frame(width: 13, height: 13)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Agent context")
+    .accessibilityValue("\(percentage) percent used")
+    .onHover { hovering in
+      showsContextDetails = hovering
+    }
+    .popover(isPresented: $showsContextDetails, arrowEdge: .bottom) {
+      SprintRunDetailsPopover(
+        profile: detailsProfile,
+        run: run,
+        liveActivity: liveActivity
+      )
+    }
+  }
+
+  private var teamMemberLabel: some View {
+    Group {
+      if let profile {
+        Label(profile.name, systemImage: profile.role.symbolName)
+          .foregroundStyle(profile.role.tint)
+      } else {
+        Label("Unassigned", systemImage: "person.crop.circle.badge.questionmark")
+          .foregroundStyle(.secondary)
+      }
+    }
+    .font(.caption.weight(.semibold))
+    .lineLimit(1)
+    .fixedSize(horizontal: true, vertical: false)
+  }
+
+}
+
+private enum RunDurationFormatter {
   static func duration(_ interval: TimeInterval) -> String {
     let totalSeconds = max(0, Int(interval))
     let days = totalSeconds / 86_400
@@ -5755,7 +7085,6 @@ private struct SprintRunDetailsPopover: View {
   let profile: AgentProfile?
   let run: AgentRun?
   let liveActivity: CodexLiveActivity?
-  let onStop: ((AgentRun) -> Void)?
 
   var body: some View {
     Group {
@@ -5770,77 +7099,81 @@ private struct SprintRunDetailsPopover: View {
   }
 
   private func details(at referenceDate: Date) -> some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 8) {
       Text("Run details")
-        .font(.headline)
-      LabeledContent("Team member", value: profile?.name ?? "Unavailable")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .padding(.bottom, 3)
+      detailLine("Team member", value: profile?.name ?? "Unavailable")
       if let run {
-        LabeledContent("Status", value: run.status.displayTitle)
+        detailLine("Status", value: run.status.displayTitle)
         switch run.status {
         case .running:
           if run.turnStartedAt != nil {
-            LabeledContent(
+            detailLine(
               "Elapsed",
-              value: RunHealthLabel.duration(run.activeDuration(at: referenceDate))
+              value: RunDurationFormatter.duration(run.activeDuration(at: referenceDate))
             )
           }
           if let lastActivityAt = run.lastActivityAt {
-            LabeledContent {
-              Text(lastActivityAt, style: .relative)
-            } label: {
-              Text("Last activity")
-            }
+            detailLine("Last activity", value: Text(lastActivityAt, style: .relative))
           }
         case .queued:
-          LabeledContent("Timing", value: "Starts when picked up")
+          detailLine("Timing", value: "Starts when picked up")
           if run.activeDurationSeconds > 0 {
-            LabeledContent(
+            detailLine(
               "Recorded active time",
-              value: RunHealthLabel.duration(run.activeDurationSeconds)
+              value: RunDurationFormatter.duration(run.activeDurationSeconds)
             )
           }
           if let lastActivityAt = run.lastActivityAt {
-            LabeledContent {
-              Text(
+            detailLine(
+              "Previous activity",
+              value: Text(
                 lastActivityAt,
                 format: .dateTime.day().month(.abbreviated).hour().minute()
               )
-            } label: {
-              Text("Previous activity")
-            }
+            )
           }
         case .awaitingOwner, .interrupted, .completed, .failed, .cancelled:
           if run.activeDurationSeconds > 0 {
-            LabeledContent(
+            detailLine(
               "Active time",
-              value: RunHealthLabel.duration(run.activeDurationSeconds)
+              value: RunDurationFormatter.duration(run.activeDurationSeconds)
             )
           }
           if let lastActivityAt = run.lastActivityAt {
-            LabeledContent {
-              Text(
+            detailLine(
+              "Last activity",
+              value: Text(
                 lastActivityAt,
                 format: .dateTime.day().month(.abbreviated).hour().minute()
               )
-            } label: {
-              Text("Last activity")
-            }
+            )
           }
         }
         if
           run.status != .queued,
           let used = run.contextUsedTokens,
-          let window = run.contextWindowTokens
+          let window = run.contextWindowTokens,
+          window > 0
         {
-          LabeledContent(
-            "Context",
+          let percentage = Int(
+            (Double(used) / Double(window) * 100).rounded()
+          )
+          detailLine(
+            "Context used",
+            value: "\(percentage)%"
+          )
+          detailLine(
+            "Context tokens",
             value: "\(used.formatted()) / \(window.formatted()) tokens"
           )
         } else if run.status == .running {
-          LabeledContent("Context", value: "Not reported by Codex yet")
+          detailLine("Context used", value: "Not reported yet")
         }
         if run.status != .queued {
-          LabeledContent("Compactions", value: run.compactionCount.formatted())
+          detailLine("Compactions", value: run.compactionCount.formatted())
         }
       }
       if run?.status == .running, let liveActivity {
@@ -5850,24 +7183,23 @@ private struct SprintRunDetailsPopover: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
-      if
-        let run,
-        run.status == .running,
-        profile?.role != .lead,
-        let onStop
-      {
-        Divider()
-        Button(role: .destructive) {
-          onStop(run)
-        } label: {
-          Label("Stop and preserve workspace", systemImage: "stop.circle")
-        }
-        .buttonStyle(.bordered)
-        .help("Interrupt this turn without deleting its ticket branch or worktree.")
-      }
     }
-    .frame(width: 300)
-    .padding(16)
+    .font(.callout)
+    .padding(12)
+    .frame(width: 270)
+  }
+
+  private func detailLine(_ label: String, value: String) -> some View {
+    detailLine(label, value: Text(value))
+  }
+
+  private func detailLine(_ label: String, value: Text) -> some View {
+    (
+      Text("\(label): ")
+        .foregroundColor(.secondary)
+      + value
+    )
+    .fixedSize(horizontal: false, vertical: true)
   }
 }
 
@@ -5896,8 +7228,16 @@ private struct SprintTicketStatusBadge: View {
   let itemState: WorkItemState
   let candidateStatus: CandidateRevisionStatus?
   let isDependencyBlocked: Bool
+  let planningIssue: String?
 
   private var activity: SprintCardActivity {
+    if planningIssue != nil {
+      return SprintCardActivity(
+        title: "Needs planning",
+        symbol: "exclamationmark.triangle.fill",
+        tint: .orange
+      )
+    }
     if run?.status == .awaitingOwner {
       return SprintCardActivity(
         title: "Needs your input",
@@ -6137,6 +7477,7 @@ private struct SprintTicketStatusBadge: View {
       .background(activity.tint.opacity(0.1), in: Capsule())
       .lineLimit(1)
       .fixedSize(horizontal: true, vertical: false)
+      .help(planningIssue ?? activity.title)
   }
 }
 
@@ -6169,14 +7510,15 @@ private struct SprintPriorityIndicator: View {
   }
 
   var body: some View {
-    HStack(spacing: -3) {
+    VStack(spacing: -4) {
       ForEach(0..<chevronCount, id: \.self) { _ in
         Image(systemName: symbolName)
       }
     }
-    .font(.caption2.weight(.black))
+    .font(.system(size: 7, weight: .semibold))
     .foregroundStyle(tint)
-    .fixedSize(horizontal: true, vertical: false)
+    .frame(width: 8)
+    .fixedSize(horizontal: false, vertical: true)
     .accessibilityLabel("\(priority.title) priority")
     .help("\(priority.title) priority")
   }
@@ -6234,6 +7576,7 @@ private struct TicketColumn: View {
           .help("Add ticket to Backlog")
         }
       }
+      .padding(.horizontal, showsWorkflowActions ? 0 : 10)
 
       if let suggestionBatch {
         BacklogSuggestionStack(batch: suggestionBatch)
@@ -6257,7 +7600,8 @@ private struct TicketColumn: View {
         .scrollIndicators(.visible)
       }
     }
-    .padding(12)
+    .padding(.vertical, 12)
+    .padding(.horizontal, showsWorkflowActions ? 12 : 8)
     .frame(width: columnWidth)
     .frame(maxHeight: .infinity, alignment: .top)
     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
@@ -6285,18 +7629,25 @@ private struct TicketColumn: View {
 
 private struct WorkItemCard: View {
   @EnvironmentObject private var model: AppModel
+  @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let item: WorkItem
   let showsWorkflowActions: Bool
   let onOpen: ((WorkItem) -> Void)?
   private let policy = WorkflowPolicy()
+  @State private var isHovering = false
+  @State private var ownerAttentionPulse = false
 
   private var sprintItem: SprintItem? {
     model.sprintPlan?.items.first { $0.workItemID == item.id }
   }
 
+  private var itemRuns: [AgentRun] {
+    model.runs.filter { $0.workItemID == item.id }
+  }
+
   private var latestRun: AgentRun? {
-    model.runs
-      .filter { $0.workItemID == item.id }
+    itemRuns
       .sorted { lhs, rhs in
         let lhsPriority = lifecyclePriority(lhs.status)
         let rhsPriority = lifecyclePriority(rhs.status)
@@ -6306,6 +7657,14 @@ private struct WorkItemCard: View {
         return lhsPriority < rhsPriority
       }
       .first
+  }
+
+  private var detailsRun: AgentRun? {
+    SprintTicketRunDetailsSelection.run(
+      for: item.state,
+      latestRun: latestRun,
+      allRuns: itemRuns
+    )
   }
 
   private func lifecyclePriority(_ status: AgentRunStatus) -> Int {
@@ -6325,6 +7684,26 @@ private struct WorkItemCard: View {
     }
     guard let ownerID = sprintItem?.implementerProfileID ?? item.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
+  }
+
+  private var detailsProfile: AgentProfile? {
+    guard let detailsRun else { return assignedProfile }
+    return model.profiles.first { $0.id == detailsRun.profileID }
+  }
+
+  private var planningIssue: String? {
+    guard model.sprintPlan?.sprint.state == .draft, let sprintItem else {
+      return nil
+    }
+    if let issue = model.sprintReadinessIssues.first(where: {
+      $0.workItemID == item.id
+    }) {
+      return issue.message
+    }
+    if sprintItem.estimatedTokens <= 0 {
+      return "\(item.key) still needs sprint planning."
+    }
+    return nil
   }
 
   private var latestCandidate: CandidateRevision? {
@@ -6365,67 +7744,74 @@ private struct WorkItemCard: View {
     latestRun?.status == .awaitingOwner
   }
 
+  private var isReadyForDemo: Bool {
+    item.state == .acceptance
+  }
+
+  private var needsOwnerAction: Bool {
+    needsOwnerInput || isReadyForDemo
+  }
+
   private var isActivelyWorkedOn: Bool {
     latestRun?.status == .running
   }
 
+  private var isInteractiveHover: Bool {
+    onOpen != nil && isHovering
+  }
+
+  private var attentionAnimationEnabled: Bool {
+    needsOwnerAction && !reduceMotion
+  }
+
   private var cardBackground: Color {
-    if needsOwnerInput {
-      return .orange.opacity(0.1)
+    return colorScheme == .dark
+      ? Color.white.opacity(0.06)
+      : Color(nsColor: .controlBackgroundColor)
+  }
+
+  private var cardBorderColor: Color {
+    if isActivelyWorkedOn {
+      return .blue.opacity(0.32)
     }
-    if item.state == .acceptance {
-      return .orange.opacity(0.07)
-    }
-    return Color(nsColor: .controlBackgroundColor)
+    return Color(nsColor: .separatorColor).opacity(0.45)
+  }
+
+  private var cardBorderWidth: CGFloat {
+    isActivelyWorkedOn ? 1 : 0.5
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: 8) {
-          ticketIdentity
-          Spacer(minLength: 4)
+    VStack(alignment: .leading, spacing: 7) {
+      HStack(spacing: 8) {
+        ticketIdentity
+        Spacer(minLength: 0)
+        if showsWorkflowActions {
           ticketStatus
         }
-
-        VStack(alignment: .leading, spacing: 6) {
-          HStack(spacing: 8) {
-            ticketIdentity
-            Spacer(minLength: 0)
-          }
-          HStack {
-            Spacer(minLength: 0)
-            ticketStatus
-          }
-        }
+        SprintPriorityIndicator(priority: item.priority)
       }
 
       Text(item.title)
-        .font(.body.weight(.medium))
+        .font(.subheadline.weight(.semibold))
         .lineLimit(3)
+        .truncationMode(.tail)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .allowsHitTesting(false)
 
       if !showsWorkflowActions {
         SprintTicketRunSummary(
           profile: assignedProfile,
-          run: latestRun,
-          liveActivity: latestRun.flatMap {
+          detailsProfile: detailsProfile,
+          run: detailsRun,
+          liveActivity: detailsRun.flatMap {
             guard $0.status == .running else { return nil }
             return model.liveRunActivities[$0.id] ?? $0.persistedActivity
-          },
-          onStop: { run in
-            Task { await model.stopAgentRun(run) }
           }
-        )
-      }
-
-      if !item.acceptanceCriteria.isEmpty {
-        Divider()
-        Label(
-          "\(item.acceptanceCriteria.count) acceptance criteria",
-          systemImage: "checklist"
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        ) {
+          ticketStatus
+        }
       }
 
       if showsWorkflowActions {
@@ -6444,26 +7830,69 @@ private struct WorkItemCard: View {
         }
       }
     }
-    .padding(12)
+    .padding(.vertical, 12)
+    .padding(.horizontal, 12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
       ZStack {
         cardBackground
-        if isActivelyWorkedOn || needsOwnerInput {
-          ActiveWorkShimmer(
-            tint: needsOwnerInput ? .orange : .white
-          )
+        if isInteractiveHover {
+          Color.accentColor.opacity(0.055)
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: 11))
     }
     .overlay {
-      RoundedRectangle(cornerRadius: 11)
-        .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 0.5)
+      ZStack {
+        RoundedRectangle(cornerRadius: 11)
+          .stroke(cardBorderColor, lineWidth: cardBorderWidth)
+        if needsOwnerAction {
+          RoundedRectangle(cornerRadius: 11)
+            .stroke(
+              Color.orange.opacity(
+                reduceMotion ? 0.4 : (ownerAttentionPulse ? 0.72 : 0.08)
+              ),
+              lineWidth: ownerAttentionPulse ? 1.6 : 0.8
+            )
+            .shadow(
+              color: .orange.opacity(ownerAttentionPulse ? 0.24 : 0),
+              radius: 4
+            )
+        }
+      }
     }
     .contentShape(RoundedRectangle(cornerRadius: 11))
     .onTapGesture {
       onOpen?(item)
+    }
+    .onHover { hovering in
+      guard onOpen != nil else { return }
+      withAnimation(.easeOut(duration: 0.12)) {
+        isHovering = hovering
+      }
+    }
+    .task(id: attentionAnimationEnabled) {
+      ownerAttentionPulse = false
+      guard attentionAnimationEnabled else { return }
+
+      while !Task.isCancelled {
+        do {
+          try await Task.sleep(for: .seconds(2.8))
+        } catch {
+          return
+        }
+        withAnimation(.easeInOut(duration: 0.45)) {
+          ownerAttentionPulse = true
+        }
+        do {
+          try await Task.sleep(for: .seconds(0.65))
+        } catch {
+          return
+        }
+        withAnimation(.easeOut(duration: 0.7)) {
+          ownerAttentionPulse = false
+        }
+      }
     }
   }
 
@@ -6478,7 +7907,6 @@ private struct WorkItemCard: View {
         .foregroundStyle(item.type.tint)
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
-      SprintPriorityIndicator(priority: item.priority)
     }
     .fixedSize(horizontal: true, vertical: false)
   }
@@ -6488,7 +7916,8 @@ private struct WorkItemCard: View {
       run: latestRun,
       itemState: item.state,
       candidateStatus: latestCandidate?.status,
-      isDependencyBlocked: isDependencyBlocked
+      isDependencyBlocked: isDependencyBlocked,
+      planningIssue: planningIssue
     )
   }
 
@@ -6499,54 +7928,6 @@ private struct WorkItemCard: View {
     default:
       false
     }
-  }
-}
-
-private struct ActiveWorkShimmer: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.colorScheme) private var colorScheme
-  let tint: Color
-
-  private let duration: TimeInterval = 2.4
-
-  var body: some View {
-    Group {
-      if reduceMotion {
-        Color.clear
-      } else {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { context in
-          GeometryReader { geometry in
-            let progress =
-              context.date.timeIntervalSinceReferenceDate
-              .truncatingRemainder(dividingBy: duration) / duration
-            let bandWidth = max(72, geometry.size.width * 0.28)
-            let travel = geometry.size.width + (bandWidth * 2)
-
-            LinearGradient(
-              colors: [
-                .clear,
-                tint.opacity(
-                  colorScheme == .dark
-                    ? (tint == .orange ? 0.16 : 0.09)
-                    : (tint == .orange ? 0.2 : 0.52)
-                ),
-                .clear,
-              ],
-              startPoint: .leading,
-              endPoint: .trailing
-            )
-            .frame(width: bandWidth, height: geometry.size.height * 2.4)
-            .rotationEffect(.degrees(18))
-            .offset(
-              x: -bandWidth + (travel * progress),
-              y: -geometry.size.height * 0.7
-            )
-          }
-        }
-      }
-    }
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
   }
 }
 
@@ -6567,15 +7948,19 @@ private struct SprintTicketDetailView: View {
   @State private var workLogScrollRequest = 0
   @State private var hasLoadedWorkLog = false
   @State private var isContextExpanded = false
+  @State private var isWritingCustomOwnerAnswer = false
   @FocusState private var isCommentComposerFocused: Bool
 
   private var currentItem: WorkItem {
     model.workItems.first { $0.id == item.id } ?? item
   }
 
+  private var currentSprintItem: SprintItem? {
+    model.sprintPlan?.items.first { $0.workItemID == item.id }
+  }
+
   private var owner: AgentProfile? {
-    let sprintOwnerID = model.sprintPlan?.items
-      .first { $0.workItemID == item.id }?.implementerProfileID
+    let sprintOwnerID = currentSprintItem?.implementerProfileID
     guard let ownerID = sprintOwnerID ?? currentItem.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
   }
@@ -6587,6 +7972,10 @@ private struct SprintTicketDetailView: View {
         .map(\.dependsOnWorkItemID)
     )
     return model.workItems.filter { ids.contains($0.id) }
+  }
+
+  private var activePrerequisites: [WorkItem] {
+    prerequisites.filter { $0.state != .released }
   }
 
   private var dependants: [WorkItem] {
@@ -6620,6 +8009,11 @@ private struct SprintTicketDetailView: View {
     model.candidateRevisions
       .filter { $0.workItemID == item.id }
       .max(by: { $0.version < $1.version })
+  }
+
+  private var currentExecutionResult: TicketExecutionResult? {
+    guard let candidate = currentCandidate else { return nil }
+    return try? CodexTicketExecutor.decode(candidate.executionResultJSON)
   }
 
   private var trunkPromotionValue: String {
@@ -6675,9 +8069,12 @@ private struct SprintTicketDetailView: View {
   }
 
   private var boardStatusTitle: String {
-    if model.sprintPlan?.sprint.state == .draft,
-      model.sprintPlan?.items.contains(where: { $0.workItemID == item.id }) == true
-    {
+    if model.sprintPlan?.sprint.state == .draft, let currentSprintItem {
+      if currentSprintItem.estimatedTokens <= 0
+        || model.sprintReadinessIssues.contains(where: { $0.workItemID == item.id })
+      {
+        return "Needs planning"
+      }
       return "Ready to Pick"
     }
     return switch currentItem.state {
@@ -6692,6 +8089,7 @@ private struct SprintTicketDetailView: View {
 
   private var boardStatusSymbol: String {
     switch boardStatusTitle {
+    case "Needs planning": "exclamationmark.triangle.fill"
     case "Ready to Pick": "tray.full"
     case "In Progress": "bolt.fill"
     case "In Review": "checkmark.shield"
@@ -6703,6 +8101,7 @@ private struct SprintTicketDetailView: View {
 
   private var boardStatusTint: Color {
     switch boardStatusTitle {
+    case "Needs planning": .orange
     case "Ready to Pick": Color(nsColor: .secondaryLabelColor)
     case "In Progress": .blue
     case "In Review": .purple
@@ -6728,6 +8127,36 @@ private struct SprintTicketDetailView: View {
   private var awaitingOwnerProfile: AgentProfile? {
     guard let awaitingOwnerRun else { return nil }
     return model.profiles.first { $0.id == awaitingOwnerRun.profileID }
+  }
+
+  private var activeOwnerQuestionComment: TicketComment? {
+    guard awaitingOwnerRun != nil else { return nil }
+    let agentComments = comments.filter { $0.authorKind == .agent }
+    if let structuredComment = agentComments.last(where: { $0.ownerQuestion != nil }) {
+      return structuredComment
+    }
+    guard
+      let latestAgentComment = agentComments.last,
+      TicketOwnerQuestion.presentation(
+        in: latestAgentComment.body,
+        structuredQuestion: nil
+      ) != nil
+    else { return nil }
+    return latestAgentComment
+  }
+
+  private var ownerAnswerSelection: TicketOwnerAnswerSelection? {
+    guard let comment = activeOwnerQuestionComment,
+      let presentation = TicketOwnerQuestion.presentation(
+        in: comment.body,
+        structuredQuestion: comment.ownerQuestion
+      )
+    else { return nil }
+    if isWritingCustomOwnerAnswer {
+      return .custom
+    }
+    let answer = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    return presentation.question.options.contains(answer) ? .option(answer) : nil
   }
 
   private var pausedQuestionRecipient: AgentProfile? {
@@ -6822,7 +8251,7 @@ private struct SprintTicketDetailView: View {
   }
 
   private var hasRelationships: Bool {
-    !prerequisites.isEmpty || !dependants.isEmpty
+    !activePrerequisites.isEmpty || !dependants.isEmpty
   }
 
   private var hasSupportingRail: Bool {
@@ -6833,10 +8262,10 @@ private struct SprintTicketDetailView: View {
   private var relationshipsSection: some View {
     SprintTicketSectionCard(title: "Relationships") {
       VStack(alignment: .leading, spacing: 14) {
-        if !prerequisites.isEmpty {
+        if !activePrerequisites.isEmpty {
           SprintTicketRelationshipRow(
             title: "Blocked by",
-            items: prerequisites,
+            items: activePrerequisites,
             symbol: "arrow.turn.up.left"
           )
         }
@@ -6863,15 +8292,23 @@ private struct SprintTicketDetailView: View {
         .foregroundStyle(.secondary)
 
         if isContextExpanded {
-          ScrollView {
+          if contextPages.count <= 7 {
             LazyVStack(alignment: .leading, spacing: 8) {
               ForEach(contextPages) { page in
                 contextPageRow(page)
               }
             }
+          } else {
+            ScrollView {
+              LazyVStack(alignment: .leading, spacing: 8) {
+                ForEach(contextPages) { page in
+                  contextPageRow(page)
+                }
+              }
+            }
+            .frame(height: 154)
+            .scrollIndicators(.visible)
           }
-          .frame(height: min(CGFloat(contextPages.count) * 28, 168))
-          .scrollIndicators(.visible)
         } else {
           ForEach(Array(contextPages.prefix(3))) { page in
             contextPageRow(page)
@@ -6907,12 +8344,8 @@ private struct SprintTicketDetailView: View {
       Text(page.title)
         .font(.caption.weight(.semibold))
         .lineLimit(1)
-      Spacer(minLength: 4)
-      Text(page.verificationStatus.title)
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   @ViewBuilder
@@ -6993,6 +8426,56 @@ private struct SprintTicketDetailView: View {
   }
 
   @ViewBuilder
+  private var followUpTicketProposalsSection: some View {
+    if let proposals = currentExecutionResult?.followUpTicketProposals,
+      !proposals.isEmpty
+    {
+      VStack(alignment: .leading, spacing: 12) {
+        Label("Recommended follow-up work", systemImage: "arrow.triangle.branch")
+          .font(.headline)
+          .foregroundStyle(.purple)
+
+        Text(
+          currentItem.state == .released
+            ? "These recommendations were published to the Backlog for individual review."
+            : "Approving this research outcome will publish these as reviewable Backlog proposals. Nothing enters the Backlog until you accept each proposal."
+        )
+        .font(.callout)
+        .foregroundStyle(.secondary)
+
+        ForEach(proposals, id: \.reference) { proposal in
+          HStack(alignment: .top, spacing: 10) {
+            Text(proposal.reference)
+              .font(.caption.monospaced().weight(.semibold))
+              .foregroundStyle(.purple)
+              .frame(width: 28, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+              Text(proposal.title)
+                .font(.subheadline.weight(.semibold))
+              Text(proposal.rationale)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Label(proposal.suggestedRole.title, systemImage: proposal.suggestedRole.symbolName)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(proposal.suggestedRole.tint)
+          }
+          .padding(11)
+          .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
+        }
+      }
+      .padding(17)
+      .background(Color.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
+      .overlay {
+        RoundedRectangle(cornerRadius: 13)
+          .stroke(Color.purple.opacity(0.34), lineWidth: 1.2)
+      }
+    }
+  }
+
+  @ViewBuilder
   private var knowledgeProposalsSection: some View {
     if !currentKnowledgeProposals.isEmpty {
       VStack(alignment: .leading, spacing: 12) {
@@ -7018,6 +8501,7 @@ private struct SprintTicketDetailView: View {
           CanonicalKnowledgeProposalCard(
             proposal: proposal,
             currentPage: knowledgePage,
+            requiresOwnerApproval: model.requiresKnowledgeApproval,
             isDeciding: decidingKnowledgeProposalIDs.contains(proposal.id),
             onOpenPage: knowledgePage.map { page in
               {
@@ -7109,25 +8593,14 @@ private struct SprintTicketDetailView: View {
         Text("Ticket details")
           .font(.title2.bold())
         Spacer()
-        if currentItem.state == .acceptance {
-          Button(isAcceptingTicket ? "Completing…" : "Approve & complete") {
-            isAcceptingTicket = true
-            Task {
-              let didComplete = await model.acceptSprintTicket(currentItem)
-              isAcceptingTicket = false
-              if didComplete {
-                dismiss()
-              }
-            }
-          }
-          .buttonStyle(.borderedProminent)
-          .disabled(isAcceptingTicket || knowledgeProposalsBlockCompletion)
-          .help(
-            knowledgeProposalsBlockCompletion
-              ? "Accept or reject every proposed knowledge change first."
-              : "Promote this exact reviewed revision to the accepted trunk."
-          )
+        Button {
+          workLogScrollRequest += 1
+        } label: {
+          Label("Latest activity", systemImage: "arrow.down.to.line")
         }
+        .buttonStyle(.bordered)
+        .disabled(workLogEntries.isEmpty)
+        .help("Jump to the latest Work log entry")
         Button("Close") { dismiss() }
       }
       .padding(.horizontal, 22)
@@ -7208,6 +8681,8 @@ private struct SprintTicketDetailView: View {
               }
             }
 
+            followUpTicketProposalsSection
+
             knowledgeProposalsSection
 
             if hasRelationships || hasSupportingRail {
@@ -7266,19 +8741,32 @@ private struct SprintTicketDetailView: View {
                 .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
               } else {
                 VStack(spacing: 0) {
-                  ForEach(workLogEntries) { entry in
+                  ForEach(Array(workLogEntries.enumerated()), id: \.element.id) { index, entry in
+                    let showsBottomSeparator = index < workLogEntries.count - 1
                     Group {
                       switch entry {
                       case .comment(let comment):
                         SprintTicketCommentRow(
                           comment: comment,
-                          authorProfile: model.profiles.first { $0.name == comment.authorName }
+                          authorProfile: model.profiles.first { $0.name == comment.authorName },
+                          showsBottomSeparator: showsBottomSeparator,
+                          ownerAnswerSelection:
+                            comment.id == activeOwnerQuestionComment?.id
+                            ? ownerAnswerSelection
+                            : nil,
+                          onSelectOwnerAnswer:
+                            comment.id == activeOwnerQuestionComment?.id
+                            ? { selection in
+                              selectOwnerAnswer(selection)
+                            }
+                            : nil
                         )
                       case .event(let event):
                         SprintTicketEventRow(
                           event: event,
                           profiles: model.profiles,
-                          retrospectiveNotes: model.retrospectiveNotes
+                          retrospectiveNotes: model.retrospectiveNotes,
+                          showsBottomSeparator: showsBottomSeparator
                         )
                       }
                     }
@@ -7287,12 +8775,9 @@ private struct SprintTicketDetailView: View {
                 }
               }
             }
-
-            Color.clear
-              .frame(height: 1)
-              .id("work-log-bottom")
           }
           .padding(24)
+          .id("work-log-bottom")
         }
         .onChange(of: workLogScrollRequest) {
           Task { @MainActor in
@@ -7315,7 +8800,7 @@ private struct SprintTicketDetailView: View {
         comments = await model.comments(for: item.id)
         activityEvents = await model.activityEvents(for: item.id)
         let latestEntryID = workLogEntries.last?.id
-        if !hasLoadedWorkLog || latestEntryID != previousLastEntryID {
+        if hasLoadedWorkLog, !isAcceptingTicket, latestEntryID != previousLastEntryID {
           workLogScrollRequest += 1
         }
         hasLoadedWorkLog = true
@@ -7344,7 +8829,11 @@ private struct SprintTicketDetailView: View {
                 .fontWeight(.semibold)
               Text("is paused and waiting for direction.")
             }
-            Text("Ask a question without restarting work, or add direction and choose Resume work.")
+            Text(
+              activeOwnerQuestionComment == nil
+                ? "Ask a question without restarting work, or add direction and choose Resume work."
+                : "Choose an answer above or write your own, then choose Resume work."
+            )
               .foregroundStyle(.secondary)
           }
           .font(.caption)
@@ -7360,14 +8849,14 @@ private struct SprintTicketDetailView: View {
           .foregroundStyle(.red)
         } else if currentItem.state == .acceptance {
           Label(
-            "Approve the demo above, or add feedback and choose Request changes.",
+            "Approve this demo, or add feedback and request changes.",
             systemImage: "play.rectangle"
           )
           .font(.caption)
           .foregroundStyle(.orange)
         }
 
-        Text("Add a comment")
+        Text(activeOwnerQuestionComment == nil ? "Add a comment" : "Your response")
           .font(.subheadline.weight(.semibold))
 
         ZStack(alignment: .topLeading) {
@@ -7417,7 +8906,6 @@ private struct SprintTicketDetailView: View {
               postComment()
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
             .disabled(!canPostComment)
 
             if let pausedQuestionRecipient {
@@ -7427,7 +8915,6 @@ private struct SprintTicketDetailView: View {
                 askQuestion(to: pausedQuestionRecipient)
               }
               .buttonStyle(.bordered)
-              .controlSize(.small)
               .disabled(!canPostComment)
             }
 
@@ -7435,42 +8922,51 @@ private struct SprintTicketDetailView: View {
               resumeWork()
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
             .disabled(!canPostComment)
           } else if failedDeliveryProfile != nil {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
             .disabled(!canPostComment)
 
             Button(isResumingWork ? "Retrying…" : "Retry work") {
               resumeWork()
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
             .disabled(!canPostComment)
           } else if currentItem.state == .acceptance {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
             }
             .buttonStyle(.bordered)
-            .controlSize(.small)
             .disabled(!canPostComment)
+
+            Divider()
+              .frame(height: 20)
+              .padding(.horizontal, 2)
 
             Button(isResumingWork ? "Sending…" : "Request changes") {
               resumeWork()
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .buttonStyle(.bordered)
             .disabled(!canPostComment)
+
+            Button(isAcceptingTicket ? "Completing…" : "Approve and complete") {
+              acceptTicket()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isAcceptingTicket || knowledgeProposalsBlockCompletion)
+            .help(
+              knowledgeProposalsBlockCompletion
+                ? "Accept or reject every proposed knowledge change first."
+                : "Promote this exact reviewed revision to the accepted trunk."
+            )
           } else {
             Button(isPostingComment ? "Commenting…" : "Comment") {
               postComment()
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
             .disabled(!canPostComment)
           }
         }
@@ -7479,6 +8975,19 @@ private struct SprintTicketDetailView: View {
     .padding(.horizontal, 24)
     .padding(.vertical, 14)
     .background(.quaternary.opacity(0.18))
+  }
+
+  private func acceptTicket() {
+    guard !isAcceptingTicket, !knowledgeProposalsBlockCompletion else { return }
+    isAcceptingTicket = true
+    Task {
+      let didComplete = await model.acceptSprintTicket(currentItem)
+      if didComplete {
+        dismiss()
+      } else {
+        isAcceptingTicket = false
+      }
+    }
   }
 
   private func postComment() {
@@ -7509,6 +9018,29 @@ private struct SprintTicketDetailView: View {
       }
       isPostingComment = false
     }
+  }
+
+  private func selectOwnerAnswer(_ selection: TicketOwnerAnswerSelection) {
+    switch selection {
+    case .option(let option):
+      commentDraft = option
+      isWritingCustomOwnerAnswer = false
+    case .custom:
+      if let comment = activeOwnerQuestionComment,
+        let presentation = TicketOwnerQuestion.presentation(
+          in: comment.body,
+          structuredQuestion: comment.ownerQuestion
+        ),
+        presentation.question.options.contains(
+          commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+      {
+        commentDraft = ""
+      }
+      isWritingCustomOwnerAnswer = true
+    }
+    isCommentComposerFocused = true
+    workLogScrollRequest += 1
   }
 
   private func askQuestion(to recipient: AgentProfile) {
@@ -7587,6 +9119,7 @@ private struct SprintTicketDetailView: View {
 private struct CanonicalKnowledgeProposalCard: View {
   let proposal: KnowledgePageProposal
   let currentPage: KnowledgePage?
+  let requiresOwnerApproval: Bool
   let isDeciding: Bool
   let onOpenPage: (() -> Void)?
   let onDecision: (Bool) -> Void
@@ -7602,10 +9135,14 @@ private struct CanonicalKnowledgeProposalCard: View {
       || currentPage.bodyMarkdown != proposal.basePageBodyMarkdown
   }
 
+  private var requiresOwnerDecision: Bool {
+    requiresOwnerApproval && proposal.status == .reviewed
+  }
+
   private var statusTitle: String {
     switch proposal.status {
     case .proposed: "Awaiting Tech Lead"
-    case .reviewed: "Decision required"
+    case .reviewed: requiresOwnerApproval ? "Decision required" : "Publishing"
     case .accepted: "Published"
     case .rejected: "Rejected"
     case .superseded: "Superseded"
@@ -7696,7 +9233,7 @@ private struct CanonicalKnowledgeProposalCard: View {
         Button(action: onOpenPage) {
           HStack(spacing: 7) {
             Image(systemName: "books.vertical")
-            Text("Open in Knowledge Base")
+            Text("Open in product")
             Spacer()
             Image(systemName: "arrow.right")
           }
@@ -7707,7 +9244,7 @@ private struct CanonicalKnowledgeProposalCard: View {
         .buttonStyle(.plain)
       }
 
-      if isPending {
+      if requiresOwnerDecision {
         HStack {
           Spacer()
           Button(sourceChanged ? "Dismiss stale proposal" : "Reject") {
@@ -7716,7 +9253,7 @@ private struct CanonicalKnowledgeProposalCard: View {
           .disabled(isDeciding)
           Button(isDeciding ? "Applying…" : "Accept") { onDecision(true) }
             .buttonStyle(.borderedProminent)
-            .disabled(isDeciding || proposal.status == .proposed || sourceChanged)
+            .disabled(isDeciding || sourceChanged)
         }
       }
     }
@@ -7801,6 +9338,7 @@ private struct SprintTicketEventRow: View {
   let event: ActivityEvent
   let profiles: [AgentProfile]
   let retrospectiveNotes: [RetrospectiveNote]
+  let showsBottomSeparator: Bool
 
   private var assignedProfile: AgentProfile? {
     guard
@@ -7896,8 +9434,12 @@ private struct SprintTicketEventRow: View {
       "Run failed"
     case "agent_run.completed":
       "Run completed"
+    case "retrospective.action_proposed":
+      "Retrospective change proposed"
     case "retrospective.action_promoted_to_practice":
       "Added to Ways of working"
+    case "work_item.created_from_retrospective":
+      "Retrospective ticket created"
     case "work_item.transitioned":
       switch transitionState {
       case .some(.running):
@@ -7934,7 +9476,8 @@ private struct SprintTicketEventRow: View {
       guard parts.count == 2 else { return nil }
       let reason = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
       return reason.isEmpty ? nil : reason
-    case "retrospective.action_promoted_to_practice":
+    case "retrospective.action_proposed", "retrospective.action_promoted_to_practice",
+      "work_item.created_from_retrospective":
       let trimmed = event.detail.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { return nil }
       if let noteID = UUID(uuidString: trimmed) {
@@ -7982,7 +9525,9 @@ private struct SprintTicketEventRow: View {
     case "agent_run.failed": .red
     case "agent_run.interrupted": .orange
     case "agent_run.completed": .green
+    case "retrospective.action_proposed": .blue
     case "retrospective.action_promoted_to_practice": .purple
+    case "work_item.created_from_retrospective": .blue
     case "agent_run.queued": Color(nsColor: .secondaryLabelColor)
     case "agent_run.running": .blue
     case "work_item.transitioned":
@@ -8011,7 +9556,9 @@ private struct SprintTicketEventRow: View {
     case "agent_run.interrupted": "pause.circle.fill"
     case "agent_run.failed": "exclamationmark.triangle.fill"
     case "agent_run.completed": "checkmark.circle.fill"
+    case "retrospective.action_proposed": "plus.bubble"
     case "retrospective.action_promoted_to_practice": "person.2.badge.gearshape"
+    case "work_item.created_from_retrospective": "list.bullet.clipboard"
     case "work_item.transitioned":
       switch transitionState {
       case .some(.running): "bolt.fill"
@@ -8064,20 +9611,31 @@ private struct SprintTicketEventRow: View {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .padding(.vertical, 14)
+    .padding(.top, 14)
+    .padding(.bottom, showsBottomSeparator ? 14 : 0)
     .frame(maxWidth: .infinity, alignment: .leading)
     .overlay(alignment: .bottom) {
-      Rectangle()
-        .fill(Color(nsColor: .separatorColor).opacity(0.55))
-        .frame(height: 1)
-        .padding(.leading, 46)
+      if showsBottomSeparator {
+        Rectangle()
+          .fill(Color(nsColor: .separatorColor).opacity(0.55))
+          .frame(height: 1)
+          .padding(.leading, 46)
+      }
     }
   }
+}
+
+private enum TicketOwnerAnswerSelection: Equatable {
+  case option(String)
+  case custom
 }
 
 private struct SprintTicketCommentRow: View {
   let comment: TicketComment
   let authorProfile: AgentProfile?
+  let showsBottomSeparator: Bool
+  let ownerAnswerSelection: TicketOwnerAnswerSelection?
+  let onSelectOwnerAnswer: ((TicketOwnerAnswerSelection) -> Void)?
 
   private var accent: Color {
     switch comment.authorKind {
@@ -8097,6 +9655,14 @@ private struct SprintTicketCommentRow: View {
 
   private var authorName: String {
     comment.authorKind == .owner ? "Me" : comment.authorName
+  }
+
+  private var ownerQuestionPresentation: TicketOwnerQuestionPresentation? {
+    guard comment.authorKind == .agent else { return nil }
+    return TicketOwnerQuestion.presentation(
+      in: comment.body,
+      structuredQuestion: comment.ownerQuestion
+    )
   }
 
   var body: some View {
@@ -8122,22 +9688,135 @@ private struct SprintTicketCommentRow: View {
           .font(.caption)
           .foregroundStyle(.secondary)
         }
-        TicketMarkdownDocument(
-          source: comment.body,
-          baseFont: .body
-        )
+        if let ownerQuestionPresentation {
+          if !ownerQuestionPresentation.context.isEmpty {
+            TicketMarkdownDocument(
+              source: ownerQuestionPresentation.context,
+              baseFont: .body
+            )
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          ownerQuestionView(ownerQuestionPresentation.question)
+            .padding(.top, ownerQuestionPresentation.context.isEmpty ? 0 : 10)
+        } else {
+          TicketMarkdownDocument(
+            source: comment.body,
+            baseFont: .body
+          )
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
+        }
       }
     }
-    .padding(.vertical, 14)
+    .padding(.top, 14)
+    .padding(.bottom, showsBottomSeparator ? 14 : 0)
     .frame(maxWidth: .infinity, alignment: .leading)
     .overlay(alignment: .bottom) {
-      Rectangle()
-        .fill(Color(nsColor: .separatorColor).opacity(0.55))
-        .frame(height: 1)
-        .padding(.leading, 46)
+      if showsBottomSeparator {
+        Rectangle()
+          .fill(Color(nsColor: .separatorColor).opacity(0.55))
+          .frame(height: 1)
+          .padding(.leading, 46)
+      }
     }
+  }
+
+  private func ownerQuestionView(_ question: TicketOwnerQuestion) -> some View {
+    VStack(alignment: .leading, spacing: 9) {
+      Label("Question for you", systemImage: "questionmark.bubble.fill")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
+      Text(question.prompt)
+        .font(.body.weight(.medium))
+        .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
+
+      VStack(spacing: 6) {
+        ForEach(question.options, id: \.self) { option in
+          ownerAnswerRow(
+            option,
+            selection: .option(option)
+          )
+        }
+        if onSelectOwnerAnswer != nil {
+          ownerAnswerRow(
+            "Write another answer",
+            selection: .custom
+          )
+        }
+      }
+
+      if onSelectOwnerAnswer != nil {
+        Text("Choose an answer to add it to your response below.")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding(12)
+    .background(accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
+    .overlay {
+      RoundedRectangle(cornerRadius: 11)
+        .stroke(accent.opacity(0.28), lineWidth: 1)
+    }
+  }
+
+  @ViewBuilder
+  private func ownerAnswerRow(
+    _ label: String,
+    selection: TicketOwnerAnswerSelection
+  ) -> some View {
+    if let onSelectOwnerAnswer {
+      Button {
+        onSelectOwnerAnswer(selection)
+      } label: {
+        ownerAnswerLabel(label, selection: selection)
+      }
+      .buttonStyle(
+        RefinementChoiceButtonStyle(
+          tint: accent,
+          isSelected: ownerAnswerSelection == selection
+        )
+      )
+    } else {
+      ownerAnswerLabel(label, selection: selection)
+        .background(
+          Color(nsColor: .controlBackgroundColor).opacity(0.52),
+          in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay {
+          RoundedRectangle(cornerRadius: 8)
+            .stroke(Color.primary.opacity(0.10), lineWidth: 0.8)
+        }
+    }
+  }
+
+  private func ownerAnswerLabel(
+    _ label: String,
+    selection: TicketOwnerAnswerSelection
+  ) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 9) {
+      Image(
+        systemName:
+          ownerAnswerSelection == selection
+          ? "largecircle.fill.circle"
+          : "circle"
+      )
+      .font(.caption)
+      .foregroundStyle(
+        ownerAnswerSelection == selection ? accent : Color.secondary
+      )
+      Text(label)
+        .font(.callout)
+        .foregroundStyle(.primary)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .contentShape(Rectangle())
   }
 }
 
@@ -8294,10 +9973,11 @@ private struct SprintTicketRelationshipRow: View {
 private struct SprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
-  let onSaved: () -> Void
+  let onSaved: (UUID) -> Void
   @State private var goal = ""
   @State private var didPrepare = false
   @State private var isSaving = false
+  @State private var selectedAssigneeIDs: [UUID: UUID] = [:]
 
   private var sprintNumber: Int {
     model.candidateSprintPlan?.sprint.number ?? 1
@@ -8315,6 +9995,10 @@ private struct SprintPlanningView: View {
         ($0.workItemID, $0)
       }
     )
+  }
+
+  private var deliveryProfiles: [AgentProfile] {
+    model.profiles.filter(\.role.canOwnDelivery)
   }
 
   private var waves: [[SprintPlanningLine]] {
@@ -8373,15 +10057,15 @@ private struct SprintPlanningView: View {
     lines.reduce(0) { $0 + $1.forecast.tokenHigh }
   }
 
-  private var elapsedLowMinutes: Int {
+  private var elapsedLowSeconds: Int {
     waves.reduce(0) { total, wave in
-      total + (wave.map(\.forecast.durationLowMinutes).max() ?? 0)
+      total + (wave.map(\.forecast.durationLowSeconds).max() ?? 0)
     }
   }
 
-  private var elapsedHighMinutes: Int {
+  private var elapsedHighSeconds: Int {
     waves.reduce(0) { total, wave in
-      total + (wave.map(\.forecast.durationHighMinutes).max() ?? 0)
+      total + (wave.map(\.forecast.durationHighSeconds).max() ?? 0)
     }
   }
 
@@ -8449,7 +10133,7 @@ private struct SprintPlanningView: View {
           )
           SprintPlanningMetric(
             title: "Elapsed time",
-            value: "\(duration(elapsedLowMinutes))–\(duration(elapsedHighMinutes))",
+            value: "\(duration(elapsedLowSeconds))–\(duration(elapsedHighSeconds))",
             detail: "agent work, not a deadline",
             symbol: "clock"
           )
@@ -8461,13 +10145,39 @@ private struct SprintPlanningView: View {
           )
         }
 
+        if riskCount > 0 {
+          VStack(alignment: .leading, spacing: 9) {
+            Label("Plan needs attention", systemImage: "exclamationmark.triangle.fill")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(.orange)
+            Text(
+              "Resolve \(riskCount) \(riskCount == 1 ? "issue" : "issues") before this sprint can start."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            ForEach(lines.filter { !$0.risks.isEmpty }) { line in
+              ForEach(line.risks, id: \.self) { risk in
+                Text("\(line.item.key): \(risk)")
+                  .font(.caption.weight(.medium))
+              }
+            }
+          }
+          .padding(14)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+          .overlay {
+            RoundedRectangle(cornerRadius: 12)
+              .stroke(.orange.opacity(0.22), lineWidth: 1)
+          }
+        }
+
         HStack(alignment: .top, spacing: 16) {
           VStack(alignment: .leading, spacing: 0) {
             HStack {
               VStack(alignment: .leading, spacing: 2) {
                 Text("Sprint scope")
                   .font(.headline)
-                Text("Owners were selected from the artifact each refined ticket is meant to produce.")
+                Text("Choose the delivery assignee for every ticket before starting the sprint.")
                   .font(.caption)
                   .foregroundStyle(.secondary)
               }
@@ -8486,7 +10196,9 @@ private struct SprintPlanningView: View {
                   SprintPlanningWave(
                     number: waveIndex + 1,
                     lines: wave,
-                    isLast: waveIndex == waves.count - 1
+                    isLast: waveIndex == waves.count - 1,
+                    deliveryProfiles: deliveryProfiles,
+                    assigneeBinding: assigneeBinding(for:)
                   )
                 }
               }
@@ -8517,32 +10229,9 @@ private struct SprintPlanningView: View {
               detail: "Broad until completed runs calibrate this product. Ranges include implementation and verification.",
               symbol: "waveform.path.ecg"
             )
-
-            if riskCount > 0 {
-              Divider()
-              Text("Attention needed")
-                .font(.subheadline.weight(.semibold))
-              ForEach(lines.filter { !$0.risks.isEmpty }) { line in
-                VStack(alignment: .leading, spacing: 3) {
-                  Text(line.item.key)
-                    .font(.caption.monospaced().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                  ForEach(line.risks, id: \.self) { risk in
-                    Text(risk)
-                      .font(.caption)
-                  }
-                }
-              }
-            }
-
-            Spacer()
-            Text("Planning does not rewrite refined tickets. Edit them in the Sprint or Backlog section of the Backlog view, then reopen this plan.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
           }
           .padding(18)
           .frame(width: 300, alignment: .topLeading)
-          .frame(maxHeight: .infinity)
           .background(.indigo.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
         }
       }
@@ -8569,10 +10258,10 @@ private struct SprintPlanningView: View {
             HStack(spacing: 7) {
               ProgressView()
                 .controlSize(.small)
-              Text("Saving Plan…")
+              Text("Saving…")
             }
           } else {
-            Text("Save Plan & Open Board")
+            Text("Save and open board")
           }
         }
         .buttonStyle(.borderedProminent)
@@ -8596,7 +10285,7 @@ private struct SprintPlanningView: View {
       return "Add a sprint goal."
     }
     if lines.contains(where: { $0.owner == nil }) {
-      return "One or more tickets have no eligible delivery owner."
+      return "Choose an assignee for every sprint ticket."
     }
     return "Every sprint ticket needs acceptance criteria."
   }
@@ -8605,10 +10294,19 @@ private struct SprintPlanningView: View {
     guard !didPrepare else { return }
     didPrepare = true
     goal = model.candidateSprintPlan?.sprint.goal ?? "Next valuable increment"
+    selectedAssigneeIDs = scopedItems.reduce(into: [:]) { result, item in
+      let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
+      if let ownerID = plannedOwnerID ?? item.ownerProfileID {
+        result[item.id] = ownerID
+      }
+    }
   }
 
   private func savePlan() {
-    guard !isSaving else { return }
+    guard
+      !isSaving,
+      let sprintID = model.candidateSprintPlan?.sprint.id
+    else { return }
     isSaving = true
     let inputs = lines.compactMap { line -> SprintDraftItemInput? in
       guard let owner = line.owner else { return nil }
@@ -8627,24 +10325,32 @@ private struct SprintPlanningView: View {
       isSaving = false
       guard saved else { return }
       isPresented = false
-      onSaved()
+      onSaved(sprintID)
     }
   }
 
   private func resolvedOwner(for item: WorkItem) -> AgentProfile? {
-    let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
-    if let ownerID = plannedOwnerID ?? item.ownerProfileID,
-      let owner = model.profiles.first(where: { $0.id == ownerID })
-    {
-      return owner
-    }
-    return TicketOwnerRouter.owner(for: item, profiles: model.profiles)
+    guard let ownerID = selectedAssigneeIDs[item.id] else { return nil }
+    return deliveryProfiles.first { $0.id == ownerID }
+  }
+
+  private func assigneeBinding(for itemID: UUID) -> Binding<UUID?> {
+    Binding(
+      get: { selectedAssigneeIDs[itemID] },
+      set: { ownerID in
+        if let ownerID {
+          selectedAssigneeIDs[itemID] = ownerID
+        } else {
+          selectedAssigneeIDs.removeValue(forKey: itemID)
+        }
+      }
+    )
   }
 
   private func risks(for item: WorkItem, scopedIDs: Set<UUID>) -> [String] {
     var values: [String] = []
     if resolvedOwner(for: item) == nil {
-      values.append("No eligible delivery owner")
+      values.append("Choose a delivery assignee")
     }
     if item.acceptanceCriteria.isEmpty {
       values.append("Acceptance criteria are missing")
@@ -8668,11 +10374,17 @@ private struct SprintPlanningView: View {
       : value.formatted()
   }
 
-  private func duration(_ minutes: Int) -> String {
-    if minutes < 60 {
-      return "\(minutes)m"
+  private func duration(_ seconds: Int) -> String {
+    if seconds < 60 {
+      return "\(seconds)s"
     }
-    let hours = Double(minutes) / 60
+    if seconds < 3_600 {
+      if seconds.isMultiple(of: 60) {
+        return "\(seconds / 60)m"
+      }
+      return String(format: "%.1fm", Double(seconds) / 60)
+    }
+    let hours = Double(seconds) / 3_600
     return String(format: hours < 10 ? "%.1fh" : "%.0fh", hours)
   }
 }
@@ -8716,6 +10428,8 @@ private struct SprintPlanningWave: View {
   let number: Int
   let lines: [SprintPlanningLine]
   let isLast: Bool
+  var deliveryProfiles: [AgentProfile] = []
+  var assigneeBinding: ((UUID) -> Binding<UUID?>)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -8738,7 +10452,11 @@ private struct SprintPlanningWave: View {
       .background(.quaternary.opacity(0.25))
 
       ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-        SprintPlanningTicketRow(line: line)
+        SprintPlanningTicketRow(
+          line: line,
+          deliveryProfiles: deliveryProfiles,
+          assigneeID: assigneeBinding?(line.item.id)
+        )
         if index != lines.count - 1 {
           Divider().padding(.leading, 66)
         }
@@ -8752,6 +10470,8 @@ private struct SprintPlanningWave: View {
 
 private struct SprintPlanningTicketRow: View {
   let line: SprintPlanningLine
+  let deliveryProfiles: [AgentProfile]
+  let assigneeID: Binding<UUID?>?
 
   var body: some View {
     HStack(spacing: 12) {
@@ -8773,7 +10493,20 @@ private struct SprintPlanningTicketRow: View {
         }
       }
       Spacer(minLength: 8)
-      if let owner = line.owner {
+      if let assigneeID {
+        Picker("Assignee", selection: assigneeID) {
+          Text("Choose assignee")
+            .tag(nil as UUID?)
+          ForEach(deliveryProfiles) { profile in
+            Label(profile.name, systemImage: profile.role.symbolName)
+              .tag(Optional(profile.id))
+          }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 132, alignment: .leading)
+        .help("Choose the team member who will deliver this ticket.")
+      } else if let owner = line.owner {
         Label(owner.name, systemImage: owner.role.symbolName)
           .font(.caption.weight(.medium))
           .foregroundStyle(owner.role.tint)
@@ -8939,13 +10672,13 @@ private struct LegacySprintPlanningView: View {
           .disabled(model.isPlanningMessageRunning)
         if showingSummary {
           Button("Back") { showingSummary = false }
-          Button("Save sprint plan") {
+          Button("Save") {
             saveAndClose()
           }
           .buttonStyle(.borderedProminent)
           .disabled(!canSave)
         } else {
-          Button("Save draft & close") {
+          Button("Save and close") {
             saveAndClose()
           }
           .disabled(!canSave)
@@ -9040,7 +10773,7 @@ private struct LegacySprintPlanningView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Button(savingTicketItemID == item.id ? "Saving…" : "Save ticket changes") {
+            Button(savingTicketItemID == item.id ? "Saving…" : "Save") {
               persistTicketDraft(for: item)
             }
             .buttonStyle(.borderedProminent)
@@ -9077,7 +10810,7 @@ private struct LegacySprintPlanningView: View {
     let isSending = sendingMessageItemID == item.id
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Label("Ticket conversation", systemImage: "bubble.left.and.bubble.right")
+        Label("Conversation", systemImage: "bubble.left.and.bubble.right")
           .font(.headline)
         Spacer()
       }
@@ -9112,9 +10845,11 @@ private struct LegacySprintPlanningView: View {
 
             Color.clear
               .frame(height: 1)
+              .padding(.bottom, 14)
               .id(bottomID)
           }
-          .padding(14)
+          .padding(.horizontal, 14)
+          .padding(.top, 14)
         }
         .defaultScrollAnchor(.bottom)
         .overlay {
@@ -9678,7 +11413,7 @@ private struct PlanningPresenceIndicator: View {
           .foregroundStyle(profile.role.tint)
         Text(" is thinking…")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.primary)
       }
       Spacer()
       Button("Stop", action: onStop)
@@ -9924,6 +11659,111 @@ private struct AcceptanceCriterionDraft: Identifiable {
   var text: String
 }
 
+private struct EpicDetailItemDraft: Identifiable {
+  let id = UUID()
+  var text: String
+}
+
+private struct FirstItemButton: View {
+  let label: String
+  let systemImage: String
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Label(label, systemImage: systemImage)
+        .font(.subheadline)
+        .frame(maxWidth: .infinity, minHeight: 40)
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(.secondary)
+    .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+    .overlay {
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(.separator.opacity(0.65), lineWidth: 1)
+    }
+  }
+}
+
+private struct EpicDetailItemsEditor: View {
+  let title: String
+  let guidance: String
+  let addLabel: String
+  let firstItemLabel: String
+  let itemPrompt: String
+  let systemImage: String
+  @Binding var items: [EpicDetailItemDraft]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        Text(title)
+          .font(.subheadline.weight(.semibold))
+        Text(items.count.formatted())
+          .font(.caption.monospacedDigit())
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 2)
+          .background(.quaternary, in: Capsule())
+        Spacer()
+        Button {
+          items.append(EpicDetailItemDraft(text: ""))
+        } label: {
+          Label(addLabel, systemImage: "plus")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+      }
+
+      Text(guidance)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+      if items.isEmpty {
+        FirstItemButton(
+          label: firstItemLabel,
+          systemImage: systemImage
+        ) {
+          items.append(EpicDetailItemDraft(text: ""))
+        }
+      } else {
+        VStack(spacing: 8) {
+          ForEach($items) { $item in
+            HStack(alignment: .center, spacing: 10) {
+              Text("•")
+                .foregroundStyle(.secondary)
+                .frame(width: 20, height: 24)
+
+              TextField(itemPrompt, text: $item.text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+
+              Button {
+                items.removeAll { $0.id == item.id }
+              } label: {
+                Image(systemName: "xmark")
+                  .frame(width: 20, height: 24)
+              }
+              .buttonStyle(.borderless)
+              .foregroundStyle(.secondary)
+              .help("Remove item")
+            }
+            .padding(10)
+            .background(
+              Color(nsColor: .textBackgroundColor),
+              in: RoundedRectangle(cornerRadius: 9)
+            )
+            .overlay {
+              RoundedRectangle(cornerRadius: 9)
+                .stroke(.separator.opacity(0.65), lineWidth: 1)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 private struct AcceptanceCriteriaEditor: View {
   @Binding var criteria: [AcceptanceCriterionDraft]
 
@@ -9964,18 +11804,11 @@ private struct AcceptanceCriteriaEditor: View {
         .foregroundStyle(.secondary)
 
       if criteria.isEmpty {
-        Button {
+        FirstItemButton(
+          label: "Add the first acceptance criterion",
+          systemImage: "checklist"
+        ) {
           criteria.append(AcceptanceCriterionDraft(text: ""))
-        } label: {
-          Label("Add the first acceptance criterion", systemImage: "checklist")
-            .frame(maxWidth: .infinity, minHeight: 54)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 9))
-        .overlay {
-          RoundedRectangle(cornerRadius: 9)
-            .stroke(.separator.opacity(0.65), lineWidth: 1)
         }
       } else {
         VStack(spacing: 8) {
@@ -10141,6 +11974,7 @@ private struct TicketDetailView: View {
   @State private var priority: WorkItemPriority
   @State private var blockerIDs: Set<UUID>
   @State private var customFields: [TicketCustomFieldDraft]
+  @State private var assigneeID: UUID?
   @State private var isSaving = false
   @State private var isStartingRefinement = false
   @State private var didStartInitialRefinement = false
@@ -10174,6 +12008,7 @@ private struct TicketDetailView: View {
         TicketCustomFieldDraft(name: $0, value: item.customFields[$0] ?? "")
       }
     )
+    _assigneeID = State(initialValue: item.ownerProfileID)
   }
 
   private var item: WorkItem? {
@@ -10245,10 +12080,29 @@ private struct TicketDetailView: View {
     }
   }
 
-  private var hasUnsavedChanges: Bool {
+  private var savedAssigneeID: UUID? {
+    let plannedAssigneeID = model.candidateSprintPlan?.items
+      .first { $0.workItemID == itemID }?
+      .implementerProfileID
+    return plannedAssigneeID ?? item?.ownerProfileID
+  }
+
+  private var deliveryProfiles: [AgentProfile] {
+    model.profiles.filter(\.role.canOwnDelivery)
+  }
+
+  private var ticketFieldsHaveUnsavedChanges: Bool {
     currentDraftSnapshot != currentSavedSnapshot
       || blockerIDs != savedBlockerIDs
       || draftCustomFields != item?.customFields
+  }
+
+  private var assignmentHasUnsavedChanges: Bool {
+    return assigneeID != savedAssigneeID
+  }
+
+  private var hasUnsavedChanges: Bool {
+    ticketFieldsHaveUnsavedChanges || assignmentHasUnsavedChanges
   }
 
   private var parsedCriteria: [String] {
@@ -10334,6 +12188,23 @@ private struct TicketDetailView: View {
                 .pickerStyle(.menu)
               }
 
+              VStack(alignment: .leading, spacing: 7) {
+                Text("Assignee")
+                  .font(.subheadline.weight(.semibold))
+                Picker("Assignee", selection: $assigneeID) {
+                  Text("Choose assignee")
+                    .tag(nil as UUID?)
+                  ForEach(deliveryProfiles) { profile in
+                    Label(profile.name, systemImage: profile.role.symbolName)
+                      .tag(Optional(profile.id))
+                  }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .disabled(deliveryProfiles.isEmpty)
+                .help("Choose the team member who will deliver this ticket.")
+              }
+
               Spacer()
 
               if let item {
@@ -10411,7 +12282,7 @@ private struct TicketDetailView: View {
         }
         Spacer()
         Button("Cancel") { dismiss() }
-        Button(isSaving ? "Saving…" : "Save changes") {
+        Button(isSaving ? "Saving…" : "Save") {
           save()
         }
         .buttonStyle(.borderedProminent)
@@ -10423,10 +12294,22 @@ private struct TicketDetailView: View {
     .frame(width: detailWidth, height: detailHeight)
     .background(InitialFocusClearer())
     .task {
+      assigneeID = savedAssigneeID
       restoreTicketAssistantSession()
       await restorePendingRefinementQuestion()
       guard
         startRefinementOnAppear,
+        !didStartInitialRefinement,
+        refinementReply == nil,
+        model.canRefineTicket
+      else { return }
+      didStartInitialRefinement = true
+      startRefinement()
+    }
+    .onChange(of: model.canRefineTicket) { _, canRefine in
+      guard
+        startRefinementOnAppear,
+        canRefine,
         !didStartInitialRefinement,
         refinementReply == nil
       else { return }
@@ -10579,7 +12462,13 @@ private struct TicketDetailView: View {
         Label(refinementError, systemImage: "exclamationmark.triangle")
           .font(.caption)
           .foregroundStyle(.orange)
-        Button("Try again") { startRefinement() }
+        Button {
+          startRefinement()
+        } label: {
+          Label("Try again", systemImage: "wand.and.stars")
+        }
+          .buttonStyle(.borderedProminent)
+          .tint(.purple)
           .controlSize(.small)
       } else if let reply = refinementReply {
         if !reply.proposal.missingQuestions.isEmpty {
@@ -11165,22 +13054,131 @@ private struct TicketDetailView: View {
 
   private func save() {
     isSaving = true
+    let shouldSaveTicketFields = ticketFieldsHaveUnsavedChanges
+    let shouldSaveAssignment = assignmentHasUnsavedChanges
+    let selectedAssigneeID = assigneeID
     Task {
-      let saved = await model.updateWorkItem(
-        id: itemID,
-        title: title,
-        type: type,
-        body: bodyText,
-        acceptanceCriteria: parsedCriteria,
-        priority: priority,
-        customFields: draftCustomFields,
-        dependsOnWorkItemIDs: blockerIDs
-      )
+      var saved = true
+      if shouldSaveTicketFields {
+        saved = await model.updateWorkItem(
+          id: itemID,
+          title: title,
+          type: type,
+          body: bodyText,
+          acceptanceCriteria: parsedCriteria,
+          priority: priority,
+          customFields: draftCustomFields,
+          dependsOnWorkItemIDs: blockerIDs
+        )
+      }
+      if saved, shouldSaveAssignment {
+        saved = await model.assignTicketOwner(
+          workItemID: itemID,
+          to: selectedAssigneeID
+        )
+      }
       isSaving = false
       if saved {
         model.dismissTicketAssistantResult(workItemID: itemID)
         dismiss()
       }
+    }
+  }
+}
+
+enum TicketConversationHistory {
+  static func displayedComments(
+    from comments: [TicketComment],
+    pendingQuestionID: UUID?,
+    analystName: String?
+  ) -> [TicketComment] {
+    var displayed: [TicketComment] = []
+
+    for comment in comments where comment.id != pendingQuestionID {
+      var presentedComment = comment
+      var answeredQuestions = comment.answeredQuestions
+
+      if answeredQuestions.isEmpty,
+        comment.authorKind == .owner,
+        let analystName,
+        let questionComment = displayed.last,
+        questionComment.authorKind == .agent,
+        questionComment.authorName == analystName
+      {
+        let questions = TicketRefinementQuestion.parseTicketCommentBody(
+          questionComment.body
+        )
+        answeredQuestions = inferredAnswers(
+          to: questions,
+          from: comment.body,
+          analystName: analystName
+        )
+        if !answeredQuestions.isEmpty {
+          presentedComment = TicketComment(
+            id: comment.id,
+            workItemID: comment.workItemID,
+            authorKind: comment.authorKind,
+            authorName: comment.authorName,
+            body: comment.body,
+            ownerQuestion: comment.ownerQuestion,
+            answeredQuestions: answeredQuestions,
+            createdAt: comment.createdAt
+          )
+        }
+      }
+
+      if
+        !answeredQuestions.isEmpty,
+        let analystName,
+        let questionComment = displayed.last,
+        questionComment.authorKind == .agent,
+        questionComment.authorName == analystName,
+        TicketRefinementQuestion.parseTicketCommentBody(questionComment.body)
+          == answeredQuestions.map(\.question)
+      {
+        displayed.removeLast()
+      }
+
+      displayed.append(presentedComment)
+    }
+
+    return displayed
+  }
+
+  private static func inferredAnswers(
+    to questions: [TicketRefinementQuestion],
+    from ownerCommentBody: String,
+    analystName: String
+  ) -> [TicketAnsweredQuestion] {
+    guard !questions.isEmpty else { return [] }
+    let mention = "@\(analystName) "
+    guard ownerCommentBody.hasPrefix(mention) else { return [] }
+    let response = String(ownerCommentBody.dropFirst(mention.count))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !response.isEmpty else { return [] }
+
+    let answers: [String]
+    if questions.count == 1 {
+      answers = [response]
+    } else {
+      let lines = response.components(separatedBy: .newlines)
+      guard lines.count == questions.count else { return [] }
+      answers = lines.enumerated().compactMap { index, line in
+        let prefix = "\(index + 1). "
+        guard line.hasPrefix(prefix) else { return nil }
+        let answer = String(line.dropFirst(prefix.count))
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        return answer.isEmpty ? nil : answer
+      }
+      guard answers.count == questions.count else { return [] }
+    }
+
+    return zip(questions, answers).map { question, answer in
+      TicketAnsweredQuestion(
+        question: question,
+        selectedOption: question.options.contains(answer) ? answer : nil,
+        answer: answer
+      )
     }
   }
 }
@@ -11276,8 +13274,11 @@ private struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private var displayedComments: [TicketComment] {
-    guard pendingRefinementComment != nil else { return comments }
-    return Array(comments.dropLast())
+    TicketConversationHistory.displayedComments(
+      from: comments,
+      pendingQuestionID: pendingRefinementComment?.id,
+      analystName: businessAnalyst?.name
+    )
   }
 
   private var pendingRefinementComment: TicketComment? {
@@ -11316,7 +13317,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Label("Ticket conversation", systemImage: "bubble.left.and.bubble.right")
+        Label("Conversation", systemImage: "bubble.left.and.bubble.right")
           .font(.headline)
         Spacer()
       }
@@ -11328,14 +13329,21 @@ private struct TicketConversationView<ReviewContent: View>: View {
         ScrollView {
           VStack(alignment: .leading, spacing: 12) {
             ForEach(displayedComments) { comment in
-              TicketCommentBubble(
-                comment: comment,
-                authorProfile: model.profiles.first { $0.name == comment.authorName },
-                mentionedProfile: mentionedProfile(
-                  in: comment.body,
-                  profiles: model.profiles
+              if comment.answeredQuestions.isEmpty {
+                TicketCommentBubble(
+                  comment: comment,
+                  authorProfile: model.profiles.first { $0.name == comment.authorName },
+                  mentionedProfile: mentionedProfile(
+                    in: comment.body,
+                    profiles: model.profiles
+                  )
                 )
-              )
+              } else {
+                answeredRefinementQuestionCards(
+                  comment.answeredQuestions,
+                  createdAt: comment.createdAt
+                )
+              }
             }
 
             if isShowingRefinementChoices {
@@ -11348,9 +13356,11 @@ private struct TicketConversationView<ReviewContent: View>: View {
 
             Color.clear
               .frame(height: 1)
+              .padding(.bottom, 14)
               .id("ticket-conversation-bottom")
           }
-          .padding(14)
+          .padding(.horizontal, 14)
+          .padding(.top, 14)
         }
         .defaultScrollAnchor(.bottom)
         .overlay {
@@ -11411,14 +13421,17 @@ private struct TicketConversationView<ReviewContent: View>: View {
                 ? " has your answers."
                 : " is waiting for your response."
             )
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.primary)
           }
           .font(.caption)
           Spacer()
-          Button("Continue") {
+          Button {
             submitRefinementAnswers()
+          } label: {
+            Label("Continue", systemImage: "wand.and.stars")
           }
           .buttonStyle(.borderedProminent)
+          .tint(.purple)
           .controlSize(.small)
           .disabled(!canSubmitRefinementAnswers)
         }
@@ -11443,7 +13456,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
                   : " is reviewing this ticket…"
                 : " is thinking…"
             )
-              .foregroundStyle(.secondary)
+              .foregroundStyle(.primary)
           }
           .font(.caption)
           Spacer()
@@ -11656,6 +13669,106 @@ private struct TicketConversationView<ReviewContent: View>: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  private func answeredRefinementQuestionCards(
+    _ answeredQuestions: [TicketAnsweredQuestion],
+    createdAt: Date
+  ) -> some View {
+    let tint = businessAnalyst?.role.tint ?? Color.purple
+    return HStack(alignment: .top, spacing: 9) {
+      ZStack {
+        Circle()
+          .fill(tint.opacity(0.12))
+        Image(systemName: "checkmark")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(tint)
+      }
+      .frame(width: 28, height: 28)
+
+      VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 7) {
+          Text("Answered")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(tint)
+          Text(createdAt, style: .time)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+
+        VStack(alignment: .leading, spacing: 9) {
+          ForEach(Array(answeredQuestions.enumerated()), id: \.offset) {
+            index,
+            answered in
+            VStack(alignment: .leading, spacing: 9) {
+              if answeredQuestions.count > 1 {
+                Text("Question \(index + 1) of \(answeredQuestions.count)")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(tint)
+              }
+              Text(answered.question.prompt)
+                .font(.callout.weight(.medium))
+
+              VStack(spacing: 6) {
+                ForEach(answered.question.options, id: \.self) { option in
+                  readOnlyRefinementChoiceRow(
+                    option,
+                    tint: tint,
+                    isSelected: answered.selectedOption == option
+                  )
+                }
+                readOnlyRefinementChoiceRow(
+                  "Other",
+                  tint: tint,
+                  isSelected: answered.selectedOption == nil
+                )
+              }
+
+              if answered.selectedOption == nil {
+                Text(answered.answer)
+                  .font(.callout)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(.horizontal, 10)
+                  .padding(.vertical, 7)
+                  .background(
+                    tint.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 8)
+                  )
+              }
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
+            .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
+          }
+        }
+        .frame(maxWidth: 380, alignment: .leading)
+      }
+      Spacer(minLength: 36)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func readOnlyRefinementChoiceRow(
+    _ label: String,
+    tint: Color,
+    isSelected: Bool
+  ) -> some View {
+    HStack(spacing: 9) {
+      Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+        .font(.caption)
+        .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.65))
+      Text(label)
+        .font(.callout)
+        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .multilineTextAlignment(.leading)
+      Spacer()
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(
+      isSelected ? tint.opacity(0.14) : Color.primary.opacity(0.025),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+  }
+
   private func refinementChoiceRow(
     _ label: String,
     tint: Color,
@@ -11687,24 +13800,33 @@ private struct TicketConversationView<ReviewContent: View>: View {
 
   private func submitRefinementAnswers() {
     guard canSubmitRefinementAnswers else { return }
-    let selectedAnswers = refinementQuestions.enumerated().map { index, _ in
+    let answeredQuestions = refinementQuestions.enumerated().map { index, question in
       let selection = selectedRefinementOptions[index] ?? ""
-      return
+      let answer =
         selection == otherChoiceKey
         ? (otherRefinementAnswers[index] ?? "")
           .trimmingCharacters(in: .whitespacesAndNewlines)
         : selection
+      return TicketAnsweredQuestion(
+        question: question,
+        selectedOption: selection == otherChoiceKey ? nil : selection,
+        answer: answer
+      )
     }
+    let selectedAnswers = answeredQuestions.map(\.answer)
     let answer =
       selectedAnswers.count == 1
       ? selectedAnswers[0]
       : selectedAnswers.enumerated().map { "\($0.offset + 1). \($0.element)" }
         .joined(separator: "\n")
     hasSubmittedRefinementAnswers = true
-    send(ownerMessage: answer)
+    send(ownerMessage: answer, answeredQuestions: answeredQuestions)
   }
 
-  private func send(ownerMessage explicitMessage: String? = nil) {
+  private func send(
+    ownerMessage explicitMessage: String? = nil,
+    answeredQuestions: [TicketAnsweredQuestion] = []
+  ) {
     let ownerMessage = (explicitMessage ?? message)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard let recipient = selectedRecipient, canSend(ownerMessage) else { return }
@@ -11715,7 +13837,11 @@ private struct TicketConversationView<ReviewContent: View>: View {
       respondingRecipientID = recipient.id
     }
     Task {
-      if let comment = await model.appendOwnerComment(workItemID: workItemID, body: body) {
+      if let comment = await model.appendOwnerComment(
+        workItemID: workItemID,
+        body: body,
+        answeredQuestions: answeredQuestions
+      ) {
         comments.append(comment)
         message = ""
         if isAwaitingRefinementAnswer {
@@ -11943,7 +14069,8 @@ private struct NewTicketView: View {
             title: "What do you want to achieve?",
             prompt: "e.g. Let customers search for a location and see its current weather.",
             text: $outcome,
-            minHeight: 138
+            minHeight: 138,
+            focusOnAppear: true
           )
 
           VStack(alignment: .leading, spacing: 7) {
@@ -11951,7 +14078,7 @@ private struct NewTicketView: View {
               .font(.subheadline.weight(.semibold))
             Picker("Epic", selection: $selectedEpicID) {
               Text("No epic").tag(UUID?.none)
-              ForEach(model.epics) { epic in
+              ForEach(model.activeEpics) { epic in
                 Text(epic.title).tag(Optional(epic.id))
               }
             }
@@ -11987,7 +14114,6 @@ private struct NewTicketView: View {
       }
       .padding(20)
     }
-    .background(InitialFocusClearer())
     .frame(width: 660, height: 470)
   }
 
@@ -12038,7 +14164,7 @@ private struct NewEpicView: View {
   private var captureView: some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(model.epics.isEmpty ? "Plan your first outcome" : "New epic")
+        Text(model.activeEpics.isEmpty ? "Plan your first outcome" : "New epic")
           .font(.title.bold())
         Text(
           "Describe the product outcome. The Business Analyst will shape the epic and propose the tickets needed to deliver it."
@@ -12054,7 +14180,8 @@ private struct NewEpicView: View {
           title: "What outcome do you want to deliver?",
           prompt: "e.g. Customers can save locations and quickly compare their forecasts.",
           text: $outcome,
-          minHeight: 150
+          minHeight: 150,
+          focusOnAppear: true
         )
         Label(
           model.canPlanEpic
@@ -12083,7 +14210,6 @@ private struct NewEpicView: View {
       }
       .padding(20)
     }
-    .background(InitialFocusClearer())
     .frame(width: 660, height: 480)
   }
 
@@ -12114,11 +14240,13 @@ private struct EpicDetailView: View {
   let onClose: (() -> Void)?
   @State private var title: String
   @State private var goal: String
-  @State private var criteriaText: String
-  @State private var constraints: String
+  @State private var successCriteria: [EpicDetailItemDraft]
+  @State private var constraints: [EpicDetailItemDraft]
   @State private var status: EpicStatus
   @State private var isSaving = false
   @State private var didStartPlanning = false
+  @State private var selectedTicket: WorkItem?
+  @State private var selectedSuggestion: TicketSuggestion?
 
   init(
     epic: Epic,
@@ -12130,8 +14258,12 @@ private struct EpicDetailView: View {
     self.onClose = onClose
     _title = State(initialValue: epic.title)
     _goal = State(initialValue: epic.goal)
-    _criteriaText = State(initialValue: epic.successCriteria.joined(separator: "\n"))
-    _constraints = State(initialValue: epic.constraints)
+    _successCriteria = State(
+      initialValue: epic.successCriteria.map(EpicDetailItemDraft.init(text:))
+    )
+    _constraints = State(
+      initialValue: Self.itemDrafts(from: epic.constraints)
+    )
     _status = State(initialValue: epic.status)
   }
 
@@ -12167,7 +14299,7 @@ private struct EpicDetailView: View {
                 Text("Status")
                   .font(.subheadline.weight(.semibold))
                 Picker("Status", selection: $status) {
-                  ForEach(EpicStatus.allCases, id: \.self) { status in
+                  ForEach(EpicStatus.allCases.filter { $0 != .archived }, id: \.self) { status in
                     Text(status.title).tag(status)
                   }
                 }
@@ -12182,49 +14314,82 @@ private struct EpicDetailView: View {
               text: $goal,
               minHeight: 110
             )
-            EditableTextArea(
+            EpicDetailItemsEditor(
               title: "Success criteria",
-              prompt: "One measurable outcome per line",
-              text: $criteriaText,
-              minHeight: 130
+              guidance: "Each item should describe one measurable product outcome.",
+              addLabel: "Add criterion",
+              firstItemLabel: "Add the first success criterion",
+              itemPrompt: "Describe a measurable outcome",
+              systemImage: "checklist",
+              items: $successCriteria
             )
-            EditableTextArea(
+            EpicDetailItemsEditor(
               title: "Constraints and context",
-              prompt: "Material constraints only",
-              text: $constraints,
-              minHeight: 100
+              guidance: "Capture each material constraint, assumption, or relevant fact separately.",
+              addLabel: "Add item",
+              firstItemLabel: "Add the first constraint or context item",
+              itemPrompt: "Describe a constraint, assumption, or relevant fact",
+              systemImage: "slider.horizontal.3",
+              items: $constraints
+            )
+            EpicTicketsSection(
+              epic: epic,
+              tickets: activeEpicTickets,
+              archivedCount: archivedEpicTicketCount,
+              suggestionBatch: epicSuggestionBatch,
+              isGeneratingSuggestions: conversation?.isGeneratingPlan == true,
+              onOpen: { selectedTicket = $0 },
+              onOpenSuggestion: { selectedSuggestion = $0 }
             )
           }
           .padding(22)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         Divider()
 
-        EpicPlanningConversationPanel(epic: epic, onReviewProposals: close)
+        EpicPlanningConversationPanel(epic: epic)
           .frame(width: 430)
+          .frame(maxHeight: .infinity)
       }
+      .frame(maxHeight: .infinity)
+      .clipped()
 
       Divider()
       HStack {
-        Text(
-          conversation?.isComplete == true
-            ? "The proposed tickets are ready to review in the backlog."
-            : "Resolve the outcome with the Business Analyst before tickets are proposed."
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        Text(footerStatus)
+          .font(.caption)
+          .foregroundStyle(.secondary)
         Spacer()
-        Button("Cancel", action: close)
-        Button("Save changes") { save() }
+        if isReadyToComplete {
+          Button {
+            completeEpic()
+          } label: {
+            Label(
+              isSaving ? "Completing…" : "Complete epic",
+              systemImage: "checkmark.circle.fill"
+            )
+          }
           .buttonStyle(.borderedProminent)
           .disabled(!canSave || isSaving)
+          .help("Confirm that this epic's outcome has been delivered")
+        } else if hasUnsavedChanges {
+          Button("Save") { save() }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canSave || isSaving)
+        } else if !proposedEpicSuggestions.isEmpty {
+          Button("Review tickets in backlog") {
+            close()
+          }
+          .buttonStyle(.borderedProminent)
+        }
       }
       .padding(18)
     }
     .background(InitialFocusClearer())
     .frame(width: 1_080, height: 740)
-    .task {
+    .task(id: epic.id) {
+      await model.restoreEpicPlanningConversation(for: epic)
       guard startPlanningOnAppear, !didStartPlanning else { return }
       didStartPlanning = true
       if conversation == nil, model.canPlanEpic {
@@ -12234,6 +14399,25 @@ private struct EpicDetailView: View {
     .onChange(of: conversation?.isComplete == true) { _, isComplete in
       guard isComplete else { return }
       syncFromLatestEpic()
+    }
+    .sheet(item: $selectedTicket) { item in
+      TicketDetailView(
+        item: item,
+        dependsOnWorkItemIDs: Set(
+          model.dependencies
+            .filter { $0.workItemID == item.id }
+            .map(\.dependsOnWorkItemID)
+        )
+      )
+    }
+    .sheet(item: $selectedSuggestion) { suggestion in
+      if let batch = epicSuggestionBatch {
+        TicketSuggestionDetailView(
+          suggestion: suggestion,
+          batch: batch,
+          onClose: { selectedSuggestion = nil }
+        )
+      }
     }
   }
 
@@ -12247,6 +14431,77 @@ private struct EpicDetailView: View {
       && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  private var latestEpic: Epic {
+    model.epics.first(where: { $0.id == epic.id }) ?? epic
+  }
+
+  private var hasUnsavedChanges: Bool {
+    title != latestEpic.title
+      || goal != latestEpic.goal
+      || criteria != latestEpic.successCriteria
+      || constraintsText != latestEpic.constraints
+      || status != latestEpic.status
+  }
+
+  private var criteria: [String] {
+    successCriteria
+      .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
+  private var constraintsText: String {
+    constraints
+      .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n")
+  }
+
+  private var epicSuggestionBatch: TicketSuggestionBatch? {
+    guard model.suggestionBatch?.session.epicID == epic.id else { return nil }
+    return model.suggestionBatch
+  }
+
+  private var proposedEpicSuggestions: [TicketSuggestion] {
+    epicSuggestionBatch?.suggestions
+      .filter { $0.status == .proposed }
+      .sorted { $0.position < $1.position } ?? []
+  }
+
+  private var isReadyToComplete: Bool {
+    status != .complete
+      && !activeEpicTickets.isEmpty
+      && activeEpicTickets.allSatisfy { $0.state == .released }
+  }
+
+  private var footerStatus: String {
+    if isReadyToComplete {
+      return "All active tickets are delivered. Confirm that the epic outcome is complete."
+    }
+    if conversation?.isGeneratingPlan == true {
+      return "The Business Analyst is preparing the proposed ticket plan."
+    }
+    let count = proposedEpicSuggestions.count
+    if count > 0 {
+      return "\(count) proposed \(count == 1 ? "ticket needs" : "tickets need") review in Tickets."
+    }
+    if conversation?.isComplete == true {
+      return "The epic plan is up to date."
+    }
+    return "Resolve the outcome with the Business Analyst before tickets are proposed."
+  }
+
+  private var activeEpicTickets: [WorkItem] {
+    model.workItems.filter {
+      $0.epicID == epic.id && $0.state != .cancelled
+    }
+  }
+
+  private var archivedEpicTicketCount: Int {
+    model.workItems.filter {
+      $0.epicID == epic.id && $0.state == .cancelled
+    }.count
+  }
+
   private func close() {
     if let onClose {
       onClose()
@@ -12255,39 +14510,332 @@ private struct EpicDetailView: View {
     }
   }
 
-  private func save() {
+  private func save(status statusOverride: EpicStatus? = nil) {
     guard canSave else { return }
+    let savedStatus = statusOverride ?? status
     isSaving = true
     Task {
-      _ = await model.updateEpic(
+      let updated = await model.updateEpic(
         epic,
         title: title,
         goal: goal,
-        successCriteria: criteriaText
-          .split(separator: "\n")
-          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .filter { !$0.isEmpty },
-        constraints: constraints,
-        status: status
+        successCriteria: criteria,
+        constraints: constraintsText,
+        status: savedStatus
       )
       isSaving = false
+      if updated != nil {
+        close()
+      }
     }
+  }
+
+  private func completeEpic() {
+    guard isReadyToComplete else { return }
+    save(status: .complete)
   }
 
   private func syncFromLatestEpic() {
     guard let latest = model.epics.first(where: { $0.id == epic.id }) else { return }
     title = latest.title
     goal = latest.goal
-    criteriaText = latest.successCriteria.joined(separator: "\n")
-    constraints = latest.constraints
+    successCriteria = latest.successCriteria.map(EpicDetailItemDraft.init(text:))
+    constraints = Self.itemDrafts(from: latest.constraints)
     status = latest.status
+  }
+
+  private static func itemDrafts(from text: String) -> [EpicDetailItemDraft] {
+    text
+      .split(separator: "\n")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+      .map(EpicDetailItemDraft.init(text:))
+  }
+
+}
+
+private struct EpicTicketsSection: View {
+  @EnvironmentObject private var model: AppModel
+  let epic: Epic
+  let tickets: [WorkItem]
+  let archivedCount: Int
+  let suggestionBatch: TicketSuggestionBatch?
+  let isGeneratingSuggestions: Bool
+  let onOpen: (WorkItem) -> Void
+  let onOpenSuggestion: (TicketSuggestion) -> Void
+
+  private var deliveredCount: Int {
+    tickets.filter { $0.state == .released }.count
+  }
+
+  private var allDelivered: Bool {
+    !tickets.isEmpty && deliveredCount == tickets.count
+  }
+
+  private var proposedSuggestions: [TicketSuggestion] {
+    suggestionBatch?.suggestions
+      .filter { $0.status == .proposed }
+      .sorted { $0.position < $1.position } ?? []
+  }
+
+  private var visibleTicketCount: Int {
+    tickets.count + proposedSuggestions.count
+  }
+
+  private let statusColumnWidth: CGFloat = 108
+  private let ownerColumnWidth: CGFloat = 128
+  private let tableRowHeight = PlanningTicketTableMetrics.rowHeight
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 7) {
+        Text("Tickets")
+          .font(.headline)
+        Text(visibleTicketCount.formatted())
+          .font(.caption2.weight(.semibold).monospacedDigit())
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 3)
+          .background(.quaternary, in: Capsule())
+        if archivedCount > 0 {
+          Text("\(archivedCount) archived")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        if allDelivered {
+          Label(
+            epic.status == .complete ? "Outcome confirmed" : "Ready to complete",
+            systemImage: "checkmark.circle.fill"
+          )
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.green)
+        } else if !tickets.isEmpty {
+          Text("\(deliveredCount) of \(tickets.count) delivered")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      VStack(spacing: 0) {
+        HStack(spacing: 0) {
+          Text("Ticket")
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Text("Status")
+            .padding(.horizontal, 8)
+            .frame(width: statusColumnWidth, alignment: .leading)
+          Text("Owner")
+            .padding(.horizontal, 8)
+            .frame(width: ownerColumnWidth, alignment: .leading)
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .frame(height: 32)
+
+        Divider()
+
+        if isGeneratingSuggestions && proposedSuggestions.isEmpty {
+          ForEach(0..<3, id: \.self) { index in
+            proposedTicketPlaceholder(index: index)
+            if index < 2 {
+              Divider()
+            }
+          }
+        } else if tickets.isEmpty && proposedSuggestions.isEmpty {
+          VStack(spacing: 5) {
+            Text(archivedCount > 0 ? "No active tickets" : "No tickets yet")
+              .font(.subheadline.weight(.medium))
+            Text(
+              archivedCount > 0
+                ? "Archived tickets no longer count towards this epic."
+                : "The Business Analyst can propose the work needed for this outcome."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          }
+          .frame(maxWidth: .infinity, minHeight: 74)
+        } else {
+          ForEach(Array(proposedSuggestions.enumerated()), id: \.element.id) {
+            index,
+            suggestion in
+            proposedTicketRow(suggestion)
+            if index < proposedSuggestions.count - 1 || !tickets.isEmpty {
+              Divider()
+            }
+          }
+
+          ForEach(Array(tickets.enumerated()), id: \.element.id) { index, ticket in
+            ticketRow(ticket)
+            if index < tickets.count - 1 {
+              Divider()
+            }
+          }
+        }
+      }
+      .background(Color.secondary.opacity(0.035))
+      .clipShape(RoundedRectangle(cornerRadius: 10))
+      .overlay {
+        RoundedRectangle(cornerRadius: 10)
+          .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+      }
+
+      if allDelivered, epic.status != .complete {
+        Text(
+          "All active tickets are delivered. Confirm the product outcome, then set this epic to Complete."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  private func proposedTicketPlaceholder(index: Int) -> some View {
+    HStack(spacing: 0) {
+      HStack(spacing: 8) {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(.purple)
+        VStack(alignment: .leading, spacing: 5) {
+          RoundedRectangle(cornerRadius: 3)
+            .fill(.purple.opacity(0.14))
+            .frame(width: index == 1 ? 150 : 190, height: 9)
+          RoundedRectangle(cornerRadius: 3)
+            .fill(.quaternary)
+            .frame(width: index == 2 ? 100 : 130, height: 7)
+        }
+      }
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Text("Preparing")
+        .padding(.horizontal, 8)
+        .foregroundStyle(.purple)
+        .frame(width: statusColumnWidth, alignment: .leading)
+
+      Text("Business Analyst")
+        .padding(.horizontal, 8)
+        .foregroundStyle(.secondary)
+        .frame(width: ownerColumnWidth, alignment: .leading)
+    }
+    .font(.caption)
+    .frame(minHeight: tableRowHeight)
+  }
+
+  private func proposedTicketRow(_ suggestion: TicketSuggestion) -> some View {
+    HStack(spacing: 0) {
+      HStack(spacing: 8) {
+        Image(systemName: suggestion.type.symbolName)
+          .foregroundStyle(suggestion.type.tint)
+          .frame(width: 16)
+        Text(suggestion.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(.primary)
+          .lineLimit(2)
+          .layoutPriority(1)
+      }
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Label("Proposed", systemImage: "wand.and.stars")
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.purple)
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(width: statusColumnWidth, alignment: .leading)
+
+      Label(suggestion.suggestedRole.title, systemImage: suggestion.suggestedRole.symbolName)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(suggestion.suggestedRole.tint)
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(width: ownerColumnWidth, alignment: .leading)
+    }
+    .frame(minHeight: tableRowHeight)
+    .background(ProposedTicketVisualStyle.surface)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      onOpenSuggestion(suggestion)
+    }
+    .help("Open suggested ticket details")
+  }
+
+  private func ticketRow(_ ticket: WorkItem) -> some View {
+    HStack(spacing: 0) {
+      HStack(spacing: 8) {
+        Image(systemName: ticket.type.symbolName)
+          .foregroundStyle(ticket.type.tint)
+          .frame(width: 16)
+        Text(ticket.title)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(.primary)
+          .lineLimit(2)
+          .layoutPriority(1)
+      }
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Text(statusTitle(for: ticket))
+        .font(.caption.weight(.medium))
+        .foregroundStyle(statusColor(for: ticket))
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .frame(width: statusColumnWidth, alignment: .leading)
+
+      ownerLabel(for: ticket)
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .frame(width: ownerColumnWidth, alignment: .leading)
+    }
+    .frame(minHeight: tableRowHeight)
+    .contentShape(Rectangle())
+    .onTapGesture {
+      onOpen(ticket)
+    }
+  }
+
+  private func owner(for ticket: WorkItem) -> AgentProfile? {
+    guard let ownerID = ticket.ownerProfileID else { return nil }
+    return model.profiles.first { $0.id == ownerID }
+  }
+
+  @ViewBuilder
+  private func ownerLabel(for ticket: WorkItem) -> some View {
+    if let owner = owner(for: ticket) {
+      Label(owner.name, systemImage: owner.role.symbolName)
+        .foregroundStyle(owner.role.tint)
+        .lineLimit(1)
+    } else {
+      Text("Unassigned")
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private func statusTitle(for ticket: WorkItem) -> String {
+    switch ticket.state {
+    case .queued: "Ready to Pick"
+    case .running: "In Progress"
+    case .integrating, .verifying, .readyToRelease: "In Review"
+    case .acceptance: "Ready for Demo"
+    case .released: "Done"
+    default: ticket.state.title
+    }
+  }
+
+  private func statusColor(for ticket: WorkItem) -> Color {
+    switch ticket.state {
+    case .released: .green
+    case .running: .blue
+    case .integrating, .verifying, .readyToRelease: .indigo
+    case .acceptance: .purple
+    default: .secondary
+    }
   }
 }
 
 private struct EpicPlanningConversationPanel: View {
   @EnvironmentObject private var model: AppModel
   let epic: Epic
-  let onReviewProposals: () -> Void
   @State private var selectedOptions: [Int: String] = [:]
   @State private var otherAnswers: [Int: String] = [:]
 
@@ -12309,7 +14857,7 @@ private struct EpicPlanningConversationPanel: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Label("Epic conversation", systemImage: "bubble.left.and.bubble.right")
+        Label("Conversation", systemImage: "bubble.left.and.bubble.right")
           .font(.headline)
         Spacer()
       }
@@ -12321,15 +14869,23 @@ private struct EpicPlanningConversationPanel: View {
           VStack(alignment: .leading, spacing: 12) {
             if let conversation {
               ForEach(conversation.messages) { message in
-                messageRow(message)
+                if message.answeredQuestions.isEmpty {
+                  messageRow(message)
+                } else {
+                  answeredQuestionCards(message.answeredQuestions)
+                }
               }
               if !conversation.questions.isEmpty {
                 questionCards(conversation.questions)
               }
             }
-            Color.clear.frame(height: 1).id("epic-conversation-bottom")
+            Color.clear
+              .frame(height: 1)
+              .padding(.bottom, 14)
+              .id("epic-conversation-bottom")
           }
-          .padding(14)
+          .padding(.horizontal, 14)
+          .padding(.top, 14)
         }
         .defaultScrollAnchor(.bottom)
         .overlay {
@@ -12357,10 +14913,13 @@ private struct EpicPlanningConversationPanel: View {
           }
         }
       }
+      .frame(maxHeight: .infinity)
 
       Divider()
       conversationStatus
     }
+    .frame(maxHeight: .infinity)
+    .clipped()
     .onChange(of: conversation?.questions ?? []) { _, _ in
       selectedOptions.removeAll()
       otherAnswers.removeAll()
@@ -12379,7 +14938,7 @@ private struct EpicPlanningConversationPanel: View {
               : "\(analyst?.name ?? "Business Analyst") is thinking…"
           )
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.primary)
           Spacer()
           Button("Stop") { model.cancelEpicPlanning() }
             .controlSize(.mini)
@@ -12387,31 +14946,21 @@ private struct EpicPlanningConversationPanel: View {
         .padding(.horizontal, 14)
         .frame(height: 42)
         .background(tint.opacity(0.075))
-      } else if conversation.isComplete {
-        HStack(spacing: 8) {
-          Image(systemName: "checkmark.circle.fill")
-            .foregroundStyle(.green)
-          Text("Proposed tickets are ready.")
-            .font(.caption)
-          Spacer()
-          Button("Review in backlog") {
-            model.backlogFocusEpicID = epic.id
-            onReviewProposals()
-          }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.small)
-        }
-        .padding(14)
       } else if !conversation.questions.isEmpty {
         HStack {
           Text("\(analyst?.name ?? "Business Analyst") is waiting for your response.")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.primary)
           Spacer()
-          Button("Continue") { submitAnswers(conversation.questions) }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(!canSubmit(conversation.questions))
+          Button {
+            submitAnswers(conversation.questions)
+          } label: {
+            Label("Continue", systemImage: "wand.and.stars")
+          }
+          .buttonStyle(.borderedProminent)
+          .tint(.purple)
+          .controlSize(.small)
+          .disabled(!canSubmit(conversation.questions))
         }
         .padding(14)
         .background(tint.opacity(0.075))
@@ -12420,11 +14969,13 @@ private struct EpicPlanningConversationPanel: View {
           Label(error, systemImage: "exclamationmark.triangle")
             .font(.caption)
             .foregroundStyle(.orange)
-          Button("Try again") {
-            model.clearEpicPlanningConversation(for: epic.id)
-            model.planEpic(epic)
+          Button {
+            model.retryEpicPlanning(epic)
+          } label: {
+            Label("Try again", systemImage: "wand.and.stars")
           }
           .buttonStyle(.borderedProminent)
+          .tint(.purple)
           .controlSize(.small)
         }
         .padding(14)
@@ -12514,6 +15065,75 @@ private struct EpicPlanningConversationPanel: View {
     }
   }
 
+  private func answeredQuestionCards(
+    _ answeredQuestions: [EpicPlanningAnsweredQuestion]
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(Array(answeredQuestions.enumerated()), id: \.offset) { index, answered in
+        VStack(alignment: .leading, spacing: 9) {
+          HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+            Text(
+              answeredQuestions.count > 1
+                ? "Question \(index + 1) of \(answeredQuestions.count)"
+                : "Answered"
+            )
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+
+          Text(answered.question.prompt)
+            .font(.callout.weight(.medium))
+
+          VStack(spacing: 6) {
+            ForEach(answered.question.options, id: \.self) { option in
+              readOnlyChoiceRow(
+                option,
+                selected: answered.selectedOption == option
+              )
+            }
+            readOnlyChoiceRow(
+              "Other",
+              selected: answered.selectedOption == nil
+            )
+          }
+
+          if answered.selectedOption == nil {
+            Text(answered.answer)
+              .font(.callout)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 7)
+              .background(
+                tint.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 8)
+              )
+          }
+        }
+        .padding(11)
+        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
+      }
+    }
+  }
+
+  private func readOnlyChoiceRow(_ label: String, selected: Bool) -> some View {
+    HStack(spacing: 9) {
+      Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+        .font(.caption)
+        .foregroundStyle(selected ? tint : Color.secondary.opacity(0.65))
+      Text(label)
+        .font(.callout)
+        .foregroundStyle(selected ? Color.primary : Color.secondary)
+      Spacer()
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(
+      selected ? tint.opacity(0.14) : Color.primary.opacity(0.025),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+  }
+
   private func choiceRow(
     _ label: String,
     selected: Bool,
@@ -12552,15 +15172,26 @@ private struct EpicPlanningConversationPanel: View {
 
   private func submitAnswers(_ questions: [TicketRefinementQuestion]) {
     guard canSubmit(questions) else { return }
-    let answers = questions.enumerated().map { index, question in
+    let answeredQuestions = questions.enumerated().map { index, question in
       let selection = selectedOptions[index] ?? ""
       let answer =
         selection == otherChoice
         ? (otherAnswers[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         : selection
-      return "\(question.prompt)\nAnswer: \(answer)"
+      return EpicPlanningAnsweredQuestion(
+        question: question,
+        selectedOption: selection == otherChoice ? nil : selection,
+        answer: answer
+      )
     }
-    model.continueEpicPlanning(epic, answers: answers)
+    let answers = answeredQuestions.map {
+      "\($0.question.prompt)\nAnswer: \($0.answer)"
+    }
+    model.continueEpicPlanning(
+      epic,
+      answers: answers,
+      answeredQuestions: answeredQuestions
+    )
   }
 }
 
@@ -12615,19 +15246,23 @@ private struct EditableTextArea: View {
   @Binding var text: String
   let statusText: String?
   let minHeight: CGFloat
+  let focusOnAppear: Bool
+  @FocusState private var isFocused: Bool
 
   init(
     title: String,
     prompt: String,
     text: Binding<String>,
     statusText: String? = nil,
-    minHeight: CGFloat
+    minHeight: CGFloat,
+    focusOnAppear: Bool = false
   ) {
     self.title = title
     self.prompt = prompt
     _text = text
     self.statusText = statusText
     self.minHeight = minHeight
+    self.focusOnAppear = focusOnAppear
   }
 
   var body: some View {
@@ -12654,12 +15289,19 @@ private struct EditableTextArea: View {
           .multilineTextAlignment(.leading)
           .font(.body)
           .padding(8)
+          .focused($isFocused)
       }
       .frame(minHeight: minHeight)
       .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
       .overlay {
         RoundedRectangle(cornerRadius: 8)
           .stroke(.separator.opacity(0.7), lineWidth: 1)
+      }
+    }
+    .onAppear {
+      guard focusOnAppear else { return }
+      DispatchQueue.main.async {
+        isFocused = true
       }
     }
   }

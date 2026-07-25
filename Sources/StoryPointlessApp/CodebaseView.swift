@@ -110,19 +110,6 @@ struct CodebaseView: View {
           .foregroundStyle(.secondary)
       }
       Spacer()
-      Button {
-        Task { await refresh(selectInitialCommit: false) }
-      } label: {
-        if isRefreshing {
-          ProgressView()
-            .controlSize(.small)
-        } else {
-          Label("Reload", systemImage: "arrow.clockwise")
-        }
-      }
-      .buttonStyle(.bordered)
-      .disabled(isRefreshing)
-      .help("Reload branches, commits, and working-copy changes")
     }
     .padding(.horizontal, 28)
     .padding(.vertical, 20)

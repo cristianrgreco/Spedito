@@ -21,10 +21,19 @@ public enum CodexTicketSuggestionGenerator {
     Propose backend work only when it is actually justified; do not invent it merely because it is a
     familiar architecture layer. The Tech Lead reviews delivery and dependency decisions. Identify genuine
     dependency edges without serialising work that can proceed with mocks or agreed contracts.
-    Do not propose a conditional implementation ticket as committed scope when a research or product
-    decision may determine that no implementation is needed. Propose the decision ticket first; its
-    outcome can create follow-up work later. Only propose the implementation now when every credible
-    decision outcome still requires it, and state the stable outcome rather than conditional wording.
+    Do not propose a conditional implementation ticket as committed scope when an unresolved product
+    decision may determine that no implementation is needed. Consequential product choices belong in
+    refinement, not in a ticket whose purpose is merely to ask the owner later. Create research or
+    discovery work only when the Product Owner requested it or explicitly agreed that external evidence
+    is needed before a responsible decision can be made. Such work must have a concrete comparison,
+    recommendation, or decision-enabling output. Otherwise propose tickets that deliver the agreed
+    outcome, not tickets that discover what the outcome should be. Desired constraints alone do not select
+    a real external source when current evidence about candidates, terms, suitability, or operation is
+    still needed. When the Product Owner authorises the Business Analyst or team to identify, compare,
+    recommend, or choose such a source, treat that as authorised Business Analyst research and give it a
+    separate ticket. Do not bury source selection inside design or implementation. Only assign selection
+    to an implementer when the Product Owner explicitly chose implementation-time selection without a
+    separate recommendation.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
     Do not modify files, use tools, browse the web, or make product decisions on the owner's behalf. Return only
@@ -89,12 +98,13 @@ public enum CodexTicketSuggestionGenerator {
       now makes them necessary, and explicitly explain what changed):
       \(rejectedScope)
 
-      Use short references such as T1, T2, and T3. Return between 1 and 24 tickets; a typical new product
-      will need 5 to 15, but scope—not persona count—determines the result. Split work where it creates an
-      independently understandable, reviewable, or parallelizable outcome; do not manufacture tiny tickets
-      to reach a count. Include testable acceptance criteria. Use dependsOn only for a real prerequisite.
-      Every dependsOn entry must reference either another ticket in this same response or an exact active
-      backlog key shown above. Use an existing key when the proposed work genuinely relies on that ticket.
+      Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets; a typical
+      new product will need 5 to 15, but scope—not persona count—determines the result. Split work where it
+      creates an independently understandable, reviewable, or parallelizable outcome; do not manufacture
+      tiny tickets to reach a count. Include testable acceptance criteria. Use dependsOn only for a real
+      prerequisite. Every dependsOn entry must reference either another ticket in this same response or an
+      exact active backlog key shown above. Use an existing key when the proposed work genuinely relies on
+      that ticket.
       An implementation ticket may depend on an agreed UX direction and data contract while still noting
       that mocked data can let implementation begin. Research or provider selection should be a Business
       Analyst ticket, not a conclusion silently embedded in an implementation ticket.
@@ -142,14 +152,31 @@ public enum CodexTicketSuggestionGenerator {
 
       Improve the epic title and goal so they are concise, outcome-oriented, and understandable to a
       Product Owner. Add measurable success criteria and retain only material constraints supported by
-      the supplied context. Do not invent product decisions; where a material decision is required,
-      create a Business Analyst ticket that can ask the owner.
+      the supplied context. Use the decisions resolved in the preceding clarification conversation. Do
+      not invent product decisions or disguise an unresolved Product Owner choice as a backlog ticket.
+      A research or discovery ticket is valid only when the Product Owner explicitly requested research
+      or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
+      decision-enabling output. An instruction for the Business Analyst or team to identify, compare,
+      recommend, or choose a real external source using current evidence is explicit research
+      authorisation, even when the Product Owner has already supplied the selection criteria. Create a
+      separate Business Analyst ticket for that work and do not bury source selection inside a UX or
+      implementation ticket. Only embed selection in implementation when the Product Owner explicitly
+      chose implementation-time selection without a separate recommendation. Research is a prerequisite,
+      not a substitute for delivery: when the epic's success criteria also describe a product change,
+      include the downstream experience-design, implementation, and verification work needed to achieve
+      it. Those tickets may depend on the approved research output without guessing its conclusion.
+      Provider-independent experience design may proceed in parallel, while integration should depend on
+      both the approved recommendation and any required design contract. Never stop at a research ticket
+      when the agreed outcome includes user-visible behaviour. Otherwise create tickets that deliver the
+      agreed outcome.
 
-      Use short references such as T1, T2, and T3. Return between 1 and 24 tickets. Split work where it
-      creates an independently understandable, reviewable, or parallelizable outcome. Include testable
-      acceptance criteria, genuine dependencies, suitable ticket types, priorities, and future owners.
-      Every dependsOn entry must reference either another ticket in this response or an exact active
-      ticket key shown above.
+      Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets. Split work
+      where it creates an independently understandable, reviewable, or parallelizable outcome. Include
+      testable acceptance criteria, genuine dependencies, suitable ticket types, priorities, and future
+      owners. Before returning, trace every epic success criterion to at least one delivery ticket and make
+      sure the dependency graph reaches the agreed product outcome rather than ending at analysis. Every
+      dependsOn entry must reference either another ticket in this response or an exact active ticket key
+      shown above.
       """
   }
 
@@ -289,6 +316,11 @@ public enum CodexTicketSuggestionGenerator {
       throw TicketSuggestionGenerationError.invalidResponse("Ticket references must be unique.")
     }
     let referenceSet = Set(references)
+    let proposalReferenceByGeneratedReference = Dictionary(
+      uniqueKeysWithValues: references.enumerated().map { index, reference in
+        (reference, "S\(index + 1)")
+      }
+    )
     let activeExistingItems = existingItems.filter { $0.state != .cancelled }
     let existingItemByReference = Dictionary(
       activeExistingItems.map { (normalizedReference($0.key), $0) },
@@ -340,8 +372,13 @@ public enum CodexTicketSuggestionGenerator {
       guard !dependencyReferences.contains(reference) else {
         throw TicketSuggestionGenerationError.invalidResponse("A ticket cannot depend on itself.")
       }
+      guard let proposalReference = proposalReferenceByGeneratedReference[reference] else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "Every proposed ticket needs a temporary reference."
+        )
+      }
       return TicketSuggestionDraft(
-        reference: reference,
+        reference: proposalReference,
         title: suggestion.title,
         type: type,
         body: suggestion.body,
@@ -350,7 +387,11 @@ public enum CodexTicketSuggestionGenerator {
         priority: priority,
         rationale: suggestion.rationale,
         dependsOnReferences: Array(
-          Set(dependencyReferences.filter(referenceSet.contains))
+          Set(
+            dependencyReferences.compactMap {
+              proposalReferenceByGeneratedReference[$0]
+            }
+          )
         ).sorted(),
         dependsOnExistingWorkItemKeys: Array(
           Set(
@@ -384,12 +425,30 @@ public enum CodexTicketSuggestionGenerator {
         "The epic needs a title, goal, and at least one success criterion."
       )
     }
+    let ticketSuggestions = try decode(text, existingItems: existingItems)
+    let decisionOutputTerms = [
+      "analysis", "assessment", "comparison", "decision", "evaluate", "evaluation",
+      "findings", "options", "recommend", "research", "select", "selection",
+    ]
+    let hasDeliveryCriterion = criteria.contains { criterion in
+      let normalized = criterion.lowercased()
+      return !decisionOutputTerms.contains { normalized.contains($0) }
+    }
+    guard
+      !hasDeliveryCriterion
+        || ticketSuggestions.contains(where: { $0.suggestedRole != .businessAnalyst })
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse(
+        "The epic includes a product-delivery outcome, but its plan stops at Business Analyst work. "
+          + "Include the dependent design, implementation, or verification tickets needed to deliver it."
+      )
+    }
     return EpicPlanDraft(
       title: title,
       goal: goal,
       successCriteria: criteria,
       constraints: response.epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
-      ticketSuggestions: try decode(text, existingItems: existingItems)
+      ticketSuggestions: ticketSuggestions
     )
   }
 

@@ -181,7 +181,8 @@ struct KnowledgeBaseView: View {
                 page: page,
                 pages: model.knowledgePages,
                 changedPageIDs: changedPageIDs,
-                selectedPageID: $selectedPageID
+                selectedPageID: $selectedPageID,
+                depth: 0
               )
             }
           } else if filteredPages.isEmpty {
@@ -786,6 +787,7 @@ private struct KnowledgeTreeBranch: View {
   let pages: [KnowledgePage]
   let changedPageIDs: Set<UUID>
   @Binding var selectedPageID: UUID?
+  let depth: Int
   @State private var isExpanded = true
 
   private var children: [KnowledgePage] {
@@ -799,36 +801,54 @@ private struct KnowledgeTreeBranch: View {
   }
 
   var body: some View {
-    if children.isEmpty {
-      KnowledgeTreeRow(
-        page: page,
-        isSelected: selectedPageID == page.id,
-        isChanged: changedPageIDs.contains(page.id),
-        containsChangedPage: false
-      ) {
-        selectedPageID = page.id
+    VStack(alignment: .leading, spacing: 2) {
+      HStack(spacing: 2) {
+        if children.isEmpty {
+          Color.clear
+            .frame(width: 16, height: 16)
+        } else {
+          Button(action: toggleExpanded) {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(.secondary)
+              .rotationEffect(.degrees(isExpanded ? 90 : 0))
+              .frame(width: 16, height: 16)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .help(isExpanded ? "Collapse section" : "Expand section")
+        }
+
+        KnowledgeTreeRow(
+          page: page,
+          isSelected: selectedPageID == page.id,
+          isChanged: changedPageIDs.contains(page.id),
+          containsChangedPage: children.isEmpty ? false : containsChangedPage
+        ) {
+          selectedPageID = page.id
+        }
       }
-    } else {
-      DisclosureGroup(isExpanded: $isExpanded) {
+      .padding(.leading, CGFloat(depth) * 13)
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      if isExpanded {
         ForEach(children) { child in
           KnowledgeTreeBranch(
             page: child,
             pages: pages,
             changedPageIDs: changedPageIDs,
-            selectedPageID: $selectedPageID
+            selectedPageID: $selectedPageID,
+            depth: depth + 1
           )
-          .padding(.leading, 13)
-        }
-      } label: {
-        KnowledgeTreeRow(
-          page: page,
-          isSelected: selectedPageID == page.id,
-          isChanged: changedPageIDs.contains(page.id),
-          containsChangedPage: containsChangedPage
-        ) {
-          selectedPageID = page.id
         }
       }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func toggleExpanded() {
+    withAnimation(.easeInOut(duration: 0.12)) {
+      isExpanded.toggle()
     }
   }
 
@@ -887,6 +907,7 @@ private struct KnowledgeTreeRow: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

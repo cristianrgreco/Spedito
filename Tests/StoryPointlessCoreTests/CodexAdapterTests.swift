@@ -349,9 +349,10 @@ struct CodexAdapterTests {
       """#
     let suggestions = try CodexTicketSuggestionGenerator.decode(response)
     #expect(suggestions.count == 3)
+    #expect(suggestions.map(\.reference) == ["S1", "S2", "S3"])
     #expect(suggestions.map(\.type) == [.task, .task, .story])
     #expect(suggestions[2].suggestedRole == .implementer)
-    #expect(suggestions[2].dependsOnReferences == ["T1", "T2"])
+    #expect(suggestions[2].dependsOnReferences == ["S1", "S2"])
 
     let looselyFormatted = #"""
       {"suggestions":[
@@ -360,8 +361,8 @@ struct CodexAdapterTests {
       ]}
       """#
     let normalized = try CodexTicketSuggestionGenerator.decode(looselyFormatted)
-    #expect(normalized.map(\.reference) == ["T1", "T2"])
-    #expect(normalized[1].dependsOnReferences == ["T1"])
+    #expect(normalized.map(\.reference) == ["S1", "S2"])
+    #expect(normalized[1].dependsOnReferences == ["S1"])
 
     let minimal = #"{"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[]}]}"#
     #expect(try CodexTicketSuggestionGenerator.decode(minimal).count == 1)
@@ -446,7 +447,74 @@ struct CodexAdapterTests {
     #expect(plan.title == "Saved locations")
     #expect(plan.successCriteria == ["A saved location can be opened again"])
     #expect(plan.ticketSuggestions.count == 2)
-    #expect(plan.ticketSuggestions[1].dependsOnReferences == ["T1"])
+    #expect(plan.ticketSuggestions.map(\.reference) == ["S1", "S2"])
+    #expect(plan.ticketSuggestions[1].dependsOnReferences == ["S1"])
+  }
+
+  @Test("Epic planning rejects analysis-only plans for delivery outcomes")
+  func epicPlanningRequiresDeliveryPath() throws {
+    let response = #"""
+      {
+        "epic": {
+          "title": "Forecast jokes",
+          "goal": "Customers see an appropriate joke with each forecast.",
+          "successCriteria": [
+            "Each weather result displays a joke when the provider responds."
+          ],
+          "constraints": "Use an approved public provider."
+        },
+        "suggestions": [
+          {
+            "reference": "S1",
+            "title": "Recommend a suitable joke provider",
+            "type": "task",
+            "body": "Compare public providers and recommend one.",
+            "acceptanceCriteria": ["The Product Owner can approve one provider"],
+            "role": "business_analyst",
+            "priority": "high",
+            "rationale": "Delivery needs an approved provider.",
+            "dependsOn": []
+          }
+        ]
+      }
+      """#
+
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    }
+  }
+
+  @Test("Epic planning permits a genuinely decision-only research outcome")
+  func epicPlanningPermitsDecisionOnlyOutcome() throws {
+    let response = #"""
+      {
+        "epic": {
+          "title": "Select a joke provider",
+          "goal": "Choose a safe provider before committing delivery scope.",
+          "successCriteria": [
+            "An approved recommendation compares terms, reliability, and maintenance ownership."
+          ],
+          "constraints": "Do not implement the integration yet."
+        },
+        "suggestions": [
+          {
+            "reference": "S1",
+            "title": "Recommend a suitable joke provider",
+            "type": "task",
+            "body": "Compare public providers and recommend one.",
+            "acceptanceCriteria": ["The Product Owner can approve one provider"],
+            "role": "business_analyst",
+            "priority": "high",
+            "rationale": "The epic is explicitly a provider decision.",
+            "dependsOn": []
+          }
+        ]
+      }
+      """#
+
+    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    #expect(plan.ticketSuggestions.count == 1)
+    #expect(plan.ticketSuggestions[0].suggestedRole == .businessAnalyst)
   }
 
   @Test("Epic planning clarifies the outcome before proposing tickets")
@@ -494,11 +562,124 @@ struct CodexAdapterTests {
 
     #expect(prompt.contains("Do not propose tickets yet"))
     #expect(prompt.contains("Let customers return to useful forecasts"))
+        #expect(prompt.contains("content sources"))
+    #expect(prompt.contains("Do not silently defer"))
+        #expect(prompt.contains("time-boxed research ticket"))
     #expect(clarification.questions.count == 1)
     #expect(clarification.questions[0].options.count == 2)
     #expect(!clarification.readyToPlan)
     #expect(ready.questions.isEmpty)
     #expect(ready.readyToPlan)
+  }
+
+  @Test("Expired epic planning threads resume from the durable owner conversation")
+  func epicPlanningRecoveryPrompt() {
+    let product = Product(
+      name: "Weather",
+      vision: "Help customers understand the weather for a chosen location"
+    )
+    let epic = Epic(
+      productID: product.id,
+      title: "Saved locations",
+      goal: "Let customers return to useful forecasts"
+    )
+    let question = TicketRefinementQuestion(
+      prompt: "Where should saved locations be retained?",
+      options: [
+        "On this device only (Recommended)",
+        "Across signed-in devices",
+      ]
+    )
+    let prompt = CodexEpicClarificationGenerator.recoveryPrompt(
+      product: product,
+      epic: epic,
+      existingItems: [],
+      messages: [
+        EpicPlanningConversationMessage(
+          author: .businessAnalyst,
+          body: "I need to clarify how saved locations persist."
+        ),
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "",
+          answeredQuestions: [
+            EpicPlanningAnsweredQuestion(
+              question: question,
+              selectedOption: "On this device only (Recommended)",
+              answer: "On this device only (Recommended)"
+            )
+          ]
+        ),
+      ]
+    )
+
+    #expect(prompt.contains("previous Codex thread"))
+    #expect(prompt.contains("Let customers return to useful forecasts"))
+    #expect(prompt.contains("I need to clarify how saved locations persist."))
+    #expect(prompt.contains("Where should saved locations be retained?"))
+    #expect(prompt.contains("On this device only (Recommended)"))
+    #expect(prompt.contains("Do not repeat resolved questions"))
+    #expect(prompt.contains("tickets in this response"))
+    #expect(prompt.contains("Constraints for an unnamed"))
+    #expect(prompt.contains("authorisation for Business Analyst research"))
+    #expect(prompt.contains("let the team choose"))
+  }
+
+  @Test("Epic planning does not turn unresolved owner decisions into discovery tickets")
+  func epicPlanningDecisionGuardrails() {
+    let product = Product(
+      name: "Weather",
+      vision: "Help customers understand the weather for a chosen location"
+    )
+    let epic = Epic(
+      productID: product.id,
+      title: "Weather jokes",
+      goal: "Show an appropriate joke with each forecast"
+    )
+    let prompt = CodexTicketSuggestionGenerator.epicPrompt(
+      product: product,
+      epic: epic,
+      existingItems: []
+    )
+    let followUp = CodexEpicClarificationGenerator.followUpPrompt(
+      answers: ["Use bundled, curated jokes"]
+    )
+    let initial = CodexEpicClarificationGenerator.initialPrompt(
+      product: product,
+      epic: epic,
+      existingItems: []
+    )
+    let finalPlan = CodexEpicClarificationGenerator.finalPlanPrompt(
+      product: product,
+      epic: epic,
+      existingItems: [],
+      rejectedSuggestions: []
+    )
+    let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
+      productInstructions: "",
+      personaInstructions: AgentPersonaDefaults.instructions(for: .businessAnalyst)
+    )
+
+    #expect(prompt.contains("invent product decisions"))
+    #expect(prompt.contains("explicitly requested research"))
+    #expect(prompt.contains("Otherwise create tickets that deliver"))
+    #expect(prompt.contains("Research is a prerequisite,"))
+    #expect(prompt.contains("trace every epic success criterion"))
+    #expect(prompt.contains("separate Business Analyst ticket"))
+    #expect(prompt.contains("do not bury source selection"))
+    #expect(prompt.contains("implementation-time selection without a separate recommendation"))
+    #expect(initial.contains("Business Analyst research ticket"))
+    #expect(initial.contains("Do not offer a vague option"))
+    #expect(initial.contains("implementation-time selection"))
+    #expect(followUp.contains("sources"))
+    #expect(followUp.contains("Do not silently"))
+    #expect(followUp.contains("Constraints for an unnamed external source"))
+    #expect(followUp.contains("let the team choose"))
+    #expect(finalPlan.contains("is such authorisation"))
+    #expect(finalPlan.contains("Give that work a separate Business Analyst ticket"))
+    #expect(finalPlan.contains("inside design or implementation"))
+    #expect(developerInstructions.contains("constraints alone do not select"))
+    #expect(developerInstructions.contains("authorised Business Analyst research"))
   }
 
   @Test("Owner and persona prompts are appended beneath platform controls")
@@ -915,6 +1096,36 @@ struct CodexAdapterTests {
     )
   }
 
+  @Test("Legacy paused Work log questions retain interactive presentation")
+  func legacyPausedWorkLogQuestionPresentation() throws {
+    let body = """
+      I found two viable providers and need the Product Owner to choose one.
+
+      Question for you: Which provider should downstream delivery use?
+
+      Options:
+      - Approve the free provider with visible credit.
+      - Select the paid provider with an SLA.
+      """
+
+    let presentation = try #require(
+      TicketOwnerQuestion.presentation(in: body, structuredQuestion: nil)
+    )
+
+    #expect(
+      presentation.context
+        == "I found two viable providers and need the Product Owner to choose one."
+    )
+    #expect(presentation.question.prompt == "Which provider should downstream delivery use?")
+    #expect(
+      presentation.question.options
+        == [
+          "Approve the free provider with visible credit.",
+          "Select the paid provider with an SLA.",
+        ]
+    )
+  }
+
   @Test("Ordinary ticket chat is concise, single-recipient, and can propose versioned edits")
   func ticketConversation() throws {
     let product = Product(
@@ -1024,6 +1235,81 @@ struct CodexAdapterTests {
     )
   }
 
+  @Test("Ticket execution receives direct prerequisite handoffs and planned dependant contracts")
+  func ticketExecutionDependencyHandoffs() {
+    let product = Product(
+      name: "Content search",
+      vision: "Return useful results with suitable supporting content"
+    )
+    let analyst = AgentProfile(
+      productID: product.id,
+      name: "Business Analyst",
+      role: .businessAnalyst
+    )
+    let prerequisite = WorkItem(
+      productID: product.id,
+      key: "T1",
+      title: "Approve the source criteria",
+      type: .task,
+      body: "Agree the privacy and licensing constraints.",
+      acceptanceCriteria: ["The permitted data-sharing boundary is recorded"],
+      state: .released
+    )
+    let research = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Recommend a content provider",
+      type: .task,
+      body: "Compare eligible providers and recommend one.",
+      acceptanceCriteria: ["The Product Owner can approve one provider"]
+    )
+    let implementation = WorkItem(
+      productID: product.id,
+      key: "T4",
+      title: "Integrate the approved provider",
+      body: "Build against the provider selected by T2.",
+      acceptanceCriteria: [
+        "Successful searches display supporting content",
+        "Provider failure does not block the primary result",
+      ]
+    )
+    let prerequisiteComment = TicketComment(
+      workItemID: prerequisite.id,
+      authorKind: .agent,
+      authorName: "Business Analyst",
+      body: "Completion handoff: Do not send customer search terms to the provider."
+    )
+    let prompt = CodexTicketExecutor.prompt(
+      product: product,
+      item: research,
+      assignee: analyst,
+      prerequisites: [prerequisite],
+      dependants: [implementation],
+      prerequisiteComments: [prerequisite.id: [prerequisiteComment]],
+      ticketComments: [],
+      knowledgeContext: [],
+      existingItems: [prerequisite, research, implementation]
+    )
+    let instructions = CodexTicketExecutor.developerInstructions(
+      productInstructions: "",
+      personaInstructions: AgentPersonaDefaults.instructions(for: .businessAnalyst),
+      assignee: analyst
+    )
+
+    #expect(prompt.contains("Planned direct dependant tickets"))
+    #expect(prompt.contains("T4 [Backlog, Story]: Integrate the approved provider"))
+    #expect(prompt.contains("Build against the provider selected by T2."))
+    #expect(prompt.contains("Successful searches display supporting content"))
+    #expect(prompt.contains("The permitted data-sharing boundary is recorded"))
+    #expect(prompt.contains("Do not send customer search terms to the provider"))
+    #expect(prompt.contains("Do not duplicate, replace,"))
+    #expect(prompt.contains("Return an empty"))
+    #expect(instructions.contains("self-contained completion handoff"))
+    #expect(instructions.contains("Planned direct dependants"))
+    #expect(instructions.contains("materially conflicts with an existing ticket contract"))
+    #expect(instructions.contains("genuinely new scope"))
+  }
+
   @Test("Ticket execution and Tech Lead review results are validated")
   func ticketExecutionResults() throws {
     let completed = try CodexTicketExecutor.decode(
@@ -1046,13 +1332,15 @@ struct CodexAdapterTests {
             "destination":"team_practice"
           }
         ],
-        "knowledgePageProposals":[]
+        "knowledgePageProposals":[],
+        "followUpTicketProposals":[]
       }
       """#
     )
     #expect(completed.status == .completed)
     #expect(completed.changedFiles == ["Sources/LocationForm.swift"])
     #expect(completed.retrospectiveActions.first?.destination == .teamPractice)
+    #expect(completed.workLogComment.contains("Completion handoff"))
     #expect(completed.workLogComment.contains("Delivery notes"))
     #expect(completed.workLogComment.contains("How to review"))
 
@@ -1072,7 +1360,8 @@ struct CodexAdapterTests {
           "retrospectiveWentWell":[],
           "retrospectiveCouldImprove":[],
           "retrospectiveActions":[],
-          "knowledgePageProposals":[]
+          "knowledgePageProposals":[],
+          "followUpTicketProposals":[]
         }
         """#
       )
@@ -1098,7 +1387,8 @@ struct CodexAdapterTests {
           "retrospectiveWentWell":[],
           "retrospectiveCouldImprove":[],
           "retrospectiveActions":[],
-          "knowledgePageProposals":[]
+          "knowledgePageProposals":[],
+          "followUpTicketProposals":[]
         }
         """#
       )
@@ -1119,7 +1409,8 @@ struct CodexAdapterTests {
         "retrospectiveWentWell":[],
         "retrospectiveCouldImprove":[],
         "retrospectiveActions":[],
-        "knowledgePageProposals":[]
+        "knowledgePageProposals":[],
+        "followUpTicketProposals":[]
       }
       """#
     )
@@ -1128,7 +1419,7 @@ struct CodexAdapterTests {
 
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.decode(
-        #"{"status":"awaiting_owner","comment":"Need input","question":null,"options":[],"summary":"","changedFiles":[],"tests":[],"knowledgeNotes":[],"reviewInstructions":[],"retrospectiveWentWell":[],"retrospectiveCouldImprove":[],"retrospectiveActions":[],"knowledgePageProposals":[]}"#
+        #"{"status":"awaiting_owner","comment":"Need input","question":null,"options":[],"summary":"","changedFiles":[],"tests":[],"knowledgeNotes":[],"reviewInstructions":[],"retrospectiveWentWell":[],"retrospectiveCouldImprove":[],"retrospectiveActions":[],"knowledgePageProposals":[],"followUpTicketProposals":[]}"#
       )
     }
 
@@ -1157,10 +1448,71 @@ struct CodexAdapterTests {
       type: .task,
       acceptanceCriteria: ["A supported provider is recommended with rationale."]
     )
+    let researchCompleted = try CodexTicketExecutor.decode(
+      #"""
+      {
+        "status":"completed",
+        "comment":"I compared the approved provider options.",
+        "question":null,
+        "options":[],
+        "summary":"Open-Meteo is recommended with documented trade-offs.",
+        "changedFiles":["docs/provider-recommendation.md"],
+        "tests":["Checked every comparison criterion — passed"],
+        "knowledgeNotes":["The approved provider requires no API key."],
+        "reviewInstructions":["Open the recommendation and inspect the comparison table."],
+        "retrospectiveWentWell":[],
+        "retrospectiveCouldImprove":[],
+        "retrospectiveActions":[],
+        "knowledgePageProposals":[],
+        "followUpTicketProposals":[
+          {
+            "reference":"F1",
+            "title":"Design provider failure states",
+            "type":"task",
+            "body":"Design the customer experience when forecast data is unavailable.",
+            "acceptanceCriteria":["The Product Owner can review every failure state"],
+            "role":"ux_designer",
+            "priority":"high",
+            "rationale":"The research identified the provider's availability behavior.",
+            "dependsOn":[]
+          },
+          {
+            "reference":"F2",
+            "title":"Integrate the approved provider",
+            "type":"story",
+            "body":"Implement forecasts using the approved provider contract.",
+            "acceptanceCriteria":["A location displays its current forecast"],
+            "role":"implementer",
+            "priority":"normal",
+            "rationale":"This turns the approved research outcome into customer value.",
+            "dependsOn":["F1"]
+          }
+        ]
+      }
+      """#
+    )
+    #expect(researchCompleted.followUpTicketProposals.count == 2)
+    #expect(researchCompleted.followUpTicketProposals[1].dependsOnReferences == ["F1"])
+    #expect(researchCompleted.workLogComment.contains("Recommended follow-up tickets"))
+    try CodexTicketExecutor.validateFollowUpTicketProposals(
+      in: researchCompleted,
+      assignee: analyst
+    )
+    let implementer = AgentProfile(
+      productID: product.id,
+      name: "Implementer",
+      role: .implementer
+    )
+    #expect(throws: TicketExecutionGenerationError.self) {
+      try CodexTicketExecutor.validateFollowUpTicketProposals(
+        in: researchCompleted,
+        assignee: implementer
+      )
+    }
     let reReviewPrompt = CodexTechLeadReviewer.prompt(
       product: product,
       item: researchTicket,
-      implementation: completed,
+      implementation: researchCompleted,
       assignee: analyst,
       reviewCycle: 1,
       priorReviewFeedback: "Clarify the usage assumption.",
@@ -1177,6 +1529,7 @@ struct CodexAdapterTests {
     #expect(reReviewPrompt.contains("Business Analyst — Business Analyst"))
     #expect(reReviewPrompt.contains("Assume a small non-commercial demo."))
     #expect(reReviewPrompt.contains("Do not restart a full review"))
+    #expect(reReviewPrompt.contains("Integrate the approved provider"))
 
     let integration = try CodexConflictIntegrator.decode(
       #"{"status":"awaiting_owner","comment":"The two branches define incompatible defaults.","question":"Which behavior should remain the default?","options":["Use the accepted trunk behavior","Use the ticket behavior"],"summary":"","checks":[]}"#

@@ -79,7 +79,8 @@ Initial tables cover:
 - work items and immutable contract versions;
 - Story/Task/Bug work-item classification, with a later optional epic foreign
   key whose aggregate state remains derived from child tickets;
-- comments and activity events;
+- comments and activity events, including an optional structured Product Owner
+  question with two to four answer options;
 - agent profiles and runs;
 - product-wide guidance and optional per-profile instruction overrides;
 - built-in and custom persona identities, governed capability archetypes, and
@@ -207,6 +208,11 @@ structured checkpoint, interrupts after a bounded grace period, and preserves
 the run as paused. Crash recovery creates a system note from durable events and
 filesystem state when no agent-authored checkpoint exists.
 
+Owner-facing clarification records are durable independently of their Codex
+thread. When a persisted read-only thread is no longer available, the adapter
+creates a replacement and rebuilds its context from the saved conversation
+before replaying the pending owner response.
+
 ## 9. Knowledge model
 
 Every accepted ticket produces a reviewed knowledge change set:
@@ -253,8 +259,10 @@ must return citations or an explicit unknown.
 6. **Partial:** the durable scheduler admits all dependency-free implementation
    runs in parallel, routes concurrent Codex notifications by thread and turn,
    records attributed Work log updates, pauses for owner input, resumes the same
-   Codex thread, performs independent read-only Tech Lead review, returns findings
-   to the original implementer, and supports owner demo feedback and approval.
+   Codex thread, persists paused questions as structured comment data, presents
+   their choices natively in the Work log, performs independent read-only Tech
+   Lead review, returns findings to the original implementer, and supports owner
+   demo feedback and approval.
    Restart recovery requeues interrupted implementation, integration, and review
    work from preserved workspaces.
 7. **Partial:** product repository bootstrap, ticket-named private branches and
@@ -272,9 +280,12 @@ must return citations or an explicit unknown.
    for testing stricter governance. Material unstated owner choices still pause
    execution rather than entering a proposal. Decision capture and richer sourced
    knowledge-change diffs remain.
-10. Structured sprint evidence snapshots, retrospective experiments, and
-   normalized before/after reporting; the existing UI shell must continue to
-   render unavailable metrics honestly until these events exist.
+10. **Partial:** durable agent observations, reviewable agent and Product Owner
+   retrospective proposals, Ways of working promotion, and backlog-ticket
+   creation with automatic refinement entry are implemented. Structured sprint
+   evidence snapshots, retrospective experiments, and normalized before/after
+   reporting remain; the existing UI shell must continue to render unavailable
+   metrics honestly until these events exist.
 11. Quit checkpoint, stale-lease reconciliation, and resume.
 
 Signing, notarization, managed tool downloads, Docker Sandboxes, cloud release,

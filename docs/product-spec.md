@@ -336,12 +336,22 @@ An **epic** is a separate planning container, not a fourth ticket type and not
 an executable work item. It describes a broader outcome and contains zero or
 more tickets. Its progress, forecast, usage, blockers, and quality signals are
 derived from those children; it is never directly assigned to an agent or moved
-into a sprint. Tickets may belong to at most one epic initially.
+into a sprint. Tickets may belong to at most one epic initially. An unresolved
+epic is labelled **Open**, not **Active**, because proposed or backlog tickets do
+not imply that delivery is underway. When every active ticket in an open epic is
+**Done**, its detail footer presents a prominent **Complete epic** action so the
+Product Owner can confirm the delivered outcome directly.
 
 The backlog should present epics as compact, collapsible groups with an outcome,
 derived progress, and clear **No epic** group. Owners can drag tickets between
 groups without affecting workflow state. Small products do not need an epic,
 and autosuggestion should avoid generating empty hierarchy for its own sake.
+Archiving an epic also archives its unfinished backlog tickets and rejects its
+outstanding proposed tickets atomically while preserving their epic association
+for history. Any in-flight proposal generation is cancelled so late results
+cannot return to the active backlog. Delivered tickets remain delivered, and an
+epic with tickets in active delivery cannot be archived until that work is
+finished or removed from delivery.
 
 ### 8.5 Work contract
 
@@ -472,9 +482,12 @@ discussing after this happens, but stale actions are never auto-applied.
 ### 9.1 Onboarding
 
 1. The owner creates a product space and describes the product, target user,
-   current stage, and risk tolerance.
+   current stage, and risk tolerance, or chooses to import an existing Git
+   repository.
 2. StoryPointless creates a local product directory and Git repository. It may
-   begin with an empty, agent-planned product or an approved starter template.
+   begin with an empty, agent-planned product, an approved starter template, or
+   a managed clone whose existing history and default branch become the
+   product's accepted starting point.
 3. The owner adds Codex through an in-app “Sign in with ChatGPT” flow or an
    OpenAI API key.
 4. StoryPointless creates an opinionated starter team: business analyst, UX
@@ -519,6 +532,31 @@ needs. Business Analyst, UX Designer, and Implementer roles may repeat freely;
 the role is a routing recommendation for later delivery. The decoder rejects
 unknown dependency references, self-dependencies, and dependency cycles.
 
+Epic planning must cover the complete path to the agreed outcome. When the
+owner has authorised research, its recommendation can be a prerequisite for
+downstream experience-design, implementation, and verification tickets, but it
+must not replace those tickets when the epic success criteria require a product
+change. The epic details view keeps proposed tickets in its **Tickets** section
+and exposes an explicit **Review** action; row selection is a convenience, not
+the only discoverable way to continue.
+
+Agreeing constraints for an unnamed real external source does not select that
+source when current evidence about candidates, terms, suitability or operation
+is still required. Clarification choices distinguish a separate Business
+Analyst comparison and recommendation from an already approved owner-supplied
+choice and from explicitly delegating selection to the implementer during
+delivery without a separate recommendation. Vague choices such as “let the team
+choose” are not used. Authorising the Business Analyst or team to identify,
+compare, recommend or choose using current external evidence authorises a
+decision-enabling research ticket. When every credible recommendation still
+requires the agreed product change, the initial epic plan also includes the
+downstream delivery tickets rather than waiting for research to rediscover them.
+
+Epic clarification is durable across application restarts. If its underlying
+Codex thread has expired, StoryPointless starts a replacement read-only thread,
+supplies the preserved Business Analyst conversation and Product Owner answers,
+and continues without asking the owner to re-enter or discard resolved input.
+
 Role-aware suggestions should produce a coherent delivery graph rather than a
 list of generic engineering tasks. For a weather product, an illustrative
 proposal is:
@@ -550,8 +588,24 @@ to the next gap analysis.
 
 Conditional implementation is not treated as committed scope. If a research or
 product decision may determine that no implementation is required, autosuggest
-creates the decision ticket first. The decision outcome may propose a follow-up
-ticket later; first-class conditional ticket activation remains a later workflow.
+creates the decision ticket first. A Business Analyst delivering that authorised
+research normally supplies its decision, contract, evidence and caveats to the
+already planned dependant tickets through its completion Work log and verified
+Product knowledge. It returns no follow-up proposals when active tickets already
+cover the downstream work, and it never rewords, splits or replaces those tickets
+merely because research added detail. If evidence materially conflicts with an
+accepted ticket contract, the Business Analyst asks the Product Owner rather than
+silently changing scope.
+
+Research may recommend zero or more fully formed follow-up tickets only when its
+evidence establishes genuinely new work absent from every active ticket. The Tech
+Lead reviews those exceptional recommendations with the research artefact, the
+Product Owner sees them before approving the outcome, and approval publishes them
+as a labelled, reviewable suggestion batch in the Backlog. Each accepted follow-up
+inherits the research ticket's epic and retains the completed research ticket as a
+durable prerequisite; rejected recommendations never become scope. Multiple
+outstanding suggestion batches remain queued for review rather than hiding one
+another.
 
 While the business analyst works, the backlog view shows one temporary
 analysis card with phases such as **Understanding the product outcome**,
@@ -571,8 +625,15 @@ Suggested tickets are not backlog records until the owner accepts them. The
 owner can accept, edit, or reject each suggestion, inspect why one item blocks
 another, and accept or reject the remaining reviewed batch with confirmation.
 Bulk acceptance only creates backlog records; it never scopes or starts a sprint.
-Rejections and edits become refinement
-feedback; they must not quietly reappear as committed scope.
+Accepting a suggestion with still-proposed prerequisites first names the full
+transitive prerequisite set, then accepts the selected suggestion and those
+prerequisites atomically with their dependency relationships.
+Rejecting a prerequisite with dependents first previews the full transitive
+impact. Confirmation rejects every remaining dependent proposal and archives any
+dependent ticket already accepted into the backlog as one atomic action; tickets
+that have entered delivery prevent the cascade and require an explicit recovery
+decision. Rejections and edits become refinement feedback; they must not quietly
+reappear as committed scope.
 After no proposals remain to review, the suggested-work region disappears; its
 decisions remain in the audit and future-analysis context rather than occupying
 permanent backlog space.
@@ -915,6 +976,20 @@ Retrospectives live beside Reports in a dedicated **Improve** navigation
 section rather than being mixed into the reference knowledge base. Decisions
 and validated lessons may still promote into Knowledge after owner review.
 
+After the sprint is complete and before its retrospective is concluded, the
+Product Owner can add a proposal directly from the Retrospectives view. They
+choose whether it changes **Ways of working** or creates a **Backlog ticket**.
+The proposal is attributed to the Product Owner and joins the same reviewable
+decision queue as agent suggestions; it is not applied silently. Accepting a
+ways-of-working proposal updates the inherited verified page. Accepting a
+ticket proposal creates the backlog ticket and immediately opens the standard
+Business Analyst refinement flow so questions and proposed ticket details
+remain reviewable. Every proposal must be accepted or dismissed before the
+retrospective can be concluded. A concluded retrospective presents its accepted
+decisions as a read-only history with their destination, author, decision date,
+and created ticket reference where applicable. Dismissed proposals contribute
+to the historical summary but do not appear as adopted changes.
+
 ## 10. Workflow and state model
 
 ### 10.1 Product-owner workflow
@@ -1203,20 +1278,26 @@ records, but the dispatcher starts only tickets whose prerequisites are Done.
 Downstream tickets remain visible in **Ready to Pick** without consuming a
 Codex turn. When an active run needs a product decision, it posts one concise,
 author-attributed ticket comment, records the exact question and options, and
-enters **Awaiting owner**. A Product Owner reply on that ticket resumes the same
-run and thread.
+enters **Awaiting owner**. The Work log presents those options as selectable
+answers, keeps a free-form alternative, and places the chosen text in the
+Product Owner response for review before resuming. A Product Owner reply on that
+ticket resumes the same run and thread.
 
 Before completing a prerequisite, its agent posts a concise final ticket comment
 containing the requirements, decisions, selected providers or contracts,
-evidence, and caveats that the next implementer needs. Relevant conclusions are
-also added as attributed comments to each dependant ticket, with a link back to
-the prerequisite, so that the implementer can work from its own ticket history.
+evidence, caveats, and safe downstream assumptions that the next team member
+needs. Reusable cross-ticket truth is also proposed as Product knowledge.
 Completion makes every fully unblocked dependant eligible and the dispatcher
-starts it automatically when execution capacity is available. The dependant
-agent receives its own ticket plus the prerequisite ticket and relevant
-attributed comments in its starting context. This visible ticket history is the
-first-release handoff mechanism; no private cross-agent message or separately
-maintained summary is required.
+starts it automatically when execution capacity is available.
+
+The dependant agent receives its own ticket, the contracts and recent Work log
+comments of its direct prerequisites, and verified Product knowledge originating
+from those prerequisites. Raw transitive history is not duplicated into every
+ticket. Instead, each completed ticket synthesises the prerequisite context it
+used with the outcome it produced, so the next direct dependant receives one
+deliberate handoff. This attributed source history is the first-release handoff
+mechanism; no private cross-agent message or separately maintained summary is
+required.
 
 ## 14. Knowledge and context system
 
@@ -1399,8 +1480,10 @@ opt into a per-profile prompt override; resetting an override restores the
 versioned StoryPointless role default. Max and Ultra are not defaults because
 they materially increase usage and, for Ultra, change orchestration behaviour.
 
-The owner can add any number of custom team members. A team member has a free-form name
-and prompt but selects a governed capability archetype: analysis/research,
+Custom team-member creation is a deferred workflow and its entry point is hidden
+from Team settings in the current product. When exposed, the owner can add any
+number of custom team members. A team member has a free-form name and prompt but
+selects a governed capability archetype: analysis/research,
 experience design, leadership/planning, implementation, independent
 review/audit, QA, or knowledge/documentation. The instructions change how the member
 approaches authorised work; it cannot expand permissions. StoryPointless offers
@@ -2211,6 +2294,10 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-215 | Global team chat launcher | A persistent chat control is available from every primary product view and opens the same familiar conversation UI used on tickets; the owner addresses exactly one selected team member for terminology, guidance, product questions, or a request for help without navigating away; the thread is retained per product, can include an explicit summary of the current view or selected object, shows thinking, typing, unread, and failure states, and presents any proposed mutation as a reviewable action rather than changing product state silently |
 | SP-216 | Git and Codex degraded-mode resilience | Startup and continuous capability checks distinguish Codex disconnected, incompatible, unauthenticated, or temporarily unreachable states from missing, damaged, or unusable Git support; the product, backlog, sprint history, knowledge, reports, and other unaffected local data remain available; only dependent actions are disabled with a plain-language reason, retry and guided repair paths are offered, interrupted runs and worktrees are reconciled without data loss, and diagnostics expose enough detail for recovery without requiring the owner to use a terminal |
 | SP-217 | Action-required notifications | StoryPointless sends deduplicated macOS notifications only when the Product Owner must act—for example to answer a question, review a demo, resolve an integration failure, recover a stopped run, or decide a retrospective action; clicking a notification opens the exact product and relevant ticket, sprint, or retrospective context; resolving the action clears its notification and in-app badge; category preferences, permission-denied guidance, and quiet handling while the relevant view is already focused prevent progress chatter from becoming notification noise |
+| SP-218 | Remote product-bundle sync | The Codebase view offers **Connect remote** for an optional, provider-neutral Git remote and clearly shows disconnected, ahead, behind, syncing, conflict, and up-to-date states; the versioned remote contains the complete portable product bundle—accepted source history, product definition, epics and tickets, sprint and retrospective records, knowledge, decisions, reports, delivery provenance, and referenced attachments—rather than source code alone; credentials, Codex sessions, secrets, transient worktrees, caches, and machine-specific runtime state are excluded; the owner can push or synchronize explicitly, interrupted transfers are recoverable, incoming changes are validated against the bundle schema, and divergent history is never overwritten silently |
+| SP-219 | Existing Git repository import | **Create product** offers **Import Git repository** for an authenticated or public repository URL; StoryPointless clones the repository into its managed product workspace, preserves branches, history, authorship, default-branch identity, and remote provenance, then treats the imported default branch as the accepted trunk for subsequent ticket worktrees and integration; a recoverable discovery pass identifies the stack, runnable checks, existing product context, incomplete work, and likely delivery risks without modifying the clone; README files, documentation, ADRs, runbooks, and other durable guidance are classified and presented as reviewable, source-linked Product knowledge proposals with page destinations, freshness and originating commit/path metadata; accepting a proposal creates or updates canonical knowledge without deleting the original repository files, while any later consolidation or removal is an explicit reviewed change; clone, authentication, submodule, large-file, unsupported-layout, and partial-import failures remain recoverable and never leave a product that appears ready when its codebase is incomplete |
+| SP-220 | Non-disruptive live Codebase updates | While the Codebase view is open, StoryPointless detects newly created or integrated commits and branch changes without requiring a manual reload; the currently visible commit list, selection, file tree, diff, and scroll position remain stable while a compact **New changes** indicator reports the number of unseen commits; selecting it reveals all pending changes together in the correct order, preserves the current selection where possible, and clearly marks the newly inserted history; repeated filesystem events are deduplicated, loading never flashes an empty state over existing content, and unavailable or failed refreshes remain recoverable without replacing the last valid snapshot |
+| SP-221 | Strict role-scoped agent permission profiles | Every agent turn uses a capability-detected, named permission profile with explicit runtime workspace roots and least-privilege access: implementers can read and write only their assigned ticket worktree; Tech Leads can read the immutable candidate and relevant product context, gaining narrowly scoped write access only while resolving an authorized integration issue; BA, refinement, suggestion, and planning turns are read-only within the active product workspace. Profiles deny the StoryPointless database, other products, other ticket worktrees, credentials, `.env` files, `.ssh`, `.aws`, and other configured sensitive paths while retaining only the minimum read access required for approved macOS runtimes, compilers, SDKs, and tools. Network access is disabled by default and any temporary or persistent grant requires an explicit Product Owner decision with visible scope and provenance. Startup and run admission verify that the installed Codex App Server supports the required permission-profile and workspace-root capabilities; unsupported, incomplete, or rejected isolation fails closed with a plain-language recovery path rather than silently falling back to a broader legacy sandbox. Automated adversarial tests prove cross-product, cross-worktree, secret, database, unauthorized-write, and unauthorized-network access is denied before autonomous execution is described as production-safe. |
 
 ### Post-MVP experiments
 

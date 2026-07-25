@@ -3,8 +3,8 @@ import Foundation
 public struct TicketForecast: Equatable, Sendable {
   public let tokenLow: Int
   public let tokenHigh: Int
-  public let durationLowMinutes: Int
-  public let durationHighMinutes: Int
+  public let durationLowSeconds: Int
+  public let durationHighSeconds: Int
 
   public var tokenMidpoint: Int {
     (tokenLow + tokenHigh) / 2
@@ -13,13 +13,13 @@ public struct TicketForecast: Equatable, Sendable {
   public init(
     tokenLow: Int,
     tokenHigh: Int,
-    durationLowMinutes: Int,
-    durationHighMinutes: Int
+    durationLowSeconds: Int,
+    durationHighSeconds: Int
   ) {
     self.tokenLow = tokenLow
     self.tokenHigh = tokenHigh
-    self.durationLowMinutes = durationLowMinutes
-    self.durationHighMinutes = durationHighMinutes
+    self.durationLowSeconds = durationLowSeconds
+    self.durationHighSeconds = durationHighSeconds
   }
 }
 
@@ -40,13 +40,13 @@ public enum SprintForecast {
     let detail = min(6_000, words * 35 + item.acceptanceCriteria.count * 650)
     let low = ((base + detail + 499) / 500) * 500
     let high = ((Int(Double(low) * 1.8) + 999) / 1_000) * 1_000
-    let lowMinutes = max(15, (low / 500) * 2)
-    let highMinutes = max(lowMinutes + 15, (high / 500) * 3)
+    let lowSeconds = max(15, (low / 500) * 2)
+    let highSeconds = max(lowSeconds + 15, (high / 500) * 3)
     return TicketForecast(
       tokenLow: low,
       tokenHigh: high,
-      durationLowMinutes: lowMinutes,
-      durationHighMinutes: highMinutes
+      durationLowSeconds: lowSeconds,
+      durationHighSeconds: highSeconds
     )
   }
 }

@@ -7,6 +7,11 @@ import Testing
 struct WorkflowPolicyTests {
   private let policy = WorkflowPolicy()
 
+  @Test("Open epics do not imply delivery is active")
+  func openEpicLabel() {
+    #expect(EpicStatus.active.title == "Open")
+  }
+
   @Test("Happy-path transitions are available")
   func happyPathTransitions() throws {
     try policy.validateTransition(from: .backlog, to: .refining)

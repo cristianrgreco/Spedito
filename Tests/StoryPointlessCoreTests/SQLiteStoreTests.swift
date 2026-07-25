@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 
 @testable import StoryPointlessCore
@@ -51,11 +52,31 @@ struct SQLiteStoreTests {
     )
     #expect(refining.version == 2)
 
+    let ownerQuestion = TicketOwnerQuestion(
+      prompt: "Which empty state should the ticket deliver?",
+      options: ["A concise explanation", "A retry action"]
+    )
     _ = try await store.appendComment(
       workItemID: item.id,
       authorKind: .agent,
       authorName: "Business Analyst",
-      body: "We still need to define the empty state."
+      body: "We still need to define the empty state.",
+      ownerQuestion: ownerQuestion
+    )
+    let answeredQuestion = TicketAnsweredQuestion(
+      question: TicketRefinementQuestion(
+        prompt: ownerQuestion.prompt,
+        options: ownerQuestion.options
+      ),
+      selectedOption: "A retry action",
+      answer: "A retry action"
+    )
+    _ = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@Business Analyst A retry action",
+      answeredQuestions: [answeredQuestion]
     )
     try await store.updateProductInstructions(
       productID: product.id,
@@ -91,7 +112,14 @@ struct SQLiteStoreTests {
     #expect(items.first?.state == .refining)
     #expect(items.first?.type == .task)
     #expect(items.first?.version == 2)
-    #expect(comments.map(\.body) == ["We still need to define the empty state."])
+    #expect(
+      comments.map(\.body) == [
+        "We still need to define the empty state.",
+        "@Business Analyst A retry action",
+      ]
+    )
+    #expect(comments.first?.ownerQuestion == ownerQuestion)
+    #expect(comments.last?.answeredQuestions == [answeredQuestion])
     #expect(activity.map(\.kind).contains("product.created"))
     #expect(activity.map(\.kind).contains("work_item.transitioned"))
     #expect(activity.map(\.kind).contains("comment.created"))
@@ -517,7 +545,7 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Suggested tickets stay outside scope until accepted and preserve dependencies")
+  @Test("Accepting a suggested ticket also accepts its transitive prerequisites")
   func ticketSuggestionsAreOwnerControlled() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -550,7 +578,8 @@ struct SQLiteStoreTests {
           acceptanceCriteria: ["The owner can review all core states"],
           suggestedRole: .uxDesigner,
           priority: .high,
-          rationale: "The owner should validate the experience first."
+          rationale: "The owner should validate the experience first.",
+          dependsOnReferences: ["T1"]
         ),
         TicketSuggestionDraft(
           reference: "T3",
@@ -561,26 +590,41 @@ struct SQLiteStoreTests {
           suggestedRole: .implementer,
           priority: .normal,
           rationale: "This creates the customer-facing outcome.",
-          dependsOnReferences: ["T1", "T2"]
+          dependsOnReferences: ["T2"]
+        ),
+        TicketSuggestionDraft(
+          reference: "T4",
+          title: "Prepare launch messaging",
+          type: .task,
+          body: "Draft messaging independently of implementation.",
+          acceptanceCriteria: ["Launch messaging is ready for review"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "This work does not block the interface."
         ),
       ]
     )
 
     #expect(ready.session.status == .ready)
-    #expect(ready.suggestions.count == 3)
-    #expect(ready.suggestions.map(\.type) == [.task, .task, .story])
+    #expect(ready.suggestions.count == 4)
+    #expect(ready.suggestions.map(\.type) == [.task, .task, .story, .task])
     #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
     let frontend = try #require(ready.suggestions.first { $0.reference == "T3" })
-    #expect(frontend.dependencyIDs.count == 2)
+    #expect(frontend.dependencyIDs.count == 1)
 
-    _ = try await store.decideTicketSuggestion(id: frontend.id, decision: .accepted)
-    #expect(try await store.fetchWorkItems(productID: product.id).count == 1)
-    #expect(try await store.fetchWorkItemDependencies(productID: product.id).isEmpty)
-
-    for reference in ["T1", "T2"] {
-      let suggestion = try #require(ready.suggestions.first { $0.reference == reference })
-      _ = try await store.decideTicketSuggestion(id: suggestion.id, decision: .accepted)
-    }
+    let acceptedBatch = try await store.decideTicketSuggestion(
+      id: frontend.id,
+      decision: .accepted
+    )
+    #expect(
+      acceptedBatch.suggestions
+        .filter { ["T1", "T2", "T3"].contains($0.reference) }
+        .allSatisfy { $0.status == .accepted }
+    )
+    #expect(
+      acceptedBatch.suggestions.first { $0.reference == "T4" }?.status == .proposed
+    )
+    #expect(try await store.fetchWorkItems(productID: product.id).count == 3)
     let dependencies = try await store.fetchWorkItemDependencies(productID: product.id)
     #expect(dependencies.count == 2)
 
@@ -589,10 +633,239 @@ struct SQLiteStoreTests {
     let recovered = try #require(
       await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
     )
-    #expect(recovered.suggestions.allSatisfy { $0.status == .accepted })
+    #expect(
+      recovered.suggestions.first { $0.reference == "T4" }?.status == .proposed
+    )
     #expect(try await reopened.fetchWorkItems(productID: product.id).count == 3)
     #expect(try await reopened.fetchWorkItemDependencies(productID: product.id).count == 2)
     await reopened.close()
+  }
+
+  @Test("Approved research follow-ups are durable reviewable backlog proposals")
+  func researchFollowUpsBecomeQueuedSuggestions() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Research follow-ups",
+      vision: "Turn approved evidence into reviewable delivery options"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Customers receive reliable external data"
+    )
+    let source = try await store.createWorkItem(
+      productID: product.id,
+      title: "Research a suitable data provider",
+      type: .task,
+      body: "Compare providers and recommend one.",
+      acceptanceCriteria: ["The Product Owner can approve a provider"],
+      epicID: epic.id
+    )
+
+    let earlierSession = try await store.beginTicketSuggestionSession(productID: product.id)
+    let earlierBatch = try await store.completeTicketSuggestionSession(
+      sessionID: earlierSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "An earlier proposal",
+          body: "Keep this proposal reviewable before later research follow-ups.",
+          acceptanceCriteria: ["The proposal can be reviewed"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "This verifies queued suggestion batches."
+        )
+      ]
+    )
+
+    let followUps = try await store.createFollowUpTicketSuggestionSession(
+      sourceWorkItemID: source.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Design provider failure states",
+          type: .task,
+          body: "Design the unavailable and partial-data states.",
+          acceptanceCriteria: ["Every provider failure state is reviewable"],
+          suggestedRole: .uxDesigner,
+          priority: .high,
+          rationale: "The approved research identified provider failure behavior.",
+          dependsOnExistingWorkItemKeys: [source.key]
+        ),
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "Integrate the approved provider",
+          body: "Implement the approved provider contract.",
+          acceptanceCriteria: ["Customers can see external data"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "This delivers the approved recommendation.",
+          dependsOnReferences: ["S1"],
+          dependsOnExistingWorkItemKeys: [source.key]
+        ),
+      ]
+    )
+
+    #expect(followUps.session.sourceWorkItemID == source.id)
+    #expect(followUps.session.epicID == epic.id)
+    #expect(followUps.suggestions.allSatisfy { $0.existingDependencyWorkItemIDs == [source.id] })
+    let idempotent = try await store.createFollowUpTicketSuggestionSession(
+      sourceWorkItemID: source.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "This duplicate publication is ignored",
+          body: "The existing source session remains authoritative.",
+          acceptanceCriteria: ["No duplicate session exists"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "Approval retries must be idempotent."
+        )
+      ]
+    )
+    #expect(idempotent.session.id == followUps.session.id)
+
+    let firstVisible = try #require(
+      await store.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(firstVisible.session.id == earlierSession.id)
+    let earlierSuggestion = try #require(earlierBatch.suggestions.first)
+    _ = try await store.decideTicketSuggestion(
+      id: earlierSuggestion.id,
+      decision: .rejected
+    )
+    let nextVisible = try #require(
+      await store.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(nextVisible.session.id == followUps.session.id)
+
+    for reference in ["S2", "S1"] {
+      let suggestion = try #require(followUps.suggestions.first { $0.reference == reference })
+      _ = try await store.decideTicketSuggestion(id: suggestion.id, decision: .accepted)
+    }
+    let accepted = try await store.fetchWorkItems(productID: product.id)
+      .filter { $0.id != source.id }
+    #expect(accepted.count == 2)
+    #expect(accepted.allSatisfy { $0.epicID == epic.id })
+    let dependencies = try await store.fetchWorkItemDependencies(productID: product.id)
+    #expect(dependencies.filter { $0.dependsOnWorkItemID == source.id }.count == 2)
+
+    await store.close()
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recovered = try #require(
+      await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(recovered.session.sourceWorkItemID == source.id)
+    #expect(recovered.session.epicID == epic.id)
+    await reopened.close()
+  }
+
+  @Test("Rejecting a legacy suggested prerequisite archives already accepted dependents")
+  func rejectingSuggestionCascadesThroughDependentWork() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Cascade planning",
+      vision: "Keep rejected prerequisites from leaving unblocked dependent work"
+    )
+    let session = try await store.beginTicketSuggestionSession(productID: product.id)
+    let ready = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Define the contract",
+          body: "Agree the shared contract.",
+          acceptanceCriteria: ["The contract is explicit"],
+          suggestedRole: .businessAnalyst,
+          priority: .high,
+          rationale: "Everything else depends on it."
+        ),
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "Design the experience",
+          body: "Design against the contract.",
+          acceptanceCriteria: ["The experience is reviewable"],
+          suggestedRole: .uxDesigner,
+          priority: .normal,
+          rationale: "The design needs the contract.",
+          dependsOnReferences: ["S1"]
+        ),
+        TicketSuggestionDraft(
+          reference: "S3",
+          title: "Prepare the implementation",
+          body: "Prepare implementation against the contract.",
+          acceptanceCriteria: ["The implementation path is clear"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Delivery needs the contract.",
+          dependsOnReferences: ["S1"]
+        ),
+        TicketSuggestionDraft(
+          reference: "S4",
+          title: "Validate the design",
+          body: "Validate the proposed experience.",
+          acceptanceCriteria: ["The design is validated"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "Validation follows design.",
+          dependsOnReferences: ["S2"]
+        ),
+        TicketSuggestionDraft(
+          reference: "S5",
+          title: "Build the implementation",
+          body: "Build the prepared implementation.",
+          acceptanceCriteria: ["The implementation is complete"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Build follows preparation.",
+          dependsOnReferences: ["S3"]
+        ),
+      ]
+    )
+
+    let acceptedS3 = try await store.createWorkItem(
+      productID: product.id,
+      title: "Prepare the implementation"
+    )
+    let acceptedS5 = try await store.createWorkItem(
+      productID: product.id,
+      title: "Build the implementation"
+    )
+    let suggestionS3 = try #require(ready.suggestions.first { $0.reference == "S3" })
+    let suggestionS5 = try #require(ready.suggestions.first { $0.reference == "S5" })
+    try fixture.execute(
+      """
+      UPDATE ticket_suggestions
+      SET status = 'accepted',
+          accepted_work_item_id = CASE id
+            WHEN '\(suggestionS3.id.uuidString)' THEN '\(acceptedS3.id.uuidString)'
+            WHEN '\(suggestionS5.id.uuidString)' THEN '\(acceptedS5.id.uuidString)'
+          END
+      WHERE id IN ('\(suggestionS3.id.uuidString)', '\(suggestionS5.id.uuidString)');
+      """
+    )
+
+    let prerequisite = try #require(ready.suggestions.first { $0.reference == "S1" })
+    let cascaded = try await store.rejectTicketSuggestionCascade(id: prerequisite.id)
+    let statuses = Dictionary(
+      uniqueKeysWithValues: cascaded.suggestions.map { ($0.reference, $0.status) }
+    )
+    #expect(statuses["S1"] == .rejected)
+    #expect(statuses["S2"] == .rejected)
+    #expect(statuses["S4"] == .rejected)
+    #expect(statuses["S3"] == .accepted)
+    #expect(statuses["S5"] == .accepted)
+
+    let acceptedTickets = try await store.fetchWorkItems(productID: product.id)
+    #expect(acceptedTickets.count == 2)
+    #expect(acceptedTickets.allSatisfy { $0.state == .cancelled })
+    #expect(try await store.fetchWorkItemDependencies(productID: product.id).isEmpty)
+    await store.close()
   }
 
   @Test("A failed ticket suggestion session can be dismissed durably")
@@ -639,12 +912,13 @@ struct SQLiteStoreTests {
       name: "Weather journeys",
       vision: "Help customers understand local conditions"
     )
-    let draft = try await store.createEpic(
+    let initialEpic = try await store.createEpic(
       productID: product.id,
       outcome: "Customers can save favourite locations"
     )
+    #expect(initialEpic.status == .active)
     let epic = try await store.updateEpic(
-      id: draft.id,
+      id: initialEpic.id,
       title: "Saved locations",
       goal: "Customers can return to important forecasts without searching again.",
       successCriteria: ["A customer can save and revisit a location"],
@@ -688,6 +962,305 @@ struct SQLiteStoreTests {
         .session.epicID == epic.id
     )
     await reopened.close()
+  }
+
+  @Test("Epic planning conversations survive restart")
+  func epicPlanningConversationsAreDurable() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic conversation",
+      vision: "Keep refinement context available"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Customers can receive location-specific alerts"
+    )
+    let audienceQuestion = TicketRefinementQuestion(
+      prompt: "Who should receive an alert?",
+      options: ["Every visitor", "Signed-in customers"]
+    )
+    let timingQuestion = TicketRefinementQuestion(
+      prompt: "When should the alert be sent?",
+      options: ["Immediately", "Daily summary"]
+    )
+    let snapshot = EpicPlanningConversationSnapshot(
+      epicID: epic.id,
+      messages: [
+        EpicPlanningConversationMessage(
+          id: UUID(uuidString: "08C990D8-5081-43C1-A5FE-A41DDE31D960")!,
+          author: .businessAnalyst,
+          body: "I need to clarify the audience.",
+          createdAt: Date(timeIntervalSince1970: 1_728_000_000)
+        ),
+        EpicPlanningConversationMessage(
+          id: UUID(uuidString: "02B804D4-8064-429D-9811-45FC0274DD89")!,
+          author: .owner,
+          body: "",
+          createdAt: Date(timeIntervalSince1970: 1_728_000_010),
+          answeredQuestions: [
+            EpicPlanningAnsweredQuestion(
+              question: audienceQuestion,
+              selectedOption: "Signed-in customers",
+              answer: "Signed-in customers"
+            )
+          ]
+        ),
+      ],
+      questions: [timingQuestion],
+      isComplete: false,
+      threadID: "thread-epic-planning",
+      updatedAt: Date(timeIntervalSince1970: 1_728_000_020)
+    )
+    try await store.saveEpicPlanningConversation(snapshot)
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    #expect(try await reopened.fetchEpicPlanningConversation(epicID: epic.id) == snapshot)
+    try await reopened.deleteEpicPlanningConversation(epicID: epic.id)
+    #expect(try await reopened.fetchEpicPlanningConversation(epicID: epic.id) == nil)
+    await reopened.close()
+  }
+
+  @Test("Archiving an epic archives unfinished tickets and preserves delivered work")
+  func archivingEpicArchivesUnfinishedTickets() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic planning",
+      vision: "Keep durable outcomes ordered"
+    )
+    let first = try await store.createEpic(productID: product.id, outcome: "First outcome")
+    let second = try await store.createEpic(productID: product.id, outcome: "Second outcome")
+    let third = try await store.createEpic(productID: product.id, outcome: "Third outcome")
+    let ticket = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver the second outcome",
+      type: .story,
+      acceptanceCriteria: ["The outcome is observable"],
+      epicID: second.id
+    )
+    let deliveredTicket = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver an earlier part of the second outcome",
+      type: .story,
+      acceptanceCriteria: ["The earlier outcome remains recorded"],
+      epicID: second.id
+    )
+    for state in [
+      WorkItemState.refining, .ready, .queued, .running, .integrating, .verifying,
+      .acceptance, .readyToRelease, .released,
+    ] {
+      _ = try await store.transitionWorkItem(
+        id: deliveredTicket.id,
+        to: state,
+        actor: "Test",
+        reason: "Prepare delivered history"
+      )
+    }
+    let suggestionSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: second.id
+    )
+    _ = try await store.completeTicketSuggestionSession(
+      sessionID: suggestionSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "Propose another part of the outcome",
+          body: "This proposal should leave the active Backlog with its Epic.",
+          acceptanceCriteria: ["The proposal is no longer active"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "Complete the outcome"
+        ),
+        TicketSuggestionDraft(
+          reference: "S3",
+          title: "Propose the final part of the outcome",
+          body: "This proposal should also be archived with its Epic.",
+          acceptanceCriteria: ["The proposal is no longer active"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Finish the outcome"
+        ),
+      ]
+    )
+
+    let reordered = try await store.moveEpics(ids: [third.id], before: first.id)
+    #expect(
+      reordered.filter { $0.status != .archived }.map(\.id)
+        == [third.id, first.id, second.id]
+    )
+
+    try await store.archiveEpic(id: second.id)
+    let archived = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == second.id }
+    )
+    #expect(archived.status == .archived)
+    let storedTickets = try await store.fetchWorkItems(productID: product.id)
+    let archivedTicket = try #require(storedTickets.first { $0.id == ticket.id })
+    #expect(archivedTicket.state == .cancelled)
+    #expect(archivedTicket.epicID == second.id)
+    let storedDeliveredTicket = try #require(
+      storedTickets.first { $0.id == deliveredTicket.id }
+    )
+    #expect(storedDeliveredTicket.state == .released)
+    #expect(storedDeliveredTicket.epicID == second.id)
+    let archivedSuggestions = try #require(
+      try await store.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(archivedSuggestions.session.status == .cancelled)
+    #expect(archivedSuggestions.suggestions.count == 2)
+    #expect(archivedSuggestions.suggestions.allSatisfy { $0.status == .rejected })
+    let activity = try await store.fetchActivity(workItemID: ticket.id)
+    #expect(activity.first?.kind == "work_item.archived")
+    let productActivity = try await store.fetchActivity(productID: product.id)
+    #expect(
+      productActivity.filter { $0.kind == "ticket_suggestion.rejected" }.map(\.detail)
+        == [
+          "Propose the final part of the outcome",
+          "Propose another part of the outcome",
+        ]
+    )
+    await #expect(throws: PersistenceError.self) {
+      try await store.assignWorkItemToEpic(id: ticket.id, epicID: second.id)
+    }
+    await store.close()
+  }
+
+  @Test("Archiving an epic cancels suggestion generation before proposals can arrive")
+  func archivingEpicCancelsSuggestionGeneration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Generating proposals",
+      vision: "Do not revive archived Epic work"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Retire this outcome"
+    )
+    let session = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+
+    try await store.archiveEpic(id: epic.id)
+    let batch = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Late proposal",
+          body: "This result arrived after the Epic was archived.",
+          acceptanceCriteria: ["It does not enter the Backlog"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Late result"
+        )
+      ]
+    )
+
+    #expect(batch.session.status == .cancelled)
+    #expect(batch.suggestions.isEmpty)
+    await store.close()
+  }
+
+  @Test("Migration rejects stale proposals belonging to archived epics")
+  func migrationRepairsArchivedEpicProposals() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Archived proposal repair",
+      vision: "Remove stale proposed tickets"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Already archived outcome"
+    )
+    let session = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    _ = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Stale proposal",
+          body: "This proposal predates the archival cascade fix.",
+          acceptanceCriteria: ["It leaves the active Backlog"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Repair historical data"
+        )
+      ]
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE epics SET status = 'archived' WHERE id = '\(epic.id.uuidString)';
+      DELETE FROM schema_migrations WHERE version = 33;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let repaired = try #require(
+      try await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(repaired.session.status == .cancelled)
+    #expect(repaired.suggestions.map(\.status) == [.rejected])
+    await reopened.close()
+  }
+
+  @Test("Archiving an epic refuses to cancel tickets in active delivery")
+  func archivingEpicRejectsActiveDeliveryTickets() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Active delivery",
+      vision: "Protect live ticket work"
+    )
+    let epic = try await store.createEpic(productID: product.id, outcome: "Deliver safely")
+    let ticket = try await store.createWorkItem(
+      productID: product.id,
+      title: "Work already queued for delivery",
+      type: .story,
+      acceptanceCriteria: ["Live delivery is not cancelled implicitly"],
+      epicID: epic.id
+    )
+    for state in [WorkItemState.refining, .ready, .queued] {
+      _ = try await store.transitionWorkItem(
+        id: ticket.id,
+        to: state,
+        actor: "Test",
+        reason: "Prepare active delivery"
+      )
+    }
+
+    await #expect(throws: PersistenceError.self) {
+      try await store.archiveEpic(id: epic.id)
+    }
+    #expect(
+      try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }?.status
+        == .active
+    )
+    #expect(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == ticket.id }?.state
+        == .queued
+    )
+    await store.close()
   }
 
   @Test("Suggested tickets can depend on existing backlog work")
@@ -919,6 +1492,17 @@ struct SQLiteStoreTests {
     )
     #expect(item.state == .backlog)
 
+    let assignedItem = try await store.assignWorkItemOwner(
+      id: item.id,
+      profileID: implementer.id
+    )
+    #expect(assignedItem.ownerProfileID == implementer.id)
+    let unassignedItem = try await store.assignWorkItemOwner(
+      id: item.id,
+      profileID: nil
+    )
+    #expect(unassignedItem.ownerProfileID == nil)
+
     let unassignedDraft = try await store.saveDraftSprint(
       productID: product.id,
       goal: "Deliver the next valuable increment",
@@ -933,6 +1517,12 @@ struct SQLiteStoreTests {
       sprintID: unassignedDraft.sprint.id
     )
     #expect(unassignedIssues.map(\.id).contains("\(item.id).implementer"))
+    #expect(
+      unassignedIssues.contains {
+        $0.workItemID == item.id
+          && $0.message == "\(item.key) needs a valid delivery owner."
+      }
+    )
 
     let draft = try await store.saveDraftSprint(
       productID: product.id,
@@ -1042,6 +1632,41 @@ struct SQLiteStoreTests {
     )
     #expect(archived.state == .cancelled)
     #expect(try await store.fetchCurrentSprint(productID: product.id)?.items.isEmpty == true)
+    await store.close()
+  }
+
+  @Test("Bulk archive is atomic and permits selected dependency groups")
+  func bulkArchiveWorkItems() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Bulk archive",
+      vision: "Manage selected backlog work together"
+    )
+    let prerequisite = try await store.createWorkItem(
+      productID: product.id,
+      title: "Choose an approach"
+    )
+    let dependent = try await store.createWorkItem(
+      productID: product.id,
+      title: "Implement the approach",
+      dependsOnWorkItemIDs: [prerequisite.id]
+    )
+
+    await #expect(throws: PersistenceError.self) {
+      try await store.archiveWorkItems(ids: [prerequisite.id])
+    }
+    let afterRejectedArchive = try await store.fetchWorkItems(productID: product.id)
+    #expect(afterRejectedArchive.first { $0.id == prerequisite.id }?.state == .backlog)
+    #expect(afterRejectedArchive.first { $0.id == dependent.id }?.state == .backlog)
+
+    try await store.archiveWorkItems(ids: [prerequisite.id, dependent.id])
+    let archived = try await store.fetchWorkItems(productID: product.id)
+      .filter { [prerequisite.id, dependent.id].contains($0.id) }
+    #expect(archived.count == 2)
+    #expect(archived.allSatisfy { $0.state == .cancelled })
     await store.close()
   }
 
@@ -1265,6 +1890,14 @@ struct SQLiteStoreTests {
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.proposeRetrospectiveAction(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        body: "Review the sprint only after delivery is complete",
+        destination: .teamPractice
+      )
+    }
     for state in [
       WorkItemState.running,
       .integrating,
@@ -1283,6 +1916,41 @@ struct SQLiteStoreTests {
     let completed = try await store.completeSprintIfFinished(id: active.sprint.id)
     #expect(completed.sprint.state == .completed)
     #expect(completed.sprint.retrospectiveConcludedAt == nil)
+
+    let ownerPractice = try await store.proposeRetrospectiveAction(
+      productID: product.id,
+      sprintID: completed.sprint.id,
+      body: "  Include Product Owner observations in every retrospective  ",
+      destination: .teamPractice
+    )
+    #expect(ownerPractice.authorName == "Product Owner")
+    #expect(ownerPractice.body == "Include Product Owner observations in every retrospective")
+    #expect(ownerPractice.actionStatus == .proposed)
+    #expect(ownerPractice.actionDestination == .teamPractice)
+
+    let ownerTicket = try await store.proposeRetrospectiveAction(
+      productID: product.id,
+      sprintID: completed.sprint.id,
+      body: "Show whether retrospective actions improved delivery",
+      destination: .backlog
+    )
+    _ = try await store.decideRetrospectiveAction(
+      noteID: ownerPractice.id,
+      accept: true
+    )
+    let createdTicket = try #require(
+      try await store.decideRetrospectiveAction(
+        noteID: ownerTicket.id,
+        accept: true
+      )
+    )
+    #expect(createdTicket.title == ownerTicket.body)
+    #expect(createdTicket.state == .backlog)
+    #expect(
+      try await store.fetchActivity(productID: product.id)
+        .filter { $0.kind == "retrospective.action_proposed" }
+        .count == 2
+    )
 
     let action = RetrospectiveNote(
       productID: product.id,
@@ -1305,6 +1973,14 @@ struct SQLiteStoreTests {
     let concludedAt = try #require(concluded.sprint.retrospectiveConcludedAt)
     let repeated = try await store.concludeRetrospective(id: completed.sprint.id)
     #expect(repeated.sprint.retrospectiveConcludedAt == concludedAt)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.proposeRetrospectiveAction(
+        productID: product.id,
+        sprintID: completed.sprint.id,
+        body: "Do not reopen a concluded retrospective",
+        destination: .backlog
+      )
+    }
     #expect(
       try await store.fetchActivity(productID: product.id)
         .filter { $0.kind == "retrospective.concluded" }
@@ -1498,5 +2174,25 @@ private struct DatabaseFixture {
 
   func remove() {
     try? FileManager.default.removeItem(at: directoryURL)
+  }
+
+  func execute(_ sql: String) throws {
+    var database: OpaquePointer?
+    let openResult = sqlite3_open(databaseURL.path, &database)
+    guard openResult == SQLITE_OK, let database else {
+      if let database {
+        sqlite3_close(database)
+      }
+      throw PersistenceError.sqlite(code: openResult, message: "Could not open test database")
+    }
+    defer { sqlite3_close(database) }
+
+    var errorMessage: UnsafeMutablePointer<CChar>?
+    let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
+    guard result == SQLITE_OK else {
+      let message = errorMessage.map { String(cString: $0) } ?? "Could not execute test SQL"
+      sqlite3_free(errorMessage)
+      throw PersistenceError.sqlite(code: result, message: message)
+    }
   }
 }

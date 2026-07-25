@@ -26,15 +26,13 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
 }
 
 public enum EpicStatus: String, Codable, CaseIterable, Hashable, Sendable {
-  case draft
   case active
   case complete
   case archived
 
   public var title: String {
     switch self {
-    case .draft: "Draft"
-    case .active: "Active"
+    case .active: "Open"
     case .complete: "Complete"
     case .archived: "Archived"
     }
@@ -60,7 +58,7 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
     goal: String,
     successCriteria: [String] = [],
     constraints: String = "",
-    status: EpicStatus = .draft,
+    status: EpicStatus = .active,
     rank: Int = 0,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -252,6 +250,7 @@ public struct SuggestionSession: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let productID: UUID
   public let epicID: UUID?
+  public let sourceWorkItemID: UUID?
   public var status: SuggestionSessionStatus
   public var codexThreadID: String?
   public var codexTurnID: String?
@@ -263,6 +262,7 @@ public struct SuggestionSession: Identifiable, Codable, Hashable, Sendable {
     id: UUID = UUID(),
     productID: UUID,
     epicID: UUID? = nil,
+    sourceWorkItemID: UUID? = nil,
     status: SuggestionSessionStatus = .generating,
     codexThreadID: String? = nil,
     codexTurnID: String? = nil,
@@ -273,6 +273,7 @@ public struct SuggestionSession: Identifiable, Codable, Hashable, Sendable {
     self.id = id
     self.productID = productID
     self.epicID = epicID
+    self.sourceWorkItemID = sourceWorkItemID
     self.status = status
     self.codexThreadID = codexThreadID
     self.codexTurnID = codexTurnID
@@ -421,12 +422,96 @@ public enum CommentAuthorKind: String, Codable, Sendable {
   case system
 }
 
+public struct TicketOwnerQuestion: Codable, Hashable, Sendable {
+  public let prompt: String
+  public let options: [String]
+
+  public init(prompt: String, options: [String]) {
+    self.prompt = prompt
+    self.options = options
+  }
+
+  public static func presentation(
+    in body: String,
+    structuredQuestion: TicketOwnerQuestion?
+  ) -> TicketOwnerQuestionPresentation? {
+    if let legacyPresentation = parseLegacyWorkLogBody(body) {
+      guard
+        structuredQuestion == nil
+          || structuredQuestion == legacyPresentation.question
+      else {
+        return structuredQuestion.map {
+          TicketOwnerQuestionPresentation(context: body, question: $0)
+        }
+      }
+      return TicketOwnerQuestionPresentation(
+        context: legacyPresentation.context,
+        question: structuredQuestion ?? legacyPresentation.question
+      )
+    }
+    return structuredQuestion.map {
+      TicketOwnerQuestionPresentation(context: body, question: $0)
+    }
+  }
+
+  private static func parseLegacyWorkLogBody(
+    _ body: String
+  ) -> TicketOwnerQuestionPresentation? {
+    let questionMarker = "\n\nQuestion for you: "
+    let optionsMarker = "\n\nOptions:\n"
+    guard
+      let questionRange = body.range(of: questionMarker, options: .backwards)
+    else { return nil }
+
+    let questionAndOptions = body[questionRange.upperBound...]
+    guard let optionsRange = questionAndOptions.range(of: optionsMarker) else {
+      return nil
+    }
+
+    let prompt = questionAndOptions[..<optionsRange.lowerBound]
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let optionLines = questionAndOptions[optionsRange.upperBound...]
+      .components(separatedBy: .newlines)
+      .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    let options = optionLines.compactMap { line -> String? in
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.hasPrefix("- ") else { return nil }
+      return String(trimmed.dropFirst(2))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    guard
+      !prompt.isEmpty,
+      (2...4).contains(options.count),
+      options.count == optionLines.count,
+      options.allSatisfy({ !$0.isEmpty })
+    else { return nil }
+
+    return TicketOwnerQuestionPresentation(
+      context: String(body[..<questionRange.lowerBound])
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      question: TicketOwnerQuestion(prompt: prompt, options: options)
+    )
+  }
+}
+
+public struct TicketOwnerQuestionPresentation: Equatable, Sendable {
+  public let context: String
+  public let question: TicketOwnerQuestion
+
+  public init(context: String, question: TicketOwnerQuestion) {
+    self.context = context
+    self.question = question
+  }
+}
+
 public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let workItemID: UUID
   public let authorKind: CommentAuthorKind
   public let authorName: String
   public let body: String
+  public let ownerQuestion: TicketOwnerQuestion?
+  public let answeredQuestions: [TicketAnsweredQuestion]
   public let createdAt: Date
 
   public init(
@@ -435,6 +520,8 @@ public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
     authorKind: CommentAuthorKind,
     authorName: String,
     body: String,
+    ownerQuestion: TicketOwnerQuestion? = nil,
+    answeredQuestions: [TicketAnsweredQuestion] = [],
     createdAt: Date = Date()
   ) {
     self.id = id
@@ -442,7 +529,80 @@ public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
     self.authorKind = authorKind
     self.authorName = authorName
     self.body = body
+    self.ownerQuestion = ownerQuestion
+    self.answeredQuestions = answeredQuestions
     self.createdAt = createdAt
+  }
+}
+
+public struct TicketAnsweredQuestion: Codable, Hashable, Sendable {
+  public let question: TicketRefinementQuestion
+  public let selectedOption: String?
+  public let answer: String
+
+  public init(
+    question: TicketRefinementQuestion,
+    selectedOption: String?,
+    answer: String
+  ) {
+    self.question = question
+    self.selectedOption = selectedOption
+    self.answer = answer
+  }
+}
+
+public typealias EpicPlanningAnsweredQuestion = TicketAnsweredQuestion
+
+public struct EpicPlanningConversationMessage: Identifiable, Codable, Hashable, Sendable {
+  public enum Author: String, Codable, Hashable, Sendable {
+    case owner
+    case businessAnalyst = "business_analyst"
+    case system
+  }
+
+  public let id: UUID
+  public let author: Author
+  public let body: String
+  public let createdAt: Date
+  public let answeredQuestions: [EpicPlanningAnsweredQuestion]
+
+  public init(
+    id: UUID = UUID(),
+    author: Author,
+    body: String,
+    createdAt: Date = Date(),
+    answeredQuestions: [EpicPlanningAnsweredQuestion] = []
+  ) {
+    self.id = id
+    self.author = author
+    self.body = body
+    self.createdAt = createdAt
+    self.answeredQuestions = answeredQuestions
+  }
+}
+
+public struct EpicPlanningConversationSnapshot: Codable, Hashable, Sendable {
+  public let epicID: UUID
+  public var messages: [EpicPlanningConversationMessage]
+  public var questions: [TicketRefinementQuestion]
+  public var isComplete: Bool
+  public var threadID: String?
+  public var updatedAt: Date
+
+  public init(
+    epicID: UUID,
+    messages: [EpicPlanningConversationMessage],
+    questions: [TicketRefinementQuestion],
+    isComplete: Bool,
+    threadID: String? = nil,
+    updatedAt: Date = Date()
+  ) {
+    self.epicID = epicID
+    self.messages = messages
+    self.questions = questions
+    self.isComplete = isComplete
+    self.threadID = threadID
+    self.updatedAt = updatedAt
   }
 }
 
@@ -895,13 +1055,13 @@ public enum RetrospectiveActionStatus: String, Codable, Sendable {
   case dismissed
 }
 
-public enum RetrospectiveActionDestination: String, Codable, Sendable {
+public enum RetrospectiveActionDestination: String, Codable, CaseIterable, Sendable {
   case teamPractice = "team_practice"
   case backlog
 
   public var title: String {
     switch self {
-    case .teamPractice: "Team practice"
+    case .teamPractice: "Ways of working"
     case .backlog: "Backlog ticket"
     }
   }

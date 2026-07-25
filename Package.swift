@@ -32,6 +32,10 @@ let package = Package(
       name: "StoryPointlessCoreTests",
       dependencies: ["StoryPointlessCore"]
     ),
+    .testTarget(
+      name: "StoryPointlessAppTests",
+      dependencies: ["StoryPointlessApp"]
+    ),
   ],
   swiftLanguageModes: [.v6]
 )

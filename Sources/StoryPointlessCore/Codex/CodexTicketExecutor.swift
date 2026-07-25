@@ -40,6 +40,40 @@ public struct RetrospectiveActionProposal: Codable, Equatable, Sendable {
   }
 }
 
+public struct FollowUpTicketProposalDraft: Codable, Equatable, Sendable {
+  public let reference: String
+  public let title: String
+  public let type: WorkItemType
+  public let body: String
+  public let acceptanceCriteria: [String]
+  public let suggestedRole: AgentRole
+  public let priority: WorkItemPriority
+  public let rationale: String
+  public let dependsOnReferences: [String]
+
+  public init(
+    reference: String,
+    title: String,
+    type: WorkItemType,
+    body: String,
+    acceptanceCriteria: [String],
+    suggestedRole: AgentRole,
+    priority: WorkItemPriority,
+    rationale: String,
+    dependsOnReferences: [String] = []
+  ) {
+    self.reference = reference
+    self.title = title
+    self.type = type
+    self.body = body
+    self.acceptanceCriteria = acceptanceCriteria
+    self.suggestedRole = suggestedRole
+    self.priority = priority
+    self.rationale = rationale
+    self.dependsOnReferences = dependsOnReferences
+  }
+}
+
 public struct TicketExecutionResult: Codable, Equatable, Sendable {
   public let status: TicketExecutionStatus
   public let comment: String
@@ -54,6 +88,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
   public let retrospectiveCouldImprove: [String]
   public let retrospectiveActions: [RetrospectiveActionProposal]
   public let knowledgePageProposals: [KnowledgePageProposalDraft]
+  public let followUpTicketProposals: [FollowUpTicketProposalDraft]
 
   public init(
     status: TicketExecutionStatus,
@@ -68,7 +103,8 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     retrospectiveWentWell: [String],
     retrospectiveCouldImprove: [String],
     retrospectiveActions: [RetrospectiveActionProposal],
-    knowledgePageProposals: [KnowledgePageProposalDraft] = []
+    knowledgePageProposals: [KnowledgePageProposalDraft] = [],
+    followUpTicketProposals: [FollowUpTicketProposalDraft] = []
   ) {
     self.status = status
     self.comment = comment
@@ -83,6 +119,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     self.retrospectiveCouldImprove = retrospectiveCouldImprove
     self.retrospectiveActions = retrospectiveActions
     self.knowledgePageProposals = knowledgePageProposals
+    self.followUpTicketProposals = followUpTicketProposals
   }
 
   public var workLogComment: String {
@@ -90,7 +127,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     case .completed:
       var sections = [comment]
       if !summary.isEmpty {
-        sections.append("Completed: \(summary)")
+        sections.append("Completion handoff:\n\(summary)")
       }
       if !tests.isEmpty {
         sections.append("Checks:\n\(tests.map { "- \($0)" }.joined(separator: "\n"))")
@@ -103,6 +140,13 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
       if !reviewInstructions.isEmpty {
         sections.append(
           "How to review:\n\(reviewInstructions.map { "- \($0)" }.joined(separator: "\n"))"
+        )
+      }
+      if !followUpTicketProposals.isEmpty {
+        sections.append(
+          "Recommended follow-up tickets:\n"
+            + followUpTicketProposals.map { "- \($0.reference): \($0.title)" }
+              .joined(separator: "\n")
         )
       }
       return sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -163,6 +207,11 @@ public enum CodexTicketExecutor {
     suitable for the ticket Work log. changedFiles must contain workspace-relative paths. tests must
     report commands or checks actually run and their result. knowledgeNotes must capture durable
     decisions, trade-offs, and usage information established by the work; never include guesses.
+    For every completed ticket, comment, summary, and knowledgeNotes together must form a
+    self-contained completion handoff for its planned direct dependants. State the delivered outcome,
+    decisions, selected providers or contracts, operating requirements, evidence, caveats, and what
+    downstream work may safely assume. Put reusable cross-ticket truth in knowledgePageProposals as
+    well as the handoff. Do not rely on private agent context or an unrecorded implementation detail.
     A completed result must include one to six reviewInstructions telling a non-technical Product
     Owner exactly how to inspect the outcome. Mention a URL, file, command, endpoint, or evidence
     only when it actually exists. If the outcome is not independently interactive, say which
@@ -193,6 +242,25 @@ public enum CodexTicketExecutor {
     never use a proposal to resolve an unstated material Product Owner choice. Return awaiting_owner
     instead. Ticket-specific delivery history is generated separately and must not be proposed here.
     Awaiting-owner results must return no proposals.
+
+    A Business Analyst completing an explicitly authorised research, discovery, or decision ticket
+    may return zero to twelve followUpTicketProposals when the evidence establishes concrete product
+    work that is not already in the supplied active scope. These are reviewable recommendations, not
+    authorised scope. Planned direct dependants and the supplied active scope are already accepted work:
+    use the completion handoff and Product knowledge to give them the decision, contract, and caveats they
+    need. Do not reword, split, replace, or duplicate them as follow-up proposals. Return an empty
+    followUpTicketProposals array whenever they already cover the downstream work. If the evidence
+    materially conflicts with an existing ticket contract, return awaiting_owner with one decision
+    question instead of silently changing that contract or proposing a substitute.
+
+    Only propose follow-up tickets for genuinely new scope that no planned dependant or active ticket
+    covers. Explain through each rationale why the work is new rather than a detail for an existing
+    ticket. When that exceptional case applies, propose the smallest coherent downstream delivery graph,
+    with testable acceptance criteria and genuine dependencies between temporary references such as F1
+    and F2. Do not restate the research ticket, speculate beyond its evidence, or propose follow-up
+    tickets from an ordinary implementation ticket. StoryPointless will add the completed research ticket
+    as a durable prerequisite and will publish the proposals only after Product Owner approval.
+    Awaiting-owner results must return no follow-up ticket proposals.
     """
 
   public static func developerInstructions(
@@ -224,9 +292,11 @@ public enum CodexTicketExecutor {
     item: WorkItem,
     assignee: AgentProfile,
     prerequisites: [WorkItem],
+    dependants: [WorkItem],
     prerequisiteComments: [UUID: [TicketComment]],
     ticketComments: [TicketComment],
     knowledgeContext: [KnowledgePage],
+    existingItems: [WorkItem] = [],
     continuationMessage: String? = nil
   ) -> String {
     let criteria = item.acceptanceCriteria.isEmpty
@@ -235,16 +305,36 @@ public enum CodexTicketExecutor {
     let dependencyContext = prerequisites.isEmpty
       ? "No prerequisites."
       : prerequisites.map { prerequisite in
+        let criteria = prerequisite.acceptanceCriteria.isEmpty
+          ? "  - No acceptance criteria supplied."
+          : prerequisite.acceptanceCriteria.map { "  - \($0)" }.joined(separator: "\n")
         let comments = prerequisiteComments[prerequisite.id, default: []]
           .suffix(20)
           .map { "  - \($0.authorName): \($0.body)" }
           .joined(separator: "\n")
         return """
           - \(prerequisite.key) [\(prerequisite.state.title)]: \(prerequisite.title)
-            \(prerequisite.body.isEmpty ? "No additional context." : prerequisite.body)
-          \(comments.isEmpty ? "  No prerequisite comments." : comments)
+            Context: \(prerequisite.body.isEmpty ? "No additional context." : prerequisite.body)
+            Acceptance criteria:
+          \(criteria)
+            Recent Work log:
+          \(comments.isEmpty ? "  - No prerequisite comments." : comments)
           """
       }.joined(separator: "\n")
+    let dependantContext = dependants
+      .filter { $0.state != .cancelled }
+      .map { dependant in
+        let criteria = dependant.acceptanceCriteria.isEmpty
+          ? "  - No acceptance criteria supplied."
+          : dependant.acceptanceCriteria.map { "  - \($0)" }.joined(separator: "\n")
+        return """
+          - \(dependant.key) [\(dependant.state.title), \(dependant.type.title)]: \(dependant.title)
+            Context: \(dependant.body.isEmpty ? "No additional context." : dependant.body)
+            Acceptance criteria:
+          \(criteria)
+          """
+      }
+      .joined(separator: "\n")
     let history = ticketComments.isEmpty
       ? "No ticket comments."
       : ticketComments.suffix(40).map { "- \($0.authorName): \($0.body)" }
@@ -257,6 +347,10 @@ public enum CodexTicketExecutor {
         \(page.bodyMarkdown)
         """
       }.joined(separator: "\n\n")
+    let existingScope = existingItems
+      .filter { $0.id != item.id && $0.state != .cancelled }
+      .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
+      .joined(separator: "\n")
 
     return """
       Product: \(product.name)
@@ -274,11 +368,22 @@ public enum CodexTicketExecutor {
       Completed prerequisite context:
       \(dependencyContext)
 
+      Planned direct dependant tickets:
+      \(dependantContext.isEmpty ? "No active tickets directly depend on this ticket." : dependantContext)
+
+      These dependant tickets already represent planned downstream work. Do not duplicate, replace,
+      reword, or split them into follow-up proposals. Use the completion handoff and verified Product
+      knowledge to give them the decisions and operating details they need. Return an empty
+      followUpTicketProposals array when they and the existing active scope cover the work.
+
       Ticket Work log comments:
       \(history)
 
       Verified knowledge context:
       \(knowledge)
+
+      Existing active scope (do not duplicate it in follow-up proposals):
+      \(existingScope.isEmpty ? "No other active tickets." : existingScope)
 
       \(continuationMessage.map { "Continuation instruction:\n\($0)" } ?? "Begin the authorised work now.")
       """
@@ -338,6 +443,7 @@ public enum CodexTicketExecutor {
         .string("retrospectiveCouldImprove"),
         .string("retrospectiveActions"),
         .string("knowledgePageProposals"),
+        .string("followUpTicketProposals"),
       ]),
       "properties": .object([
         "status": .object([
@@ -419,6 +525,11 @@ public enum CodexTicketExecutor {
             ]),
           ]),
         ]),
+        "followUpTicketProposals": .object([
+          "type": .string("array"),
+          "maxItems": .number(12),
+          "items": followUpTicketProposalSchema,
+        ]),
       ]),
     ])
   }
@@ -451,6 +562,11 @@ public enum CodexTicketExecutor {
       guard generated.knowledgePageProposals.isEmpty else {
         throw TicketExecutionGenerationError.invalidResponse(
           "Awaiting-owner results cannot propose canonical knowledge changes."
+        )
+      }
+      guard generated.followUpTicketProposals?.isEmpty != false else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "Awaiting-owner results cannot propose follow-up tickets."
         )
       }
     }
@@ -518,6 +634,9 @@ public enum CodexTicketExecutor {
         rationale: rationale
       )
     }
+    let followUpTicketProposals = try decodeFollowUpTicketProposals(
+      generated.followUpTicketProposals ?? []
+    )
 
     return TicketExecutionResult(
       status: generated.status,
@@ -532,8 +651,22 @@ public enum CodexTicketExecutor {
       retrospectiveWentWell: Array(clean(generated.retrospectiveWentWell).prefix(2)),
       retrospectiveCouldImprove: Array(clean(generated.retrospectiveCouldImprove).prefix(2)),
       retrospectiveActions: cleanActions(generated.retrospectiveActions),
-      knowledgePageProposals: proposals
+      knowledgePageProposals: proposals,
+      followUpTicketProposals: followUpTicketProposals
     )
+  }
+
+  public static func validateFollowUpTicketProposals(
+    in result: TicketExecutionResult,
+    assignee: AgentProfile
+  ) throws {
+    guard !result.followUpTicketProposals.isEmpty else { return }
+    guard assignee.role == .businessAnalyst else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Only an assigned Business Analyst may propose follow-up tickets from authorised "
+          + "research, discovery, or decision work."
+      )
+    }
   }
 
   private static var nullableStringSchema: JSONValue {
@@ -564,6 +697,164 @@ public enum CodexTicketExecutor {
         ]),
       ]),
     ])
+  }
+
+  private static var followUpTicketProposalSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([
+        .string("reference"),
+        .string("title"),
+        .string("type"),
+        .string("body"),
+        .string("acceptanceCriteria"),
+        .string("role"),
+        .string("priority"),
+        .string("rationale"),
+        .string("dependsOn"),
+      ]),
+      "properties": .object([
+        "reference": .object(["type": .string("string")]),
+        "title": .object(["type": .string("string")]),
+        "type": .object([
+          "type": .string("string"),
+          "enum": .array(WorkItemType.allCases.map { .string($0.rawValue) }),
+        ]),
+        "body": .object(["type": .string("string")]),
+        "acceptanceCriteria": .object([
+          "type": .string("array"),
+          "minItems": .integer(1),
+          "items": .object(["type": .string("string")]),
+        ]),
+        "role": .object([
+          "type": .string("string"),
+          "enum": .array([
+            .string(AgentRole.businessAnalyst.rawValue),
+            .string(AgentRole.uxDesigner.rawValue),
+            .string(AgentRole.implementer.rawValue),
+          ]),
+        ]),
+        "priority": .object([
+          "type": .string("string"),
+          "enum": .array([
+            .string("urgent"), .string("high"), .string("normal"), .string("low"),
+          ]),
+        ]),
+        "rationale": .object(["type": .string("string")]),
+        "dependsOn": .object([
+          "type": .string("array"),
+          "items": .object(["type": .string("string")]),
+        ]),
+      ]),
+    ])
+  }
+
+  private static func decodeFollowUpTicketProposals(
+    _ generated: [GeneratedFollowUpTicketProposal]
+  ) throws -> [FollowUpTicketProposalDraft] {
+    guard generated.count <= 12 else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "A research result can propose at most twelve follow-up tickets."
+      )
+    }
+    let references = generated.map { normalizedReference($0.reference) }
+    guard references.allSatisfy({ !$0.isEmpty }), Set(references).count == references.count else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Follow-up ticket references must be non-empty and unique."
+      )
+    }
+    let referenceSet = Set(references)
+    let dependencies = Dictionary(
+      uniqueKeysWithValues: zip(references, generated).map { reference, proposal in
+        (reference, proposal.dependsOn.map(normalizedReference))
+      }
+    )
+    guard dependencies.values.flatMap({ $0 }).allSatisfy(referenceSet.contains) else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Every follow-up dependency must reference another follow-up ticket."
+      )
+    }
+    guard dependencies.allSatisfy({ reference, values in !values.contains(reference) }) else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "A follow-up ticket cannot depend on itself."
+      )
+    }
+    guard !hasDependencyCycle(dependencies) else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Follow-up ticket dependencies must not contain a cycle."
+      )
+    }
+
+    return try zip(references, generated).map { reference, proposal in
+      let title = proposal.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      let body = proposal.body.trimmingCharacters(in: .whitespacesAndNewlines)
+      let criteria = clean(proposal.acceptanceCriteria)
+      let rationale = proposal.rationale.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard
+        !title.isEmpty,
+        !body.isEmpty,
+        !criteria.isEmpty,
+        !rationale.isEmpty,
+        let type = WorkItemType(rawValue: proposal.type),
+        let role = AgentRole(rawValue: proposal.role),
+        [.businessAnalyst, .uxDesigner, .implementer].contains(role),
+        let priority = priority(named: proposal.priority)
+      else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "Each follow-up ticket needs a title, context, criteria, role, priority, and rationale."
+        )
+      }
+      return FollowUpTicketProposalDraft(
+        reference: reference,
+        title: title,
+        type: type,
+        body: body,
+        acceptanceCriteria: criteria,
+        suggestedRole: role,
+        priority: priority,
+        rationale: rationale,
+        dependsOnReferences: dependencies[reference] ?? []
+      )
+    }
+  }
+
+  private static func normalizedReference(_ value: String) -> String {
+    String(
+      value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .uppercased()
+        .filter { $0.isLetter || $0.isNumber }
+    )
+  }
+
+  private static func priority(named value: String) -> WorkItemPriority? {
+    switch value {
+    case "urgent": .urgent
+    case "high": .high
+    case "normal": .normal
+    case "low": .low
+    default: nil
+    }
+  }
+
+  private static func hasDependencyCycle(_ dependencies: [String: [String]]) -> Bool {
+    var visiting: Set<String> = []
+    var visited: Set<String> = []
+
+    func visit(_ reference: String) -> Bool {
+      if visiting.contains(reference) { return true }
+      if visited.contains(reference) { return false }
+      visiting.insert(reference)
+      for dependency in dependencies[reference] ?? [] where visit(dependency) {
+        return true
+      }
+      visiting.remove(reference)
+      visited.insert(reference)
+      return false
+    }
+
+    return dependencies.keys.contains { visit($0) }
   }
 
   private static func cleanActions(
@@ -597,6 +888,7 @@ private struct GeneratedTicketExecutionResult: Codable {
   let retrospectiveCouldImprove: [String]
   let retrospectiveActions: [RetrospectiveActionProposal]
   let knowledgePageProposals: [GeneratedKnowledgePageProposal]
+  let followUpTicketProposals: [GeneratedFollowUpTicketProposal]?
 }
 
 private struct GeneratedKnowledgePageProposal: Codable {
@@ -606,6 +898,18 @@ private struct GeneratedKnowledgePageProposal: Codable {
   let title: String
   let proposedBodyMarkdown: String
   let rationale: String
+}
+
+private struct GeneratedFollowUpTicketProposal: Codable {
+  let reference: String
+  let title: String
+  let type: String
+  let body: String
+  let acceptanceCriteria: [String]
+  let role: String
+  let priority: String
+  let rationale: String
+  let dependsOn: [String]
 }
 
 public enum TechLeadReviewDecision: String, Codable, Sendable {
@@ -668,8 +972,10 @@ public enum CodexTechLeadReviewer {
     the produced artefact gives a reasonable evidence-backed recommendation and records important
     assumptions or Product Owner decisions. Do not require an exhaustive specification, complete
     downstream implementation mappings, or fresh independent research unless the ticket explicitly
-    asks for it. An acceptance criterion requiring Product Owner approval means the artefact must be
-    ready for that approval; the approval does not need to pre-exist the demonstration.
+    asks for it. Review any follow-up ticket proposals for a clear connection to the evidence, useful
+    acceptance criteria, and duplication of existing scope; they remain optional Product Owner
+    recommendations. An acceptance criterion requiring Product Owner approval means the artefact must
+    be ready for that approval; the approval does not need to pre-exist the demonstration.
 
     For implementation tickets, inspect the relevant diff, targeted checks, and resulting behaviour
     rather than attempting a second implementation. The purpose of review is to catch material
@@ -741,6 +1047,14 @@ public enum CodexTechLeadReviewer {
           Rationale: \(proposal.rationale)
         """
       }.joined(separator: "\n")
+    let followUpProposals = implementation.followUpTicketProposals.isEmpty
+      ? "No follow-up tickets were proposed."
+      : implementation.followUpTicketProposals.map { proposal in
+        """
+        - \(proposal.reference): \(proposal.title) [\(proposal.type.title), \(proposal.suggestedRole.title)]
+          Rationale: \(proposal.rationale)
+        """
+      }.joined(separator: "\n")
     let reviewMode: String
     if reviewCycle > 0 {
       reviewMode = """
@@ -794,6 +1108,9 @@ public enum CodexTechLeadReviewer {
 
       Proposed canonical knowledge changes:
       \(knowledgeProposals)
+
+      Proposed follow-up tickets:
+      \(followUpProposals)
 
       Recent ticket Work log:
       \(history.isEmpty ? "No earlier Work log context." : history)
