@@ -152,6 +152,30 @@ struct SprintTicketWorkLogHistoryTests {
     ])
   }
 
+  @Test("Work log rows mark every entry except the last for separation")
+  func workLogRowsUseOneOrderedSnapshot() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 1_500)
+    let entries = (0..<3).map { offset in
+      SprintWorkLogEntry.event(
+        ActivityEvent(
+          productID: productID,
+          workItemID: workItemID,
+          kind: "test.event",
+          actor: "StoryPointless",
+          detail: "Event \(offset)",
+          createdAt: base.addingTimeInterval(TimeInterval(offset))
+        )
+      )
+    }
+
+    let rows = SprintTicketWorkLogTimeline.rows(entries)
+
+    #expect(rows.map(\.id) == entries.map(\.id))
+    #expect(rows.map(\.showsBottomSeparator) == [true, true, false])
+  }
+
   @Test("Each Ready for Demo transition uses the latest preceding candidate")
   func demoTransitionsUseLatestCandidate() throws {
     let productID = UUID()

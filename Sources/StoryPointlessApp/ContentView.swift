@@ -6938,14 +6938,6 @@ struct SprintTicketRunTelemetryPresentation {
   }
 }
 
-struct SprintTicketCardActivityPresentation {
-  let showsAgentWorkShimmer: Bool
-
-  init(run: AgentRun?, showsWorkflowActions: Bool) {
-    showsAgentWorkShimmer = !showsWorkflowActions && run?.status == .running
-  }
-}
-
 private enum AIActivityVisualStyle {
   static var tint: Color { .purple }
 }
@@ -7812,13 +7804,6 @@ private struct WorkItemCard: View {
     onOpen != nil && isHovering
   }
 
-  private var activityPresentation: SprintTicketCardActivityPresentation {
-    SprintTicketCardActivityPresentation(
-      run: latestRun,
-      showsWorkflowActions: showsWorkflowActions
-    )
-  }
-
   private var cardBackground: Color {
     return colorScheme == .dark
       ? Color.white.opacity(0.06)
@@ -7880,9 +7865,6 @@ private struct WorkItemCard: View {
     .background {
       ZStack {
         cardBackground
-        if activityPresentation.showsAgentWorkShimmer {
-          ActiveTicketShimmer()
-        }
         if isInteractiveHover {
           Color.accentColor.opacity(0.055)
         }
@@ -7933,94 +7915,6 @@ private struct WorkItemCard: View {
     default:
       false
     }
-  }
-}
-
-private struct ActiveTicketShimmer: View {
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  private static let travelCurve = UnitCurve.bezier(
-    startControlPoint: UnitPoint(x: 0.8, y: 0),
-    endControlPoint: UnitPoint(x: 0.2, y: 1)
-  )
-
-  var body: some View {
-    GeometryReader { geometry in
-      if !reduceMotion {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-          let cycleDuration = 3.0
-          let linearProgress =
-            timeline.date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: cycleDuration)
-            / cycleDuration
-          let position = CGFloat(
-            Self.travelCurve.value(at: linearProgress)
-          )
-          let bandWidth = max(220, geometry.size.width * 0.92)
-          let bandHeight =
-            (geometry.size.height * 1.1)
-            + (bandWidth * 0.35)
-          let startX = -bandWidth * 0.3
-          let endX = geometry.size.width + (bandWidth * 0.3)
-          let centerX =
-            startX + (position * (endX - startX))
-          let centerY = geometry.size.height * 0.5
-          let entryOpacity = min(1, linearProgress / 0.08)
-          let exitOpacity = min(1, (1 - linearProgress) / 0.14)
-          let temporalOpacity = min(entryOpacity, exitOpacity)
-
-          LinearGradient(
-            gradient: Gradient(stops: [
-              .init(color: .clear, location: 0),
-              .init(
-                color: Color.accentColor.opacity(0.008),
-                location: 0.12
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.03),
-                location: 0.28
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.075),
-                location: 0.42
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.1),
-                location: 0.48
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.1),
-                location: 0.52
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.075),
-                location: 0.58
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.03),
-                location: 0.72
-              ),
-              .init(
-                color: Color.accentColor.opacity(0.008),
-                location: 0.88
-              ),
-              .init(color: .clear, location: 1),
-            ]),
-            startPoint: .leading,
-            endPoint: .trailing
-          )
-          .frame(
-            width: bandWidth,
-            height: bandHeight
-          )
-          .rotationEffect(.degrees(15))
-          .position(x: centerX, y: centerY)
-          .opacity(temporalOpacity)
-        }
-      }
-    }
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
   }
 }
 
@@ -8160,7 +8054,6 @@ private struct SprintTicketDetailView: View {
   let item: WorkItem
   @State private var comments: [TicketComment] = []
   @State private var activityEvents: [ActivityEvent] = []
-  @State private var commentDraft = ""
   @State private var isPostingComment = false
   @State private var isAskingQuestion = false
   @State private var isResumingWork = false
@@ -8174,7 +8067,7 @@ private struct SprintTicketDetailView: View {
   @State private var hoveredContextPageID: UUID?
   @State private var ownerAnswerSelection: TicketOwnerAnswerSelection?
   @State private var customOwnerAnswerDraft = ""
-  @FocusState private var isCommentComposerFocused: Bool
+  @State private var commentComposerFocusResetRequest = 0
 
   private var currentItem: WorkItem {
     model.workItems.first { $0.id == item.id } ?? item
@@ -8358,13 +8251,13 @@ private struct SprintTicketDetailView: View {
     min(780, max(600, containerSize.height - 110))
   }
 
-  private var latestActivityButton: some View {
+  private func latestActivityButton(hasEntries: Bool) -> some View {
     Button {
       workLogScrollRequest += 1
     } label: {
       Label("Latest activity", systemImage: "arrow.down.to.line")
     }
-    .disabled(workLogEntries.isEmpty)
+    .disabled(!hasEntries)
     .help("Jump to the latest Work log entry")
   }
 
@@ -8411,19 +8304,6 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private var canPostComment: Bool {
-    !commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !isPostingComment
-      && !isAskingQuestion
-      && !isResumingWork
-  }
-
-  private var canAskQuestion: Bool {
-    canPostComment
-      && commentReplyRecipient != nil
-      && !model.isTicketConversationMessageRunning
-  }
-
   private var ownerAnswer: String? {
     switch ownerAnswerSelection {
     case .option(let option):
@@ -8439,20 +8319,6 @@ private struct SprintTicketDetailView: View {
 
   private var canRetryFailedPostReviewDemo: Bool {
     model.canRetryFailedPostReviewDemo(workItemID: item.id)
-  }
-
-  private var resumeWorkDraft: String {
-    if activeOwnerQuestionComment != nil {
-      return ownerAnswer ?? ""
-    }
-    return commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private var canResumeWork: Bool {
-    (canRetryFailedPostReviewDemo || !resumeWorkDraft.isEmpty)
-      && !isPostingComment
-      && !isAskingQuestion
-      && !isResumingWork
   }
 
   private var awaitingOwnerRun: AgentRun? {
@@ -9474,6 +9340,8 @@ private struct SprintTicketDetailView: View {
   }
 
   var body: some View {
+    let workLogRows = SprintTicketWorkLogTimeline.rows(workLogEntries)
+
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 10) {
         Image(systemName: currentItem.type.symbolName)
@@ -9485,11 +9353,11 @@ private struct SprintTicketDetailView: View {
           .font(.title2.bold())
         Spacer()
         if hasPendingWorkLogAction {
-          latestActivityButton
+          latestActivityButton(hasEntries: !workLogRows.isEmpty)
             .buttonStyle(.borderedProminent)
             .tint(.orange)
         } else {
-          latestActivityButton
+          latestActivityButton(hasEntries: !workLogRows.isEmpty)
             .buttonStyle(.bordered)
         }
         Button("Close") { dismiss() }
@@ -9570,7 +9438,7 @@ private struct SprintTicketDetailView: View {
               HStack {
                 Text("Work log")
                   .font(.headline)
-                Text(workLogEntries.count.formatted())
+                Text(workLogRows.count.formatted())
                   .font(.caption.monospacedDigit())
                   .padding(.horizontal, 7)
                   .padding(.vertical, 3)
@@ -9578,7 +9446,7 @@ private struct SprintTicketDetailView: View {
                 Spacer()
               }
 
-              if workLogEntries.isEmpty {
+              if workLogRows.isEmpty {
                 HStack(spacing: 10) {
                   Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(.tertiary)
@@ -9594,11 +9462,10 @@ private struct SprintTicketDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
               } else {
-                VStack(spacing: 0) {
-                  ForEach(Array(workLogEntries.enumerated()), id: \.element.id) { index, entry in
-                    let showsBottomSeparator = index < workLogEntries.count - 1
+                LazyVStack(spacing: 0) {
+                  ForEach(workLogRows) { row in
                     Group {
-                      switch entry {
+                      switch row.entry {
                       case .comment(let comment):
                         SprintTicketCommentRow(
                           comment: comment,
@@ -9607,7 +9474,7 @@ private struct SprintTicketDetailView: View {
                             in: comment.body,
                             profiles: model.profiles
                           ),
-                          showsBottomSeparator: showsBottomSeparator,
+                          showsBottomSeparator: row.showsBottomSeparator,
                           ownerAnswerSelection:
                             comment.id == activeOwnerQuestionComment?.id
                             ? ownerAnswerSelection
@@ -9628,41 +9495,41 @@ private struct SprintTicketDetailView: View {
                           event: event,
                           profiles: model.profiles,
                           retrospectiveNotes: model.retrospectiveNotes,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .permission(let request):
                         permissionRequestSection(
                           request,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .runContext(let context):
                         contextSection(
                           context,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .candidate(let candidate):
                         deliveryRevisionSection(
                           candidate,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .knowledge(let knowledge):
                         knowledgeProposalsSection(
                           knowledge,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .demo(let demo):
                         demoSection(
                           demo,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       case .followUp(let followUp):
                         followUpTicketProposalsSection(
                           followUp,
-                          showsBottomSeparator: showsBottomSeparator
+                          showsBottomSeparator: row.showsBottomSeparator
                         )
                       }
                     }
-                    .id(entry.id)
+                    .id(row.id)
                   }
                 }
               }
@@ -9694,8 +9561,14 @@ private struct SprintTicketDetailView: View {
       while !Task.isCancelled {
         let isFirstLoad = !hasLoadedWorkLog
         let previousLastEntryID = workLogEntries.last?.id
-        comments = await model.comments(for: item.id)
-        activityEvents = await model.activityEvents(for: item.id)
+        let latestComments = await model.comments(for: item.id)
+        let latestActivityEvents = await model.activityEvents(for: item.id)
+        if latestComments != comments {
+          comments = latestComments
+        }
+        if latestActivityEvents != activityEvents {
+          activityEvents = latestActivityEvents
+        }
         let latestEntryID = workLogEntries.last?.id
         if isFirstLoad, hasPendingWorkLogAction {
           workLogScrollRequest += 1
@@ -9713,217 +9586,40 @@ private struct SprintTicketDetailView: View {
   }
 
   private var commentComposer: some View {
-    HStack(alignment: .top, spacing: 12) {
-      ZStack {
-        Circle()
-          .fill(Color.blue.opacity(0.12))
-        Image(systemName: "person.fill")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.blue)
-      }
-      .frame(width: 34, height: 34)
-
-      VStack(alignment: .leading, spacing: 7) {
-        if canRetryFailedPostReviewDemo {
-          VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-              Image(systemName: "arrow.clockwise.circle.fill")
-              Text("Demo preparation stopped unexpectedly.")
-                .fontWeight(.semibold)
-            }
-            Text(
-              "Retry the already reviewed candidate. No new comment or repeat implementation is required."
-            )
-              .foregroundStyle(.secondary)
-          }
-          .font(.caption)
-          .foregroundStyle(.red)
-        } else if let awaitingOwnerProfile {
-          VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-              Image(systemName: "pause.circle.fill")
-              Text(awaitingOwnerProfile.name)
-                .fontWeight(.semibold)
-              Text("is paused and waiting for direction.")
-            }
-            Text(
-              pendingPermissionRequest != nil
-                ? "Use Allow or Deny on the permission request above. You can still add context here."
-                : activeOwnerQuestionComment == nil
-                  ? "Ask a question without restarting work, or add direction and choose Resume work."
-                  : "Choose an answer above or select Other, then choose Resume work."
-            )
-              .foregroundStyle(.secondary)
-          }
-          .font(.caption)
-          .foregroundStyle(.orange)
-        } else if let failedDeliveryProfile {
-          HStack(spacing: 7) {
-            Image(systemName: "arrow.clockwise.circle.fill")
-            Text(failedDeliveryProfile.name)
-              .fontWeight(.semibold)
-            Text("stopped unexpectedly. Add direction, then choose Retry work.")
-          }
-          .font(.caption)
-          .foregroundStyle(.red)
-        } else if currentItem.state == .acceptance {
-          Label(
-            commentReplyRecipient.map {
-              "Comments go to \($0.name) for a reply without changing the reviewed demo."
-            }
-              ?? "No team member is available to answer comments on this ticket.",
-            systemImage: "play.rectangle"
-          )
-          .font(.caption)
-          .foregroundStyle(.orange)
-        }
-
-        Text(activeOwnerQuestionComment == nil ? "Add a comment" : "Your response")
-          .font(.subheadline.weight(.semibold))
-
-        ZStack(alignment: .topLeading) {
-          if commentDraft.isEmpty && !isCommentComposerFocused {
-            Text("Add context, answer a question, or give feedback…")
-              .foregroundStyle(.tertiary)
-              .padding(.horizontal, 12)
-              .padding(.vertical, 8)
-              .allowsHitTesting(false)
-          }
-          TextEditor(text: $commentDraft)
-            .scrollContentBackground(.hidden)
-            .font(.body)
-            .focused($isCommentComposerFocused)
-            .padding(8)
-            .onKeyPress(phases: .down) { keyPress in
-              guard keyPress.key == .return else { return .ignored }
-              if keyPress.modifiers.contains(.shift) {
-                return .ignored
-              }
-              if currentItem.state == .acceptance, let commentReplyRecipient {
-                if canAskQuestion {
-                  askQuestion(to: commentReplyRecipient)
-                }
-                return .handled
-              }
-              if canPostComment {
-                postComment()
-              }
-              return .handled
-            }
-        }
-        .frame(height: 58)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-          RoundedRectangle(cornerRadius: 8)
-            .stroke(.separator.opacity(0.7), lineWidth: 1)
-        }
-
-        HStack {
-          if let commentError {
-            Label(commentError, systemImage: "exclamationmark.triangle")
-              .font(.caption)
-              .foregroundStyle(.orange)
-          } else {
-            Text("Return to comment · Shift-Return for a new line")
-              .font(.caption2)
-              .foregroundStyle(.tertiary)
-          }
-          Spacer()
-          if pendingPermissionRequest != nil {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canPostComment)
-          } else if canRetryFailedPostReviewDemo {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canPostComment)
-
-            Button(
-              isResumingWork ? "Retrying…" : "Retry demo preparation"
-            ) {
-              resumeWork()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canResumeWork)
-          } else if awaitingOwnerProfile != nil {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canPostComment)
-
-            if let pausedQuestionRecipient {
-              Button(
-                isAskingQuestion ? "Asking…" : "Ask \(pausedQuestionRecipient.name)"
-              ) {
-                askQuestion(to: pausedQuestionRecipient)
-              }
-              .buttonStyle(.bordered)
-              .disabled(!canPostComment)
-            }
-
-            Button(isResumingWork ? "Resuming…" : "Resume work") {
-              resumeWork()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canResumeWork)
-          } else if failedDeliveryProfile != nil {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canPostComment)
-
-            Button(isResumingWork ? "Retrying…" : "Retry work") {
-              resumeWork()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canResumeWork)
-          } else if currentItem.state == .acceptance {
-            Button(isAskingQuestion ? "Commenting…" : "Comment") {
-              guard let commentReplyRecipient else { return }
-              askQuestion(to: commentReplyRecipient)
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canAskQuestion)
-
-            Divider()
-              .frame(height: 20)
-              .padding(.horizontal, 2)
-
-            Button(isResumingWork ? "Sending…" : "Request changes") {
-              resumeWork()
-            }
-            .buttonStyle(.bordered)
-            .disabled(!canResumeWork)
-
-            Button(isAcceptingTicket ? "Completing…" : "Approve and complete") {
-              acceptTicket()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isAcceptingTicket || knowledgeProposalsBlockCompletion)
-            .help(
-              knowledgeProposalsBlockCompletion
-                ? "Accept or reject every proposed knowledge change first."
-                : "Promote this exact reviewed revision to the accepted trunk."
-            )
-          } else {
-            Button(isPostingComment ? "Commenting…" : "Comment") {
-              postComment()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canPostComment)
-          }
-        }
-      }
-    }
-    .padding(.horizontal, 24)
-    .padding(.vertical, 14)
-    .background(.quaternary.opacity(0.18))
+    SprintTicketCommentComposer(
+      ticketState: currentItem.state,
+      canRetryFailedPostReviewDemo: canRetryFailedPostReviewDemo,
+      awaitingOwnerName: awaitingOwnerProfile?.name,
+      failedDeliveryName: failedDeliveryProfile?.name,
+      hasPendingPermissionRequest: pendingPermissionRequest != nil,
+      hasActiveOwnerQuestion: activeOwnerQuestionComment != nil,
+      commentReplyRecipientName: commentReplyRecipient?.name,
+      pausedQuestionRecipientName: pausedQuestionRecipient?.name,
+      ownerAnswer: ownerAnswer,
+      isPostingComment: isPostingComment,
+      isAskingQuestion: isAskingQuestion,
+      isResumingWork: isResumingWork,
+      isAcceptingTicket: isAcceptingTicket,
+      isConversationMessageRunning: model.isTicketConversationMessageRunning,
+      knowledgeProposalsBlockCompletion: knowledgeProposalsBlockCompletion,
+      commentError: commentError,
+      focusResetRequest: commentComposerFocusResetRequest,
+      onPostComment: { body in
+        await postComment(body)
+      },
+      onAskCommentRecipient: { body in
+        guard let commentReplyRecipient else { return false }
+        return await askQuestion(body, to: commentReplyRecipient)
+      },
+      onAskPausedRecipient: { body in
+        guard let pausedQuestionRecipient else { return false }
+        return await askQuestion(body, to: pausedQuestionRecipient)
+      },
+      onResumeWork: { body in
+        await resumeWork(body)
+      },
+      onAcceptTicket: acceptTicket
+    )
   }
 
   private func acceptTicket() {
@@ -9939,103 +9635,108 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private func postComment() {
-    let body = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !body.isEmpty, !isPostingComment else { return }
-    commentDraft = ""
+  private func postComment(_ draft: String) async -> Bool {
+    let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !body.isEmpty, !isPostingComment else { return false }
     commentError = nil
     isPostingComment = true
 
-    Task {
-      if let comment = await model.appendSprintWorkLogComment(
-        workItemID: item.id,
-        body: body
-      ) {
-        if !comments.contains(where: { $0.id == comment.id }) {
-          comments.append(comment)
-          comments.sort {
-            if $0.createdAt == $1.createdAt {
-              return $0.id.uuidString < $1.id.uuidString
-            }
-            return $0.createdAt < $1.createdAt
+    if let comment = await model.appendSprintWorkLogComment(
+      workItemID: item.id,
+      body: body
+    ) {
+      if !comments.contains(where: { $0.id == comment.id }) {
+        comments.append(comment)
+        comments.sort {
+          if $0.createdAt == $1.createdAt {
+            return $0.id.uuidString < $1.id.uuidString
           }
+          return $0.createdAt < $1.createdAt
         }
-        workLogScrollRequest += 1
-      } else {
-        commentDraft = body
-        commentError = "Your comment couldn't be saved. Try again."
       }
+      workLogScrollRequest += 1
       isPostingComment = false
+      return true
     }
+    commentError = "Your comment couldn't be saved. Try again."
+    isPostingComment = false
+    return false
   }
 
   private func selectOwnerAnswer(_ selection: TicketOwnerAnswerSelection) {
     ownerAnswerSelection = selection
-    isCommentComposerFocused = false
+    commentComposerFocusResetRequest += 1
     workLogScrollRequest += 1
   }
 
-  private func askQuestion(to recipient: AgentProfile) {
-    let body = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !body.isEmpty, !isAskingQuestion else { return }
-    commentDraft = ""
+  private func askQuestion(
+    _ draft: String,
+    to recipient: AgentProfile
+  ) async -> Bool {
+    let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !body.isEmpty, !isAskingQuestion else { return false }
     commentError = nil
     isAskingQuestion = true
 
-    Task {
-      let attributedBody = "@\(recipient.name) \(body)"
-      guard
-        let comment = await model.appendOwnerComment(
-          workItemID: item.id,
-          body: attributedBody
-        )
-      else {
-        commentDraft = body
-        commentError = "Your question couldn't be saved. Try again."
-        isAskingQuestion = false
-        return
-      }
-      appendLocalComment(comment)
-      workLogScrollRequest += 1
-
-      do {
-        _ = try await model.sendTicketConversationMessage(
-          for: currentItem,
-          to: recipient,
-          ownerMessage: body,
-          allowsProposal: false
-        )
-        comments = await model.comments(for: item.id)
-        workLogScrollRequest += 1
-      } catch {
-        commentError = error.localizedDescription
-      }
+    let attributedBody = "@\(recipient.name) \(body)"
+    guard
+      let comment = await model.appendOwnerComment(
+        workItemID: item.id,
+        body: attributedBody
+      )
+    else {
+      commentError = "Your question couldn't be saved. Try again."
       isAskingQuestion = false
+      return false
     }
+    appendLocalComment(comment)
+    workLogScrollRequest += 1
+
+    do {
+      _ = try await model.sendTicketConversationMessage(
+        for: currentItem,
+        to: recipient,
+        ownerMessage: body,
+        allowsProposal: false
+      )
+      let latestComments = await model.comments(for: item.id)
+      if latestComments != comments {
+        comments = latestComments
+      }
+      workLogScrollRequest += 1
+    } catch {
+      commentError = error.localizedDescription
+    }
+    isAskingQuestion = false
+    return true
   }
 
-  private func resumeWork() {
+  private func resumeWork(_ draft: String) async -> Bool {
     if canRetryFailedPostReviewDemo {
-      guard !isResumingWork else { return }
+      guard !isResumingWork else { return false }
       commentError = nil
       isResumingWork = true
-      Task {
-        let didRetry = await model.retryFailedPostReviewDemo(
-          workItemID: item.id
-        )
-        if !didRetry {
-          commentError = "Demo preparation couldn't be retried. Try again."
-        }
-        comments = await model.comments(for: item.id)
-        activityEvents = await model.activityEvents(for: item.id)
-        workLogScrollRequest += 1
-        isResumingWork = false
+      let didRetry = await model.retryFailedPostReviewDemo(
+        workItemID: item.id
+      )
+      if !didRetry {
+        commentError = "Demo preparation couldn't be retried. Try again."
       }
-      return
+      let latestComments = await model.comments(for: item.id)
+      let latestActivityEvents = await model.activityEvents(for: item.id)
+      if latestComments != comments {
+        comments = latestComments
+      }
+      if latestActivityEvents != activityEvents {
+        activityEvents = latestActivityEvents
+      }
+      workLogScrollRequest += 1
+      isResumingWork = false
+      return didRetry
     }
 
-    let body = resumeWorkDraft
-    guard !body.isEmpty, !isResumingWork else { return }
+    let body = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !body.isEmpty, !isResumingWork else { return false }
     let answeredQuestions = answeredOwnerQuestions(answer: body)
     let submittedSelection = ownerAnswerSelection
     let submittedCustomAnswer = customOwnerAnswerDraft
@@ -10043,31 +9744,27 @@ private struct SprintTicketDetailView: View {
     if wasAnsweringQuestion {
       ownerAnswerSelection = nil
       customOwnerAnswerDraft = ""
-    } else {
-      commentDraft = ""
     }
     commentError = nil
     isResumingWork = true
 
-    Task {
-      if let comment = await model.resumeSprintWork(
-        workItemID: item.id,
-        body: body,
-        answeredQuestions: answeredQuestions
-      ) {
-        appendLocalComment(comment)
-        workLogScrollRequest += 1
-      } else {
-        if wasAnsweringQuestion {
-          ownerAnswerSelection = submittedSelection
-          customOwnerAnswerDraft = submittedCustomAnswer
-        } else {
-          commentDraft = body
-        }
-        commentError = "Your direction couldn't be saved. Try again."
-      }
+    if let comment = await model.resumeSprintWork(
+      workItemID: item.id,
+      body: body,
+      answeredQuestions: answeredQuestions
+    ) {
+      appendLocalComment(comment)
+      workLogScrollRequest += 1
       isResumingWork = false
+      return true
     }
+    if wasAnsweringQuestion {
+      ownerAnswerSelection = submittedSelection
+      customOwnerAnswerDraft = submittedCustomAnswer
+    }
+    commentError = "Your direction couldn't be saved. Try again."
+    isResumingWork = false
+    return false
   }
 
   private func answeredOwnerQuestions(
@@ -10108,6 +9805,332 @@ private struct SprintTicketDetailView: View {
       }
       return $0.createdAt < $1.createdAt
     }
+  }
+}
+
+private struct SprintTicketCommentComposer: View {
+  let ticketState: WorkItemState
+  let canRetryFailedPostReviewDemo: Bool
+  let awaitingOwnerName: String?
+  let failedDeliveryName: String?
+  let hasPendingPermissionRequest: Bool
+  let hasActiveOwnerQuestion: Bool
+  let commentReplyRecipientName: String?
+  let pausedQuestionRecipientName: String?
+  let ownerAnswer: String?
+  let isPostingComment: Bool
+  let isAskingQuestion: Bool
+  let isResumingWork: Bool
+  let isAcceptingTicket: Bool
+  let isConversationMessageRunning: Bool
+  let knowledgeProposalsBlockCompletion: Bool
+  let commentError: String?
+  let focusResetRequest: Int
+  let onPostComment: (String) async -> Bool
+  let onAskCommentRecipient: (String) async -> Bool
+  let onAskPausedRecipient: (String) async -> Bool
+  let onResumeWork: (String) async -> Bool
+  let onAcceptTicket: () -> Void
+
+  @State private var draft = ""
+  @FocusState private var isFocused: Bool
+
+  private var trimmedDraft: String {
+    draft.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var isSubmitting: Bool {
+    isPostingComment || isAskingQuestion || isResumingWork
+  }
+
+  private var canPostComment: Bool {
+    !trimmedDraft.isEmpty && !isSubmitting
+  }
+
+  private var canAskCommentRecipient: Bool {
+    canPostComment
+      && commentReplyRecipientName != nil
+      && !isConversationMessageRunning
+  }
+
+  private var resumeBody: String {
+    if hasActiveOwnerQuestion {
+      return ownerAnswer ?? ""
+    }
+    return trimmedDraft
+  }
+
+  private var canResumeWork: Bool {
+    (canRetryFailedPostReviewDemo || !resumeBody.isEmpty)
+      && !isSubmitting
+  }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      ZStack {
+        Circle()
+          .fill(Color.blue.opacity(0.12))
+        Image(systemName: "person.fill")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.blue)
+      }
+      .frame(width: 34, height: 34)
+
+      VStack(alignment: .leading, spacing: 7) {
+        statusMessage
+
+        Text(hasActiveOwnerQuestion ? "Your response" : "Add a comment")
+          .font(.subheadline.weight(.semibold))
+
+        ZStack(alignment: .topLeading) {
+          if draft.isEmpty && !isFocused {
+            Text("Add context, answer a question, or give feedback…")
+              .foregroundStyle(.tertiary)
+              .padding(.horizontal, 12)
+              .padding(.vertical, 8)
+              .allowsHitTesting(false)
+          }
+          TextEditor(text: $draft)
+            .scrollContentBackground(.hidden)
+            .font(.body)
+            .focused($isFocused)
+            .padding(8)
+            .onKeyPress(phases: .down) { keyPress in
+              handleKeyPress(keyPress)
+            }
+        }
+        .frame(height: 58)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+          RoundedRectangle(cornerRadius: 8)
+            .stroke(.separator.opacity(0.7), lineWidth: 1)
+        }
+
+        HStack {
+          if let commentError {
+            Label(commentError, systemImage: "exclamationmark.triangle")
+              .font(.caption)
+              .foregroundStyle(.orange)
+          } else {
+            Text("Return to comment · Shift-Return for a new line")
+              .font(.caption2)
+              .foregroundStyle(.tertiary)
+          }
+          Spacer()
+          actionButtons
+        }
+      }
+    }
+    .padding(.horizontal, 24)
+    .padding(.vertical, 14)
+    .background(.quaternary.opacity(0.18))
+    .onChange(of: focusResetRequest) {
+      isFocused = false
+    }
+  }
+
+  @ViewBuilder
+  private var statusMessage: some View {
+    if canRetryFailedPostReviewDemo {
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 7) {
+          Image(systemName: "arrow.clockwise.circle.fill")
+          Text("Demo preparation stopped unexpectedly.")
+            .fontWeight(.semibold)
+        }
+        Text(
+          "Retry the already reviewed candidate. No new comment or repeat implementation is required."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .font(.caption)
+      .foregroundStyle(.red)
+    } else if let awaitingOwnerName {
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 7) {
+          Image(systemName: "pause.circle.fill")
+          Text(awaitingOwnerName)
+            .fontWeight(.semibold)
+          Text("is paused and waiting for direction.")
+        }
+        Text(
+          hasPendingPermissionRequest
+            ? "Use Allow or Deny on the permission request above. You can still add context here."
+            : hasActiveOwnerQuestion
+              ? "Choose an answer above or select Other, then choose Resume work."
+              : "Ask a question without restarting work, or add direction and choose Resume work."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .font(.caption)
+      .foregroundStyle(.orange)
+    } else if let failedDeliveryName {
+      HStack(spacing: 7) {
+        Image(systemName: "arrow.clockwise.circle.fill")
+        Text(failedDeliveryName)
+          .fontWeight(.semibold)
+        Text("stopped unexpectedly. Add direction, then choose Retry work.")
+      }
+      .font(.caption)
+      .foregroundStyle(.red)
+    } else if ticketState == .acceptance {
+      Label(
+        commentReplyRecipientName.map {
+          "Comments go to \($0) for a reply without changing the reviewed demo."
+        }
+          ?? "No team member is available to answer comments on this ticket.",
+        systemImage: "play.rectangle"
+      )
+      .font(.caption)
+      .foregroundStyle(.orange)
+    }
+  }
+
+  @ViewBuilder
+  private var actionButtons: some View {
+    if hasPendingPermissionRequest {
+      commentButton(style: .bordered)
+    } else if canRetryFailedPostReviewDemo {
+      commentButton(style: .bordered)
+
+      Button(
+        isResumingWork ? "Retrying…" : "Retry demo preparation"
+      ) {
+        submitResumeWork()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(!canResumeWork)
+    } else if awaitingOwnerName != nil {
+      commentButton(style: .bordered)
+
+      if let pausedQuestionRecipientName {
+        Button(
+          isAskingQuestion ? "Asking…" : "Ask \(pausedQuestionRecipientName)"
+        ) {
+          submitDraft(using: onAskPausedRecipient)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!canPostComment)
+      }
+
+      Button(isResumingWork ? "Resuming…" : "Resume work") {
+        submitResumeWork()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(!canResumeWork)
+    } else if failedDeliveryName != nil {
+      commentButton(style: .bordered)
+
+      Button(isResumingWork ? "Retrying…" : "Retry work") {
+        submitResumeWork()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(!canResumeWork)
+    } else if ticketState == .acceptance {
+      Button(isAskingQuestion ? "Commenting…" : "Comment") {
+        submitDraft(using: onAskCommentRecipient)
+      }
+      .buttonStyle(.bordered)
+      .disabled(!canAskCommentRecipient)
+
+      Divider()
+        .frame(height: 20)
+        .padding(.horizontal, 2)
+
+      Button(isResumingWork ? "Sending…" : "Request changes") {
+        submitResumeWork()
+      }
+      .buttonStyle(.bordered)
+      .disabled(!canResumeWork)
+
+      Button(isAcceptingTicket ? "Completing…" : "Approve and complete") {
+        onAcceptTicket()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(isAcceptingTicket || knowledgeProposalsBlockCompletion)
+      .help(
+        knowledgeProposalsBlockCompletion
+          ? "Accept or reject every proposed knowledge change first."
+          : "Promote this exact reviewed revision to the accepted trunk."
+      )
+    } else {
+      commentButton(style: .borderedProminent)
+    }
+  }
+
+  @ViewBuilder
+  private func commentButton(style: CommentButtonStyle) -> some View {
+    switch style {
+    case .bordered:
+      Button(isPostingComment ? "Commenting…" : "Comment") {
+        submitDraft(using: onPostComment)
+      }
+      .buttonStyle(.bordered)
+      .disabled(!canPostComment)
+    case .borderedProminent:
+      Button(isPostingComment ? "Commenting…" : "Comment") {
+        submitDraft(using: onPostComment)
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(!canPostComment)
+    }
+  }
+
+  private func handleKeyPress(_ keyPress: KeyPress) -> KeyPress.Result {
+    guard keyPress.key == .return else { return .ignored }
+    if keyPress.modifiers.contains(.shift) {
+      return .ignored
+    }
+    if ticketState == .acceptance, commentReplyRecipientName != nil {
+      if canAskCommentRecipient {
+        submitDraft(using: onAskCommentRecipient)
+      }
+      return .handled
+    }
+    if canPostComment {
+      submitDraft(using: onPostComment)
+    }
+    return .handled
+  }
+
+  private func submitDraft(
+    using action: @escaping (String) async -> Bool
+  ) {
+    let submittedDraft = trimmedDraft
+    guard !submittedDraft.isEmpty, !isSubmitting else { return }
+    draft = ""
+    Task { @MainActor in
+      if !(await action(submittedDraft)) {
+        restore(submittedDraft)
+      }
+    }
+  }
+
+  private func submitResumeWork() {
+    let submittedDraft = resumeBody
+    guard canResumeWork else { return }
+    let restoresDraft = !hasActiveOwnerQuestion && !canRetryFailedPostReviewDemo
+    if restoresDraft {
+      draft = ""
+    }
+    Task { @MainActor in
+      if !(await onResumeWork(submittedDraft)), restoresDraft {
+        restore(submittedDraft)
+      }
+    }
+  }
+
+  private func restore(_ submittedDraft: String) {
+    if trimmedDraft.isEmpty {
+      draft = submittedDraft
+    } else {
+      draft = submittedDraft + "\n" + draft
+    }
+  }
+
+  private enum CommentButtonStyle {
+    case bordered
+    case borderedProminent
   }
 }
 
@@ -10386,7 +10409,23 @@ enum SprintWorkLogEntry: Identifiable {
   }
 }
 
+struct SprintWorkLogRow: Identifiable {
+  let entry: SprintWorkLogEntry
+  let showsBottomSeparator: Bool
+
+  var id: String { entry.id }
+}
+
 enum SprintTicketWorkLogTimeline {
+  static func rows(_ entries: [SprintWorkLogEntry]) -> [SprintWorkLogRow] {
+    entries.enumerated().map { index, entry in
+      SprintWorkLogRow(
+        entry: entry,
+        showsBottomSeparator: index < entries.count - 1
+      )
+    }
+  }
+
   static func ordered(_ entries: [SprintWorkLogEntry]) -> [SprintWorkLogEntry] {
     entries.sorted {
       if $0.createdAt == $1.createdAt {
