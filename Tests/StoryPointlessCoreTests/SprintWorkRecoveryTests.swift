@@ -368,6 +368,53 @@ struct SprintWorkRecoveryTests {
     )
   }
 
+  @Test("Recovery bookkeeping does not hide an interrupted permission decision")
+  func recoveredPermissionRemainsActionableAfterRunMetadataUpdate() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let activityDate = Date()
+    let requestRecoveryDate = activityDate.addingTimeInterval(5)
+    let run = AgentRun(
+      id: runID,
+      productID: productID,
+      workItemID: workItemID,
+      profileID: UUID(),
+      status: .awaitingOwner,
+      lastActivityAt: activityDate,
+      updatedAt: requestRecoveryDate.addingTimeInterval(1)
+    )
+    let request = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn",
+      serverRequestID: "recovered-request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "python3 -m http.server",
+      signature: "command|python3 -m http.server",
+      status: .interrupted,
+      updatedAt: requestRecoveryDate
+    )
+
+    #expect(
+      SprintWorkRecoveryPolicy().actionablePermissionRequest(
+        for: workItemID,
+        runs: [run],
+        permissionRequests: [request]
+      )?.id == request.id
+    )
+    #expect(
+      SprintWorkRecoveryPolicy().runsWithExpiredPermissionDecisions(
+        runs: [run],
+        permissionRequests: [request]
+      ).map(\.id) == [run.id]
+    )
+  }
+
   @Test("Permission continuation uses the latest reusable decision for the same run")
   func latestPermissionContinuationIsRunScoped() {
     let productID = UUID()

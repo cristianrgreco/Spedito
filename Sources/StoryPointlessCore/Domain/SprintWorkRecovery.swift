@@ -59,8 +59,9 @@ public struct SprintWorkRecoveryPolicy: Sendable {
       else {
         return false
       }
+      let latestMeaningfulActivity = run.lastActivityAt ?? run.updatedAt
       return request.status == .interrupted
-        && request.updatedAt >= run.updatedAt
+        && request.updatedAt >= latestMeaningfulActivity
     }
   }
 
@@ -98,10 +99,11 @@ public struct SprintWorkRecoveryPolicy: Sendable {
         else {
           return false
         }
+        let latestMeaningfulActivity = run.lastActivityAt ?? run.updatedAt
         return request.status == .pending
           || (
             request.status == .interrupted
-              && request.updatedAt >= run.updatedAt
+              && request.updatedAt >= latestMeaningfulActivity
           )
       }
       .max(by: { $0.createdAt < $1.createdAt })

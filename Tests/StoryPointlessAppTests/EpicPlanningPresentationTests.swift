@@ -161,4 +161,44 @@ struct EpicPlanningPresentationTests {
       )
     )
   }
+
+  @Test("Backlog uses the height remaining below every visible Epic row")
+  func backlogUsesRemainingHeightBelowEpics() {
+    let availableHeight: CGFloat = 922
+    let dividerHeight: CGFloat = 37
+    let epicHeight = BacklogPlanningSizing.epicHeight(
+      openEpicCount: 3,
+      completedEpicCount: 4,
+      completedEpicsExpanded: false
+    )
+    let backlogHeight = BacklogPlanningSizing.backlogHeight(
+      availableHeight: availableHeight,
+      epicHeight: epicHeight,
+      sectionDividerHeight: dividerHeight,
+      rowCount: 5
+    )
+
+    #expect(epicHeight == 262)
+    #expect(backlogHeight == 623)
+    #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
+  }
+
+  @Test("Expanded completed Epics contribute to the planning section height")
+  func expandedCompletedEpicsContributeToHeight() {
+    let collapsedHeight = BacklogPlanningSizing.epicHeight(
+      openEpicCount: 2,
+      completedEpicCount: 3,
+      completedEpicsExpanded: false
+    )
+    let expandedHeight = BacklogPlanningSizing.epicHeight(
+      openEpicCount: 2,
+      completedEpicCount: 3,
+      completedEpicsExpanded: true
+    )
+
+    #expect(
+      expandedHeight - collapsedHeight
+        == CGFloat(3) * BacklogPlanningSizing.epicRowHeight
+    )
+  }
 }

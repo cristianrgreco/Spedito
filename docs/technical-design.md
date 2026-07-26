@@ -286,22 +286,29 @@ StoryPointless enables and capability-checks the pinned runtime's
 `request_permissions_tool`; it does not discover package managers, resolve
 project runtimes, or add runtime paths automatically. Delivery guidance tells
 the assigned agent to diagnose an `operation not permitted` or `permission
-denied` result with non-mutating executable and symlink inspection, request the
-smallest exact filesystem or network capability, and retry the original command
-without adding shell wrappers. An identical sandbox failure after command
-approval is treated as evidence that a different capability is missing, not as
-a reason to repeat the same approval. Recovery prompts label prior permission
-details as audit display only: the agent never pastes a displayed command back
-into the command tool, omits explicit `sh -c`, `bash -lc`, and `zsh -lc` launchers,
-and prefers a short, existing, purpose-named project entry point over a shell
-chain. When recurring checks are one coherent workflow and the product has no
-suitable entry point, an Implementer may add a maintained repository script or
-package task as normal product tooling; it must not conceal unrelated operations
-or exist only to obtain broader approval. Read-only reviewers may use an existing
-entry point but cannot create one. If the permissions tool is unavailable or
-the exact capability cannot be established within the current boundary, the
-agent fails closed with the diagnostic and required access instead of silently
-substituting older verification evidence.
+denied` result with non-mutating executable, symlink-chain, and runtime-dependency
+inspection. The agent establishes the foreseeable boundary first and submits one
+batched request for the smallest coherent filesystem or network capability rather
+than discovering an executable, its parent directories, symlink targets, and shared
+libraries through sequential Product Owner approvals. For a Homebrew runtime, that
+may be one read request for `/opt/homebrew/bin`, `/opt/homebrew/opt`, and
+`/opt/homebrew/Cellar`; package-manager data, configuration, credentials, and unrelated
+user locations remain excluded. The agent then retries the original command without
+adding shell wrappers. An identical sandbox failure after command approval is treated
+as evidence that a different capability is missing, not as a reason to repeat the same
+approval. Recovery prompts label prior permission details as audit display only: the
+agent never pastes a displayed command back into the command tool, omits explicit
+`sh -c`, `bash -lc`, and `zsh -lc` launchers, and replaces an interrupted leaf
+permission with one consolidated runtime request instead of continuing a path-by-path
+cascade. It also prefers a short, existing, purpose-named project entry point over a
+shell chain. When recurring checks are one coherent workflow and the product has no
+suitable entry point, an Implementer may add a maintained repository script or package
+task as normal product tooling; it must not conceal unrelated operations or exist only
+to obtain broader approval. Read-only reviewers may use an existing entry point but
+cannot create one. If the permissions tool is unavailable or a safe coherent capability
+cannot be established within the current boundary, the agent fails closed with the
+diagnostic and required access instead of silently substituting older verification
+evidence.
 The permission Work log card presents the agent's plain-language purpose first
 and places the unchanged exact command and additional access in a disclosure.
 Persistence and matching continue to use the exact request, so this presentation
@@ -496,10 +503,12 @@ bodies as verified context.
 9. **Partial:** ticket delivery notes are verified during Tech Lead review;
    agents can propose complete canonical-page creations or updates; and the
    reviewed proposals are published automatically and committed on the integrated
-   revision. A runtime feature flag restores per-proposal Product Owner approval
-   for testing stricter governance. Material unstated owner choices still pause
-   execution rather than entering a proposal. Decision capture and richer sourced
-   knowledge-change diffs remain.
+   revision. Candidate-sourced pages remain excluded from accepted-workspace
+   Markdown synchronization until their source candidate is promoted, preventing a
+   normal trunk checkpoint from publishing them early. A runtime feature flag
+   restores per-proposal Product Owner approval for testing stricter governance.
+   Material unstated owner choices still pause execution rather than entering a
+   proposal. Decision capture and richer sourced knowledge-change diffs remain.
 10. **Partial:** durable agent observations, reviewable agent and Product Owner
    retrospective proposals, Ways of working promotion, and backlog-ticket
    creation with automatic refinement entry are implemented. Per-run free-text

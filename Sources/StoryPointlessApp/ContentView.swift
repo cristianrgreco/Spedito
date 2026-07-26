@@ -2017,6 +2017,48 @@ enum TicketEpicNavigation {
   }
 }
 
+struct BacklogPlanningSizing {
+  static let emptyEpicHeight: CGFloat = 166
+  static let epicChromeHeight: CGFloat = 66
+  static let epicRowHeight: CGFloat = 49
+  static let minimumBacklogHeight: CGFloat = 260
+  static let maximumPreferredBacklogContentHeight: CGFloat = 420
+  static let backlogChromeHeight: CGFloat = 132
+  static let backlogRowHeight: CGFloat = 54
+
+  static func epicHeight(
+    openEpicCount: Int,
+    completedEpicCount: Int,
+    completedEpicsExpanded: Bool
+  ) -> CGFloat {
+    let visibleRowCount =
+      openEpicCount
+      + (completedEpicCount > 0 ? 1 : 0)
+      + (completedEpicsExpanded ? completedEpicCount : 0)
+
+    guard visibleRowCount > 0 else { return emptyEpicHeight }
+    return CGFloat(visibleRowCount) * epicRowHeight + epicChromeHeight
+  }
+
+  static func backlogHeight(
+    availableHeight: CGFloat,
+    epicHeight: CGFloat,
+    sectionDividerHeight: CGFloat,
+    rowCount: Int
+  ) -> CGFloat {
+    let remainingHeight = availableHeight - epicHeight - sectionDividerHeight
+    let preferredContentHeight = min(
+      CGFloat(rowCount) * backlogRowHeight + backlogChromeHeight,
+      maximumPreferredBacklogContentHeight
+    )
+
+    return max(
+      minimumBacklogHeight,
+      max(remainingHeight, preferredContentHeight)
+    )
+  }
+}
+
 enum EpicPlanningDisclosureDefaults {
   private static let prefix = "completedEpicsExpanded"
 
@@ -2150,27 +2192,20 @@ private struct BacklogView: View {
         let availableHeight = max(0, proxy.size.height - topPadding - bottomPadding)
         let leftWidth = floor((availableWidth - dividerThickness) * 0.59)
         let sprintWidth = max(0, availableWidth - leftWidth - dividerThickness)
-        let completedSectionRowCount = epicSections.completedEpics.isEmpty ? 0 : 1
-        let visibleCompletedEpicCount =
-          completedEpicsExpanded ? epicSections.completedEpics.count : 0
-        let visibleEpicRowCount =
-          epicSections.openEpics.count
-          + completedSectionRowCount
-          + visibleCompletedEpicCount
-        let epicHeight = epicSections.isEmpty
-          ? CGFloat(166)
-          : min(CGFloat(visibleEpicRowCount * 49 + 66), 250)
+        let epicHeight = BacklogPlanningSizing.epicHeight(
+          openEpicCount: epicSections.openEpics.count,
+          completedEpicCount: epicSections.completedEpics.count,
+          completedEpicsExpanded: completedEpicsExpanded
+        )
         let suggestionCount = visibleSuggestionBatch?.suggestions
           .filter { $0.status == .proposed }
           .count ?? 0
         let backlogRowCount = backlogItems.count + suggestionCount
-        let backlogContentHeight = CGFloat(backlogRowCount * 54 + 132)
-        let backlogHeight = max(
-          260,
-          max(
-            availableHeight - epicHeight - sectionDividerHeight,
-            min(backlogContentHeight, 420)
-          )
+        let backlogHeight = BacklogPlanningSizing.backlogHeight(
+          availableHeight: availableHeight,
+          epicHeight: epicHeight,
+          sectionDividerHeight: sectionDividerHeight,
+          rowCount: backlogRowCount
         )
 
         HStack(alignment: .top, spacing: 0) {
@@ -9596,12 +9631,16 @@ enum SprintTicketWorkLogAttention {
   static func requiresProductOwnerInput(
     hasPendingPermissionRequest: Bool,
     hasActiveOwnerQuestion: Bool,
-    knowledgeProposalsBlockCompletion: Bool,
+    knowledgeProposalStatuses: [KnowledgePageProposalStatus],
+    requiresKnowledgeApproval: Bool,
     ticketState: WorkItemState
   ) -> Bool {
     hasPendingPermissionRequest
       || hasActiveOwnerQuestion
-      || knowledgeProposalsBlockCompletion
+      || (
+        requiresKnowledgeApproval
+          && knowledgeProposalStatuses.contains(.reviewed)
+      )
       || ticketState == .acceptance
   }
 }
@@ -9800,7 +9839,8 @@ private struct SprintTicketDetailView: View {
     SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: pendingPermissionRequest != nil,
       hasActiveOwnerQuestion: activeOwnerQuestionComment != nil,
-      knowledgeProposalsBlockCompletion: knowledgeProposalsBlockCompletion,
+      knowledgeProposalStatuses: currentKnowledgeProposals.map(\.status),
+      requiresKnowledgeApproval: model.requiresKnowledgeApproval,
       ticketState: currentItem.state
     )
   }
@@ -10361,10 +10401,7 @@ private struct SprintTicketDetailView: View {
             }
           }
 
-          if let explanation = permissionExplanation(
-            request,
-            isActionable: isActionable
-          ) {
+          if let explanation = permissionExplanation(request) {
             Text(explanation)
               .font(.caption)
               .foregroundStyle(.secondary)
@@ -10405,10 +10442,7 @@ private struct SprintTicketDetailView: View {
     }
   }
 
-  private func permissionExplanation(
-    _ request: AgentPermissionRequest,
-    isActionable: Bool
-  ) -> String? {
+  private func permissionExplanation(_ request: AgentPermissionRequest) -> String? {
     switch request.status {
     case .pending:
       if request.kind == .fileChange {
@@ -10416,8 +10450,6 @@ private struct SprintTicketDetailView: View {
       } else {
         nil
       }
-    case .interrupted where isActionable:
-      "StoryPointless restarted after this request. Your decision will be applied when the same Conversation resumes."
     case .allowed, .denied, .interrupted:
       nil
     }
@@ -18020,6 +18052,11 @@ private struct EpicPlanningConversationPanel: View {
     analyst?.role.tint ?? .purple
   }
 
+  private var showsEmptyConversation: Bool {
+    guard let conversation else { return true }
+    return conversation.messages.isEmpty && conversation.questions.isEmpty
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
@@ -18055,19 +18092,19 @@ private struct EpicPlanningConversationPanel: View {
         }
         .defaultScrollAnchor(.bottom)
         .overlay {
-          if conversation == nil {
+          if showsEmptyConversation {
             VStack(spacing: 7) {
               Image(systemName: "bubble.left.and.bubble.right")
                 .font(.title3)
                 .foregroundStyle(.tertiary)
-              Text("No conversation yet")
+              Text("No messages yet")
                 .font(.subheadline.weight(.medium))
-              Text("Refine the epic with the Business Analyst before tickets are proposed.")
+              Text("Messages will appear here when the Business Analyst responds.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
             }
-            .padding(28)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
           }
         }
         .onChange(of: conversation?.messages.count ?? 0) { _, _ in

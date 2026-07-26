@@ -4660,7 +4660,7 @@ public actor SQLiteStore {
     }
 
     if let existing = try fetchKnowledgePages(productID: productID).first(where: {
-      $0.sourceWorkItemID == item.id
+      $0.sourceWorkItemID == item.id && $0.kind == .deliveryNote
     }) {
       var updated = existing
       updated.bodyMarkdown = KnowledgeMarkdown.normalizedBody(bodyMarkdown)
@@ -4708,7 +4708,9 @@ public actor SQLiteStore {
       """
       SELECT id, product_id, parent_id, title, slug, body_markdown, kind,
              verification_status, sort_order, source_work_item_id, created_at, updated_at
-      FROM knowledge_pages WHERE source_work_item_id = ? LIMIT 1;
+      FROM knowledge_pages
+      WHERE source_work_item_id = ? AND kind = 'delivery_note'
+      LIMIT 1;
       """
     , operation: { statement -> KnowledgePage? in
       try bind(workItemID.uuidString, to: 1, in: statement)
@@ -6343,6 +6345,163 @@ public actor SQLiteStore {
 
         COMMIT;
         PRAGMA foreign_keys = ON;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 47, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        CREATE TEMP TABLE misdirected_delivery_note_pages AS
+        SELECT
+          page.id AS corrupted_page_id,
+          delivery.id AS delivery_page_id,
+          (
+            SELECT revision.body_markdown
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary <> 'Updated delivery note'
+            ORDER BY revision.version DESC
+            LIMIT 1
+          ) AS restored_page_body,
+          (
+            SELECT revision.body_markdown
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary = 'Updated delivery note'
+            ORDER BY revision.version DESC
+            LIMIT 1
+          ) AS recovered_delivery_body,
+          (
+            SELECT revision.version
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary = 'Updated delivery note'
+            ORDER BY revision.version DESC
+            LIMIT 1
+          ) AS recovered_delivery_version,
+          (
+            SELECT revision.created_at
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary = 'Updated delivery note'
+            ORDER BY revision.version DESC
+            LIMIT 1
+          ) AS recovered_delivery_created_at
+        FROM knowledge_pages AS page
+        JOIN knowledge_pages AS delivery
+          ON delivery.product_id = page.product_id
+         AND delivery.source_work_item_id = page.source_work_item_id
+         AND delivery.kind = 'delivery_note'
+        WHERE page.kind <> 'delivery_note'
+          AND page.source_work_item_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary = 'Updated delivery note'
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.change_summary <> 'Updated delivery note'
+          );
+
+        UPDATE knowledge_pages
+        SET body_markdown = (
+              SELECT repair.recovered_delivery_body
+              FROM misdirected_delivery_note_pages AS repair
+              WHERE repair.delivery_page_id = knowledge_pages.id
+              ORDER BY
+                repair.recovered_delivery_created_at DESC,
+                repair.recovered_delivery_version DESC
+              LIMIT 1
+            ),
+            verification_status = 'proposed',
+            updated_at = unixepoch()
+        WHERE id IN (
+          SELECT delivery_page_id
+          FROM misdirected_delivery_note_pages
+        );
+
+        INSERT INTO knowledge_page_revisions (
+          id, page_id, version, body_markdown, author_name, change_summary, created_at
+        )
+        SELECT
+          lower(hex(randomblob(4))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(6))),
+          repair.delivery_page_id,
+          (
+            SELECT COALESCE(MAX(revision.version), 0) + 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = repair.delivery_page_id
+          ),
+          repair.recovered_delivery_body,
+          'StoryPointless',
+          'Recovered misdirected delivery note',
+          unixepoch()
+        FROM misdirected_delivery_note_pages AS repair
+        WHERE repair.corrupted_page_id = (
+          SELECT preferred.corrupted_page_id
+          FROM misdirected_delivery_note_pages AS preferred
+          WHERE preferred.delivery_page_id = repair.delivery_page_id
+          ORDER BY
+            preferred.recovered_delivery_created_at DESC,
+            preferred.recovered_delivery_version DESC
+          LIMIT 1
+        );
+
+        UPDATE knowledge_pages
+        SET body_markdown = (
+              SELECT repair.restored_page_body
+              FROM misdirected_delivery_note_pages AS repair
+              WHERE repair.corrupted_page_id = knowledge_pages.id
+            ),
+            verification_status = 'verified',
+            updated_at = unixepoch()
+        WHERE id IN (
+          SELECT corrupted_page_id
+          FROM misdirected_delivery_note_pages
+        );
+
+        INSERT INTO knowledge_page_revisions (
+          id, page_id, version, body_markdown, author_name, change_summary, created_at
+        )
+        SELECT
+          lower(hex(randomblob(4))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(2))) || '-' ||
+            lower(hex(randomblob(6))),
+          repair.corrupted_page_id,
+          (
+            SELECT COALESCE(MAX(revision.version), 0) + 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = repair.corrupted_page_id
+          ),
+          repair.restored_page_body,
+          'StoryPointless',
+          'Restored after misdirected delivery note update',
+          unixepoch()
+        FROM misdirected_delivery_note_pages AS repair;
+
+        DROP TABLE misdirected_delivery_note_pages;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_delivery_note_source
+        ON knowledge_pages(product_id, source_work_item_id)
+        WHERE kind = 'delivery_note' AND source_work_item_id IS NOT NULL;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (47, unixepoch());
+
+        COMMIT;
         """,
         database: database
       )

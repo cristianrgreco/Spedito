@@ -198,8 +198,11 @@ public enum CodexEpicClarificationGenerator {
         to delegate implementation-time selection to the implementer without a separate recommendation.
         Otherwise return tickets that deliver the agreed outcome, not tickets that discover what the
         outcome should be. If approved research is needed before delivery, include it together with the
-        dependent design, implementation, and verification work; do not return a research-only plan for an
-        epic whose success criteria include a product change. Do not ask more questions in this response.
+        downstream work needed to achieve the epic; do not return a research-only plan for an epic whose
+        success criteria include a product change. Do not force that work into a standard sequence of
+        research, design, implementation, and verification tickets. Make verification explicit in the
+        relevant acceptance criteria, using a separate ticket only when it has an independently valuable
+        outcome. Do not ask more questions in this response.
         """
   }
 

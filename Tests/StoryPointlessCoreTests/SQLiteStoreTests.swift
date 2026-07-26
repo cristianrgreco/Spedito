@@ -1911,6 +1911,206 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
+  @Test("Delivery note revisions do not overwrite other knowledge from the same ticket")
+  func deliveryNoteUpdatesSelectTheDeliveryNoteKind() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Knowledge provenance",
+      vision: "Keep ticket knowledge distinct"
+    )
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let technical = try #require(
+      pages.first { $0.parentID == nil && $0.slug == "technical" }
+    )
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Document the forecast"
+    )
+    let sprint = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Keep the handoff accurate",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [SprintDraftItemInput(workItemID: item.id)]
+    ).sprint
+    let delivery = try await store.upsertDeliveryNote(
+      productID: product.id,
+      sprint: sprint,
+      item: item,
+      bodyMarkdown: "Initial delivery note.",
+      authorName: "Implementer"
+    )
+    let canonical = try await store.createKnowledgePage(
+      productID: product.id,
+      parentID: technical.id,
+      title: "Forecast guidance"
+    )
+    _ = try await store.updateKnowledgePage(
+      id: canonical.id,
+      title: canonical.title,
+      bodyMarkdown: "Canonical guidance contract.",
+      authorName: "Product Owner",
+      changeSummary: "Recorded the reusable contract"
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE knowledge_pages
+      SET source_work_item_id = '\(item.id.uuidString)',
+          sort_order = -1
+      WHERE id = '\(canonical.id.uuidString)';
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let updatedDelivery = try await reopened.upsertDeliveryNote(
+      productID: product.id,
+      sprint: sprint,
+      item: item,
+      bodyMarkdown: "Revised delivery note.",
+      authorName: "Implementer"
+    )
+    #expect(updatedDelivery.id == delivery.id)
+    #expect(updatedDelivery.kind == .deliveryNote)
+    #expect(updatedDelivery.bodyMarkdown == "Revised delivery note.")
+
+    try await reopened.verifyDeliveryNote(workItemID: item.id, authorName: "Tech Lead")
+    let updatedPages = try await reopened.fetchKnowledgePages(productID: product.id)
+    let storedDelivery = try #require(updatedPages.first { $0.id == delivery.id })
+    let storedCanonical = try #require(updatedPages.first { $0.id == canonical.id })
+    #expect(storedDelivery.verificationStatus == .verified)
+    #expect(storedCanonical.bodyMarkdown == "Canonical guidance contract.")
+    #expect(storedCanonical.verificationStatus == .verified)
+    await reopened.close()
+  }
+
+  @Test("Migration repairs delivery notes written into canonical ticket knowledge")
+  func migrationRepairsMisdirectedDeliveryNoteUpdates() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Knowledge repair",
+      vision: "Recover both forms of ticket knowledge"
+    )
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let technical = try #require(
+      pages.first { $0.parentID == nil && $0.slug == "technical" }
+    )
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Repair the forecast handoff"
+    )
+    let sprint = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Preserve durable knowledge",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [SprintDraftItemInput(workItemID: item.id)]
+    ).sprint
+    let delivery = try await store.upsertDeliveryNote(
+      productID: product.id,
+      sprint: sprint,
+      item: item,
+      bodyMarkdown: "Original delivery note.",
+      authorName: "Implementer"
+    )
+    try await store.verifyDeliveryNote(workItemID: item.id, authorName: "Tech Lead")
+    let canonical = try await store.createKnowledgePage(
+      productID: product.id,
+      parentID: technical.id,
+      title: "Forecast guidance"
+    )
+    _ = try await store.updateKnowledgePage(
+      id: canonical.id,
+      title: canonical.title,
+      bodyMarkdown: "Canonical guidance contract.",
+      authorName: "Product Owner",
+      changeSummary: "Recorded the reusable contract"
+    )
+    await store.close()
+
+    let firstBadRevisionID = UUID()
+    let latestBadRevisionID = UUID()
+    try fixture.execute(
+      """
+      UPDATE knowledge_pages
+      SET source_work_item_id = '\(item.id.uuidString)',
+          body_markdown = 'Latest revised delivery note.',
+          verification_status = 'proposed'
+      WHERE id = '\(canonical.id.uuidString)';
+
+      INSERT INTO knowledge_page_revisions (
+          id, page_id, version, body_markdown, author_name, change_summary, created_at
+      ) VALUES (
+          '\(firstBadRevisionID.uuidString)',
+          '\(canonical.id.uuidString)',
+          (SELECT MAX(version) + 1
+           FROM knowledge_page_revisions
+           WHERE page_id = '\(canonical.id.uuidString)'),
+          'Earlier revised delivery note.',
+          'Implementer',
+          'Updated delivery note',
+          100
+      );
+
+      INSERT INTO knowledge_page_revisions (
+          id, page_id, version, body_markdown, author_name, change_summary, created_at
+      ) VALUES (
+          '\(latestBadRevisionID.uuidString)',
+          '\(canonical.id.uuidString)',
+          (SELECT MAX(version) + 1
+           FROM knowledge_page_revisions
+           WHERE page_id = '\(canonical.id.uuidString)'),
+          'Latest revised delivery note.',
+          'Implementer',
+          'Updated delivery note',
+          101
+      );
+
+      DELETE FROM schema_migrations WHERE version = 47;
+      """
+    )
+
+    let repairedStore = try SQLiteStore(url: fixture.databaseURL)
+    let repairedPages = try await repairedStore.fetchKnowledgePages(productID: product.id)
+    let repairedDelivery = try #require(repairedPages.first { $0.id == delivery.id })
+    let repairedCanonical = try #require(repairedPages.first { $0.id == canonical.id })
+    #expect(repairedDelivery.bodyMarkdown == "Latest revised delivery note.")
+    #expect(repairedDelivery.verificationStatus == .proposed)
+    #expect(repairedCanonical.bodyMarkdown == "Canonical guidance contract.")
+    #expect(repairedCanonical.verificationStatus == .verified)
+
+    let deliveryRevisions = try await repairedStore.fetchKnowledgePageRevisions(
+      pageID: delivery.id
+    )
+    let canonicalRevisions = try await repairedStore.fetchKnowledgePageRevisions(
+      pageID: canonical.id
+    )
+    #expect(deliveryRevisions.first?.changeSummary == "Recovered misdirected delivery note")
+    #expect(
+      canonicalRevisions.first?.changeSummary
+        == "Restored after misdirected delivery note update"
+    )
+    await repairedStore.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    #expect(
+      try await reopened.fetchKnowledgePageRevisions(pageID: delivery.id).count
+        == deliveryRevisions.count
+    )
+    #expect(
+      try await reopened.fetchKnowledgePageRevisions(pageID: canonical.id).count
+        == canonicalRevisions.count
+    )
+    await reopened.close()
+  }
+
   @Test("Migration removes only untouched initial knowledge placeholders")
   func migrationRemovesInitialKnowledgePlaceholders() async throws {
     let fixture = try DatabaseFixture()

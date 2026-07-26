@@ -60,17 +60,21 @@ system access therefore becomes a scoped Product Owner permission request instea
 a failed workspace write or an agent-created `/tmp` copy. StoryPointless enables and
 checks Codex's explicit permission-request tool rather than discovering or whitelisting
 package managers and runtime installations itself. Agents diagnose blocked executables,
-request the narrowest exact filesystem or network capability, and do not repeat an
-ineffective command approval or add shell wrappers. Agents are explicitly
+inspect their foreseeable symlink and runtime dependencies, and request the smallest
+coherent capability in one batch rather than asking for an executable, its parent, and
+each shared library separately. A package-manager runtime request may therefore include
+its executable, link, and installation roots while excluding unrelated data,
+configuration, and credentials. Agents do not repeat an ineffective command approval or
+add shell wrappers. Agents are explicitly
 forbidden from copying a ticket workspace elsewhere to bypass that decision. They
 also treat a recovered permission request as audit display rather than executable
-command text: retries invoke the underlying executable directly, never paste an
-already wrapped `/bin/zsh -lc` command, and do not turn the same post-approval
-sandbox failure into a syntactically different approval request. For routine checks,
-agents prefer short, established product entry points such as `npm test`, `make test`,
-or `./scripts/test.sh`. An Implementer may add a maintained script or package task when
-recurring checks form one coherent workflow, but never merely to conceal unrelated
-commands or broaden an approval. Agents receive
+command text: retries invoke the underlying executable directly, never paste an already
+wrapped `/bin/zsh -lc` command, and replace an interrupted leaf permission with one
+consolidated runtime request instead of continuing a path-by-path cascade. For routine
+checks, agents prefer short, established product entry points such as `npm test`,
+`make test`, or `./scripts/test.sh`. An Implementer may add a maintained script or
+package task when recurring checks form one coherent workflow, but never merely to
+conceal unrelated commands or broaden an approval. Agents receive
 read-only access to the active product's central Git metadata, so status,
 diff, history, and conflict inspection do not need Product Owner approval. Their
 turns inherit that product-scoped thread profile so the exact Git grant is not
@@ -219,8 +223,10 @@ They also create a proposed per-ticket delivery note; Tech Lead approval verifie
 before it is used as current knowledge. Agents may propose complete updates or new
 pages for the canonical wiki. The Tech Lead reviews those proposals with the exact
 candidate, after which StoryPointless publishes them automatically and commits the
-Markdown into the integrated revision. The ticket keeps the full proposal, rationale,
-status, and page history visible. Set
+Markdown into the integrated revision. Candidate-sourced Markdown is not synchronized
+into the accepted `trunk` workspace until the Product Owner approves that candidate,
+so working-tree checkpoints cannot bypass the normal promotion gate. The ticket keeps
+the full proposal, rationale, status, and page history visible. Set
 `STORYPOINTLESS_REQUIRE_KNOWLEDGE_APPROVAL=1` when launching the development app to
 restore the stricter per-proposal Product Owner accept/reject gate. Material unstated
 Product Owner decisions must still pause the ticket and cannot be smuggled through a

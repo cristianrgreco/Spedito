@@ -6906,16 +6906,26 @@ final class AppModel: ObservableObject {
       )
       let loadedProfiles = try await store.seedDefaultProfiles(productID: productID)
       let loadedKnowledgePages = try await store.seedKnowledgeBase(productID: productID)
+      let loadedCandidates = try await store.fetchCandidateRevisions(productID: productID)
+      let acceptedKnowledgeSourceWorkItemIDs = Set(
+        loadedCandidates
+          .filter { $0.status == .accepted }
+          .map(\.workItemID)
+      ).union(
+        loadedWorkItems
+          .filter { $0.state == .readyToRelease || $0.state == .released }
+          .map(\.id)
+      )
       try Self.syncKnowledgeMarkdownFiles(
         productID: productID,
-        pages: loadedKnowledgePages
+        pages: loadedKnowledgePages,
+        acceptedSourceWorkItemIDs: acceptedKnowledgeSourceWorkItemIDs
       )
       let loadedAgentRunKnowledgeContext = try await store.fetchAgentRunKnowledgeContext(
         productID: productID
       )
       let loadedAgentRunKnowledgeDestinations =
         try await store.fetchAgentRunKnowledgeDestinations(productID: productID)
-      let loadedCandidates = try await store.fetchCandidateRevisions(productID: productID)
       let loadedDemoSessions = try await store.fetchDemoSessions(productID: productID)
       let loadedPermissionRequests = try await store.fetchAgentPermissionRequests(
         productID: productID
@@ -7414,17 +7424,36 @@ final class AppModel: ObservableObject {
 
   private static func syncKnowledgeMarkdownFiles(
     productID: UUID,
-    pages: [KnowledgePage]
+    pages: [KnowledgePage],
+    acceptedSourceWorkItemIDs: Set<UUID>
   ) throws {
     try syncKnowledgeMarkdownFiles(
       at: productWorkspaceURL(productID: productID),
-      pages: pages
+      pages: pages,
+      shouldExport: {
+        AcceptedWorkspaceKnowledgeExportPolicy.shouldExport(
+          $0,
+          acceptedSourceWorkItemIDs: acceptedSourceWorkItemIDs
+        )
+      }
     )
   }
 
   private static func syncKnowledgeMarkdownFiles(
     at workspaceURL: URL,
     pages: [KnowledgePage]
+  ) throws {
+    try syncKnowledgeMarkdownFiles(
+      at: workspaceURL,
+      pages: pages,
+      shouldExport: { $0.verificationStatus == .verified }
+    )
+  }
+
+  private static func syncKnowledgeMarkdownFiles(
+    at workspaceURL: URL,
+    pages: [KnowledgePage],
+    shouldExport: (KnowledgePage) -> Bool
   ) throws {
     let knowledgeRoot = workspaceURL
       .appendingPathComponent("knowledge", isDirectory: true)
@@ -7463,7 +7492,7 @@ final class AppModel: ObservableObject {
         )
         directory.appendPathComponent("\(page.slug).md")
       }
-      guard page.verificationStatus == .verified else {
+      guard shouldExport(page) else {
         if FileManager.default.fileExists(atPath: directory.path) {
           try FileManager.default.removeItem(at: directory)
         }

@@ -10,7 +10,8 @@ struct SprintTicketWorkLogHistoryTests {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
       hasActiveOwnerQuestion: true,
-      knowledgeProposalsBlockCompletion: false,
+      knowledgeProposalStatuses: [],
+      requiresKnowledgeApproval: false,
       ticketState: .running
     )
 
@@ -22,11 +23,46 @@ struct SprintTicketWorkLogHistoryTests {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
       hasActiveOwnerQuestion: false,
-      knowledgeProposalsBlockCompletion: false,
+      knowledgeProposalStatuses: [],
+      requiresKnowledgeApproval: false,
       ticketState: .running
     )
 
     #expect(!requiresInput)
+  }
+
+  @Test("Product knowledge under Tech Lead review does not need Product Owner attention")
+  func proposedKnowledgeDoesNotNeedAttention() {
+    let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: false,
+      hasActiveOwnerQuestion: false,
+      knowledgeProposalStatuses: [.proposed],
+      requiresKnowledgeApproval: true,
+      ticketState: .verifying
+    )
+
+    #expect(!requiresInput)
+  }
+
+  @Test("Reviewed Product knowledge needs attention only when owner approval is enabled")
+  func reviewedKnowledgeNeedsAttentionWhenOwnerApprovalIsEnabled() {
+    let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: false,
+      hasActiveOwnerQuestion: false,
+      knowledgeProposalStatuses: [.reviewed],
+      requiresKnowledgeApproval: true,
+      ticketState: .verifying
+    )
+    let publishesAutomatically = SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: false,
+      hasActiveOwnerQuestion: false,
+      knowledgeProposalStatuses: [.reviewed],
+      requiresKnowledgeApproval: false,
+      ticketState: .verifying
+    )
+
+    #expect(requiresInput)
+    #expect(!publishesAutomatically)
   }
 
   @Test("A selected sprint answer remains on its question without a duplicate comment")

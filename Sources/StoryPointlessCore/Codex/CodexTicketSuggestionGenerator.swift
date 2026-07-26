@@ -165,12 +165,14 @@ public enum CodexTicketSuggestionGenerator {
       implementation ticket. Only embed selection in implementation when the Product Owner explicitly
       chose implementation-time selection without a separate recommendation. Research is a prerequisite,
       not a substitute for delivery: when the epic's success criteria also describe a product change,
-      include the downstream experience-design, implementation, and verification work needed to achieve
-      it. Those tickets may depend on the approved research output without guessing its conclusion.
-      Provider-independent experience design may proceed in parallel, while integration should depend on
-      both the approved recommendation and any required design contract. Never stop at a research ticket
-      when the agreed outcome includes user-visible behaviour. Otherwise create tickets that deliver the
-      agreed outcome.
+      include the downstream work needed to achieve it. Derive ticket boundaries from independently
+      valuable outcomes, genuine dependencies, and useful parallelism; do not default to a fixed research,
+      design, implementation, and verification sequence. Make verification explicit in the relevant
+      acceptance criteria and create a separate design or verification ticket only when it produces a
+      meaningful outcome that should be delivered, reviewed, or scheduled independently. Work that does
+      not require the research conclusion may proceed in parallel, while work that does must depend on the
+      approved output without guessing its conclusion. Never stop at a research ticket when the agreed
+      outcome includes user-visible behaviour. Otherwise create tickets that deliver the agreed outcome.
 
       Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets. Split work
       where it creates an independently understandable, reviewable, or parallelizable outcome. Include
@@ -442,7 +444,7 @@ public enum CodexTicketSuggestionGenerator {
     else {
       throw TicketSuggestionGenerationError.invalidResponse(
         "The epic includes a product-delivery outcome, but its plan stops at Business Analyst work. "
-          + "Include the dependent design, implementation, or verification tickets needed to deliver it."
+          + "Include the downstream delivery tickets needed to achieve it."
       )
     }
     return EpicPlanDraft(

@@ -212,20 +212,28 @@ public enum CodexTicketExecutor {
     requirements, credentials, providers, destructive operations, or network permission. The
     ticket workspace starts with no external network or access to secrets and unrelated products.
     When the authorised implementation genuinely needs a capability outside that boundary, request
-    the narrowest exact filesystem, network, or command permission through the available approval
-    channel and explain why it is needed. Never copy, mirror, archive, or stage the ticket workspace
-    in /tmp or another location to work around a permission boundary. Never request general access
-    when a narrower capability will work.
+    the smallest coherent filesystem, network, or command capability through the available approval
+    channel and explain why it is needed. A coherent capability may contain several paths when one
+    executable predictably needs parent-directory traversal, symlink targets, shared libraries,
+    compiler resources, SDK contents, or package metadata. Never copy, mirror, archive, or stage the
+    ticket workspace in /tmp or another location to work around a permission boundary. Exclude
+    unrelated user data, configuration, credentials, and package-manager data directories from every
+    request.
 
     If a command fails with `operation not permitted` or `permission denied`, do not merely repeat
     it, add another shell wrapper, or ask for the same command approval again. First use non-mutating
     diagnostics such as `command -v` or `type -a` to resolve the executable, inspect its symlink
-    target when permitted, and distinguish a missing filesystem or network capability from command
-    approval. Use the `request_permissions` tool to request only the exact path and access needed,
-    then retry the original command without wrapping it. If that tool is unavailable or the missing
-    capability cannot be diagnosed inside the current boundary, stop safely and report the exact
-    diagnostic and capability still needed; do not substitute older evidence when the ticket
-    requires a fresh check.
+    chain and runtime dependencies when permitted, and distinguish a missing filesystem or network
+    capability from command approval. Determine the complete foreseeable runtime boundary before
+    asking. Batch all known paths into one `request_permissions` call, then retry the original
+    command without wrapping it. Do not discover a runtime one approval at a time by requesting an
+    executable, then its parent, then each symlink target or shared library. For example, a Homebrew
+    runtime may need one read request containing `/opt/homebrew/bin`, `/opt/homebrew/opt`, and
+    `/opt/homebrew/Cellar`; do not request `node` and its dynamic libraries individually. If direct
+    inspection is blocked, infer the smallest stable runtime subtree from the resolved packaging
+    layout and explain that boundary in one request. If the tool is unavailable or no safe coherent
+    boundary can be established, stop safely and report the diagnostic and capability still needed;
+    do not substitute older evidence when the ticket requires a fresh check.
 
     Invoke the underlying executable or check directly through the provided command tool. Do not put
     `/bin/sh -c`, `/bin/bash -lc`, or `/bin/zsh -lc` in the command text; the execution platform may
@@ -570,6 +578,14 @@ public enum CodexTicketExecutor {
       }
     let permissionContext: String
     if let interruptedPermission {
+      let coherentCapabilityContinuation = """
+        Treat a runtime and the files it predictably needs as one coherent capability. If the
+        displayed request covers only one executable, directory, symlink target, shared library,
+        compiler resource, or SDK file, do not continue requesting adjacent paths one at a time.
+        Diagnose the foreseeable boundary and replace the leaf request with one batched
+        `request_permissions` call. A Homebrew runtime may require the read roots
+        `/opt/homebrew/bin`, `/opt/homebrew/opt`, and `/opt/homebrew/Cellar` together.
+        """
       let commandContinuation =
         if interruptedPermission.kind == .command {
           """
@@ -589,16 +605,18 @@ public enum CodexTicketExecutor {
         The Product Owner already allowed this matching capability for the existing run:
         \(interruptedPermission.detail)
         \(commandContinuation)
-        Reissue a non-command capability only if it is still needed; StoryPointless will apply
-        the saved scoped decision.
+        \(coherentCapabilityContinuation)
+        Reissue a non-command capability only if it is both still needed and already represents
+        the complete coherent boundary; StoryPointless will apply the saved scoped decision.
         """
       case .interrupted:
         """
         The previous live permission request expired when the app stopped:
         \(interruptedPermission.detail)
         \(commandContinuation)
-        Reissue a non-command capability only if it is still needed so the Product Owner can
-        answer it.
+        \(coherentCapabilityContinuation)
+        Reissue it only if it already represents the complete coherent boundary. Otherwise replace
+        it with one consolidated request so the Product Owner is not asked for each runtime file.
         """
       case .denied:
         """
@@ -1547,6 +1565,14 @@ public enum CodexTechLeadReviewer {
   ) -> String {
     let permissionContext: String
     if let interruptedPermission {
+      let coherentCapabilityContinuation = """
+        Treat a runtime and the files it predictably needs as one coherent capability. If the
+        displayed request covers only one executable, directory, symlink target, shared library,
+        compiler resource, or SDK file, do not continue requesting adjacent paths one at a time.
+        Diagnose the foreseeable boundary and replace the leaf request with one batched
+        `request_permissions` call. A Homebrew runtime may require the read roots
+        `/opt/homebrew/bin`, `/opt/homebrew/opt`, and `/opt/homebrew/Cellar` together.
+        """
       let commandContinuation =
         if interruptedPermission.kind == .command {
           """
@@ -1566,16 +1592,18 @@ public enum CodexTechLeadReviewer {
         The Product Owner already allowed this matching capability for the existing review run:
         \(interruptedPermission.detail)
         \(commandContinuation)
-        Reissue a non-command capability only if it is still needed; StoryPointless will apply
-        the saved scoped decision.
+        \(coherentCapabilityContinuation)
+        Reissue a non-command capability only if it is both still needed and already represents
+        the complete coherent boundary; StoryPointless will apply the saved scoped decision.
         """
       case .interrupted:
         """
         The previous live permission request expired when the app stopped:
         \(interruptedPermission.detail)
         \(commandContinuation)
-        Reissue a non-command capability only if it is still needed so the Product Owner can
-        answer it.
+        \(coherentCapabilityContinuation)
+        Reissue it only if it already represents the complete coherent boundary. Otherwise replace
+        it with one consolidated request so the Product Owner is not asked for each runtime file.
         """
       case .denied:
         """

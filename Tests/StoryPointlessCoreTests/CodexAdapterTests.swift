@@ -710,7 +710,21 @@ struct CodexAdapterTests {
                 "access": .string("read"),
                 "path": .object([
                   "type": .string("path"),
-                  "path": .string("/opt/homebrew"),
+                  "path": .string("/opt/homebrew/bin"),
+                ]),
+              ]),
+              .object([
+                "access": .string("read"),
+                "path": .object([
+                  "type": .string("path"),
+                  "path": .string("/opt/homebrew/opt"),
+                ]),
+              ]),
+              .object([
+                "access": .string("read"),
+                "path": .object([
+                  "type": .string("path"),
+                  "path": .string("/opt/homebrew/Cellar"),
                 ]),
               ])
             ])
@@ -724,7 +738,9 @@ struct CodexAdapterTests {
     )
     #expect(runtimePresentation.detail.contains("node --test"))
     #expect(runtimePresentation.detail.contains("Additional access for this command"))
-    #expect(runtimePresentation.detail.contains("Read /opt/homebrew"))
+    #expect(runtimePresentation.detail.contains("Read /opt/homebrew/bin"))
+    #expect(runtimePresentation.detail.contains("Read /opt/homebrew/opt"))
+    #expect(runtimePresentation.detail.contains("Read /opt/homebrew/Cellar"))
 
     let sameCapabilityInAnotherTicket = CodexServerRequest(
       id: .integer(94),
@@ -1080,6 +1096,44 @@ struct CodexAdapterTests {
     }
   }
 
+  @Test("Epic planning permits one coherent delivery ticket")
+  func epicPlanningPermitsOneCoherentDeliveryTicket() throws {
+    let response = #"""
+      {
+        "epic": {
+          "title": "Forecast units",
+          "goal": "Customers can choose the temperature unit they understand.",
+          "successCriteria": [
+            "A customer can switch units and see every displayed temperature update."
+          ],
+          "constraints": "Keep the preference on the device."
+        },
+        "suggestions": [
+          {
+            "reference": "S1",
+            "title": "Choose a temperature unit",
+            "type": "story",
+            "body": "Add the unit preference and apply it throughout the forecast.",
+            "acceptanceCriteria": [
+              "A customer can switch between Celsius and Fahrenheit",
+              "Every displayed temperature uses the selected unit",
+              "Automated checks cover conversion and saved preference behaviour"
+            ],
+            "role": "implementer",
+            "priority": "normal",
+            "rationale": "One cohesive change delivers and verifies the complete outcome.",
+            "dependsOn": []
+          }
+        ]
+      }
+      """#
+
+    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+
+    #expect(plan.ticketSuggestions.count == 1)
+    #expect(plan.ticketSuggestions[0].suggestedRole == .implementer)
+  }
+
   @Test("Epic planning permits a genuinely decision-only research outcome")
   func epicPlanningPermitsDecisionOnlyOutcome() throws {
     let response = #"""
@@ -1307,6 +1361,10 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Otherwise create tickets that deliver"))
     #expect(prompt.contains("Research is a prerequisite,"))
     #expect(prompt.contains("trace every epic success criterion"))
+    #expect(prompt.contains("do not default to a fixed"))
+    #expect(prompt.contains("Make verification explicit in"))
+    #expect(prompt.contains("separate design or verification ticket only when"))
+    #expect(!prompt.contains("include the downstream experience-design, implementation, and verification"))
     #expect(prompt.contains("separate Business Analyst ticket"))
     #expect(prompt.contains("do not bury source selection"))
     #expect(prompt.contains("implementation-time selection without a separate recommendation"))
@@ -1320,6 +1378,8 @@ struct CodexAdapterTests {
     #expect(finalPlan.contains("is such authorisation"))
     #expect(finalPlan.contains("Give that work a separate Business Analyst ticket"))
     #expect(finalPlan.contains("inside design or implementation"))
+    #expect(finalPlan.contains("Do not force that work into a standard sequence"))
+    #expect(finalPlan.contains("using a separate ticket only when"))
     #expect(developerInstructions.contains("constraints alone do not select"))
     #expect(developerInstructions.contains("authorised Business Analyst research"))
     #expect(developerInstructions.contains(#"not "S1 - Choose a provider""#))
@@ -1965,6 +2025,12 @@ struct CodexAdapterTests {
     #expect(instructions.contains("already available inside the sandbox"))
     #expect(instructions.contains("command -v"))
     #expect(instructions.contains("request_permissions"))
+    #expect(instructions.contains("smallest coherent filesystem"))
+    #expect(instructions.contains("Batch all known paths into one"))
+    #expect(instructions.contains("Do not discover a runtime one approval at a time"))
+    #expect(instructions.contains("`/opt/homebrew/bin`"))
+    #expect(instructions.contains("`/opt/homebrew/opt`"))
+    #expect(instructions.contains("`/opt/homebrew/Cellar`"))
     #expect(instructions.contains("do not merely repeat"))
     #expect(instructions.contains("add another shell wrapper"))
     #expect(instructions.contains("substitute older evidence"))
@@ -2358,6 +2424,8 @@ struct CodexAdapterTests {
     #expect(recoveryPrompt.contains("audit display only"))
     #expect(recoveryPrompt.contains("Never paste it into a command"))
     #expect(recoveryPrompt.contains("do not request the command again"))
+    #expect(recoveryPrompt.contains("one batched"))
+    #expect(recoveryPrompt.contains("`/opt/homebrew/Cellar`"))
 
     let implementationRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
       item: researchTicket,
@@ -2383,6 +2451,33 @@ struct CodexAdapterTests {
     #expect(implementationRecoveryPrompt.contains("audit display only"))
     #expect(implementationRecoveryPrompt.contains("`/bin/zsh -lc`"))
     #expect(implementationRecoveryPrompt.contains("use `request_permissions`"))
+    #expect(implementationRecoveryPrompt.contains("one batched"))
+    #expect(implementationRecoveryPrompt.contains("`/opt/homebrew/Cellar`"))
+
+    let interruptedLeafPermission = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: researchTicket.id,
+      agentRunID: UUID(),
+      threadID: "implementation-thread",
+      turnID: "implementation-turn",
+      serverRequestID: "92",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read /opt/homebrew/opt/llhttp",
+      signature: "permissions|/opt/homebrew/opt/llhttp",
+      status: .interrupted
+    )
+    let leafRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: researchTicket,
+      interruptedPermission: interruptedLeafPermission
+    )
+    #expect(leafRecoveryPrompt.contains("Read /opt/homebrew/opt/llhttp"))
+    #expect(leafRecoveryPrompt.contains("do not continue requesting adjacent paths"))
+    #expect(leafRecoveryPrompt.contains("one consolidated request"))
+    #expect(leafRecoveryPrompt.contains("`/opt/homebrew/bin`"))
+    #expect(leafRecoveryPrompt.contains("`/opt/homebrew/opt`"))
+    #expect(leafRecoveryPrompt.contains("`/opt/homebrew/Cellar`"))
 
     var deniedPermission = interruptedPermission
     deniedPermission.status = .denied
