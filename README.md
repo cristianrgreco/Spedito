@@ -47,11 +47,13 @@ An agent that needs a Product Owner choice enters a durable attention state; its
 structured options are selectable in the Work log, with a free-form response still
 available, and the submitted owner response queues the same thread to resume. Delivery
 and Tech Lead runs use App Server approval requests rather than treating every sandbox
-boundary as a failure. The ticket shows the exact command or capability with
+boundary as a failure. The ticket leads with the plain-language reason for a request and
+keeps the exact command or capability available in a technical-details disclosure, with
 **Allow once**, **Always allow for this product**, and **Deny** actions where applicable.
 One-time decisions apply to the current agent run; saved product access can be
 reviewed and revoked in Product settings. Every decision remains auditable after
-relaunch. The delivery profile grants the exact
+relaunch on its original permission request, without a duplicate Product Owner
+message. The delivery profile grants the exact
 ticket worktree plus Codex's minimal macOS runtime paths; it does not deny a parent
 directory that the worktree must traverse. Extra Homebrew, SDK, service, or other
 system access therefore becomes a scoped Product Owner permission request instead of
@@ -61,8 +63,18 @@ package managers and runtime installations itself. Agents diagnose blocked execu
 request the narrowest exact filesystem or network capability, and do not repeat an
 ineffective command approval or add shell wrappers. Agents are explicitly
 forbidden from copying a ticket workspace elsewhere to bypass that decision. They
-receive read-only access to the active product's central Git metadata, so status,
+also treat a recovered permission request as audit display rather than executable
+command text: retries invoke the underlying executable directly, never paste an
+already wrapped `/bin/zsh -lc` command, and do not turn the same post-approval
+sandbox failure into a syntactically different approval request. For routine checks,
+agents prefer short, established product entry points such as `npm test`, `make test`,
+or `./scripts/test.sh`. An Implementer may add a maintained script or package task when
+recurring checks form one coherent workflow, but never merely to conceal unrelated
+commands or broaden an approval. Agents receive
+read-only access to the active product's central Git metadata, so status,
 diff, history, and conflict inspection do not need Product Owner approval. Their
+turns inherit that product-scoped thread profile so the exact Git grant is not
+replaced by the generic delivery profile when work begins or resumes. Their
 App Server process disables optional Git locks, ignores the user's global Git
 configuration, and uses a noninteractive pager. The assigned worktree remains
 writable, while StoryPointless alone owns Git mutations such as staging, commits,
@@ -75,7 +87,11 @@ handled by an internal Integrator turn in that preserved worktree; material choi
 pause as **Needs your input** without inventing a new board state. The exact integrated
 revision is then inspected by a separate read-only Tech Lead run. Approval moves the
 ticket to **Ready for Demo** only after its typed demo recipe successfully smoke-tests
-the exact integrated revision. The ticket acceptance room then provides one **Demo**
+the exact integrated revision. Tech Lead findings block only when a material defect
+justifies another implementation and review cycle; whitespace, formatting, and
+optional style-only checks are informational unless they have a concrete product,
+validity, required-gate, reviewability, or security consequence. The ticket acceptance
+room then provides one **Demo**
 button. StoryPointless prepares a detached preview checkout, starts a sandboxed local
 service through the same pinned Codex App Server runtime and opens its loopback browser URL, launches a reviewed macOS app, opens a
 review artifact, or captures a bounded scenario result according to that reviewed
@@ -99,6 +115,11 @@ the persisted Conversation and continues in the same ticket workspace with a foc
 recovery instruction; it does not receive the original “start the ticket” briefing again.
 Any completed structured result is recovered before another implementation turn is
 started. A Product Owner stop remains paused until they explicitly resume it.
+Switching products does not suspend delivery. Every active product keeps its own
+scheduler, agent turns, telemetry, permissions, and durable execution context while the
+selected product changes only the visible UI projection. Returning to a product shows
+the work at its current stage without interrupting or restarting its Implementer,
+Integrator, or Tech Lead.
 An expired permission request remains visibly actionable and keeps its implementation,
 Tech Lead review, or conflict-resolution run paused after relaunch. Once the Product
 Owner chooses Allow or Deny, StoryPointless explicitly resumes the persisted Conversation
@@ -135,10 +156,16 @@ Tech Lead performs normal delivery review; specialist frontend, backend, securit
 and other team members are optional additions rather than permanent headcount.
 The current product header opens a searchable, launcher-style product library
 with scrollable descriptions, current-workspace state, double-click/open, and
-new-product creation. Each product loads its own backlog, team, sprints, and
-knowledge, and the most recently opened product is restored on restart. When
+new-product creation. The first product uses the app accent color for its initial
+tile, while later products receive a durable color from a light/dark-safe palette
+so the active workspace is visually distinct. Each product loads its own backlog,
+team, sprints, and knowledge, and the most recently opened product is restored on restart. When
 multiple products exist without a valid remembered selection, the library is
 shown automatically once rather than interrupting every launch.
+Product settings can archive the current product after safely suspending its
+active delivery. Archived products leave active navigation but retain their
+backlog, Work logs, Product knowledge, source workspace, and delivery history;
+the product library can show, restore, and reopen them.
 Product Context keeps the potentially long product description out of the
 sidebar while allowing the owner to review and edit what future agents receive.
 Manual ticket creation also requires the same simple Story/Task/Bug choice.
@@ -154,10 +181,15 @@ last saved plan. Ordinary Tech Lead review is an execution-stage system run rath
 than a second per-ticket planning picker.
 Epics are optional backlog groups rather than executable ticket types. The Backlog
 keeps open epics prominent while completed epics collapse into a remembered inline
-summary that expands within the same table.
+summary that expands within the same table. Ticket details show their Epic as a
+clickable relationship in both planning and delivery history.
 An **Improve** sidebar section now separates sprint Retrospectives from
-longitudinal Reports. Both are evidence-first: the UI shows current operational
-counts but withholds trend claims until comparable completed sprints exist.
+longitudinal Reports. Both are evidence-first: each starts with a clear empty
+state, and Reports shows current operational counts after the first completed
+sprint while withholding trend claims until comparable completed sprints exist.
+A compact tabbed chart switches between cycle time, agent time per delivered
+outcome, and outcomes with correction cycles across the latest twelve sprints or
+the full history, with exact values available for a selected sprint.
 Custom team-member creation is currently hidden from Team settings while that
 workflow is deferred. Existing custom team members remain configurable and are
 archived rather than destructively deleted.
@@ -195,6 +227,12 @@ Product Owner decisions must still pause the ticket and cannot be smuggled throu
 knowledge proposal. The Knowledge view provides a seeded page
 tree, Markdown editing, search, breadcrumbs, contents, backlinks, version history,
 provenance metadata, and citation-backed **Ask Knowledge** over verified pages only.
+Unused canonical pages are stored with genuinely empty bodies so their guidance is
+presentation-only rather than false verified content. Delivery runs receive a bounded
+set of non-empty verified reference pages plus a separate canonical destination
+directory. Empty canonical pages and relevant populated pages may receive complete
+updates, while sections may receive focused child pages; persisted per-run destination
+authorization prevents an agent from using an unrelated page as a catch-all.
 
 An approved Business Analyst research ticket normally hands its decision to already
 planned dependant tickets through its completion Work log and verified Product
@@ -202,16 +240,27 @@ knowledge. It may publish fully formed follow-up ticket proposals only for genui
 new work that is absent from the active Backlog. Those exceptional proposals appear
 as a labelled suggestion batch, inherit the source epic and research dependency when
 accepted, and remain outside committed scope until the Product Owner reviews them.
-Bounded verified pages are selected for future execution prompts rather than sending
-the whole wiki. Normal app termination interrupts the active turn, persists the
+Bounded verified pages are selected with title, taxonomy, provenance, and capped body
+relevance rather than sending the whole wiki or allowing a long page to dominate by
+word count. Normal app termination interrupts the active turn, persists the
 interruption, preserves its Conversation and workspace, and queues ordinary implementation
 to continue on the next launch. A live permission request expires with the old process,
 remains paused for an explicit owner decision, and resumes only after that decision.
 
 Execution and Tech Lead results also record at most two concrete observations in
-each retrospective category. The Retrospectives view presents these as attributed,
-ticket-linked evidence for **Went well** and **Could improve**, plus a reviewable
-decision queue. After a sprint completes and before its retrospective is concluded,
+each retrospective category. Their free-text action ideas remain source evidence
+rather than becoming repeated Product Owner decisions. At sprint completion, one
+read-only Business Analyst turn groups and deduplicates the frozen evidence into
+zero to five final actions, each with an expected effect and inspectable source
+observations. Existing Ways of working, prior decisions, and active Backlog scope
+prevent already-covered work from being proposed again. The durable synthesis can
+be retried after interruption or explicitly skipped when Codex is unavailable.
+The Retrospectives view presents attributed, ticket-linked evidence for **Went
+well** and **Could improve**, plus the consolidated review queue, opening on the
+latest completed sprint when one exists. An active sprint is a read-only preview:
+evidence remains visible, but final actions and decisions wait until the sprint
+is complete. After a sprint completes, final action preparation resolves, and
+before its retrospective is concluded,
 the Product Owner can add their own attributed proposal for **Ways of working** or a
 **Backlog ticket** alongside the agents’ suggestions. Accepting a ways-of-working
 proposal updates inherited team guidance; accepting a ticket creates it in the

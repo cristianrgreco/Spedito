@@ -1,3 +1,4 @@
+import Foundation
 import StoryPointlessCore
 import SwiftUI
 
@@ -921,7 +922,7 @@ private struct CodebaseBranchDetailView: View {
   }
 }
 
-private enum CodebaseDiffLayout: String, CaseIterable, Identifiable {
+enum CodebaseDiffLayout: String, CaseIterable, Identifiable {
   case automatic
   case unified
   case split
@@ -937,12 +938,29 @@ private enum CodebaseDiffLayout: String, CaseIterable, Identifiable {
   }
 }
 
+enum CodebaseDiffLayoutPreference {
+  private static let key = "codebaseDiffLayout"
+
+  static func load(defaults: UserDefaults = .standard) -> CodebaseDiffLayout {
+    defaults.string(forKey: key)
+      .flatMap(CodebaseDiffLayout.init(rawValue:))
+      ?? .automatic
+  }
+
+  static func save(
+    _ layout: CodebaseDiffLayout,
+    defaults: UserDefaults = .standard
+  ) {
+    defaults.set(layout.rawValue, forKey: key)
+  }
+}
+
 private struct CodebaseDiffViewer: View {
   let unifiedDiff: String
   let isTruncated: Bool
   let isLoading: Bool
   let emptyDescription: String
-  @State private var layout = CodebaseDiffLayout.automatic
+  @State private var layout = CodebaseDiffLayoutPreference.load()
 
   var body: some View {
     if unifiedDiff.isEmpty {
@@ -970,6 +988,9 @@ private struct CodebaseDiffViewer: View {
           .pickerStyle(.segmented)
           .labelsHidden()
           .frame(width: 260)
+          .onChange(of: layout) { _, layout in
+            CodebaseDiffLayoutPreference.save(layout)
+          }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

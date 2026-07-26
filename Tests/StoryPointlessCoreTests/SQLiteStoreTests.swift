@@ -6,6 +6,60 @@ import Testing
 
 @Suite("SQLite store", .serialized)
 struct SQLiteStoreTests {
+  @Test("Products receive distinct colors that survive restart")
+  func productColorsAreAssignedAndPersisted() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let first = try await store.createProduct(name: "First", vision: "Start familiar")
+    let second = try await store.createProduct(name: "Second", vision: "Stand apart")
+    let third = try await store.createProduct(name: "Third", vision: "Stay recognizable")
+
+    #expect(first.color == .accent)
+    #expect(second.color != .accent)
+    #expect(third.color != .accent)
+    #expect(second.color != third.color)
+
+    let assignedColors = Dictionary(
+      uniqueKeysWithValues: [first, second, third].map { ($0.id, $0.color) }
+    )
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recoveredColors = Dictionary(
+      uniqueKeysWithValues: try await reopened.fetchProducts().map { ($0.id, $0.color) }
+    )
+    #expect(recoveredColors == assignedColors)
+    await reopened.close()
+  }
+
+  @Test("Product color migration keeps the first accent and distinguishes the rest")
+  func productColorMigrationBackfillsExistingProducts() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let first = try await store.createProduct(name: "First", vision: "Start familiar")
+    _ = try await store.createProduct(name: "Second", vision: "Stand apart")
+    _ = try await store.createProduct(name: "Third", vision: "Stay recognizable")
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE products SET color = 'accent';
+      DELETE FROM schema_migrations WHERE version = 44;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let products = try await reopened.fetchProducts()
+    #expect(products.first { $0.id == first.id }?.color == .accent)
+    #expect(products.filter { $0.color == .accent }.count == 1)
+    #expect(Set(products.map(\.color)).count == products.count)
+    await reopened.close()
+  }
+
   @Test("Product, ticket, comments, profiles, and audit events survive restart")
   func durableWorkflow() async throws {
     let fixture = try DatabaseFixture()
@@ -123,6 +177,7 @@ struct SQLiteStoreTests {
     #expect(activity.map(\.kind).contains("product.created"))
     #expect(activity.map(\.kind).contains("work_item.transitioned"))
     #expect(activity.map(\.kind).contains("comment.created"))
+    #expect(products.first?.updatedAt == activity.first?.createdAt)
     #expect(ticketActivity.allSatisfy { $0.workItemID == item.id })
     #expect(ticketActivity.map(\.kind).contains("work_item.transitioned"))
     #expect(ticketActivity.map(\.kind).contains("comment.created"))
@@ -133,6 +188,70 @@ struct SQLiteStoreTests {
     #expect(recoveredAnalyst.model == "gpt-5.6-sol")
     #expect(recoveredAnalyst.reasoningEffort == "high")
     #expect(recoveredAnalyst.customInstructions == "Challenge assumptions with concrete examples.")
+
+    await reopened.close()
+  }
+
+  @Test("Archiving a product hides active work without deleting its history")
+  func productArchiveAndRestorePreserveHistory() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let retained = try await store.createProduct(
+      name: "Retained product",
+      vision: "Keep this product active"
+    )
+    let archived = try await store.createProduct(
+      name: "Historical product",
+      vision: "Preserve its delivery record"
+    )
+    let item = try await store.createWorkItem(
+      productID: archived.id,
+      title: "Keep the historical ticket",
+      acceptanceCriteria: ["The ticket survives product archival"]
+    )
+    _ = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "This Work log entry must remain available."
+    )
+
+    let archivedProduct = try await store.archiveProduct(id: archived.id)
+    #expect(archivedProduct.status == .archived)
+    #expect(try await store.fetchProducts().map(\.id) == [retained.id])
+    #expect(
+      try await store.fetchProducts(status: .archived).map(\.id) == [archived.id]
+    )
+    #expect(try await store.fetchWorkItems(productID: archived.id).map(\.id) == [item.id])
+    #expect(
+      try await store.fetchComments(workItemID: item.id).map(\.body)
+        == ["This Work log entry must remain available."]
+    )
+    #expect(
+      try await store.fetchActivity(productID: archived.id).first?.kind
+        == "product.archived"
+    )
+
+    await store.close()
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    #expect(try await reopened.fetchProducts().map(\.id) == [retained.id])
+    #expect(
+      try await reopened.fetchProducts(status: .archived).first?.status == .archived
+    )
+
+    let restoredProduct = try await reopened.restoreProduct(id: archived.id)
+    #expect(restoredProduct.status == .active)
+    #expect(
+      Set(try await reopened.fetchProducts().map(\.id)) == Set([retained.id, archived.id])
+    )
+    #expect(try await reopened.fetchProducts(status: .archived).isEmpty)
+    #expect(
+      try await reopened.fetchActivity(productID: archived.id).first?.kind
+        == "product.restored"
+    )
+    #expect(try await reopened.fetchWorkItems(productID: archived.id).map(\.id) == [item.id])
 
     await reopened.close()
   }
@@ -1728,6 +1847,23 @@ struct SQLiteStoreTests {
     #expect(pages.contains { $0.slug == "ways-of-working" })
     #expect(pages.contains { $0.slug == "delivery-history" })
     #expect(pages.allSatisfy { !$0.bodyMarkdown.hasPrefix("# ") })
+    let emptySeedSlugs = Set([
+      "overview",
+      "users-and-journeys",
+      "product-principles",
+      "glossary",
+      "architecture",
+      "components-and-data",
+      "integrations",
+      "environments",
+      "runbooks",
+      "release-and-rollback",
+    ])
+    #expect(
+      pages
+        .filter { emptySeedSlugs.contains($0.slug) }
+        .allSatisfy { $0.bodyMarkdown.isEmpty }
+    )
 
     let overview = try #require(pages.first { $0.slug == "overview" })
     _ = try await store.updateKnowledgePage(
@@ -1775,7 +1911,88 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Retrospective evidence is durable and accepted actions become backlog tickets")
+  @Test("Migration removes only untouched initial knowledge placeholders")
+  func migrationRemovesInitialKnowledgePlaceholders() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Knowledge migration",
+      vision: "Show genuine empty states"
+    )
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let overview = try #require(pages.first { $0.slug == "overview" })
+    let architecture = try #require(pages.first { $0.slug == "architecture" })
+    let glossary = try #require(pages.first { $0.slug == "glossary" })
+    _ = try await store.updateKnowledgePage(
+      id: glossary.id,
+      title: glossary.title,
+      bodyMarkdown: "Add verified knowledge here.",
+      authorName: "Me",
+      changeSummary: "Kept an intentional sentence"
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE knowledge_pages
+      SET body_markdown = 'Add verified knowledge here.',
+          updated_at = created_at
+      WHERE id = '\(overview.id.uuidString)';
+
+      UPDATE knowledge_page_revisions
+      SET body_markdown = 'Add verified knowledge here.',
+          author_name = 'StoryPointless',
+          change_summary = 'Created page'
+      WHERE page_id = '\(overview.id.uuidString)'
+        AND version = 1;
+
+      UPDATE knowledge_pages
+      SET body_markdown = 'Add verified knowledge here.',
+          updated_at = created_at
+      WHERE id = '\(architecture.id.uuidString)';
+
+      UPDATE knowledge_page_revisions
+      SET body_markdown = '# Architecture' || char(10) || char(10) ||
+            'Add verified knowledge here.',
+          author_name = 'StoryPointless',
+          change_summary = 'Created page'
+      WHERE page_id = '\(architecture.id.uuidString)'
+        AND version = 1;
+
+      DELETE FROM schema_migrations WHERE version = 40;
+      DELETE FROM schema_migrations WHERE version = 43;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let migratedPages = try await reopened.fetchKnowledgePages(productID: product.id)
+    let migratedOverview = try #require(migratedPages.first { $0.id == overview.id })
+    let migratedArchitecture = try #require(
+      migratedPages.first { $0.id == architecture.id }
+    )
+    let preservedGlossary = try #require(migratedPages.first { $0.id == glossary.id })
+    #expect(migratedOverview.bodyMarkdown.isEmpty)
+    #expect(migratedArchitecture.bodyMarkdown.isEmpty)
+    #expect(preservedGlossary.bodyMarkdown == "Add verified knowledge here.")
+    let revisions = try await reopened.fetchKnowledgePageRevisions(pageID: overview.id)
+    let architectureRevisions = try await reopened.fetchKnowledgePageRevisions(
+      pageID: architecture.id
+    )
+    #expect(revisions.count == 2)
+    #expect(revisions.first?.bodyMarkdown.isEmpty == true)
+    #expect(revisions.first?.changeSummary == "Removed the initial placeholder body")
+    #expect(architectureRevisions.count == 2)
+    #expect(architectureRevisions.first?.bodyMarkdown.isEmpty == true)
+    #expect(
+      architectureRevisions.first?.changeSummary
+        == "Removed the legacy initial placeholder body"
+    )
+    await reopened.close()
+  }
+
+  @Test("Active retrospective actions are read-only until they can become backlog tickets")
   func retrospectiveEvidenceLifecycle() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -1784,21 +2001,27 @@ struct SQLiteStoreTests {
     let product = try await store.createProduct(name: "Learning product", vision: "Improve")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
-    let item = try await store.createWorkItem(
+    let item = try await readyItem(
+      in: store,
       productID: product.id,
-      title: "First delivery",
-      acceptanceCriteria: ["The result is visible"]
+      title: "First delivery"
     )
-    let sprint = try await store.saveDraftSprint(
+    let draft = try await store.saveDraftSprint(
       productID: product.id,
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
       concurrencyLimit: 1,
-      items: [SprintDraftItemInput(workItemID: item.id)]
-    ).sprint
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
     let action = RetrospectiveNote(
       productID: product.id,
-      sprintID: sprint.id,
+      sprintID: active.sprint.id,
       workItemID: item.id,
       profileID: implementer.id,
       authorName: implementer.name,
@@ -1811,6 +2034,19 @@ struct SQLiteStoreTests {
     try await store.saveRetrospectiveNotes([action])
     #expect(try await store.fetchRetrospectiveNotes(productID: product.id).count == 1)
 
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.decideRetrospectiveAction(noteID: action.id, accept: true)
+    }
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.decideRetrospectiveAction(noteID: action.id, accept: false)
+    }
+    #expect(
+      try await store.fetchRetrospectiveNotes(productID: product.id).first?.actionStatus
+        == .proposed
+    )
+    #expect(try await store.fetchWorkItems(productID: product.id).count == 1)
+
+    _ = try await completeSprint(active, delivering: item, in: store)
     let created = try #require(
       try await store.decideRetrospectiveAction(noteID: action.id, accept: true)
     )
@@ -1832,21 +2068,29 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(name: "Practice product", vision: "Improve")
-    let item = try await store.createWorkItem(
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
       productID: product.id,
-      title: "Deliver an outcome",
-      acceptanceCriteria: ["The result is visible"]
+      title: "Deliver an outcome"
     )
-    let sprint = try await store.saveDraftSprint(
+    let draft = try await store.saveDraftSprint(
       productID: product.id,
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
       concurrencyLimit: 1,
-      items: [SprintDraftItemInput(workItemID: item.id)]
-    ).sprint
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
     let action = RetrospectiveNote(
       productID: product.id,
-      sprintID: sprint.id,
+      sprintID: active.sprint.id,
       workItemID: item.id,
       authorName: "Tech Lead",
       category: .suggestedAction,
@@ -1855,6 +2099,7 @@ struct SQLiteStoreTests {
       actionDestination: .teamPractice
     )
     try await store.saveRetrospectiveNotes([action])
+    _ = try await completeSprint(active, delivering: item, in: store)
 
     let created = try await store.decideRetrospectiveAction(
       noteID: action.id,
@@ -1882,7 +2127,7 @@ struct SQLiteStoreTests {
 
     let duplicate = RetrospectiveNote(
       productID: product.id,
-      sprintID: sprint.id,
+      sprintID: active.sprint.id,
       workItemID: item.id,
       authorName: "Implementer",
       category: .suggestedAction,
@@ -1961,6 +2206,19 @@ struct SQLiteStoreTests {
     let completed = try await store.completeSprintIfFinished(id: active.sprint.id)
     #expect(completed.sprint.state == .completed)
     #expect(completed.sprint.retrospectiveConcludedAt == nil)
+    let synthesis = try #require(
+      try await store.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    #expect(synthesis.status == .pending)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.proposeRetrospectiveAction(
+        productID: product.id,
+        sprintID: completed.sprint.id,
+        body: "Wait until the team suggestions are ready",
+        destination: .teamPractice
+      )
+    }
+    _ = try await store.skipRetrospectiveSynthesis(id: synthesis.id)
 
     let ownerPractice = try await store.proposeRetrospectiveAction(
       productID: product.id,
@@ -2019,6 +2277,9 @@ struct SQLiteStoreTests {
     let repeated = try await store.concludeRetrospective(id: completed.sprint.id)
     #expect(repeated.sprint.retrospectiveConcludedAt == concludedAt)
     await #expect(throws: PersistenceError.self) {
+      _ = try await store.decideRetrospectiveAction(noteID: action.id, accept: true)
+    }
+    await #expect(throws: PersistenceError.self) {
       _ = try await store.proposeRetrospectiveAction(
         productID: product.id,
         sprintID: completed.sprint.id,
@@ -2039,6 +2300,188 @@ struct SQLiteStoreTests {
         .first { $0.sprint.id == completed.sprint.id }
     )
     #expect(historical.sprint.retrospectiveConcludedAt == concludedAt)
+    await reopened.close()
+  }
+
+  @Test("Sprint evidence is consolidated into durable sourced retrospective actions")
+  func retrospectiveSynthesisLifecycle() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Learning product",
+      vision: "Turn repeated friction into one decision"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver one outcome"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Learn from repeated validation friction",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let firstCandidate = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: "Keep the approved validation runtime available",
+      isActionCandidate: true,
+      actionDestination: .teamPractice
+    )
+    let repeatedCandidate = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: "Ensure final checks can use the configured runtime",
+      isActionCandidate: true,
+      actionDestination: .teamPractice
+    )
+    try await store.saveRetrospectiveNotes([firstCandidate, repeatedCandidate])
+
+    let completed = try await completeSprint(active, delivering: item, in: store)
+    let pending = try #require(
+      try await store.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    #expect(pending.status == .pending)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.concludeRetrospective(id: completed.sprint.id)
+    }
+
+    let generating = try await store.beginRetrospectiveSynthesis(
+      id: pending.id,
+      profileID: analyst.id
+    )
+    #expect(generating.status == .generating)
+    let sources = try await store.fetchRetrospectiveSynthesisSourceNotes(
+      synthesisID: pending.id
+    )
+    #expect(Set(sources.map(\.id)) == Set([firstCandidate.id, repeatedCandidate.id]))
+
+    let actions = try await store.completeRetrospectiveSynthesis(
+      id: pending.id,
+      actions: [
+        RetrospectiveSynthesisActionDraft(
+          body: "Make approved validation tools available before delivery begins.",
+          destination: .teamPractice,
+          expectedEffect: "Ticket handoffs include executed checks instead of repeated runtime blockers.",
+          sourceNoteIDs: [firstCandidate.id, repeatedCandidate.id]
+        )
+      ],
+      profileID: analyst.id,
+      authorName: analyst.name
+    )
+    let finalAction = try #require(actions.first)
+    #expect(finalAction.actionStatus == .proposed)
+    #expect(finalAction.expectedEffect?.contains("executed checks") == true)
+    #expect(finalAction.synthesisID == pending.id)
+    #expect(
+      Set(
+        try await store.fetchRetrospectiveActionSources(productID: product.id)
+          .filter { $0.actionNoteID == finalAction.id }
+          .map(\.sourceNoteID)
+      ) == Set([firstCandidate.id, repeatedCandidate.id])
+    )
+    let storedCandidates = try await store.fetchRetrospectiveNotes(productID: product.id)
+      .filter(\.isActionCandidate)
+    #expect(storedCandidates.count == 2)
+    #expect(storedCandidates.allSatisfy { $0.actionStatus == nil })
+
+    _ = try await store.decideRetrospectiveAction(
+      noteID: finalAction.id,
+      accept: false
+    )
+    let concluded = try await store.concludeRetrospective(id: completed.sprint.id)
+    #expect(concluded.sprint.retrospectiveConcludedAt != nil)
+    await store.close()
+  }
+
+  @Test("Migration normalizes synthesis IDs created with lowercase UUID text")
+  func retrospectiveSynthesisIDMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Migration product",
+      vision: "Keep retrospective preparation recoverable"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver before migration"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Preserve retrospective preparation",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let candidate = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: "Keep the migration path covered",
+      isActionCandidate: true,
+      actionDestination: .teamPractice
+    )
+    try await store.saveRetrospectiveNotes([candidate])
+    _ = try await completeSprint(active, delivering: item, in: store)
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE retrospective_syntheses SET id = lower(id);
+      DELETE FROM schema_migrations WHERE version = 46;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let pending = try #require(
+      try await reopened.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    let generating = try await reopened.beginRetrospectiveSynthesis(
+      id: pending.id,
+      profileID: analyst.id
+    )
+    #expect(generating.status == .generating)
+    #expect(
+      try await reopened.fetchRetrospectiveSynthesisSourceNotes(
+        synthesisID: pending.id
+      ).map(\.id) == [candidate.id]
+    )
     await reopened.close()
   }
 
@@ -2291,6 +2734,28 @@ struct SQLiteStoreTests {
     let technical = try #require(
       pages.first { $0.parentID == nil && $0.slug == "technical" }
     )
+    try await store.setAgentRunKnowledgeContext(
+      runID: run.id,
+      pageIDs: [overview.id]
+    )
+    try await store.setAgentRunKnowledgeDestinations(
+      runID: run.id,
+      pageIDs: [overview.id, technical.id, overview.id]
+    )
+    let storedContext = try await store.fetchAgentRunKnowledgeContext(
+      productID: product.id
+    )
+    let storedDestinations = try await store.fetchAgentRunKnowledgeDestinations(
+      productID: product.id
+    )
+    #expect(storedContext == [AgentRunKnowledgePage(runID: run.id, pageID: overview.id)])
+    #expect(
+      Set(storedDestinations)
+        == Set([
+          AgentRunKnowledgeDestination(runID: run.id, pageID: overview.id),
+          AgentRunKnowledgeDestination(runID: run.id, pageID: technical.id),
+        ])
+    )
     let update = KnowledgePageProposal(
       productID: product.id,
       sprintID: active.sprint.id,
@@ -2392,6 +2857,29 @@ struct SQLiteStoreTests {
       actor: "Product Owner",
       reason: "Ready for delivery"
     )
+  }
+
+  private func completeSprint(
+    _ active: SprintPlan,
+    delivering item: WorkItem,
+    in store: SQLiteStore
+  ) async throws -> SprintPlan {
+    for state in [
+      WorkItemState.running,
+      .integrating,
+      .verifying,
+      .acceptance,
+      .readyToRelease,
+      .released,
+    ] {
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: state,
+        actor: "Test",
+        reason: "Complete the delivery"
+      )
+    }
+    return try await store.completeSprintIfFinished(id: active.sprint.id)
   }
 }
 

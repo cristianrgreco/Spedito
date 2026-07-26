@@ -37,9 +37,49 @@ struct EpicPlanningConversationState: Equatable {
   var errorMessage: String?
 }
 
+private struct SprintExecutionContext {
+  let product: Product
+  let plan: SprintPlan
+  let workItems: [WorkItem]
+  let dependencies: [WorkItemDependency]
+  let profiles: [AgentProfile]
+  let runs: [AgentRun]
+  let permissionRequests: [AgentPermissionRequest]
+  let permissionGrants: [AgentPermissionGrant]
+  let knowledgePages: [KnowledgePage]
+}
+
+enum ProductExecutionLifecycleEvent: Equatable {
+  case productSelectionChanged
+  case productArchived(UUID)
+  case appShutdown
+}
+
+enum ProductExecutionSuspensionScope: Equatable {
+  case none
+  case product(UUID)
+  case all
+}
+
+struct ProductExecutionLifecyclePolicy {
+  static func suspensionScope(
+    for event: ProductExecutionLifecycleEvent
+  ) -> ProductExecutionSuspensionScope {
+    switch event {
+    case .productSelectionChanged:
+      .none
+    case .productArchived(let productID):
+      .product(productID)
+    case .appShutdown:
+      .all
+    }
+  }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
   @Published private(set) var products: [Product] = []
+  @Published private(set) var archivedProducts: [Product] = []
   @Published private(set) var epics: [Epic] = []
   @Published private(set) var workItems: [WorkItem] = []
   @Published private(set) var dependencies: [WorkItemDependency] = []
@@ -50,6 +90,8 @@ final class AppModel: ObservableObject {
   @Published private(set) var sprintReadinessIssues: [SprintReadinessIssue] = []
   @Published private(set) var activity: [ActivityEvent] = []
   @Published private(set) var retrospectiveNotes: [RetrospectiveNote] = []
+  @Published private(set) var retrospectiveSyntheses: [RetrospectiveSynthesis] = []
+  @Published private(set) var retrospectiveActionSources: [RetrospectiveActionSource] = []
   @Published private(set) var knowledgePages: [KnowledgePage] = []
   @Published private(set) var candidateRevisions: [CandidateRevision] = []
   @Published private(set) var demoSessions: [DemoSession] = []
@@ -57,6 +99,7 @@ final class AppModel: ObservableObject {
   @Published private(set) var permissionGrants: [AgentPermissionGrant] = []
   @Published private(set) var knowledgePageProposals: [KnowledgePageProposal] = []
   @Published private(set) var agentRunKnowledgeContext: [AgentRunKnowledgePage] = []
+  @Published private(set) var agentRunKnowledgeDestinations: [AgentRunKnowledgeDestination] = []
   @Published private(set) var liveRunActivities: [UUID: CodexLiveActivity] = [:]
   @Published private(set) var suggestionBatch: TicketSuggestionBatch?
   @Published private(set) var codexModels: [CodexModelOption] = []
@@ -64,7 +107,7 @@ final class AppModel: ObservableObject {
   @Published var selectedProductID: UUID?
   @Published private(set) var shouldPresentProductLibraryOnLaunch = false
   @Published var errorMessage: String?
-  @Published private(set) var isLoading = false
+  @Published private(set) var isLoading = true
   @Published private(set) var isDecidingSuggestions = false
   @Published private(set) var isPlanningMessageRunning = false
   @Published private(set) var isTicketConversationMessageRunning = false
@@ -113,19 +156,32 @@ final class AppModel: ObservableObject {
   private var activeEpicPlanningTurn: (threadID: String, turnID: String)?
   private var epicPlanningTask: Task<Void, Never>?
   private var epicConversationPersistenceTask: Task<Void, Never>?
-  private var sprintExecutionTask: Task<Void, Never>?
+  private var sprintExecutionTasks: [UUID: Task<Void, Never>] = [:]
+  private var sprintExecutionTaskIDs: [UUID: UUID] = [:]
+  private var sprintExecutionWakeContinuations: [
+    UUID: AsyncStream<Void>.Continuation
+  ] = [:]
   private var activeImplementationTasks: [UUID: Task<Void, Never>] = [:]
-    private struct ActiveExecutionTurn: Sendable {
-        let threadID: String
-        let turnID: String
-    }
+  private var activeImplementationProductIDs: [UUID: UUID] = [:]
+
+  private struct ActiveExecutionTurn: Sendable {
+    let productID: UUID
+    let threadID: String
+    let turnID: String
+  }
 
   private var activeExecutionTurns: [UUID: ActiveExecutionTurn] = [:]
   private var liveApprovalRequests: [UUID: CodexServerRequest] = [:]
+  private var liveApprovalRequestProductIDs: [UUID: UUID] = [:]
   private var approvalRoutingTask: Task<Void, Never>?
   private var manuallyStoppedRunIDs: Set<UUID> = []
   private var liveActivityTasks: [UUID: Task<Void, Never>] = [:]
   private var liveActivityMonitorIDs: [UUID: UUID] = [:]
+  private var liveActivityProductIDs: [UUID: UUID] = [:]
+  private var retrospectiveSynthesisTasks: [UUID: Task<Void, Never>] = [:]
+  private var activeRetrospectiveSynthesisTurns: [
+    UUID: (threadID: String, turnID: String)
+  ] = [:]
   private var didLoad = false
   private var didResolveInitialProductSelection = false
   private var automaticallyRecoveredSuggestionSessionIDs: Set<UUID> = []
@@ -145,6 +201,11 @@ final class AppModel: ObservableObject {
       store = nil
       errorMessage = error.localizedDescription
     }
+  }
+
+  init(store: SQLiteStore?, selectedProductID: UUID? = nil) {
+    self.store = store
+    self.selectedProductID = selectedProductID
   }
 
   var selectedProduct: Product? {
@@ -254,11 +315,13 @@ final class AppModel: ObservableObject {
     guard !didLoad else { return }
     didLoad = true
     try? await store?.interruptPendingAgentPermissionRequests()
+    try? await store?.requeueGeneratingRetrospectiveSyntheses()
     await reload()
     await recoverDemoSessions()
     await connectCodex()
     await recoverTicketSuggestionSessionIfNeeded()
-    scheduleSprintExecution()
+    scheduleRetrospectiveSyntheses()
+    scheduleSprintExecutions()
   }
 
   func createProduct(name: String, vision: String) {
@@ -276,6 +339,7 @@ final class AppModel: ObservableObject {
       selectedProductID = product.id
       rememberSelectedProduct(product.id)
       products = try await store.fetchProducts()
+      archivedProducts = try await store.fetchProducts(status: .archived)
       await reloadSelectedProduct()
       let workspace = try Self.productWorkspaceURL(productID: product.id)
       _ = try await gitWorkspaceManager.ensureRepository(at: workspace)
@@ -287,8 +351,14 @@ final class AppModel: ObservableObject {
   }
 
   func selectProduct(_ product: Product) async {
-    await stopAllDemoSessions()
-    await suspendSprintExecution()
+    guard product.status == .active else { return }
+    if let departingProductID = selectedProductID {
+      await stopDemoSessions(
+        productID: departingProductID,
+        includesPreparation: false
+      )
+    }
+    await applyExecutionLifecycle(.productSelectionChanged)
     suggestionTask?.cancel()
     planningThreadIDs.removeAll()
     ticketConversationThreadIDs.removeAll()
@@ -296,6 +366,73 @@ final class AppModel: ObservableObject {
     rememberSelectedProduct(product.id)
     await reloadSelectedProduct()
     await recoverTicketSuggestionSessionIfNeeded()
+    scheduleRetrospectiveSyntheses()
+    scheduleSprintExecution(productID: product.id)
+  }
+
+  func archiveSelectedProduct() async -> Bool {
+    guard
+      let store,
+      let product = selectedProduct,
+      product.status == .active
+    else { return false }
+
+    await stopDemoSessions(productID: product.id, includesPreparation: true)
+    await applyExecutionLifecycle(.productArchived(product.id))
+    let interruptedSuggestionTask = suggestionTask
+    let interruptedEpicPlanningTask = epicPlanningTask
+    interruptedSuggestionTask?.cancel()
+    interruptedEpicPlanningTask?.cancel()
+    if let client = codexClient, let activeEpicPlanningTurn {
+      try? await client.interruptTurn(
+        threadID: activeEpicPlanningTurn.threadID,
+        turnID: activeEpicPlanningTurn.turnID
+      )
+    }
+    await interruptedSuggestionTask?.value
+    await interruptedEpicPlanningTask?.value
+    suggestionTask = nil
+    epicPlanningTask = nil
+    activeEpicPlanningTurn = nil
+    planningThreadIDs.removeAll()
+    ticketConversationThreadIDs.removeAll()
+
+    do {
+      _ = try await store.archiveProduct(id: product.id)
+      products = try await store.fetchProducts()
+      archivedProducts = try await store.fetchProducts(status: .archived)
+      selectedProductID = products.first?.id
+      if let selectedProductID {
+        rememberSelectedProduct(selectedProductID)
+      } else {
+        forgetSelectedProduct()
+      }
+      await reloadSelectedProduct()
+      await recoverTicketSuggestionSessionIfNeeded()
+      scheduleSprintExecution()
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      scheduleSprintExecution(productID: product.id)
+      return false
+    }
+  }
+
+  func restoreProductAndSelect(_ product: Product) async -> Bool {
+    guard let store, product.status == .archived else { return false }
+    do {
+      _ = try await store.restoreProduct(id: product.id)
+      products = try await store.fetchProducts()
+      archivedProducts = try await store.fetchProducts(status: .archived)
+      guard let restored = products.first(where: { $0.id == product.id }) else {
+        throw PersistenceError.recordNotFound("restored product \(product.id)")
+      }
+      await selectProduct(restored)
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
   }
 
   func consumeProductLibraryLaunchPrompt() {
@@ -903,6 +1040,46 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func prepareRetrospectiveSynthesisIfNeeded(sprintID: UUID) {
+    guard
+      let synthesis = retrospectiveSyntheses.first(where: {
+        $0.sprintID == sprintID && $0.status == .pending
+      })
+    else { return }
+    scheduleRetrospectiveSynthesis(synthesis)
+  }
+
+  func retryRetrospectiveSynthesis(_ synthesis: RetrospectiveSynthesis) {
+    guard synthesis.status == .failed else { return }
+    scheduleRetrospectiveSynthesis(synthesis, allowsFailedRetry: true)
+  }
+
+  func skipRetrospectiveSynthesis(_ synthesis: RetrospectiveSynthesis) async {
+    guard let store else { return }
+    do {
+      _ = try await store.skipRetrospectiveSynthesis(id: synthesis.id)
+      await reloadSelectedProduct()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  func retrospectiveSources(for actionNoteID: UUID) -> [RetrospectiveNote] {
+    let sourceIDs = Set(
+      retrospectiveActionSources
+        .filter { $0.actionNoteID == actionNoteID }
+        .map(\.sourceNoteID)
+    )
+    return retrospectiveNotes
+      .filter { sourceIDs.contains($0.id) }
+      .sorted {
+        if $0.createdAt == $1.createdAt {
+          return $0.id.uuidString < $1.id.uuidString
+        }
+        return $0.createdAt < $1.createdAt
+      }
+  }
+
   func decideRetrospectiveAction(
     _ note: RetrospectiveNote,
     accept: Bool
@@ -1275,9 +1452,16 @@ final class AppModel: ObservableObject {
   }
 
   private func replaceDemoSession(_ session: DemoSession) {
+    guard selectedProductID == session.productID else { return }
     demoSessions.removeAll { $0.candidateRevisionID == session.candidateRevisionID }
     demoSessions.append(session)
     demoSessions.sort { $0.createdAt < $1.createdAt }
+  }
+
+  private func storedDemoSession(for candidate: CandidateRevision) async -> DemoSession? {
+    guard let store else { return nil }
+    return try? await store.fetchDemoSessions(productID: candidate.productID)
+      .first { $0.candidateRevisionID == candidate.id }
   }
 
   private func stopDemoSession(
@@ -1285,7 +1469,7 @@ final class AppModel: ObservableObject {
     removesPreview: Bool
   ) async {
     await demoLauncher.stop(candidateID: candidate.id)
-    guard let store, var session = currentDemoSession(for: candidate.id) else { return }
+    guard let store, var session = await storedDemoSession(for: candidate) else { return }
     if
       removesPreview,
       let previewPath = session.previewWorktreePath,
@@ -1303,6 +1487,28 @@ final class AppModel: ObservableObject {
     session.updatedAt = Date()
     if let saved = try? await store.saveDemoSession(session) {
       replaceDemoSession(saved)
+    }
+  }
+
+  private func stopDemoSessions(
+    productID: UUID,
+    includesPreparation: Bool
+  ) async {
+    guard let store else { return }
+    let productSessions =
+      (try? await store.fetchDemoSessions(productID: productID)) ?? []
+    let stoppableStatuses: [DemoSessionStatus] = includesPreparation
+      ? [.preparing, .starting, .ready]
+      : [.starting, .ready]
+    for var session in productSessions where stoppableStatuses.contains(session.status) {
+      await demoLauncher.stop(candidateID: session.candidateRevisionID)
+      session.status = .stopped
+      session.allocatedPort = nil
+      session.errorMessage = nil
+      session.updatedAt = Date()
+      if let saved = try? await store.saveDemoSession(session) {
+        replaceDemoSession(saved)
+      }
     }
   }
 
@@ -1340,7 +1546,7 @@ final class AppModel: ObservableObject {
       isDirectory: true
     )
     if
-      let existingPath = currentDemoSession(for: candidate.id)?.previewWorktreePath,
+      let existingPath = await storedDemoSession(for: candidate)?.previewWorktreePath,
       URL(fileURLWithPath: existingPath).standardizedFileURL
         != expectedPreviewURL.standardizedFileURL
     {
@@ -1367,7 +1573,7 @@ final class AppModel: ObservableObject {
       candidate: candidate,
       integratedSHA: integratedSHA
     )
-    var session = currentDemoSession(for: candidate.id) ?? DemoSession(
+    var session = await storedDemoSession(for: candidate) ?? DemoSession(
       productID: candidate.productID,
       candidateRevisionID: candidate.id,
       status: .preparing
@@ -1507,6 +1713,7 @@ final class AppModel: ObservableObject {
         branchName: candidate.branchName
       )
       await reloadSelectedProduct()
+      scheduleRetrospectiveSyntheses()
       scheduleSprintExecution()
       return true
     } catch {
@@ -3133,63 +3340,134 @@ final class AppModel: ObservableObject {
     }
   }
 
-  private func scheduleSprintExecution() {
-    guard
-      sprintExecutionTask == nil,
-      codexClient != nil,
-      let productID = selectedProductID,
-      let plan = sprintPlan,
-      plan.sprint.productID == productID,
-      plan.sprint.state == .active
-    else { return }
-
-    sprintExecutionTask = Task { [weak self] in
-      guard let self else { return }
-      await drainSprintQueue(productID: productID)
+  private func scheduleSprintExecutions() {
+    for product in products where product.status == .active {
+      scheduleSprintExecution(productID: product.id)
     }
   }
 
-  private func drainSprintQueue(productID: UUID) async {
+  private func scheduleSprintExecution(productID: UUID? = nil) {
+    guard
+      codexClient != nil,
+      let productID = productID ?? selectedProductID
+    else { return }
+    if sprintExecutionTasks[productID] != nil {
+      sprintExecutionWakeContinuations[productID]?.yield()
+      return
+    }
+
+    let schedulerID = UUID()
+    sprintExecutionTaskIDs[productID] = schedulerID
+    sprintExecutionTasks[productID] = Task { [weak self] in
+      guard let self else { return }
+      await drainSprintQueue(productID: productID, schedulerID: schedulerID)
+    }
+  }
+
+  private func drainSprintQueue(productID: UUID, schedulerID: UUID) async {
+    let (wakeStream, wakeContinuation) = AsyncStream<Void>.makeStream()
+    sprintExecutionWakeContinuations[productID] = wakeContinuation
+    var wakeIterator = wakeStream.makeAsyncIterator()
     defer {
-      sprintExecutionTask = nil
+      wakeContinuation.finish()
+      if sprintExecutionTaskIDs[productID] == schedulerID {
+        sprintExecutionWakeContinuations.removeValue(forKey: productID)
+        sprintExecutionTasks.removeValue(forKey: productID)
+        sprintExecutionTaskIDs.removeValue(forKey: productID)
+      }
     }
     await recoverOrphanedExecutionRuns(productID: productID)
-    await reloadSelectedProduct()
+    await reloadSelectedProductIfCurrent(productID: productID)
 
-    while !Task.isCancelled, selectedProductID == productID {
-      guard
-        let plan = sprintPlan,
-        plan.sprint.productID == productID,
-        plan.sprint.state == .active
-      else { return }
+    while !Task.isCancelled {
+      guard let context = await sprintExecutionContext(productID: productID) else {
+        return
+      }
 
-      let eligibleRuns = eligibleImplementationRuns(in: plan)
+      let eligibleRuns = eligibleImplementationRuns(in: context)
       for run in eligibleRuns where activeImplementationTasks[run.id] == nil {
+        activeImplementationProductIDs[run.id] = productID
         activeImplementationTasks[run.id] = Task { [weak self] in
           guard let self else { return }
-          await executeImplementationRun(run, plan: plan)
-          activeImplementationTasks.removeValue(forKey: run.id)
+          defer {
+            activeImplementationTasks.removeValue(forKey: run.id)
+            activeImplementationProductIDs.removeValue(forKey: run.id)
+            sprintExecutionWakeContinuations[productID]?.yield()
+          }
+          await executeImplementationRun(run, context: context)
         }
       }
 
-      let processedIntegration = await processNextIntegrationCandidate(plan: plan)
-      if activeImplementationTasks.isEmpty && eligibleRuns.isEmpty && !processedIntegration {
+      let processedIntegration = await processNextIntegrationCandidate(context: context)
+      let hasActiveImplementation = activeImplementationProductIDs.values.contains(productID)
+      if !hasActiveImplementation && eligibleRuns.isEmpty && !processedIntegration {
         return
       }
-      // Each worker and integration path reloads after a durable transition. Poll
-      // their in-memory results without refetching every product collection while
-      // a long-running Codex turn is otherwise idle.
-      try? await Task.sleep(for: .milliseconds(300))
+      if hasActiveImplementation && !processedIntegration {
+        guard await wakeIterator.next() != nil else { return }
+      }
     }
+  }
+
+  private func sprintExecutionContext(productID: UUID) async -> SprintExecutionContext? {
+    guard let store else { return nil }
+    do {
+      let availableProducts = try await store.fetchProducts()
+      guard
+        let product = availableProducts.first(where: { $0.id == productID }),
+        product.status == .active,
+        let plan = try await store.fetchCurrentSprint(productID: productID),
+        plan.sprint.state == .active
+      else { return nil }
+      var productProfiles = try await store.fetchAgentProfiles(productID: productID)
+      if productProfiles.isEmpty {
+        productProfiles = try await store.seedDefaultProfiles(productID: productID)
+      }
+      var productKnowledge = try await store.fetchKnowledgePages(productID: productID)
+      if productKnowledge.isEmpty {
+        productKnowledge = try await store.seedKnowledgeBase(productID: productID)
+      }
+      return SprintExecutionContext(
+        product: product,
+        plan: plan,
+        workItems: try await store.fetchWorkItems(productID: productID),
+        dependencies: try await store.fetchWorkItemDependencies(productID: productID),
+        profiles: productProfiles,
+        runs: try await store.fetchAgentRuns(productID: productID),
+        permissionRequests: try await store.fetchAgentPermissionRequests(
+          productID: productID
+        ),
+        permissionGrants: try await store.fetchAgentPermissionGrants(productID: productID),
+        knowledgePages: productKnowledge
+      )
+    } catch {
+      presentExecutionError(error, productID: productID)
+      return nil
+    }
+  }
+
+  private func reloadSelectedProductIfCurrent(productID: UUID) async {
+    guard selectedProductID == productID else { return }
+    await reloadSelectedProduct()
+  }
+
+  private func presentExecutionError(_ error: Error, productID: UUID) {
+    guard selectedProductID == productID else { return }
+    errorMessage = error.localizedDescription
   }
 
   private func recoverOrphanedExecutionRuns(productID: UUID) async {
     guard
       let store,
       let client = codexClient,
-      let plan = sprintPlan,
-      plan.sprint.state == .active
+      let context = await sprintExecutionContext(productID: productID)
     else { return }
+    let plan = context.plan
+    let product = context.product
+    let workItems = context.workItems
+    let profiles = context.profiles
+    let runs = context.runs
+    let permissionRequests = context.permissionRequests
     let storedCandidates = (try? await store.fetchCandidateRevisions(productID: productID)) ?? []
     let implementerByItemID = Dictionary(
       uniqueKeysWithValues: plan.items.compactMap { item in
@@ -3341,7 +3619,6 @@ final class AppModel: ObservableObject {
         let threadID = run.codexThreadID,
         let workspacePath = run.worktreePath,
         let assignee = profiles.first(where: { $0.id == run.profileID }),
-        let product = selectedProduct,
         product.id == productID,
         let productWorkspace = try? Self.productWorkspaceURL(productID: productID)
       else { continue }
@@ -3499,7 +3776,7 @@ final class AppModel: ObservableObject {
       else {
         await restoreCandidateToIntegrationQueue(
           candidate,
-          productID: productID,
+          context: context,
           reason: "The interrupted review had no recoverable integrated revision"
         )
         continue
@@ -3575,7 +3852,7 @@ final class AppModel: ObservableObject {
       } catch {
         await restoreCandidateToIntegrationQueue(
           candidate,
-          productID: productID,
+          context: context,
           reason: "The exact integrated revision could not be restored: \(error.localizedDescription)"
         )
       }
@@ -3693,10 +3970,11 @@ final class AppModel: ObservableObject {
 
   private func restoreCandidateToIntegrationQueue(
     _ candidate: CandidateRevision,
-    productID: UUID,
+    context: SprintExecutionContext,
     reason: String
   ) async {
     guard let store else { return }
+    let productID = context.product.id
     if let integrationPath = candidate.integrationWorktreePath {
       try? await gitWorkspaceManager.removeWorktree(
         repositoryURL: Self.productWorkspaceURL(productID: productID),
@@ -3708,13 +3986,13 @@ final class AppModel: ObservableObject {
       status: .queuedForIntegration
     )
     let reviewerProfileIDs = Set(
-      profiles
+      context.profiles
         .filter { $0.role == .lead }
         .map(\.id)
     )
     if let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
       for: candidate,
-      runs: runs,
+      runs: context.runs,
       reviewerProfileIDs: reviewerProfileIDs
     ), reviewRun.status != .completed {
       _ = try? await store.updateAgentRun(
@@ -3752,18 +4030,26 @@ final class AppModel: ObservableObject {
     )
   }
 
-  private func eligibleImplementationRuns(in plan: SprintPlan) -> [AgentRun] {
+  private func eligibleImplementationRuns(
+    in context: SprintExecutionContext
+  ) -> [AgentRun] {
     SprintRunAdmission.eligibleImplementationRuns(
-      plan: plan,
-      runs: runs,
-      workItems: workItems,
-      dependencies: dependencies
+      plan: context.plan,
+      runs: context.runs,
+      workItems: context.workItems,
+      dependencies: context.dependencies
     )
   }
 
   @discardableResult
-  private func processNextIntegrationCandidate(plan: SprintPlan) async -> Bool {
+  private func processNextIntegrationCandidate(
+    context: SprintExecutionContext
+  ) async -> Bool {
     guard let store else { return false }
+    let plan = context.plan
+    let profiles = context.profiles
+    let runs = context.runs
+    let workItems = context.workItems
     do {
       let candidates = try await store.fetchCandidateRevisions(
         productID: plan.sprint.productID
@@ -3852,7 +4138,7 @@ final class AppModel: ObservableObject {
         id: candidate.id,
         status: .integrating
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: context.product.id)
       await reviewCompletedImplementation(
         implementation,
         candidate: candidate,
@@ -3862,19 +4148,27 @@ final class AppModel: ObservableObject {
       )
       return true
     } catch {
-      errorMessage = error.localizedDescription
+      presentExecutionError(error, productID: context.product.id)
       return false
     }
   }
 
-  private func executeImplementationRun(_ queuedRun: AgentRun, plan: SprintPlan) async {
+  private func executeImplementationRun(
+    _ queuedRun: AgentRun,
+    context: SprintExecutionContext
+  ) async {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == queuedRun.workItemID }),
-      let assignee = profiles.first(where: { $0.id == queuedRun.profileID })
+      let item = context.workItems.first(where: { $0.id == queuedRun.workItemID }),
+      let assignee = context.profiles.first(where: { $0.id == queuedRun.profileID })
     else { return }
+    let product = context.product
+    let plan = context.plan
+    let workItems = context.workItems
+    let dependencies = context.dependencies
+    let knowledgePages = context.knowledgePages
+    let permissionRequests = context.permissionRequests
 
     var run = queuedRun
     do {
@@ -3983,7 +4277,7 @@ final class AppModel: ObservableObject {
           ? "Replaced an unavailable Conversation and preserved the ticket workspace"
           : nil
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
 
       let currentItem = workItems.first(where: { $0.id == item.id }) ?? item
       let prerequisiteIDs = Set(
@@ -4003,18 +4297,30 @@ final class AppModel: ObservableObject {
         )
       }
       let comments = try await store.fetchComments(workItemID: item.id)
-      let knowledgeContext = relevantKnowledgeContext(
-        for: currentItem,
+      let knowledgeSelection = KnowledgeContextSelector.select(
+        pages: knowledgePages,
+        item: currentItem,
         prerequisites: prerequisites
       )
+      let knowledgeContext = knowledgeSelection.referencePages
       try await store.setAgentRunKnowledgeContext(
         runID: run.id,
         pageIDs: knowledgeContext.map(\.id)
+      )
+      try await store.setAgentRunKnowledgeDestinations(
+        runID: run.id,
+        pageIDs: Array(knowledgeSelection.writablePageIDs)
       )
       agentRunKnowledgeContext.removeAll { $0.runID == run.id }
       agentRunKnowledgeContext.append(
         contentsOf: knowledgeContext.map {
           AgentRunKnowledgePage(runID: run.id, pageID: $0.id)
+        }
+      )
+      agentRunKnowledgeDestinations.removeAll { $0.runID == run.id }
+      agentRunKnowledgeDestinations.append(
+        contentsOf: knowledgeSelection.writablePageIDs.map {
+          AgentRunKnowledgeDestination(runID: run.id, pageID: $0)
         }
       )
       let interruptedPermission = sprintWorkRecoveryPolicy.latestPermissionContinuation(
@@ -4041,6 +4347,8 @@ final class AppModel: ObservableObject {
         prerequisiteComments: prerequisiteComments,
         ticketComments: comments,
         knowledgeContext: knowledgeContext,
+        knowledgeDirectory: knowledgeSelection.directoryPages,
+        knowledgeDestinationIDs: knowledgeSelection.writablePageIDs,
         existingItems: workItems,
         continuationMessage: isContinuation
           ? replacementContinuationPrompt
@@ -4058,7 +4366,6 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [workspace]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
@@ -4091,16 +4398,17 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [workspace]
         )
       }
       activeExecutionTurns[run.id] = ActiveExecutionTurn(
+        productID: product.id,
         threadID: activeThreadID,
         turnID: turnID
       )
       monitorLiveActivity(
         runID: run.id,
+        productID: product.id,
         client: client,
         threadID: activeThreadID,
         turnID: turnID,
@@ -4120,6 +4428,7 @@ final class AppModel: ObservableObject {
         client: client,
         threadID: activeThreadID,
         runID: run.id,
+        productID: product.id,
         assignee: assignee,
         workspaceURL: workspace
       )
@@ -4139,8 +4448,11 @@ final class AppModel: ObservableObject {
       stopLiveActivityMonitoring(runID: run.id)
       activeExecutionTurns.removeValue(forKey: run.id)
       let wasManuallyStopped = manuallyStoppedRunIDs.remove(run.id) != nil
+      let currentPermissionRequests =
+        (try? await store.fetchAgentPermissionRequests(productID: product.id))
+        ?? permissionRequests
       let wasAwaitingPermission =
-        permissionRequests
+        currentPermissionRequests
         .filter { $0.agentRunID == run.id }
         .max(by: { $0.updatedAt < $1.updatedAt })?
         .status.needsOwnerDecision == true
@@ -4182,9 +4494,9 @@ final class AppModel: ObservableObject {
         body: workLogBody
       )
       if !Task.isCancelled && !wasManuallyStopped {
-        errorMessage = error.localizedDescription
+        presentExecutionError(error, productID: product.id)
       }
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
     }
   }
 
@@ -4193,6 +4505,7 @@ final class AppModel: ObservableObject {
     client: CodexAppServerClient,
     threadID: String,
     runID: UUID,
+    productID: UUID,
     assignee: AgentProfile,
     workspaceURL: URL
   ) async throws -> TicketExecutionResult {
@@ -4212,15 +4525,16 @@ final class AppModel: ObservableObject {
         ),
         effort: assignee.reasoningEffort,
         outputSchema: CodexTicketExecutor.outputSchema,
-        permissionProfile: CodexPermissionProfiles.delivery,
         runtimeWorkspaceRoots: [workspaceURL]
       )
       activeExecutionTurns[runID] = ActiveExecutionTurn(
+        productID: productID,
         threadID: threadID,
         turnID: repairTurnID
       )
       monitorLiveActivity(
         runID: runID,
+        productID: productID,
         client: client,
         threadID: threadID,
         turnID: repairTurnID,
@@ -4319,10 +4633,12 @@ final class AppModel: ObservableObject {
   ) async {
     guard
       let store,
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let run = try? await store.fetchAgentRun(id: implementationRunID),
-      let item = workItems.first(where: { $0.id == run.workItemID }),
-      let assignee = profiles.first(where: { $0.id == run.profileID })
+      let item = context.workItems.first(where: { $0.id == run.workItemID }),
+      let assignee = context.profiles.first(where: { $0.id == run.profileID })
     else { return }
+    let productID = context.product.id
 
     _ = try? await store.appendComment(
       workItemID: item.id,
@@ -4359,7 +4675,7 @@ final class AppModel: ObservableObject {
         eventActor: assignee.name,
         eventDetail: "Waiting for Product Owner input"
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: productID)
     case .completed:
       do {
         guard let worktreePath = run.worktreePath else {
@@ -4417,7 +4733,7 @@ final class AppModel: ObservableObject {
             executionResultJSON: resultJSON
           )
         )
-        let proposals = try makeKnowledgePageProposals(
+        let proposals = try await makeKnowledgePageProposals(
           drafts: result.knowledgePageProposals,
           candidate: candidate,
           runID: run.id
@@ -4439,7 +4755,7 @@ final class AppModel: ObservableObject {
           eventActor: assignee.name,
           eventDetail: "Candidate v\(candidate.version) queued for integration"
         )
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
         _ = try? await store.updateAgentRun(
           id: run.id,
@@ -4453,8 +4769,8 @@ final class AppModel: ObservableObject {
           authorName: "StoryPointless",
           body: "The work is preserved, but StoryPointless could not prepare it for review: \(error.localizedDescription)"
         )
-        errorMessage = error.localizedDescription
-        await reloadSelectedProduct()
+        presentExecutionError(error, productID: productID)
+        await reloadSelectedProductIfCurrent(productID: productID)
       }
     }
   }
@@ -4467,17 +4783,21 @@ final class AppModel: ObservableObject {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == candidate.workItemID }),
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
       let implementationRun = try? await store.fetchAgentRun(
         id: candidate.implementationRunID
       ),
-      let implementer = profiles.first(where: { $0.id == implementationRun.profileID }),
-      let techLead = profiles.first(where: { $0.id == reviewRun.profileID }),
+      let implementer = context.profiles.first(
+        where: { $0.id == implementationRun.profileID }
+      ),
+      let techLead = context.profiles.first(where: { $0.id == reviewRun.profileID }),
       let integratedSHA = candidate.integratedSHA
     else {
       return
     }
+    let product = context.product
+    let permissionRequests = context.permissionRequests
 
     let reviewCycle = max(0, candidate.version - 1)
     do {
@@ -4594,7 +4914,7 @@ final class AppModel: ObservableObject {
           ? "Replaced an unavailable review Conversation"
           : "Continuing Tech Lead review against the same integrated revision"
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
 
       let turnID: String
       do {
@@ -4603,7 +4923,6 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          permissionProfile: CodexPermissionProfiles.readOnly,
           runtimeWorkspaceRoots: [integration.url]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
@@ -4633,17 +4952,18 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          permissionProfile: CodexPermissionProfiles.readOnly,
           runtimeWorkspaceRoots: [integration.url]
         )
       }
 
       activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
+        productID: product.id,
         threadID: threadID,
         turnID: turnID
       )
       monitorLiveActivity(
         runID: reviewRun.id,
+        productID: product.id,
         client: client,
         threadID: threadID,
         turnID: turnID,
@@ -4671,15 +4991,16 @@ final class AppModel: ObservableObject {
           """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          permissionProfile: CodexPermissionProfiles.readOnly,
           runtimeWorkspaceRoots: [integration.url]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
+          productID: product.id,
           threadID: threadID,
           turnID: repairTurnID
         )
         monitorLiveActivity(
           runID: reviewRun.id,
+          productID: product.id,
           client: client,
           threadID: threadID,
           turnID: repairTurnID,
@@ -4715,7 +5036,7 @@ final class AppModel: ObservableObject {
           eventActor: "StoryPointless",
           eventDetail: "Tech Lead review paused when the app stopped"
         )
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
 
@@ -4762,8 +5083,8 @@ final class AppModel: ObservableObject {
         authorName: "StoryPointless",
         body: "Tech Lead review continuation stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved implementation workspace."
       )
-      errorMessage = error.localizedDescription
-      await reloadSelectedProduct()
+      presentExecutionError(error, productID: product.id)
+      await reloadSelectedProductIfCurrent(productID: product.id)
     }
   }
 
@@ -4778,11 +5099,16 @@ final class AppModel: ObservableObject {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == implementationRun.workItemID }),
-      let implementer = profiles.first(where: { $0.id == implementationRun.profileID }),
-      let techLead = profiles.first(where: { $0.role == .lead })
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(
+        where: { $0.id == implementationRun.workItemID }
+      ),
+      let implementer = context.profiles.first(
+        where: { $0.id == implementationRun.profileID }
+      ),
+      let techLead = context.profiles.first(where: { $0.role == .lead })
     else { return }
+    let product = context.product
 
     var failureStage = "Tech Lead review"
     var activeReviewRunID: UUID?
@@ -4856,7 +5182,7 @@ final class AppModel: ObservableObject {
         )
       )
       activeReviewRunID = reviewRun.id
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
 
       let workspace = integration.url
       let threadID = try await client.startReadOnlyThread(
@@ -4901,15 +5227,16 @@ final class AppModel: ObservableObject {
         ),
         effort: techLead.reasoningEffort,
         outputSchema: CodexTechLeadReviewer.outputSchema,
-        permissionProfile: CodexPermissionProfiles.readOnly,
         runtimeWorkspaceRoots: [workspace]
       )
       activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
+        productID: product.id,
         threadID: threadID,
         turnID: turnID
       )
       monitorLiveActivity(
         runID: reviewRun.id,
+        productID: product.id,
         client: client,
         threadID: threadID,
         turnID: turnID,
@@ -4936,15 +5263,16 @@ final class AppModel: ObservableObject {
           """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          permissionProfile: CodexPermissionProfiles.readOnly,
           runtimeWorkspaceRoots: [workspace]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
+          productID: product.id,
           threadID: threadID,
           turnID: repairTurnID
         )
         monitorLiveActivity(
           runID: reviewRun.id,
+          productID: product.id,
           client: client,
           threadID: threadID,
           turnID: repairTurnID,
@@ -4985,7 +5313,7 @@ final class AppModel: ObservableObject {
         }
         stopLiveActivityMonitoring(runID: implementationRun.id)
         activeExecutionTurns.removeValue(forKey: implementationRun.id)
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
       await stopDemoSession(candidate, removesPreview: true)
@@ -5041,8 +5369,8 @@ final class AppModel: ObservableObject {
         authorName: "StoryPointless",
         body: "\(failureStage) stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved workspace."
       )
-      errorMessage = error.localizedDescription
-      await reloadSelectedProduct()
+      presentExecutionError(error, productID: product.id)
+      await reloadSelectedProductIfCurrent(productID: product.id)
     }
   }
 
@@ -5059,13 +5387,18 @@ final class AppModel: ObservableObject {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == implementationRun.workItemID }),
-      let implementer = profiles.first(where: { $0.id == implementationRun.profileID }),
-      let techLead = profiles.first(where: { $0.id == reviewRun.profileID })
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(
+        where: { $0.id == implementationRun.workItemID }
+      ),
+      let implementer = context.profiles.first(
+        where: { $0.id == implementationRun.profileID }
+      ),
+      let techLead = context.profiles.first(where: { $0.id == reviewRun.profileID })
     else {
       throw CodexClientError.notConnected
     }
+    let product = context.product
 
     let existingComments = try await store.fetchComments(workItemID: item.id)
     if !existingComments.contains(where: {
@@ -5151,7 +5484,7 @@ final class AppModel: ObservableObject {
           )
         }
       }
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
     case .changesRequested:
       _ = try await store.updateCandidateRevision(
         id: candidate.id,
@@ -5199,7 +5532,7 @@ final class AppModel: ObservableObject {
             Ask the assigned specialist a question without restarting work, or add Product Owner direction and choose Resume work.
             """
         )
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
       _ = try await store.updateAgentRun(
@@ -5208,7 +5541,7 @@ final class AppModel: ObservableObject {
         eventActor: implementer.name,
         eventDetail: "Resuming after \(techLead.name) requested changes"
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
       let comments = try await store.fetchComments(workItemID: item.id)
       let revisionWorkspace = URL(
         fileURLWithPath: candidate.worktreePath,
@@ -5280,7 +5613,6 @@ final class AppModel: ObservableObject {
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [revisionWorkspace]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
@@ -5312,16 +5644,17 @@ final class AppModel: ObservableObject {
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [revisionWorkspace]
         )
       }
       activeExecutionTurns[implementationRun.id] = ActiveExecutionTurn(
+        productID: product.id,
         threadID: revisionThreadID,
         turnID: turnID
       )
       monitorLiveActivity(
         runID: implementationRun.id,
+        productID: product.id,
         client: client,
         threadID: revisionThreadID,
         turnID: turnID,
@@ -5339,6 +5672,7 @@ final class AppModel: ObservableObject {
         client: client,
         threadID: revisionThreadID,
         runID: implementationRun.id,
+        productID: product.id,
         assignee: implementer,
         workspaceURL: revisionWorkspace
       )
@@ -5361,10 +5695,11 @@ final class AppModel: ObservableObject {
   ) async {
     guard
       let store,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == candidate.workItemID }),
-      let techLead = profiles.first(where: { $0.role == .lead })
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
+      let techLead = context.profiles.first(where: { $0.role == .lead })
     else { return }
+    let product = context.product
 
     var resolutionRunID: UUID?
     do {
@@ -5391,7 +5726,7 @@ final class AppModel: ObservableObject {
         authorName: "Integrator",
         body: "The candidate overlaps newer accepted work in \(conflictedFiles.count) file(s). I’m resolving the integration before Tech Lead review."
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: product.id)
       await runIntegrationConflictResolution(
         candidate: candidate,
         resolutionRun: resolutionRun,
@@ -5433,7 +5768,7 @@ final class AppModel: ObservableObject {
         eventActor: "Integrator",
         eventDetail: "Product Owner response received; conflict resolution resumed"
       )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: plan.sprint.productID)
       await runIntegrationConflictResolution(
         candidate: candidate,
         resolutionRun: resolutionRun,
@@ -5465,12 +5800,13 @@ final class AppModel: ObservableObject {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let item = workItems.first(where: { $0.id == candidate.workItemID }),
-      let techLead = profiles.first(where: { $0.role == .lead }),
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
+      let techLead = context.profiles.first(where: { $0.role == .lead }),
       let worktreePath = candidate.integrationWorktreePath
         ?? resolutionRun.worktreePath
     else { return }
+    let product = context.product
 
     do {
       let workspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
@@ -5539,7 +5875,6 @@ final class AppModel: ObservableObject {
           prompt: resolutionPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexConflictIntegrator.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [workspace]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
@@ -5568,16 +5903,17 @@ final class AppModel: ObservableObject {
           prompt: resolutionPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexConflictIntegrator.outputSchema,
-          permissionProfile: CodexPermissionProfiles.delivery,
           runtimeWorkspaceRoots: [workspace]
         )
       }
       activeExecutionTurns[resolutionRun.id] = ActiveExecutionTurn(
+        productID: product.id,
         threadID: threadID,
         turnID: turnID
       )
       monitorLiveActivity(
         runID: resolutionRun.id,
+        productID: product.id,
         client: client,
         threadID: threadID,
         turnID: turnID,
@@ -5612,7 +5948,7 @@ final class AppModel: ObservableObject {
           eventActor: "Integrator",
           eventDetail: "Waiting for Product Owner input"
         )
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: product.id)
       case .resolved:
         let integration = try await gitWorkspaceManager.completeConflictResolution(
           integrationWorkspaceURL: workspace,
@@ -5631,7 +5967,7 @@ final class AppModel: ObservableObject {
           integrationWorktreePath: integration.url.path
         )
         let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-        await reloadSelectedProduct()
+        await reloadSelectedProductIfCurrent(productID: product.id)
         await reviewCompletedImplementation(
           implementation,
           candidate: candidate,
@@ -5681,9 +6017,9 @@ final class AppModel: ObservableObject {
         : "Integration needs attention: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved conflict workspace."
     )
     if !Task.isCancelled {
-      errorMessage = error.localizedDescription
+      presentExecutionError(error, productID: candidate.productID)
     }
-    await reloadSelectedProduct()
+    await reloadSelectedProductIfCurrent(productID: candidate.productID)
   }
 
   private func handleSprintOwnerComment(workItemID: UUID, body: String) async {
@@ -5702,6 +6038,34 @@ final class AppModel: ObservableObject {
       let currentCandidates = try await store.fetchCandidateRevisions(
         productID: plan.sprint.productID
       )
+      let reviewerProfileIDs = Set(
+        profiles
+          .filter { $0.role == .lead }
+          .map(\.id)
+      )
+      if
+        let reviewingCandidate = currentCandidates
+          .filter({
+            $0.workItemID == workItemID && $0.status == .reviewing
+          })
+          .max(by: { $0.version < $1.version }),
+        let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
+          for: reviewingCandidate,
+          runs: currentRuns,
+          reviewerProfileIDs: reviewerProfileIDs
+        ),
+        reviewRun.status == .interrupted
+      {
+        _ = try await store.updateAgentRun(
+          id: reviewRun.id,
+          status: .queued,
+          eventActor: "Product Owner",
+          eventDetail: "Retry requested; Tech Lead review queued to continue"
+        )
+        await reloadSelectedProduct()
+        scheduleSprintExecution()
+        return
+      }
       if currentCandidates.contains(where: {
         $0.workItemID == workItemID && $0.status == .resolvingConflict
       }) {
@@ -5793,6 +6157,7 @@ final class AppModel: ObservableObject {
 
   private func monitorLiveActivity(
     runID: UUID,
+    productID: UUID,
     client: CodexAppServerClient,
     threadID: String,
     turnID: String,
@@ -5801,6 +6166,7 @@ final class AppModel: ObservableObject {
     stopLiveActivityMonitoring(runID: runID)
     let monitorID = UUID()
     liveActivityMonitorIDs[runID] = monitorID
+    liveActivityProductIDs[runID] = productID
     let initialActivity = CodexLiveActivity(text: initialText, kind: .thinking)
     liveRunActivities[runID] = initialActivity
 
@@ -5868,6 +6234,7 @@ final class AppModel: ObservableObject {
         if case .turnFinished = update {
           self.liveRunActivities.removeValue(forKey: runID)
           self.liveActivityMonitorIDs.removeValue(forKey: runID)
+          self.liveActivityProductIDs.removeValue(forKey: runID)
           self.liveActivityTasks.removeValue(forKey: runID)
           return
         }
@@ -5876,6 +6243,7 @@ final class AppModel: ObservableObject {
       guard self.liveActivityMonitorIDs[runID] == monitorID else { return }
       self.liveRunActivities.removeValue(forKey: runID)
       self.liveActivityMonitorIDs.removeValue(forKey: runID)
+      self.liveActivityProductIDs.removeValue(forKey: runID)
       self.liveActivityTasks.removeValue(forKey: runID)
     }
   }
@@ -5899,8 +6267,9 @@ final class AppModel: ObservableObject {
         didCompact: didCompact,
         startsTurn: startsTurn,
         at: at
-      )
+    )
     else { return }
+    guard selectedProductID == updated.productID else { return }
     if let index = runs.firstIndex(where: { $0.id == updated.id }) {
       runs[index] = updated
     } else {
@@ -5911,18 +6280,41 @@ final class AppModel: ObservableObject {
   private func stopLiveActivityMonitoring(runID: UUID) {
     liveActivityTasks.removeValue(forKey: runID)?.cancel()
     liveActivityMonitorIDs.removeValue(forKey: runID)
+    liveActivityProductIDs.removeValue(forKey: runID)
     liveRunActivities.removeValue(forKey: runID)
   }
 
-  private func suspendSprintExecution() async {
-    let executionTask = sprintExecutionTask
-    executionTask?.cancel()
-    let implementationTasks = Array(activeImplementationTasks.values)
-    for task in implementationTasks {
+  private func applyExecutionLifecycle(
+    _ event: ProductExecutionLifecycleEvent
+  ) async {
+    switch ProductExecutionLifecyclePolicy.suspensionScope(for: event) {
+    case .none:
+      return
+    case .product(let productID):
+      await suspendSprintExecution(productID: productID)
+    case .all:
+      await suspendSprintExecution()
+    }
+  }
+
+  private func suspendSprintExecution(productID: UUID? = nil) async {
+    let executionTasks = sprintExecutionTasks.filter {
+      productID == nil || $0.key == productID
+    }
+    for task in executionTasks.values {
+      task.cancel()
+    }
+    let implementationTaskIDs = activeImplementationProductIDs.compactMap {
+      productID == nil || $0.value == productID ? $0.key : nil
+    }
+    for runID in implementationTaskIDs {
+      guard let task = activeImplementationTasks[runID] else { continue }
       task.cancel()
     }
     if let client = codexClient {
-      let turns = activeExecutionTurns.values
+      let turns = activeExecutionTurns.values.filter {
+        productID == nil || $0.productID == productID
+      }
       await withTaskGroup(of: Void.self) { group in
         for turn in turns {
           group.addTask {
@@ -5934,17 +6326,48 @@ final class AppModel: ObservableObject {
         }
       }
     }
-    if executionTask != nil {
+    if !executionTasks.isEmpty || !implementationTaskIDs.isEmpty {
       for _ in 0..<100 {
-        guard sprintExecutionTask != nil || !activeImplementationTasks.isEmpty else { break }
+        let hasScheduler =
+          if let productID {
+            sprintExecutionTasks[productID] != nil
+          } else {
+            !sprintExecutionTasks.isEmpty
+          }
+        let hasImplementation = activeImplementationProductIDs.contains {
+          productID == nil || $0.value == productID
+        }
+        guard hasScheduler || hasImplementation else { break }
         try? await Task.sleep(for: .milliseconds(100))
       }
     }
-    sprintExecutionTask = nil
-    activeImplementationTasks.removeAll()
-    activeExecutionTurns.removeAll()
+    if let productID {
+      sprintExecutionWakeContinuations.removeValue(forKey: productID)?.finish()
+      sprintExecutionTasks.removeValue(forKey: productID)
+      sprintExecutionTaskIDs.removeValue(forKey: productID)
+      for runID in implementationTaskIDs {
+        activeImplementationTasks.removeValue(forKey: runID)
+        activeImplementationProductIDs.removeValue(forKey: runID)
+      }
+      activeExecutionTurns = activeExecutionTurns.filter {
+        $0.value.productID != productID
+      }
+    } else {
+      for continuation in sprintExecutionWakeContinuations.values {
+        continuation.finish()
+      }
+      sprintExecutionWakeContinuations.removeAll()
+      sprintExecutionTasks.removeAll()
+      sprintExecutionTaskIDs.removeAll()
+      activeImplementationTasks.removeAll()
+      activeImplementationProductIDs.removeAll()
+      activeExecutionTurns.removeAll()
+    }
+    let approvalRequestIDs = liveApprovalRequestProductIDs.compactMap {
+      productID == nil || $0.value == productID ? $0.key : nil
+    }
     if let store {
-      for requestID in liveApprovalRequests.keys {
+      for requestID in approvalRequestIDs {
         if let updated = try? await store.updateAgentPermissionRequest(
           id: requestID,
           status: .interrupted
@@ -5953,13 +6376,16 @@ final class AppModel: ObservableObject {
         }
       }
     }
-    liveApprovalRequests.removeAll()
-    for task in liveActivityTasks.values {
-      task.cancel()
+    for requestID in approvalRequestIDs {
+      liveApprovalRequests.removeValue(forKey: requestID)
+      liveApprovalRequestProductIDs.removeValue(forKey: requestID)
     }
-    liveActivityTasks.removeAll()
-    liveActivityMonitorIDs.removeAll()
-    liveRunActivities.removeAll()
+    let liveRunIDs = liveActivityProductIDs.compactMap {
+      productID == nil || $0.value == productID ? $0.key : nil
+    }
+    for runID in liveRunIDs {
+      stopLiveActivityMonitoring(runID: runID)
+    }
   }
 
   func shutdown() async {
@@ -5979,9 +6405,26 @@ final class AppModel: ObservableObject {
     suggestionTask = nil
     epicPlanningTask = nil
     activeEpicPlanningTurn = nil
+    let interruptedRetrospectiveTasks = Array(retrospectiveSynthesisTasks.values)
+    for task in interruptedRetrospectiveTasks {
+      task.cancel()
+    }
+    if let client = codexClient {
+      for turn in activeRetrospectiveSynthesisTurns.values {
+        try? await client.interruptTurn(
+          threadID: turn.threadID,
+          turnID: turn.turnID
+        )
+      }
+    }
+    for task in interruptedRetrospectiveTasks {
+      await task.value
+    }
+    retrospectiveSynthesisTasks.removeAll()
+    activeRetrospectiveSynthesisTurns.removeAll()
     await epicConversationPersistenceTask?.value
     await stopAllDemoSessions()
-    await suspendSprintExecution()
+    await applyExecutionLifecycle(.appShutdown)
     approvalRoutingTask?.cancel()
     approvalRoutingTask = nil
     await codexClient?.disconnect()
@@ -6023,11 +6466,214 @@ final class AppModel: ObservableObject {
         authorName: profile.name,
         category: .suggestedAction,
         body: action.body,
-        actionStatus: .proposed,
+        isActionCandidate: true,
         actionDestination: action.destination
       )
     }
     return evidence + proposedActions
+  }
+
+  private func scheduleRetrospectiveSyntheses() {
+    guard
+      retrospectiveSynthesisTasks.isEmpty,
+      let product = selectedProduct,
+      let synthesis = retrospectiveSyntheses.first(where: {
+        $0.productID == product.id && $0.status == .pending
+      })
+    else { return }
+    scheduleRetrospectiveSynthesis(synthesis)
+  }
+
+  private func scheduleRetrospectiveSynthesis(
+    _ synthesis: RetrospectiveSynthesis,
+    allowsFailedRetry: Bool = false
+  ) {
+    guard
+      retrospectiveSynthesisTasks.isEmpty,
+      case .connected = codexConnectionState,
+      let product = selectedProduct,
+      product.id == synthesis.productID,
+      synthesis.status == .pending
+        || (allowsFailedRetry && synthesis.status == .failed)
+    else { return }
+
+    retrospectiveSynthesisTasks[synthesis.id] = Task { [weak self] in
+      guard let self else { return }
+      await performRetrospectiveSynthesis(
+        synthesisID: synthesis.id,
+        product: product
+      )
+      retrospectiveSynthesisTasks.removeValue(forKey: synthesis.id)
+      scheduleRetrospectiveSyntheses()
+    }
+  }
+
+  private func performRetrospectiveSynthesis(
+    synthesisID: UUID,
+    product: Product
+  ) async {
+    guard let store, let client = codexClient else { return }
+    var startedSynthesis: RetrospectiveSynthesis?
+    do {
+      let productProfiles = try await store.fetchAgentProfiles(productID: product.id)
+      guard
+        let analyst = productProfiles.first(where: { $0.role == .businessAnalyst })
+      else {
+        throw PersistenceError.corruptData(
+          "This product needs a Business Analyst to prepare retrospective actions."
+        )
+      }
+      let synthesis = try await store.beginRetrospectiveSynthesis(
+        id: synthesisID,
+        profileID: analyst.id
+      )
+      startedSynthesis = synthesis
+      replaceRetrospectiveSynthesis(synthesis)
+
+      let sourceNotes = try await store.fetchRetrospectiveSynthesisSourceNotes(
+        synthesisID: synthesis.id
+      )
+      if sourceNotes.isEmpty {
+        _ = try await store.completeRetrospectiveSynthesis(
+          id: synthesis.id,
+          actions: [],
+          profileID: analyst.id,
+          authorName: analyst.name
+        )
+        await reloadSelectedProductIfCurrent(productID: product.id)
+        return
+      }
+
+      let plans = try await store.fetchSprintHistory(productID: product.id)
+      guard
+        let sprint = plans.first(where: { $0.sprint.id == synthesis.sprintID })?.sprint
+      else {
+        throw PersistenceError.recordNotFound(
+          "sprint \(synthesis.sprintID)"
+        )
+      }
+      let productItems = try await store.fetchWorkItems(productID: product.id)
+      let productNotes = try await store.fetchRetrospectiveNotes(productID: product.id)
+      let productKnowledge = try await store.fetchKnowledgePages(productID: product.id)
+      let waysOfWorking = productKnowledge.first {
+        $0.slug == "ways-of-working" && $0.verificationStatus == .verified
+      }?.bodyMarkdown ?? ""
+      let existingActions = productNotes.filter {
+        $0.category == .suggestedAction
+          && !$0.isActionCandidate
+          && $0.synthesisID != synthesis.id
+      }
+
+      let workspace = try Self.productWorkspaceURL(productID: product.id)
+      let threadID = try await client.startReadOnlyThread(
+        workingDirectory: workspace,
+        developerInstructions: CodexRetrospectiveSynthesizer.developerInstructions(
+          productInstructions: product.instructions,
+          personaInstructions: analyst.effectiveInstructions
+        ),
+        model: analyst.model
+      )
+      let prompt = CodexRetrospectiveSynthesizer.prompt(
+        product: product,
+        sprint: sprint,
+        sourceNotes: sourceNotes,
+        workItems: productItems,
+        existingActions: existingActions,
+        waysOfWorking: waysOfWorking
+      )
+      var turnID = try await client.startStructuredTurn(
+        threadID: threadID,
+        prompt: prompt,
+        effort: analyst.reasoningEffort,
+        outputSchema: CodexRetrospectiveSynthesizer.outputSchema
+      )
+      _ = try await store.attachRetrospectiveSynthesisTurn(
+        id: synthesis.id,
+        threadID: threadID,
+        turnID: turnID
+      )
+      activeRetrospectiveSynthesisTurns[synthesis.id] = (
+        threadID: threadID,
+        turnID: turnID
+      )
+      var response = try await client.waitForFinalAgentMessage(
+        threadID: threadID,
+        turnID: turnID
+      )
+      try Task.checkCancellation()
+
+      let actions: [RetrospectiveSynthesisActionDraft]
+      do {
+        actions = try CodexRetrospectiveSynthesizer.decode(
+          response,
+          sourceNotes: sourceNotes
+        )
+      } catch let validationError as RetrospectiveSynthesisGenerationError {
+        turnID = try await client.startStructuredTurn(
+          threadID: threadID,
+          prompt: CodexRetrospectiveSynthesizer.repairPrompt(
+            validationError: validationError.localizedDescription
+          ),
+          effort: analyst.reasoningEffort,
+          outputSchema: CodexRetrospectiveSynthesizer.outputSchema
+        )
+        _ = try await store.attachRetrospectiveSynthesisTurn(
+          id: synthesis.id,
+          threadID: threadID,
+          turnID: turnID
+        )
+        activeRetrospectiveSynthesisTurns[synthesis.id] = (
+          threadID: threadID,
+          turnID: turnID
+        )
+        response = try await client.waitForFinalAgentMessage(
+          threadID: threadID,
+          turnID: turnID
+        )
+        try Task.checkCancellation()
+        actions = try CodexRetrospectiveSynthesizer.decode(
+          response,
+          sourceNotes: sourceNotes
+        )
+      }
+
+      _ = try await store.completeRetrospectiveSynthesis(
+        id: synthesis.id,
+        actions: actions,
+        profileID: analyst.id,
+        authorName: analyst.name
+      )
+      activeRetrospectiveSynthesisTurns.removeValue(forKey: synthesis.id)
+      await reloadSelectedProductIfCurrent(productID: product.id)
+    } catch is CancellationError {
+      if !isShuttingDown, let startedSynthesis {
+        _ = try? await store.failRetrospectiveSynthesis(
+          id: startedSynthesis.id,
+          message: "Preparing retrospective actions was interrupted. You can safely retry."
+        )
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      }
+    } catch {
+      if let startedSynthesis {
+        _ = try? await store.failRetrospectiveSynthesis(
+          id: startedSynthesis.id,
+          message: error.localizedDescription
+        )
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      } else {
+        errorMessage = error.localizedDescription
+      }
+    }
+    activeRetrospectiveSynthesisTurns.removeValue(forKey: synthesisID)
+  }
+
+  private func replaceRetrospectiveSynthesis(
+    _ synthesis: RetrospectiveSynthesis
+  ) {
+    guard selectedProductID == synthesis.productID else { return }
+    retrospectiveSyntheses.removeAll { $0.id == synthesis.id }
+    retrospectiveSyntheses.append(synthesis)
+    retrospectiveSyntheses.sort { $0.createdAt < $1.createdAt }
   }
 
   private func inheritedAgentInstructions(for product: Product) -> String {
@@ -6116,38 +6762,49 @@ final class AppModel: ObservableObject {
     drafts: [KnowledgePageProposalDraft],
     candidate: CandidateRevision,
     runID: UUID
-  ) throws -> [KnowledgePageProposal] {
-    let suppliedPageIDs = Set(
-      agentRunKnowledgeContext
+  ) async throws -> [KnowledgePageProposal] {
+    guard let store else {
+      throw PersistenceError.recordNotFound("knowledge context for agent run \(runID)")
+    }
+    let productDestinations = try await store.fetchAgentRunKnowledgeDestinations(
+      productID: candidate.productID
+    )
+    let productKnowledgePages = try await store.fetchKnowledgePages(
+      productID: candidate.productID
+    )
+    let destinationPageIDs = Set(
+      productDestinations
         .filter { $0.runID == runID }
         .map(\.pageID)
     )
-    let pagesByID = Dictionary(uniqueKeysWithValues: knowledgePages.map { ($0.id, $0) })
+    let pagesByID = Dictionary(
+      uniqueKeysWithValues: productKnowledgePages.map { ($0.id, $0) }
+    )
     return try drafts.map { draft in
       let basePage = draft.targetPageID.flatMap { pagesByID[$0] }
       switch draft.operation {
       case .update:
         guard
           let targetPageID = draft.targetPageID,
-          suppliedPageIDs.contains(targetPageID),
+          destinationPageIDs.contains(targetPageID),
           let page = pagesByID[targetPageID],
           page.productID == candidate.productID,
-          page.kind != .deliveryNote
+          page.kind == .page
         else {
           throw TicketExecutionGenerationError.invalidResponse(
-            "A canonical-page update referenced a page that was not supplied to the agent."
+            "A canonical-page update referenced a page that was not writable for this run."
           )
         }
       case .create:
         guard
           let parentPageID = draft.parentPageID,
-          suppliedPageIDs.contains(parentPageID),
+          destinationPageIDs.contains(parentPageID),
           let parent = pagesByID[parentPageID],
           parent.productID == candidate.productID,
           parent.kind == .section
         else {
           throw TicketExecutionGenerationError.invalidResponse(
-            "A canonical-page creation referenced a section that was not supplied to the agent."
+            "A canonical-page creation referenced a section that was not writable for this run."
           )
         }
       }
@@ -6187,61 +6844,16 @@ final class AppModel: ObservableObject {
     try Data(markdown.utf8).write(to: fileURL, options: .atomic)
   }
 
-  private func relevantKnowledgeContext(
-    for item: WorkItem,
-    prerequisites: [WorkItem]
-  ) -> [KnowledgePage] {
-    let verified = knowledgePages.filter { $0.verificationStatus == .verified }
-    let prerequisiteIDs = Set(prerequisites.map(\.id))
-    let explicit = verified.filter {
-      $0.sourceWorkItemID == item.id
-        || $0.sourceWorkItemID.map(prerequisiteIDs.contains) == true
-        || ["overview", "product-principles", "glossary", "ways-of-working"].contains($0.slug)
-    }
-    let terms = Set(
-      "\(item.title) \(item.body)"
-        .lowercased()
-        .split { !$0.isLetter && !$0.isNumber }
-        .filter { $0.count >= 4 }
-        .map(String.init)
-    )
-    let explicitIDs = Set(explicit.map(\.id))
-    var scoredPages: [(page: KnowledgePage, score: Int)] = []
-    for page in verified where !explicitIDs.contains(page.id) {
-      let pageText = "\(page.title) \(page.bodyMarkdown)".lowercased()
-      var score = 0
-      for term in terms where pageText.contains(term) {
-        score += 1
-      }
-      if score > 0 {
-        scoredPages.append((page: page, score: score))
-      }
-    }
-    scoredPages.sort { lhs, rhs in
-      lhs.score == rhs.score ? lhs.page.title < rhs.page.title : lhs.score > rhs.score
-    }
-    let scored = scoredPages.prefix(5).map(\.page)
-    var selected = Array((explicit + scored).prefix(8))
-    let pagesByID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
-    var selectedIDs = Set(selected.map(\.id))
-    for page in selected {
-      var parentID = page.parentID
-      while let id = parentID, let parent = pagesByID[id] {
-        if selectedIDs.insert(parent.id).inserted {
-          selected.append(parent)
-        }
-        parentID = parent.parentID
-      }
-    }
-    return Array(selected.prefix(12))
-  }
-
   func reload() async {
-    guard let store else { return }
+    guard let store else {
+      isLoading = false
+      return
+    }
     isLoading = true
     defer { isLoading = false }
     do {
       products = try await store.fetchProducts()
+      archivedProducts = try await store.fetchProducts(status: .archived)
       if !didResolveInitialProductSelection {
         didResolveInitialProductSelection = true
         let rememberedSelectionIsValid = products.contains { $0.id == selectedProductID }
@@ -6274,6 +6886,8 @@ final class AppModel: ObservableObject {
       activity = []
       suggestionBatch = nil
       retrospectiveNotes = []
+      retrospectiveSyntheses = []
+      retrospectiveActionSources = []
       knowledgePages = []
       candidateRevisions = []
       demoSessions = []
@@ -6281,41 +6895,91 @@ final class AppModel: ObservableObject {
       permissionGrants = []
       knowledgePageProposals = []
       agentRunKnowledgeContext = []
+      agentRunKnowledgeDestinations = []
       return
     }
     do {
-      epics = try await store.fetchEpics(productID: productID)
-      workItems = try await store.fetchWorkItems(productID: productID)
-      dependencies = try await store.fetchWorkItemDependencies(productID: productID)
-      profiles = try await store.seedDefaultProfiles(productID: productID)
-      knowledgePages = try await store.seedKnowledgeBase(productID: productID)
-      try Self.syncKnowledgeMarkdownFiles(
-        productID: productID,
-        pages: knowledgePages
-      )
-      agentRunKnowledgeContext = try await store.fetchAgentRunKnowledgeContext(
+      let loadedEpics = try await store.fetchEpics(productID: productID)
+      let loadedWorkItems = try await store.fetchWorkItems(productID: productID)
+      let loadedDependencies = try await store.fetchWorkItemDependencies(
         productID: productID
       )
-      candidateRevisions = try await store.fetchCandidateRevisions(productID: productID)
-      demoSessions = try await store.fetchDemoSessions(productID: productID)
-      permissionRequests = try await store.fetchAgentPermissionRequests(productID: productID)
-      permissionGrants = try await store.fetchAgentPermissionGrants(productID: productID)
-      knowledgePageProposals = try await store.fetchKnowledgePageProposals(productID: productID)
-      sprintPlan = try await store.fetchCurrentSprint(productID: productID)
-      sprintHistory = try await store.fetchSprintHistory(productID: productID)
-      runs = try await store.fetchAgentRuns(productID: productID)
-      if let candidateSprintPlan {
-        sprintReadinessIssues = try await store.sprintReadinessIssues(
-          sprintID: candidateSprintPlan.sprint.id
-        )
-      } else {
-        sprintReadinessIssues = []
-      }
-      activity = try await store.fetchActivity(productID: productID)
-      retrospectiveNotes = try await store.fetchRetrospectiveNotes(productID: productID)
-      suggestionBatch = try await store.fetchLatestTicketSuggestionBatch(productID: productID)
+      let loadedProfiles = try await store.seedDefaultProfiles(productID: productID)
+      let loadedKnowledgePages = try await store.seedKnowledgeBase(productID: productID)
+      try Self.syncKnowledgeMarkdownFiles(
+        productID: productID,
+        pages: loadedKnowledgePages
+      )
+      let loadedAgentRunKnowledgeContext = try await store.fetchAgentRunKnowledgeContext(
+        productID: productID
+      )
+      let loadedAgentRunKnowledgeDestinations =
+        try await store.fetchAgentRunKnowledgeDestinations(productID: productID)
+      let loadedCandidates = try await store.fetchCandidateRevisions(productID: productID)
+      let loadedDemoSessions = try await store.fetchDemoSessions(productID: productID)
+      let loadedPermissionRequests = try await store.fetchAgentPermissionRequests(
+        productID: productID
+      )
+      let loadedPermissionGrants = try await store.fetchAgentPermissionGrants(
+        productID: productID
+      )
+      let loadedKnowledgeProposals = try await store.fetchKnowledgePageProposals(
+        productID: productID
+      )
+      let loadedSprintPlan = try await store.fetchCurrentSprint(productID: productID)
+      let loadedSprintHistory = try await store.fetchSprintHistory(productID: productID)
+      let loadedRuns = try await store.fetchAgentRuns(productID: productID)
+      let loadedCandidateSprint =
+        if let loadedSprintPlan, loadedSprintPlan.sprint.state == .draft {
+          loadedSprintPlan
+        } else {
+          loadedSprintHistory.first { $0.sprint.state == .draft }
+        }
+      let loadedReadinessIssues: [SprintReadinessIssue] =
+        if let loadedCandidateSprint {
+          try await store.sprintReadinessIssues(
+            sprintID: loadedCandidateSprint.sprint.id
+          )
+        } else {
+          []
+        }
+      let loadedActivity = try await store.fetchActivity(productID: productID)
+      let loadedRetrospectiveNotes = try await store.fetchRetrospectiveNotes(
+        productID: productID
+      )
+      let loadedRetrospectiveSyntheses = try await store.fetchRetrospectiveSyntheses(
+        productID: productID
+      )
+      let loadedRetrospectiveActionSources =
+        try await store.fetchRetrospectiveActionSources(productID: productID)
+      let loadedSuggestionBatch = try await store.fetchLatestTicketSuggestionBatch(
+        productID: productID
+      )
+
+      guard selectedProductID == productID else { return }
+      epics = loadedEpics
+      workItems = loadedWorkItems
+      dependencies = loadedDependencies
+      profiles = loadedProfiles
+      knowledgePages = loadedKnowledgePages
+      agentRunKnowledgeContext = loadedAgentRunKnowledgeContext
+      agentRunKnowledgeDestinations = loadedAgentRunKnowledgeDestinations
+      candidateRevisions = loadedCandidates
+      demoSessions = loadedDemoSessions
+      permissionRequests = loadedPermissionRequests
+      permissionGrants = loadedPermissionGrants
+      knowledgePageProposals = loadedKnowledgeProposals
+      sprintPlan = loadedSprintPlan
+      sprintHistory = loadedSprintHistory
+      runs = loadedRuns
+      sprintReadinessIssues = loadedReadinessIssues
+      activity = loadedActivity
+      retrospectiveNotes = loadedRetrospectiveNotes
+      retrospectiveSyntheses = loadedRetrospectiveSyntheses
+      retrospectiveActionSources = loadedRetrospectiveActionSources
+      suggestionBatch = loadedSuggestionBatch
     } catch {
-      errorMessage = error.localizedDescription
+      presentExecutionError(error, productID: productID)
     }
   }
 
@@ -6341,6 +7005,7 @@ final class AppModel: ObservableObject {
       )
       startApprovalRouting(client: client)
       codexConnectionState = .connected(version: descriptor.version, userAgent: info.userAgent)
+      scheduleRetrospectiveSyntheses()
       codexModels = (try? await client.listModels()) ?? []
     } catch let error as CodexRuntimeError {
       switch error {
@@ -6418,6 +7083,7 @@ final class AppModel: ObservableObject {
         }
       }
       liveApprovalRequests.removeValue(forKey: request.id)
+      liveApprovalRequestProductIDs.removeValue(forKey: request.id)
       let updated = try await store.updateAgentPermissionRequest(
         id: request.id,
         status: allow ? .allowed : .denied
@@ -6426,20 +7092,6 @@ final class AppModel: ObservableObject {
       if let savedGrant {
         replacePermissionGrant(savedGrant)
       }
-      let decision =
-        if allow && rememberForProduct {
-          "Always allowed for this product"
-        } else if allow {
-          "Allowed once"
-        } else {
-          "Denied"
-        }
-      _ = try await store.appendComment(
-        workItemID: request.workItemID,
-        authorKind: .owner,
-        authorName: "Me",
-        body: "\(decision): \(request.detail)"
-      )
       if let run = try? await store.fetchAgentRun(id: request.agentRunID),
         run.status == .awaitingOwner
       {
@@ -6464,9 +7116,9 @@ final class AppModel: ObservableObject {
           eventDetail: eventDetail
         )
       }
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: request.productID)
       if resumesAfterDecision {
-        scheduleSprintExecution()
+        scheduleSprintExecution(productID: request.productID)
       }
     } catch {
       errorMessage = error.localizedDescription
@@ -6518,6 +7170,10 @@ final class AppModel: ObservableObject {
       await client.rejectUnsupportedServerRequest(request)
       return
     }
+    let productPermissionRequests =
+      (try? await store.fetchAgentPermissionRequests(productID: run.productID)) ?? []
+    let productPermissionGrants =
+      (try? await store.fetchAgentPermissionGrants(productID: run.productID)) ?? []
     let productGrantSignature = try? CodexAppServerClient.productGrantSignature(
       for: request,
       ticketWorkspaceRoot: run.worktreePath.map {
@@ -6526,7 +7182,7 @@ final class AppModel: ObservableObject {
     )
 
     if let priorDecision = (
-      permissionRequests
+      productPermissionRequests
         .filter {
           $0.agentRunID == runID
             && $0.signature == presentation.signature
@@ -6547,7 +7203,7 @@ final class AppModel: ObservableObject {
 
     if
       let signature = productGrantSignature,
-      permissionGrants.contains(where: {
+      productPermissionGrants.contains(where: {
         $0.productID == run.productID
           && $0.signature == signature
           && $0.isActive
@@ -6574,12 +7230,6 @@ final class AppModel: ObservableObject {
         if let saved = try? await store.saveAgentPermissionRequest(record) {
           replacePermissionRequest(saved)
         }
-        _ = try? await store.appendComment(
-          workItemID: run.workItemID,
-          authorKind: .system,
-          authorName: "StoryPointless",
-          body: "Automatically allowed by saved product access: \(presentation.detail)"
-        )
         return
       } catch {
         // Fall through so the Product Owner can make a visible decision.
@@ -6604,6 +7254,7 @@ final class AppModel: ObservableObject {
     do {
       let saved = try await store.saveAgentPermissionRequest(record)
       liveApprovalRequests[saved.id] = request
+      liveApprovalRequestProductIDs[saved.id] = run.productID
       replacePermissionRequest(saved)
       _ = try await store.updateAgentRun(
         id: run.id,
@@ -6611,21 +7262,7 @@ final class AppModel: ObservableObject {
         eventActor: "StoryPointless",
         eventDetail: "Waiting for a scoped permission decision"
       )
-      _ = try await store.appendComment(
-        workItemID: run.workItemID,
-        authorKind: .system,
-        authorName: "StoryPointless",
-        body: [
-          "Permission requested: \(presentation.detail)",
-          presentation.reason.map { "Reason: \($0)" },
-          productGrantSignature == nil
-            ? "Use Allow once or Deny on this ticket."
-            : "Use Allow once, Always allow, or Deny on this ticket.",
-        ]
-        .compactMap { $0 }
-        .joined(separator: "\n\n")
-      )
-      await reloadSelectedProduct()
+      await reloadSelectedProductIfCurrent(productID: run.productID)
     } catch {
       await client.rejectUnsupportedServerRequest(request)
       errorMessage = error.localizedDescription
@@ -6633,6 +7270,7 @@ final class AppModel: ObservableObject {
   }
 
   private func replacePermissionRequest(_ request: AgentPermissionRequest) {
+    guard selectedProductID == request.productID else { return }
     permissionRequests.removeAll { $0.id == request.id }
     permissionRequests.append(request)
     permissionRequests.sort { $0.createdAt < $1.createdAt }
@@ -6649,6 +7287,7 @@ final class AppModel: ObservableObject {
   }
 
   private func replacePermissionGrant(_ grant: AgentPermissionGrant) {
+    guard selectedProductID == grant.productID else { return }
     permissionGrants.removeAll { $0.id == grant.id || $0.signature == grant.signature }
     if grant.isActive {
       permissionGrants.append(grant)
@@ -6726,6 +7365,10 @@ final class AppModel: ObservableObject {
 
   private func rememberSelectedProduct(_ id: UUID) {
     UserDefaults.standard.set(id.uuidString, forKey: Self.selectedProductDefaultsKey)
+  }
+
+  private func forgetSelectedProduct() {
+    UserDefaults.standard.removeObject(forKey: Self.selectedProductDefaultsKey)
   }
 
   private static func productWorkspaceURL(productID: UUID) throws -> URL {

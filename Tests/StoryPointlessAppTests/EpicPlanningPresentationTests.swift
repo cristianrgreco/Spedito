@@ -84,6 +84,47 @@ struct EpicPlanningPresentationTests {
     #expect(sections.deliveredTicketCount == 1)
   }
 
+  @Test("Ticket details resolve their Epic across delivery history")
+  func ticketDetailsResolveEpic() throws {
+    let productID = UUID()
+    let epic = Epic(
+      productID: productID,
+      title: "Delivered outcome",
+      goal: "Keep the outcome available from ticket history",
+      status: .archived
+    )
+    let ticket = WorkItem(
+      productID: productID,
+      key: "T1",
+      title: "Deliver the outcome",
+      state: .released,
+      epicID: epic.id
+    )
+
+    let destination = try #require(
+      TicketEpicNavigation.destination(for: ticket, in: [epic])
+    )
+
+    #expect(destination.id == epic.id)
+  }
+
+  @Test("Ticket details do not cross product boundaries when resolving an Epic")
+  func ticketDetailsRejectForeignEpic() {
+    let epic = Epic(
+      productID: UUID(),
+      title: "Another product",
+      goal: "Remain isolated"
+    )
+    let ticket = WorkItem(
+      productID: UUID(),
+      key: "T1",
+      title: "Unrelated ticket",
+      epicID: epic.id
+    )
+
+    #expect(TicketEpicNavigation.destination(for: ticket, in: [epic]) == nil)
+  }
+
   @Test("Completed disclosure defaults to collapsed and persists per product")
   func completedDisclosurePersistsPerProduct() throws {
     let suiteName = "EpicPlanningPresentationTests.\(UUID().uuidString)"

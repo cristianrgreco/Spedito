@@ -127,6 +127,159 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayedQuestion.answeredQuestions.first?.answer == customAnswer)
   }
 
+  @Test("Permission decisions remain on their request without duplicate comments")
+  func permissionDecisionsRemainOnRequest() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let base = Date(timeIntervalSince1970: 900)
+    let allowedDetail = "swift test"
+    let deniedDetail = "Write /Library/Application Support"
+    let allowedRequest = permissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      runID: runID,
+      detail: allowedDetail,
+      status: .allowed,
+      createdAt: base
+    )
+    let deniedRequest = permissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      runID: runID,
+      detail: deniedDetail,
+      status: .denied,
+      createdAt: base.addingTimeInterval(10)
+    )
+    let ordinaryComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "Please keep the validation local.",
+      createdAt: base.addingTimeInterval(20)
+    )
+    let comments = [
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: "Permission requested: \(allowedDetail)\n\nUse Allow once or Deny on this ticket.",
+        createdAt: base
+      ),
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "Allowed once: \(allowedDetail)",
+        createdAt: base.addingTimeInterval(1)
+      ),
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "Denied: \(deniedDetail)",
+        createdAt: base.addingTimeInterval(11)
+      ),
+      ordinaryComment,
+    ]
+
+    let displayed = SprintTicketWorkLogHistory.displayedComments(
+      from: comments,
+      permissionRequests: [allowedRequest, deniedRequest]
+    )
+
+    #expect(displayed.map(\.id) == [ordinaryComment.id])
+  }
+
+  @Test("Saved product access does not add a duplicate Work log message")
+  func savedProductAccessRemainsOnRequest() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let detail = "Read /opt/homebrew/bin/node"
+    let request = permissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      runID: UUID(),
+      detail: detail,
+      status: .allowed,
+      createdAt: Date(timeIntervalSince1970: 950)
+    )
+    let comments = [
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "Always allowed for this product: \(detail)"
+      ),
+      TicketComment(
+        workItemID: workItemID,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: "Automatically allowed by saved product access: \(detail)"
+      ),
+    ]
+
+    let displayed = SprintTicketWorkLogHistory.displayedComments(
+      from: comments,
+      permissionRequests: [request]
+    )
+
+    #expect(displayed.isEmpty)
+  }
+
+  @Test("Command requests lead with their purpose and keep the exact command available")
+  func commandRequestPresentation() {
+    let request = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-command",
+      turnID: "turn-command",
+      serverRequestID: "request-command",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: """
+        npm test
+
+        Additional access for this command:
+
+        Read /opt/homebrew
+        """,
+      reason: "Run the product's automated tests.",
+      signature: "command-signature"
+    )
+
+    let presentation = SprintPermissionRequestPresentation(request: request)
+
+    #expect(presentation.context == "The agent wants to run a local project command.")
+    #expect(presentation.purpose == "Run the product's automated tests.")
+    #expect(presentation.detailTitle == "Exact command and access")
+    #expect(request.detail.contains("npm test"))
+  }
+
+  @Test("Permission request presentation supplies plain-language fallback copy")
+  func permissionRequestPresentationFallback() {
+    let request = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-access",
+      turnID: "turn-access",
+      serverRequestID: "request-access",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read /opt/homebrew/bin/node",
+      signature: "access-signature"
+    )
+
+    let presentation = SprintPermissionRequestPresentation(request: request)
+
+    #expect(presentation.purpose == "Use an additional capability needed to continue this ticket.")
+    #expect(presentation.detailTitle == "Exact access")
+  }
+
   @Test("Structured ticket artifacts are ordered with comments and events by occurrence")
   func structuredArtifactsAreChronological() {
     let productID = UUID()
@@ -176,6 +329,32 @@ struct SprintTicketWorkLogHistoryTests {
     ])
   }
 
+  private func permissionRequest(
+    productID: UUID,
+    workItemID: UUID,
+    runID: UUID,
+    detail: String,
+    status: AgentPermissionRequestStatus,
+    createdAt: Date
+  ) -> AgentPermissionRequest {
+    AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread-\(UUID().uuidString)",
+      turnID: "turn-\(UUID().uuidString)",
+      serverRequestID: "request-\(UUID().uuidString)",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: detail,
+      signature: "signature-\(UUID().uuidString)",
+      status: status,
+      createdAt: createdAt,
+      updatedAt: createdAt
+    )
+  }
+
   @Test("Work log rows mark every entry except the last for separation")
   func workLogRowsUseOneOrderedSnapshot() {
     let productID = UUID()
@@ -198,6 +377,89 @@ struct SprintTicketWorkLogHistoryTests {
 
     #expect(rows.map(\.id) == entries.map(\.id))
     #expect(rows.map(\.showsBottomSeparator) == [true, true, false])
+  }
+
+  @Test("Demo feedback comment replaces its copied transition event")
+  func demoFeedbackCommentReplacesTransitionEvent() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 1_600)
+    let feedback = String(
+      repeating: "Keep the saved-place button aligned. ",
+      count: 6
+    )
+    let comment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: feedback,
+      createdAt: base
+    )
+    let feedbackTransition = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Product Owner",
+      detail: "acceptance -> running: Demo feedback: \(feedback.prefix(160))",
+      createdAt: base.addingTimeInterval(1)
+    )
+    let unrelatedTransition = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Tech Lead",
+      detail: "verifying -> running: Review changes requested",
+      createdAt: base.addingTimeInterval(2)
+    )
+
+    let displayed = SprintTicketWorkLogTimeline.displayedEvents(
+      events: [feedbackTransition, unrelatedTransition],
+      comments: [comment],
+      permissionRequests: [],
+      demoSubmissions: []
+    )
+
+    #expect(displayed.map(\.id) == [unrelatedTransition.id])
+  }
+
+  @Test("Permission card replaces its generic waiting event")
+  func permissionCardReplacesWaitingEvent() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 1_700)
+    let request = permissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      runID: UUID(),
+      detail: "swift test",
+      status: .pending,
+      createdAt: base
+    )
+    let permissionWait = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "agent_run.awaiting_owner",
+      actor: "StoryPointless",
+      detail: "Waiting for a scoped permission decision",
+      createdAt: base.addingTimeInterval(1)
+    )
+    let productQuestion = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "agent_run.awaiting_owner",
+      actor: "Implementer",
+      detail: "Choose which unavailable state to show",
+      createdAt: base.addingTimeInterval(2)
+    )
+
+    let displayed = SprintTicketWorkLogTimeline.displayedEvents(
+      events: [permissionWait, productQuestion],
+      comments: [],
+      permissionRequests: [request],
+      demoSubmissions: []
+    )
+
+    #expect(displayed.map(\.id) == [productQuestion.id])
   }
 
   @Test("Each Ready for Demo transition uses the latest preceding candidate")
@@ -261,6 +523,13 @@ struct SprintTicketWorkLogHistoryTests {
       firstCandidate.id,
       secondCandidate.id,
     ])
+    let displayedEvents = SprintTicketWorkLogTimeline.displayedEvents(
+      events: [secondDemo, nonDemo, firstDemo],
+      comments: [],
+      permissionRequests: [],
+      demoSubmissions: submissions
+    )
+    #expect(displayedEvents.map(\.id) == [nonDemo.id])
   }
 
   @Test("Ready for Demo comments prefer the assignee, recent participant, then Tech Lead")

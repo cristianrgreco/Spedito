@@ -36,6 +36,8 @@ public enum CodexTicketSuggestionGenerator {
     separate recommendation.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
+    Temporary proposal references belong only in the reference field. Never repeat one at the start
+    of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
     Do not modify files, use tools, browse the web, or make product decisions on the owner's behalf. Return only
     the JSON requested by the output schema. Every proposal must explain why it belongs in the backlog.
     """

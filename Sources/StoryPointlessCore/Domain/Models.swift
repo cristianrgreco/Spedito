@@ -1,10 +1,43 @@
 import Foundation
 
+public enum ProductStatus: String, Codable, CaseIterable, Hashable, Sendable {
+  case active
+  case archived
+
+  public var title: String {
+    switch self {
+    case .active: "Active"
+    case .archived: "Archived"
+    }
+  }
+}
+
+public enum ProductColor: String, Codable, CaseIterable, Hashable, Sendable {
+  case accent
+  case blue
+  case teal
+  case green
+  case orange
+  case pink
+  case indigo
+
+  static let automaticallyAssigned: [ProductColor] = [
+    .blue,
+    .teal,
+    .green,
+    .orange,
+    .pink,
+    .indigo,
+  ]
+}
+
 public struct Product: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public var name: String
   public var vision: String
   public var instructions: String
+  public var status: ProductStatus
+  public var color: ProductColor
   public let createdAt: Date
   public var updatedAt: Date
 
@@ -13,6 +46,8 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
     name: String,
     vision: String,
     instructions: String = "",
+    status: ProductStatus = .active,
+    color: ProductColor = .accent,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
   ) {
@@ -20,8 +55,33 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
     self.name = name
     self.vision = vision
     self.instructions = instructions
+    self.status = status
+    self.color = color
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case name
+    case vision
+    case instructions
+    case status
+    case color
+    case createdAt
+    case updatedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    name = try container.decode(String.self, forKey: .name)
+    vision = try container.decode(String.self, forKey: .vision)
+    instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+    status = try container.decodeIfPresent(ProductStatus.self, forKey: .status) ?? .active
+    color = try container.decodeIfPresent(ProductColor.self, forKey: .color) ?? .accent
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
   }
 }
 
@@ -1004,6 +1064,16 @@ public struct AgentRunKnowledgePage: Codable, Hashable, Sendable {
   }
 }
 
+public struct AgentRunKnowledgeDestination: Codable, Hashable, Sendable {
+  public let runID: UUID
+  public let pageID: UUID
+
+  public init(runID: UUID, pageID: UUID) {
+    self.runID = runID
+    self.pageID = pageID
+  }
+}
+
 public struct ActivityEvent: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let sequence: Int64
@@ -1076,8 +1146,11 @@ public struct RetrospectiveNote: Identifiable, Codable, Hashable, Sendable {
   public let authorName: String
   public let category: RetrospectiveNoteCategory
   public let body: String
+  public let isActionCandidate: Bool
   public var actionStatus: RetrospectiveActionStatus?
   public let actionDestination: RetrospectiveActionDestination?
+  public let expectedEffect: String?
+  public let synthesisID: UUID?
   public var acceptedWorkItemID: UUID?
   public let createdAt: Date
   public var updatedAt: Date
@@ -1091,8 +1164,11 @@ public struct RetrospectiveNote: Identifiable, Codable, Hashable, Sendable {
     authorName: String,
     category: RetrospectiveNoteCategory,
     body: String,
+    isActionCandidate: Bool = false,
     actionStatus: RetrospectiveActionStatus? = nil,
     actionDestination: RetrospectiveActionDestination? = nil,
+    expectedEffect: String? = nil,
+    synthesisID: UUID? = nil,
     acceptedWorkItemID: UUID? = nil,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -1105,11 +1181,73 @@ public struct RetrospectiveNote: Identifiable, Codable, Hashable, Sendable {
     self.authorName = authorName
     self.category = category
     self.body = body
+    self.isActionCandidate = isActionCandidate
     self.actionStatus = actionStatus
     self.actionDestination = actionDestination
+    self.expectedEffect = expectedEffect
+    self.synthesisID = synthesisID
     self.acceptedWorkItemID = acceptedWorkItemID
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+}
+
+public enum RetrospectiveSynthesisStatus: String, Codable, Sendable {
+  case pending
+  case generating
+  case completed
+  case failed
+  case skipped
+
+  public var isResolved: Bool {
+    self == .completed || self == .skipped
+  }
+}
+
+public struct RetrospectiveSynthesis: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let sprintID: UUID
+  public var profileID: UUID?
+  public var status: RetrospectiveSynthesisStatus
+  public var codexThreadID: String?
+  public var codexTurnID: String?
+  public var errorMessage: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    sprintID: UUID,
+    profileID: UUID? = nil,
+    status: RetrospectiveSynthesisStatus = .pending,
+    codexThreadID: String? = nil,
+    codexTurnID: String? = nil,
+    errorMessage: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.sprintID = sprintID
+    self.profileID = profileID
+    self.status = status
+    self.codexThreadID = codexThreadID
+    self.codexTurnID = codexTurnID
+    self.errorMessage = errorMessage
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct RetrospectiveActionSource: Codable, Hashable, Sendable {
+  public let actionNoteID: UUID
+  public let sourceNoteID: UUID
+
+  public init(actionNoteID: UUID, sourceNoteID: UUID) {
+    self.actionNoteID = actionNoteID
+    self.sourceNoteID = sourceNoteID
   }
 }
 

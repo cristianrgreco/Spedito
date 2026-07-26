@@ -72,21 +72,28 @@ public actor SQLiteStore {
   }
 
   public func createProduct(name: String, vision: String) throws -> Product {
-    let product = Product(name: name, vision: vision)
+    let product = Product(
+      name: name,
+      vision: vision,
+      color: try nextProductColor()
+    )
 
     try transaction {
       try withStatement(
         """
-        INSERT INTO products (id, name, vision, instructions, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?);
+        INSERT INTO products (
+            id, name, vision, instructions, status, color, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(product.id.uuidString, to: 1, in: statement)
         try bind(product.name, to: 2, in: statement)
         try bind(product.vision, to: 3, in: statement)
         try bind(product.instructions, to: 4, in: statement)
-        try bind(product.createdAt.timeIntervalSince1970, to: 5, in: statement)
-        try bind(product.updatedAt.timeIntervalSince1970, to: 6, in: statement)
+        try bind(product.status.rawValue, to: 5, in: statement)
+        try bind(product.color.rawValue, to: 6, in: statement)
+        try bind(product.createdAt.timeIntervalSince1970, to: 7, in: statement)
+        try bind(product.updatedAt.timeIntervalSince1970, to: 8, in: statement)
         try stepDone(statement)
       }
 
@@ -101,20 +108,102 @@ public actor SQLiteStore {
     return product
   }
 
-  public func fetchProducts() throws -> [Product] {
+  private func nextProductColor() throws -> ProductColor {
+    let existingColors = try withStatement(
+      """
+      SELECT color
+      FROM products
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      var colors: [ProductColor] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        let rawValue = try text(statement, column: 0)
+        guard let color = ProductColor(rawValue: rawValue) else {
+          throw PersistenceError.corruptData("Invalid product color")
+        }
+        colors.append(color)
+      }
+      return colors
+    }
+
+    guard let mostRecentColor = existingColors.last else {
+      return .accent
+    }
+
+    let usedColors = Set(existingColors)
+    let unusedColors = ProductColor.automaticallyAssigned.filter {
+      !usedColors.contains($0)
+    }
+    let availableColors = unusedColors.isEmpty
+      ? ProductColor.automaticallyAssigned.filter { $0 != mostRecentColor }
+      : unusedColors
+    return availableColors.randomElement() ?? .blue
+  }
+
+  public func fetchProducts(status: ProductStatus = .active) throws -> [Product] {
     try withStatement(
       """
-      SELECT id, name, vision, instructions, created_at, updated_at
+      SELECT id, name, vision, instructions, status, color, created_at,
+             COALESCE(
+               (
+                 SELECT created_at
+                 FROM activity_events
+                 WHERE product_id = products.id
+                 ORDER BY sequence DESC
+                 LIMIT 1
+               ),
+               products.updated_at
+             )
       FROM products
+      WHERE status = ?
       ORDER BY created_at ASC;
       """
     ) { statement in
+      try bind(status.rawValue, to: 1, in: statement)
       var products: [Product] = []
       while sqlite3_step(statement) == SQLITE_ROW {
         products.append(try decodeProduct(statement))
       }
       return products
     }
+  }
+
+  public func archiveProduct(id: UUID) throws -> Product {
+    try setProductStatus(id: id, status: .archived)
+  }
+
+  public func restoreProduct(id: UUID) throws -> Product {
+    try setProductStatus(id: id, status: .active)
+  }
+
+  private func setProductStatus(id: UUID, status: ProductStatus) throws -> Product {
+    var product = try fetchProduct(id: id)
+    guard product.status != status else { return product }
+
+    let updatedAt = Date()
+    try transaction {
+      try withStatement(
+        """
+        UPDATE products SET status = ?, updated_at = ? WHERE id = ?;
+        """
+      ) { statement in
+        try bind(status.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: id,
+        kind: status == .archived ? "product.archived" : "product.restored",
+        actor: "owner",
+        detail: product.name
+      )
+    }
+
+    product.status = status
+    product.updatedAt = updatedAt
+    return product
   }
 
   public func updateProductInstructions(productID: UUID, instructions: String) throws {
@@ -2359,6 +2448,14 @@ public actor SQLiteStore {
         actor: "StoryPointless",
         detail: "Sprint \(sprint.number): every ticket accepted"
       )
+      try insertRetrospectiveSynthesisIfNeeded(
+        RetrospectiveSynthesis(
+          productID: sprint.productID,
+          sprintID: sprint.id,
+          createdAt: now,
+          updatedAt: now
+        )
+      )
     }
     return SprintPlan(sprint: sprint, items: items)
   }
@@ -2372,6 +2469,13 @@ public actor SQLiteStore {
     }
     if sprint.retrospectiveConcludedAt != nil {
       return SprintPlan(sprint: sprint, items: try fetchSprintItems(sprintID: id))
+    }
+
+    let synthesis = try fetchRetrospectiveSynthesis(sprintID: id)
+    guard synthesis?.status.isResolved == true else {
+      throw PersistenceError.corruptData(
+        "Wait for the final retrospective actions, retry their preparation, or continue without AI suggestions."
+      )
     }
 
     let unresolvedActions = try withStatement(
@@ -3378,6 +3482,11 @@ public actor SQLiteStore {
         "This retrospective has already been concluded."
       )
     }
+    guard try fetchRetrospectiveSynthesis(sprintID: sprintID)?.status.isResolved == true else {
+      throw PersistenceError.corruptData(
+        "Wait for the final retrospective actions, retry their preparation, or continue without AI suggestions before adding a proposal."
+      )
+    }
 
     let proposal = body.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !proposal.isEmpty else {
@@ -3411,8 +3520,8 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, sprint_id, work_item_id, profile_id, author_name,
-             category, body, action_status, action_destination, accepted_work_item_id,
-             created_at, updated_at
+             category, body, is_action_candidate, action_status, action_destination,
+             expected_effect, synthesis_id, accepted_work_item_id, created_at, updated_at
       FROM retrospective_notes
       WHERE product_id = ?
       ORDER BY created_at ASC, id ASC;
@@ -3439,17 +3548,22 @@ public actor SQLiteStore {
             authorName: try text(statement, column: 5),
             category: category,
             body: try text(statement, column: 7),
-            actionStatus: try optionalText(statement, column: 8).flatMap(
+            isActionCandidate: sqlite3_column_int64(statement, 8) != 0,
+            actionStatus: try optionalText(statement, column: 9).flatMap(
               RetrospectiveActionStatus.init(rawValue:)
             ),
-            actionDestination: try optionalText(statement, column: 9).flatMap(
+            actionDestination: try optionalText(statement, column: 10).flatMap(
               RetrospectiveActionDestination.init(rawValue:)
             ),
-            acceptedWorkItemID: try optionalText(statement, column: 10).flatMap(
+            expectedEffect: try optionalText(statement, column: 11),
+            synthesisID: try optionalText(statement, column: 12).flatMap(
               UUID.init(uuidString:)
             ),
-            createdAt: date(statement, column: 11),
-            updatedAt: date(statement, column: 12)
+            acceptedWorkItemID: try optionalText(statement, column: 13).flatMap(
+              UUID.init(uuidString:)
+            ),
+            createdAt: date(statement, column: 14),
+            updatedAt: date(statement, column: 15)
           )
         )
       }
@@ -3457,12 +3571,316 @@ public actor SQLiteStore {
     }
   }
 
+  public func fetchRetrospectiveSyntheses(
+    productID: UUID
+  ) throws -> [RetrospectiveSynthesis] {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, profile_id, status, codex_thread_id,
+             codex_turn_id, error_message, created_at, updated_at
+      FROM retrospective_syntheses
+      WHERE product_id = ?
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var syntheses: [RetrospectiveSynthesis] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        syntheses.append(try decodeRetrospectiveSynthesis(statement))
+      }
+      return syntheses
+    }
+  }
+
+  public func fetchRetrospectiveSynthesisSourceNotes(
+    synthesisID: UUID
+  ) throws -> [RetrospectiveNote] {
+    let synthesis = try fetchRetrospectiveSynthesis(id: synthesisID)
+    let sourceIDs = try withStatement(
+      """
+      SELECT source_note_id
+      FROM retrospective_synthesis_sources
+      WHERE synthesis_id = ?;
+      """
+    ) { statement in
+      try bind(synthesisID.uuidString, to: 1, in: statement)
+      var ids: Set<UUID> = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        guard let id = UUID(uuidString: try text(statement, column: 0)) else {
+          throw PersistenceError.corruptData(
+            "Invalid retrospective synthesis source"
+          )
+        }
+        ids.insert(id)
+      }
+      return ids
+    }
+    return try fetchRetrospectiveNotes(productID: synthesis.productID)
+      .filter { sourceIDs.contains($0.id) }
+  }
+
+  public func fetchRetrospectiveActionSources(
+    productID: UUID
+  ) throws -> [RetrospectiveActionSource] {
+    try withStatement(
+      """
+      SELECT source.action_note_id, source.source_note_id
+      FROM retrospective_action_sources AS source
+      JOIN retrospective_notes AS action ON action.id = source.action_note_id
+      WHERE action.product_id = ?
+      ORDER BY action.created_at ASC, source.source_note_id ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var sources: [RetrospectiveActionSource] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        guard
+          let actionNoteID = UUID(uuidString: try text(statement, column: 0)),
+          let sourceNoteID = UUID(uuidString: try text(statement, column: 1))
+        else {
+          throw PersistenceError.corruptData("Invalid retrospective action source")
+        }
+        sources.append(
+          RetrospectiveActionSource(
+            actionNoteID: actionNoteID,
+            sourceNoteID: sourceNoteID
+          )
+        )
+      }
+      return sources
+    }
+  }
+
+  public func beginRetrospectiveSynthesis(
+    id: UUID,
+    profileID: UUID
+  ) throws -> RetrospectiveSynthesis {
+    var synthesis = try fetchRetrospectiveSynthesis(id: id)
+    if synthesis.status == .generating || synthesis.status.isResolved {
+      return synthesis
+    }
+    let sprint = try fetchSprint(id: synthesis.sprintID)
+    guard
+      sprint.state == .completed,
+      sprint.retrospectiveConcludedAt == nil
+    else {
+      throw PersistenceError.corruptData(
+        "Retrospective actions can only be prepared for an open completed sprint."
+      )
+    }
+    let profile = try fetchAgentProfile(id: profileID)
+    guard
+      profile.productID == synthesis.productID,
+      profile.role == .businessAnalyst
+    else {
+      throw PersistenceError.corruptData(
+        "A Business Analyst must prepare the final retrospective actions."
+      )
+    }
+
+    let now = Date()
+    synthesis.profileID = profileID
+    synthesis.status = .generating
+    synthesis.codexThreadID = nil
+    synthesis.codexTurnID = nil
+    synthesis.errorMessage = nil
+    synthesis.updatedAt = now
+    try transaction {
+      let existingSourceCount = try withStatement(
+        """
+        SELECT COUNT(*)
+        FROM retrospective_synthesis_sources
+        WHERE synthesis_id = ?;
+        """
+      ) { statement in
+        try bind(id.uuidString, to: 1, in: statement)
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+          throw currentSQLiteError()
+        }
+        return Int(sqlite3_column_int64(statement, 0))
+      }
+      if existingSourceCount == 0 {
+        try withStatement(
+          """
+          INSERT OR IGNORE INTO retrospective_synthesis_sources (
+              synthesis_id, source_note_id
+          )
+          SELECT ?, id
+          FROM retrospective_notes
+          WHERE sprint_id = ?
+            AND (
+              category IN ('went_well', 'could_improve')
+              OR is_action_candidate = 1
+            );
+          """
+        ) { statement in
+          try bind(id.uuidString, to: 1, in: statement)
+          try bind(synthesis.sprintID.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+      try updateRetrospectiveSynthesis(synthesis)
+      _ = try insertEvent(
+        productID: synthesis.productID,
+        kind: "retrospective.synthesis_started",
+        actor: profile.name,
+        detail: synthesis.sprintID.uuidString
+      )
+    }
+    return synthesis
+  }
+
+  public func attachRetrospectiveSynthesisTurn(
+    id: UUID,
+    threadID: String,
+    turnID: String
+  ) throws -> RetrospectiveSynthesis {
+    var synthesis = try fetchRetrospectiveSynthesis(id: id)
+    guard synthesis.status == .generating else { return synthesis }
+    synthesis.codexThreadID = threadID
+    synthesis.codexTurnID = turnID
+    synthesis.updatedAt = Date()
+    try updateRetrospectiveSynthesis(synthesis)
+    return synthesis
+  }
+
+  public func completeRetrospectiveSynthesis(
+    id: UUID,
+    actions: [RetrospectiveSynthesisActionDraft],
+    profileID: UUID,
+    authorName: String
+  ) throws -> [RetrospectiveNote] {
+    var synthesis = try fetchRetrospectiveSynthesis(id: id)
+    guard synthesis.status == .generating else {
+      throw PersistenceError.corruptData(
+        "Only a running retrospective synthesis can be completed."
+      )
+    }
+    guard actions.count <= CodexRetrospectiveSynthesizer.maximumActionCount else {
+      throw PersistenceError.corruptData(
+        "A retrospective synthesis can contain at most five actions."
+      )
+    }
+    let allowedSourceIDs = Set(
+      try fetchRetrospectiveSynthesisSourceNotes(synthesisID: id).map(\.id)
+    )
+    guard actions.allSatisfy({
+      !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !$0.expectedEffect.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !$0.sourceNoteIDs.isEmpty
+        && Set($0.sourceNoteIDs).isSubset(of: allowedSourceIDs)
+    }) else {
+      throw PersistenceError.corruptData(
+        "Every final action needs a description, expected effect, and frozen sprint evidence."
+      )
+    }
+
+    let now = Date()
+    let notes = actions.map { action in
+      RetrospectiveNote(
+        productID: synthesis.productID,
+        sprintID: synthesis.sprintID,
+        profileID: profileID,
+        authorName: authorName,
+        category: .suggestedAction,
+        body: action.body.trimmingCharacters(in: .whitespacesAndNewlines),
+        actionStatus: .proposed,
+        actionDestination: action.destination,
+        expectedEffect: action.expectedEffect.trimmingCharacters(
+          in: .whitespacesAndNewlines
+        ),
+        synthesisID: synthesis.id,
+        createdAt: now,
+        updatedAt: now
+      )
+    }
+    synthesis.profileID = profileID
+    synthesis.status = .completed
+    synthesis.errorMessage = nil
+    synthesis.updatedAt = now
+    try transaction {
+      for (note, action) in zip(notes, actions) {
+        try insertRetrospectiveNoteIfNeeded(note)
+        for sourceNoteID in Set(action.sourceNoteIDs) {
+          try withStatement(
+            """
+            INSERT OR IGNORE INTO retrospective_action_sources (
+                action_note_id, source_note_id
+            ) VALUES (?, ?);
+            """
+          ) { statement in
+            try bind(note.id.uuidString, to: 1, in: statement)
+            try bind(sourceNoteID.uuidString, to: 2, in: statement)
+            try stepDone(statement)
+          }
+        }
+      }
+      try updateRetrospectiveSynthesis(synthesis)
+      _ = try insertEvent(
+        productID: synthesis.productID,
+        kind: "retrospective.synthesized",
+        actor: authorName,
+        detail: "\(actions.count) final action\(actions.count == 1 ? "" : "s")"
+      )
+    }
+    return notes
+  }
+
+  public func failRetrospectiveSynthesis(
+    id: UUID,
+    message: String
+  ) throws -> RetrospectiveSynthesis {
+    var synthesis = try fetchRetrospectiveSynthesis(id: id)
+    guard synthesis.status == .generating else { return synthesis }
+    synthesis.status = .failed
+    synthesis.errorMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    synthesis.updatedAt = Date()
+    try updateRetrospectiveSynthesis(synthesis)
+    return synthesis
+  }
+
+  public func skipRetrospectiveSynthesis(id: UUID) throws -> RetrospectiveSynthesis {
+    var synthesis = try fetchRetrospectiveSynthesis(id: id)
+    guard synthesis.status == .pending || synthesis.status == .failed else {
+      return synthesis
+    }
+    synthesis.status = .skipped
+    synthesis.errorMessage = nil
+    synthesis.updatedAt = Date()
+    try transaction {
+      try updateRetrospectiveSynthesis(synthesis)
+      _ = try insertEvent(
+        productID: synthesis.productID,
+        kind: "retrospective.synthesis_skipped",
+        actor: "Product Owner",
+        detail: synthesis.sprintID.uuidString
+      )
+    }
+    return synthesis
+  }
+
+  public func requeueGeneratingRetrospectiveSyntheses() throws {
+    try withStatement(
+      """
+      UPDATE retrospective_syntheses
+      SET status = 'pending',
+          codex_thread_id = NULL,
+          codex_turn_id = NULL,
+          updated_at = ?
+      WHERE status = 'generating';
+      """
+    ) { statement in
+      try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+      try stepDone(statement)
+    }
+  }
+
   private func fetchRetrospectiveNote(id: UUID) throws -> RetrospectiveNote {
     try withStatement(
       """
       SELECT id, product_id, sprint_id, work_item_id, profile_id, author_name,
-             category, body, action_status, action_destination, accepted_work_item_id,
-             created_at, updated_at
+             category, body, is_action_candidate, action_status, action_destination,
+             expected_effect, synthesis_id, accepted_work_item_id, created_at, updated_at
       FROM retrospective_notes WHERE id = ?;
       """
     ) { statement in
@@ -3487,17 +3905,22 @@ public actor SQLiteStore {
         authorName: try text(statement, column: 5),
         category: category,
         body: try text(statement, column: 7),
-        actionStatus: try optionalText(statement, column: 8).flatMap(
+        isActionCandidate: sqlite3_column_int64(statement, 8) != 0,
+        actionStatus: try optionalText(statement, column: 9).flatMap(
           RetrospectiveActionStatus.init(rawValue:)
         ),
-        actionDestination: try optionalText(statement, column: 9).flatMap(
+        actionDestination: try optionalText(statement, column: 10).flatMap(
           RetrospectiveActionDestination.init(rawValue:)
         ),
-        acceptedWorkItemID: try optionalText(statement, column: 10).flatMap(
+        expectedEffect: try optionalText(statement, column: 11),
+        synthesisID: try optionalText(statement, column: 12).flatMap(
           UUID.init(uuidString:)
         ),
-        createdAt: date(statement, column: 11),
-        updatedAt: date(statement, column: 12)
+        acceptedWorkItemID: try optionalText(statement, column: 13).flatMap(
+          UUID.init(uuidString:)
+        ),
+        createdAt: date(statement, column: 14),
+        updatedAt: date(statement, column: 15)
       )
     }
   }
@@ -3507,9 +3930,9 @@ public actor SQLiteStore {
       """
       INSERT OR IGNORE INTO retrospective_notes (
           id, product_id, sprint_id, work_item_id, profile_id, author_name,
-          category, body, action_status, action_destination, accepted_work_item_id,
-          created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          category, body, is_action_candidate, action_status, action_destination,
+          expected_effect, synthesis_id, accepted_work_item_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(note.id.uuidString, to: 1, in: statement)
@@ -3520,11 +3943,124 @@ public actor SQLiteStore {
       try bind(note.authorName, to: 6, in: statement)
       try bind(note.category.rawValue, to: 7, in: statement)
       try bind(note.body, to: 8, in: statement)
-      try bindOptionalString(note.actionStatus?.rawValue, to: 9, in: statement)
-      try bindOptionalString(note.actionDestination?.rawValue, to: 10, in: statement)
-      try bindOptionalUUID(note.acceptedWorkItemID, to: 11, in: statement)
-      try bind(note.createdAt.timeIntervalSince1970, to: 12, in: statement)
-      try bind(note.updatedAt.timeIntervalSince1970, to: 13, in: statement)
+      try bind(note.isActionCandidate ? Int64(1) : Int64(0), to: 9, in: statement)
+      try bindOptionalString(note.actionStatus?.rawValue, to: 10, in: statement)
+      try bindOptionalString(note.actionDestination?.rawValue, to: 11, in: statement)
+      try bindOptionalString(note.expectedEffect, to: 12, in: statement)
+      try bindOptionalUUID(note.synthesisID, to: 13, in: statement)
+      try bindOptionalUUID(note.acceptedWorkItemID, to: 14, in: statement)
+      try bind(note.createdAt.timeIntervalSince1970, to: 15, in: statement)
+      try bind(note.updatedAt.timeIntervalSince1970, to: 16, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func fetchRetrospectiveSynthesis(
+    id: UUID
+  ) throws -> RetrospectiveSynthesis {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, profile_id, status, codex_thread_id,
+             codex_turn_id, error_message, created_at, updated_at
+      FROM retrospective_syntheses
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("retrospective synthesis \(id)")
+      }
+      return try decodeRetrospectiveSynthesis(statement)
+    }
+  }
+
+  private func fetchRetrospectiveSynthesis(
+    sprintID: UUID
+  ) throws -> RetrospectiveSynthesis? {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, profile_id, status, codex_thread_id,
+             codex_turn_id, error_message, created_at, updated_at
+      FROM retrospective_syntheses
+      WHERE sprint_id = ?;
+      """
+    ) { statement in
+      try bind(sprintID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeRetrospectiveSynthesis(statement)
+    }
+  }
+
+  private func decodeRetrospectiveSynthesis(
+    _ statement: OpaquePointer
+  ) throws -> RetrospectiveSynthesis {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let sprintID = UUID(uuidString: try text(statement, column: 2)),
+      let status = RetrospectiveSynthesisStatus(
+        rawValue: try text(statement, column: 4)
+      )
+    else {
+      throw PersistenceError.corruptData("Invalid retrospective synthesis")
+    }
+    return RetrospectiveSynthesis(
+      id: id,
+      productID: productID,
+      sprintID: sprintID,
+      profileID: try optionalText(statement, column: 3).flatMap(UUID.init(uuidString:)),
+      status: status,
+      codexThreadID: try optionalText(statement, column: 5),
+      codexTurnID: try optionalText(statement, column: 6),
+      errorMessage: try optionalText(statement, column: 7),
+      createdAt: date(statement, column: 8),
+      updatedAt: date(statement, column: 9)
+    )
+  }
+
+  private func insertRetrospectiveSynthesisIfNeeded(
+    _ synthesis: RetrospectiveSynthesis
+  ) throws {
+    try withStatement(
+      """
+      INSERT OR IGNORE INTO retrospective_syntheses (
+          id, product_id, sprint_id, profile_id, status, codex_thread_id,
+          codex_turn_id, error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(synthesis.id.uuidString, to: 1, in: statement)
+      try bind(synthesis.productID.uuidString, to: 2, in: statement)
+      try bind(synthesis.sprintID.uuidString, to: 3, in: statement)
+      try bindOptionalUUID(synthesis.profileID, to: 4, in: statement)
+      try bind(synthesis.status.rawValue, to: 5, in: statement)
+      try bindOptionalString(synthesis.codexThreadID, to: 6, in: statement)
+      try bindOptionalString(synthesis.codexTurnID, to: 7, in: statement)
+      try bindOptionalString(synthesis.errorMessage, to: 8, in: statement)
+      try bind(synthesis.createdAt.timeIntervalSince1970, to: 9, in: statement)
+      try bind(synthesis.updatedAt.timeIntervalSince1970, to: 10, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func updateRetrospectiveSynthesis(
+    _ synthesis: RetrospectiveSynthesis
+  ) throws {
+    try withStatement(
+      """
+      UPDATE retrospective_syntheses
+      SET profile_id = ?, status = ?, codex_thread_id = ?, codex_turn_id = ?,
+          error_message = ?, updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bindOptionalUUID(synthesis.profileID, to: 1, in: statement)
+      try bind(synthesis.status.rawValue, to: 2, in: statement)
+      try bindOptionalString(synthesis.codexThreadID, to: 3, in: statement)
+      try bindOptionalString(synthesis.codexTurnID, to: 4, in: statement)
+      try bindOptionalString(synthesis.errorMessage, to: 5, in: statement)
+      try bind(synthesis.updatedAt.timeIntervalSince1970, to: 6, in: statement)
+      try bind(synthesis.id.uuidString, to: 7, in: statement)
       try stepDone(statement)
     }
   }
@@ -3535,7 +4071,11 @@ public actor SQLiteStore {
   ) throws -> WorkItem? {
     let note = try fetchRetrospectiveNote(id: noteID)
 
-    guard note.category == .suggestedAction, note.actionStatus == .proposed else {
+    guard note.category == .suggestedAction else {
+      return note.acceptedWorkItemID.flatMap { try? fetchWorkItem(id: $0) }
+    }
+    try validateRetrospectiveDecision(note)
+    guard note.actionStatus == .proposed else {
       return note.acceptedWorkItemID.flatMap { try? fetchWorkItem(id: $0) }
     }
 
@@ -3600,6 +4140,7 @@ public actor SQLiteStore {
         "Only suggested retrospective actions can become team practices."
       )
     }
+    try validateRetrospectiveDecision(note)
     guard note.actionStatus == .proposed else {
       let pages = try seedKnowledgeBase(productID: note.productID)
       guard let existing = pages.first(where: { $0.slug == "ways-of-working" }) else {
@@ -3680,6 +4221,25 @@ public actor SQLiteStore {
       )
     }
     return page
+  }
+
+  private func validateRetrospectiveDecision(_ note: RetrospectiveNote) throws {
+    let sprint = try fetchSprint(id: note.sprintID)
+    guard sprint.productID == note.productID else {
+      throw PersistenceError.corruptData(
+        "The retrospective action does not belong to its sprint."
+      )
+    }
+    guard sprint.state == .completed else {
+      throw PersistenceError.corruptData(
+        "Retrospective actions can only be accepted or dismissed after the sprint is complete."
+      )
+    }
+    guard sprint.retrospectiveConcludedAt == nil else {
+      throw PersistenceError.corruptData(
+        "This retrospective has already been concluded."
+      )
+    }
   }
 
   private static func practicesAreEquivalent(_ lhs: String, _ rhs: String) -> Bool {
@@ -3808,7 +4368,7 @@ public actor SQLiteStore {
 
               ## Adopted practices
               """
-            : "Add verified knowledge here.",
+            : "",
           sortOrder: order,
           createdAt: now,
           updatedAt: now
@@ -3882,6 +4442,55 @@ public actor SQLiteStore {
           throw PersistenceError.corruptData("Invalid agent knowledge context")
         }
         links.append(AgentRunKnowledgePage(runID: runID, pageID: pageID))
+      }
+      return links
+    }
+  }
+
+  public func setAgentRunKnowledgeDestinations(runID: UUID, pageIDs: [UUID]) throws {
+    try transaction {
+      try withStatement(
+        "DELETE FROM agent_run_knowledge_destinations WHERE run_id = ?;"
+      ) { statement in
+        try bind(runID.uuidString, to: 1, in: statement)
+        try stepDone(statement)
+      }
+      for pageID in Set(pageIDs) {
+        try withStatement(
+          """
+          INSERT INTO agent_run_knowledge_destinations (run_id, page_id) VALUES (?, ?);
+          """
+        ) { statement in
+          try bind(runID.uuidString, to: 1, in: statement)
+          try bind(pageID.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+    }
+  }
+
+  public func fetchAgentRunKnowledgeDestinations(
+    productID: UUID
+  ) throws -> [AgentRunKnowledgeDestination] {
+    try withStatement(
+      """
+      SELECT destination.run_id, destination.page_id
+      FROM agent_run_knowledge_destinations AS destination
+      JOIN agent_runs AS run ON run.id = destination.run_id
+      WHERE run.product_id = ?
+      ORDER BY run.created_at ASC, destination.page_id ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var links: [AgentRunKnowledgeDestination] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        guard
+          let runID = UUID(uuidString: try text(statement, column: 0)),
+          let pageID = UUID(uuidString: try text(statement, column: 1))
+        else {
+          throw PersistenceError.corruptData("Invalid agent knowledge destination")
+        }
+        links.append(AgentRunKnowledgeDestination(runID: runID, pageID: pageID))
       }
       return links
     }
@@ -5400,6 +6009,373 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    // Migration 39 was used by an earlier development build and remains reserved.
+    if try !migrationApplied(version: 40, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE IF NOT EXISTS agent_run_knowledge_destinations (
+            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+            page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
+            PRIMARY KEY(run_id, page_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_agent_run_knowledge_destination
+            ON agent_run_knowledge_destinations(page_id, run_id);
+
+        INSERT INTO knowledge_page_revisions (
+            id, page_id, version, body_markdown, author_name, change_summary, created_at
+        )
+        SELECT
+            lower(hex(randomblob(4))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(6))),
+            page.id,
+            2,
+            '',
+            'StoryPointless',
+            'Removed the initial placeholder body',
+            unixepoch()
+        FROM knowledge_pages AS page
+        WHERE page.body_markdown = 'Add verified knowledge here.'
+          AND page.kind = 'page'
+          AND page.source_work_item_id IS NULL
+          AND (
+            SELECT COUNT(*)
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+          ) = 1
+          AND EXISTS (
+            SELECT 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.version = 1
+              AND revision.body_markdown = 'Add verified knowledge here.'
+              AND revision.author_name = 'StoryPointless'
+              AND revision.change_summary = 'Created page'
+          );
+
+        UPDATE knowledge_pages
+        SET body_markdown = '',
+            updated_at = unixepoch()
+        WHERE id IN (
+          SELECT page_id
+          FROM knowledge_page_revisions
+          WHERE change_summary = 'Removed the initial placeholder body'
+            AND body_markdown = ''
+        )
+          AND body_markdown = 'Add verified knowledge here.';
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (40, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 43, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        INSERT INTO knowledge_page_revisions (
+            id, page_id, version, body_markdown, author_name, change_summary, created_at
+        )
+        SELECT
+            lower(hex(randomblob(4))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(2))) || '-' ||
+              lower(hex(randomblob(6))),
+            page.id,
+            2,
+            '',
+            'StoryPointless',
+            'Removed the legacy initial placeholder body',
+            unixepoch()
+        FROM knowledge_pages AS page
+        WHERE page.body_markdown = 'Add verified knowledge here.'
+          AND page.kind = 'page'
+          AND page.source_work_item_id IS NULL
+          AND (
+            SELECT COUNT(*)
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+          ) = 1
+          AND EXISTS (
+            SELECT 1
+            FROM knowledge_page_revisions AS revision
+            WHERE revision.page_id = page.id
+              AND revision.version = 1
+              AND (
+                revision.body_markdown = 'Add verified knowledge here.'
+                OR revision.body_markdown =
+                  '# ' || page.title || char(10) || char(10) ||
+                    'Add verified knowledge here.'
+              )
+              AND revision.author_name = 'StoryPointless'
+              AND revision.change_summary = 'Created page'
+          );
+
+        UPDATE knowledge_pages
+        SET body_markdown = '',
+            updated_at = unixepoch()
+        WHERE id IN (
+          SELECT page_id
+          FROM knowledge_page_revisions
+          WHERE change_summary = 'Removed the legacy initial placeholder body'
+            AND body_markdown = ''
+        )
+          AND body_markdown = 'Add verified knowledge here.';
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (43, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 42, database: database) {
+      if try columnExists("status", in: "products", database: database) {
+        try execute(
+          """
+          BEGIN IMMEDIATE;
+
+          CREATE INDEX IF NOT EXISTS idx_products_status_created
+              ON products(status, created_at);
+
+          INSERT INTO schema_migrations (version, applied_at)
+          VALUES (42, unixepoch());
+
+          COMMIT;
+          """,
+          database: database
+        )
+      } else {
+        try execute(
+          """
+          BEGIN IMMEDIATE;
+
+          ALTER TABLE products
+              ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
+              CHECK (status IN ('active', 'archived'));
+
+          CREATE INDEX idx_products_status_created
+              ON products(status, created_at);
+
+          INSERT INTO schema_migrations (version, applied_at)
+          VALUES (42, unixepoch());
+
+          COMMIT;
+          """,
+          database: database
+        )
+      }
+    }
+
+    if try !migrationApplied(version: 44, database: database) {
+      if try !columnExists("color", in: "products", database: database) {
+        try execute(
+          """
+          ALTER TABLE products
+              ADD COLUMN color TEXT NOT NULL DEFAULT 'accent'
+              CHECK (
+                color IN ('accent', 'blue', 'teal', 'green', 'orange', 'pink', 'indigo')
+              );
+          """,
+          database: database
+        )
+      }
+
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        WITH ranked_products AS (
+          SELECT
+            id,
+            ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS position
+          FROM products
+        )
+        UPDATE products
+        SET color = CASE (
+          SELECT (position - 2) % 6
+          FROM ranked_products
+          WHERE ranked_products.id = products.id
+        )
+          WHEN 0 THEN 'blue'
+          WHEN 1 THEN 'teal'
+          WHEN 2 THEN 'green'
+          WHEN 3 THEN 'orange'
+          WHEN 4 THEN 'pink'
+          ELSE 'indigo'
+        END
+        WHERE color = 'accent'
+          AND id IN (
+            SELECT id
+            FROM ranked_products
+            WHERE position > 1
+          );
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (44, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 45, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        ALTER TABLE retrospective_notes
+        ADD COLUMN is_action_candidate INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE retrospective_notes
+        ADD COLUMN expected_effect TEXT;
+
+        ALTER TABLE retrospective_notes
+        ADD COLUMN synthesis_id TEXT REFERENCES retrospective_syntheses(id) ON DELETE SET NULL;
+
+        CREATE TABLE retrospective_syntheses (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
+            profile_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
+            status TEXT NOT NULL,
+            codex_thread_id TEXT,
+            codex_turn_id TEXT,
+            error_message TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE(sprint_id)
+        );
+
+        CREATE TABLE retrospective_synthesis_sources (
+            synthesis_id TEXT NOT NULL
+                REFERENCES retrospective_syntheses(id) ON DELETE CASCADE,
+            source_note_id TEXT NOT NULL
+                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
+            PRIMARY KEY(synthesis_id, source_note_id)
+        );
+
+        CREATE TABLE retrospective_action_sources (
+            action_note_id TEXT NOT NULL
+                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
+            source_note_id TEXT NOT NULL
+                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
+            PRIMARY KEY(action_note_id, source_note_id)
+        );
+
+        UPDATE retrospective_notes
+        SET is_action_candidate = 1,
+            action_status = NULL
+        WHERE category = 'suggested_action'
+          AND profile_id IS NOT NULL
+          AND action_status = 'proposed'
+          AND sprint_id IN (
+            SELECT id
+            FROM sprints
+            WHERE retrospective_concluded_at IS NULL
+          );
+
+        INSERT INTO retrospective_syntheses (
+            id, product_id, sprint_id, profile_id, status,
+            codex_thread_id, codex_turn_id, error_message, created_at, updated_at
+        )
+        SELECT
+            upper(hex(randomblob(4))) || '-' ||
+              upper(hex(randomblob(2))) || '-' ||
+              upper(hex(randomblob(2))) || '-' ||
+              upper(hex(randomblob(2))) || '-' ||
+              upper(hex(randomblob(6))),
+            product_id,
+            id,
+            NULL,
+            'pending',
+            NULL,
+            NULL,
+            NULL,
+            COALESCE(completed_at, updated_at),
+            unixepoch()
+        FROM sprints
+        WHERE state = 'completed'
+          AND retrospective_concluded_at IS NULL;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (45, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 46, database: database) {
+      try execute(
+        """
+        PRAGMA foreign_keys = OFF;
+        BEGIN IMMEDIATE;
+
+        UPDATE retrospective_synthesis_sources
+        SET synthesis_id = upper(synthesis_id);
+
+        UPDATE retrospective_notes
+        SET synthesis_id = upper(synthesis_id)
+        WHERE synthesis_id IS NOT NULL;
+
+        UPDATE retrospective_syntheses
+        SET id = upper(id);
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (46, unixepoch());
+
+        COMMIT;
+        PRAGMA foreign_keys = ON;
+        """,
+        database: database
+      )
+    }
+  }
+
+  private static func columnExists(
+    _ column: String,
+    in table: String,
+    database: OpaquePointer
+  ) throws -> Bool {
+    var statement: OpaquePointer?
+    let result = sqlite3_prepare_v2(
+      database,
+      "PRAGMA table_info(\(table));",
+      -1,
+      &statement,
+      nil
+    )
+    guard result == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: result,
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let name = sqlite3_column_text(statement, 1) else { continue }
+      if String(cString: name) == column {
+        return true
+      }
+    }
+    return false
   }
 
   private static func migrationApplied(version: Int, database: OpaquePointer) throws -> Bool {
@@ -6544,14 +7520,42 @@ public actor SQLiteStore {
     guard let id = UUID(uuidString: try text(statement, column: 0)) else {
       throw PersistenceError.corruptData("Invalid product id")
     }
+    guard
+      let status = ProductStatus(rawValue: try text(statement, column: 4))
+    else {
+      throw PersistenceError.corruptData("Invalid product status")
+    }
+    guard
+      let color = ProductColor(rawValue: try text(statement, column: 5))
+    else {
+      throw PersistenceError.corruptData("Invalid product color")
+    }
     return Product(
       id: id,
       name: try text(statement, column: 1),
       vision: try text(statement, column: 2),
       instructions: try text(statement, column: 3),
-      createdAt: date(statement, column: 4),
-      updatedAt: date(statement, column: 5)
+      status: status,
+      color: color,
+      createdAt: date(statement, column: 6),
+      updatedAt: date(statement, column: 7)
     )
+  }
+
+  private func fetchProduct(id: UUID) throws -> Product {
+    try withStatement(
+      """
+      SELECT id, name, vision, instructions, status, color, created_at, updated_at
+      FROM products
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("product \(id)")
+      }
+      return try decodeProduct(statement)
+    }
   }
 
   private func fetchEpic(id: UUID) throws -> Epic {

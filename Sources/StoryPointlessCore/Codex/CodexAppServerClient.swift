@@ -329,7 +329,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     prompt: String,
     effort: String,
     outputSchema: JSONValue,
-    permissionProfile: String? = nil,
     runtimeWorkspaceRoots: [URL] = []
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
@@ -345,9 +344,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "summary": .string("concise"),
       "threadId": .string(threadID),
     ]
-    if let permissionProfile {
-      params["permissions"] = .string(permissionProfile)
-    }
+    // Turns deliberately inherit the profile materialized by thread start/resume.
+    // Reselecting a named process profile here would discard dynamic per-thread
+    // grants such as the active product's exact read-only Git directory.
     if !runtimeWorkspaceRoots.isEmpty {
       params["runtimeWorkspaceRoots"] = .array(
         runtimeWorkspaceRoots.map {

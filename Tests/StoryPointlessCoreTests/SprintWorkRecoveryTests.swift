@@ -113,6 +113,55 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.id == completedReviewRun.id)
   }
 
+  @Test("An interrupted Tech Lead run remains bound to its reviewing candidate")
+  func interruptedReviewRunIsRecoverable() {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let techLeadID = UUID()
+    let reviewStartedAt = Date()
+    let integrationPath = "/private/tmp/t9-interrupted-integration"
+    let candidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: UUID(),
+      version: 3,
+      branchName: "ticket/T9",
+      baseSHA: "base",
+      headSHA: "head",
+      integratedSHA: "integrated",
+      worktreePath: "/private/tmp/t9",
+      integrationWorktreePath: integrationPath,
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    let interruptedReviewRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .interrupted,
+      codexThreadID: "interrupted-review-thread",
+      worktreePath: integrationPath,
+      createdAt: reviewStartedAt.addingTimeInterval(1)
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
+      for: candidate,
+      runs: [interruptedReviewRun],
+      reviewerProfileIDs: [techLeadID]
+    )
+
+    #expect(recovered?.id == interruptedReviewRun.id)
+    #expect(recovered?.codexThreadID == "interrupted-review-thread")
+  }
+
   @Test("Review recovery rejects a mismatched workspace")
   func mismatchedReviewWorkspaceIsNotRecoverable() {
     let productID = UUID()

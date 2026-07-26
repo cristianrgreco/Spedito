@@ -142,11 +142,17 @@ public actor CodexJSONLTransport: CodexRPCTransport {
   private var inputHandle: FileHandle?
   private var outputHandle: FileHandle?
   private var errorHandle: FileHandle?
+  private var outputChunkContinuation: AsyncStream<Data>.Continuation?
+  private var errorChunkContinuation: AsyncStream<Data>.Continuation?
+  private var outputReadTask: Task<Void, Never>?
+  private var errorReadTask: Task<Void, Never>?
   private var outputBuffer = Data()
   private var errorBuffer = Data()
   private var nextRequestID: Int64 = 1
   private var pending: [Int64: PendingRequest] = [:]
-  private var isStopping = false
+  private var processGeneration: UUID?
+  private var processExitStatus: Int32?
+  private var outputDidReachEOF = false
 
   public init(configuration: Configuration) {
     self.configuration = configuration
@@ -162,6 +168,9 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     let input = Pipe()
     let output = Pipe()
     let errorPipe = Pipe()
+    let generation = UUID()
+    let outputChunks = AsyncStream<Data>.makeStream()
+    let errorChunks = AsyncStream<Data>.makeStream()
     process.executableURL = configuration.executableURL
     process.arguments = configuration.arguments
     process.currentDirectoryURL = configuration.currentDirectoryURL
@@ -176,16 +185,27 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     process.standardOutput = output
     process.standardError = errorPipe
 
-    output.fileHandleForReading.readabilityHandler = { [weak self] handle in
+    output.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
-      Task { await self?.receiveOutput(data) }
+      outputChunks.continuation.yield(data)
+      if data.isEmpty {
+        outputChunks.continuation.finish()
+      }
     }
-    errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+    errorPipe.fileHandleForReading.readabilityHandler = { handle in
       let data = handle.availableData
-      Task { await self?.receiveError(data) }
+      errorChunks.continuation.yield(data)
+      if data.isEmpty {
+        errorChunks.continuation.finish()
+      }
     }
     process.terminationHandler = { [weak self] process in
-      Task { await self?.processDidExit(status: process.terminationStatus) }
+      Task {
+        await self?.processDidExit(
+          status: process.terminationStatus,
+          generation: generation
+        )
+      }
     }
 
     do {
@@ -193,13 +213,30 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     } catch let runtimeError {
       output.fileHandleForReading.readabilityHandler = nil
       errorPipe.fileHandleForReading.readabilityHandler = nil
+      outputChunks.continuation.finish()
+      errorChunks.continuation.finish()
       throw CodexTransportError.writeFailed(runtimeError.localizedDescription)
     }
 
+    processGeneration = generation
+    processExitStatus = nil
+    outputDidReachEOF = false
     self.process = process
     inputHandle = input.fileHandleForWriting
     outputHandle = output.fileHandleForReading
     errorHandle = errorPipe.fileHandleForReading
+    outputChunkContinuation = outputChunks.continuation
+    errorChunkContinuation = errorChunks.continuation
+    outputReadTask = Task { [weak self, stream = outputChunks.stream] in
+      for await data in stream {
+        await self?.receiveOutput(data)
+      }
+    }
+    errorReadTask = Task { [weak self, stream = errorChunks.stream] in
+      for await data in stream {
+        await self?.receiveError(data)
+      }
+    }
   }
 
   public func request(method: String, params: JSONValue) async throws -> JSONValue {
@@ -300,9 +337,13 @@ public actor CodexJSONLTransport: CodexRPCTransport {
 
   public func stop() {
     guard let process else { return }
-    isStopping = true
+    processGeneration = nil
     outputHandle?.readabilityHandler = nil
     errorHandle?.readabilityHandler = nil
+    outputChunkContinuation?.finish()
+    errorChunkContinuation?.finish()
+    outputReadTask?.cancel()
+    errorReadTask?.cancel()
     try? inputHandle?.close()
     if process.isRunning {
       process.terminate()
@@ -312,8 +353,14 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     inputHandle = nil
     outputHandle = nil
     errorHandle = nil
+    outputChunkContinuation = nil
+    errorChunkContinuation = nil
+    outputReadTask = nil
+    errorReadTask = nil
     outputBuffer.removeAll(keepingCapacity: false)
     errorBuffer.removeAll(keepingCapacity: false)
+    processExitStatus = nil
+    outputDidReachEOF = false
   }
 
   private func send(_ value: JSONValue) throws {
@@ -330,6 +377,8 @@ public actor CodexJSONLTransport: CodexRPCTransport {
   private func receiveOutput(_ data: Data) {
     if data.isEmpty {
       outputHandle?.readabilityHandler = nil
+      outputDidReachEOF = true
+      failPendingAfterProcessExitIfReady()
       return
     }
     outputBuffer.append(data)
@@ -405,12 +454,15 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     request.continuation.resume(throwing: CodexTransportError.requestTimedOut(request.method))
   }
 
-  private func processDidExit(status: Int32) {
-    guard !isStopping else {
-      isStopping = false
-      return
-    }
-    failPending(with: CodexTransportError.processExited(status))
+  private func processDidExit(status: Int32, generation: UUID) {
+    guard processGeneration == generation else { return }
+    processExitStatus = status
+    failPendingAfterProcessExitIfReady()
+  }
+
+  private func failPendingAfterProcessExitIfReady() {
+    guard outputDidReachEOF, let processExitStatus else { return }
+    failPending(with: CodexTransportError.processExited(processExitStatus))
   }
 
   private func failPending(with error: any Error) {

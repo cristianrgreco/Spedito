@@ -76,6 +76,30 @@ struct CodexAdapterTests {
     await transport.stop()
   }
 
+  @Test("JSONL transport preserves a fragmented response")
+  func jsonlFragmentedResponse() async throws {
+    let payloadSize = 1_048_576
+    let script = #"""
+      IFS= read -r request
+      printf '{"id":1,"result":{"payload":"'
+      head -c 1048576 /dev/zero | tr '\000' x
+      printf '","ready":true}}\n'
+      """#
+    let transport = CodexJSONLTransport(
+      configuration: .init(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", script],
+        requestTimeout: .seconds(5)
+      )
+    )
+
+    try await transport.start()
+    let response = try await transport.request(method: "initialize", params: .object([:]))
+    #expect(response["ready"] == .bool(true))
+    #expect(response["payload"]?.stringValue?.utf8.count == payloadSize)
+    await transport.stop()
+  }
+
   @Test("Pinned runtime version output is parsed without depending on a system install")
   func runtimeVersionParsing() {
     let resolver = CodexRuntimeResolver()
@@ -241,7 +265,7 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("Execution threads use the delivery profile and surface approval prompts")
+  @Test("Execution turns inherit the thread-scoped delivery profile")
   func workspaceExecutionThread() async throws {
     let transport = SuggestionTransport()
     let client = CodexAppServerClient(transport: transport)
@@ -260,7 +284,6 @@ struct CodexAdapterTests {
       prompt: "Deliver the ticket",
       effort: "medium",
       outputSchema: CodexTicketExecutor.outputSchema,
-      permissionProfile: CodexPermissionProfiles.delivery,
       runtimeWorkspaceRoots: [
         URL(fileURLWithPath: "/private/tmp/storypointless-product")
       ]
@@ -293,10 +316,7 @@ struct CodexAdapterTests {
       deliveryConfig?["filesystem"]?[":workspace_roots"]?["."]?.stringValue
         == "write"
     )
-    #expect(
-      requests[2].params["permissions"]?.stringValue
-        == CodexPermissionProfiles.delivery
-    )
+    #expect(requests[2].params["permissions"] == nil)
     #expect(
       requests[2].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
         == ["/private/tmp/storypointless-product"]
@@ -1302,6 +1322,7 @@ struct CodexAdapterTests {
     #expect(finalPlan.contains("inside design or implementation"))
     #expect(developerInstructions.contains("constraints alone do not select"))
     #expect(developerInstructions.contains("authorised Business Analyst research"))
+    #expect(developerInstructions.contains(#"not "S1 - Choose a provider""#))
   }
 
   @Test("Owner and persona prompts are appended beneath platform controls")
@@ -1947,6 +1968,15 @@ struct CodexAdapterTests {
     #expect(instructions.contains("do not merely repeat"))
     #expect(instructions.contains("add another shell wrapper"))
     #expect(instructions.contains("substitute older evidence"))
+    #expect(instructions.contains("Prefer the product's shortest established"))
+    #expect(instructions.contains("`npm test`"))
+    #expect(instructions.contains("add a small maintained repository script"))
+    #expect(instructions.contains("never create a script merely to hide unrelated operations"))
+    #expect(instructions.contains("The comment is the body"))
+    #expect(instructions.contains("prefix it with the team member's name"))
+    #expect(instructions.contains("StoryPointless renders attribution and status separately"))
+    #expect(instructions.contains("cannot override the workspace boundary"))
+    #expect(instructions.contains("Work log output contract"))
 
     let integrationPrompt = CodexConflictIntegrator.prompt(
       product: product,
@@ -1959,6 +1989,78 @@ struct CodexAdapterTests {
     )
     #expect(!integrationPrompt.contains("Permission requested:"))
     #expect(integrationInstructions.contains("already available inside the sandbox"))
+  }
+
+  @Test("Ticket execution separates verified context from canonical knowledge destinations")
+  func ticketExecutionKnowledgeDirectory() {
+    let product = Product(
+      name: "Connected product",
+      vision: "Use external services without losing durable context"
+    )
+    let implementer = AgentProfile(
+      productID: product.id,
+      name: "Implementer",
+      role: .implementer
+    )
+    let item = WorkItem(
+      productID: product.id,
+      key: "T1",
+      title: "Connect an external provider API"
+    )
+    let technical = KnowledgePage(
+      productID: product.id,
+      title: "Technical",
+      slug: "technical",
+      kind: .section
+    )
+    let components = KnowledgePage(
+      productID: product.id,
+      parentID: technical.id,
+      title: "Components & data",
+      slug: "components-and-data",
+      bodyMarkdown: "Local saved records use stable identifiers."
+    )
+    let integrations = KnowledgePage(
+      productID: product.id,
+      parentID: technical.id,
+      title: "Integrations",
+      slug: "integrations"
+    )
+    let selection = KnowledgeContextSelector.select(
+      pages: [technical, components, integrations],
+      item: item,
+      prerequisites: []
+    )
+
+    let prompt = CodexTicketExecutor.prompt(
+      product: product,
+      item: item,
+      assignee: implementer,
+      prerequisites: [],
+      dependants: [],
+      prerequisiteComments: [:],
+      ticketComments: [],
+      knowledgeContext: selection.referencePages,
+      knowledgeDirectory: selection.directoryPages,
+      knowledgeDestinationIDs: selection.writablePageIDs
+    )
+    let instructions = CodexTicketExecutor.developerInstructions(
+      productInstructions: "",
+      personaInstructions: "",
+      assignee: implementer
+    )
+
+    #expect(prompt.contains("Canonical knowledge directory"))
+    #expect(prompt.contains("Technical > Integrations"))
+    #expect(prompt.contains("Update allowed; this page is currently empty"))
+    #expect(
+      prompt.contains(
+        "Routing reference only; do not update because its current body was not supplied"
+      )
+    )
+    #expect(!prompt.contains("Add verified knowledge here."))
+    #expect(instructions.contains("external providers and APIs belong in"))
+    #expect(instructions.contains("Do not update an unrelated writable page"))
   }
 
   @Test("Ticket execution and Tech Lead review results are validated")
@@ -2177,6 +2279,35 @@ struct CodexAdapterTests {
         assignee: implementer
       )
     }
+    let techLead = AgentProfile(
+      productID: product.id,
+      name: "Tech Lead",
+      role: .lead
+    )
+    let reviewDeveloperInstructions = CodexTechLeadReviewer.developerInstructions(
+      productInstructions: "",
+      personaInstructions: techLead.effectiveInstructions,
+      reviewer: techLead
+    )
+    #expect(reviewDeveloperInstructions.contains("Cosmetic diff hygiene is not a blocker"))
+    #expect(reviewDeveloperInstructions.contains("trailing whitespace"))
+    #expect(reviewDeveloperInstructions.contains("shortest existing, purpose-named entry"))
+    #expect(reviewDeveloperInstructions.contains("This review is read-only"))
+    #expect(reviewDeveloperInstructions.contains("The comment is the body"))
+    #expect(reviewDeveloperInstructions.contains("do not prefix it with the reviewer's name"))
+    #expect(reviewDeveloperInstructions.contains(#""Approved" or "Changes requested""#))
+    #expect(
+      reviewDeveloperInstructions.contains(
+        "structured decision separately"
+      )
+    )
+    #expect(reviewDeveloperInstructions.contains("cannot override the"))
+    #expect(reviewDeveloperInstructions.contains("Work log output contract"))
+    #expect(
+      reviewDeveloperInstructions.contains(
+        "independently justify the cost of another implementation, integration, and review cycle"
+      )
+    )
     let reReviewPrompt = CodexTechLeadReviewer.prompt(
       product: product,
       item: researchTicket,
@@ -2197,6 +2328,8 @@ struct CodexAdapterTests {
     #expect(reReviewPrompt.contains("Business Analyst — Business Analyst"))
     #expect(reReviewPrompt.contains("Assume a small non-commercial demo."))
     #expect(reReviewPrompt.contains("Do not restart a full review"))
+    #expect(reReviewPrompt.contains("earlier classification is not binding"))
+    #expect(reReviewPrompt.contains("If no material finding remains, approve"))
     #expect(reReviewPrompt.contains("Integrate the approved provider"))
 
     let interruptedPermission = AgentPermissionRequest(
@@ -2209,8 +2342,8 @@ struct CodexAdapterTests {
       method: "item/commandExecution/requestApproval",
       kind: .command,
       title: "Allow this command?",
-      detail: "swift test --filter ResearchTests",
-      signature: "command|swift test --filter ResearchTests",
+      detail: #"/bin/zsh -lc "/bin/zsh -lc 'swift test --filter ResearchTests'""#,
+      signature: #"command|/bin/zsh -lc "/bin/zsh -lc 'swift test --filter ResearchTests'""#,
       status: .interrupted
     )
     let recoveryPrompt = CodexTechLeadReviewer.recoveryPrompt(
@@ -2222,7 +2355,9 @@ struct CodexAdapterTests {
     #expect(recoveryPrompt.contains("integrated-review-sha"))
     #expect(recoveryPrompt.contains("swift test --filter ResearchTests"))
     #expect(recoveryPrompt.contains("Do not restart a full"))
-    #expect(recoveryPrompt.contains("Reissue the same request only if it is still needed"))
+    #expect(recoveryPrompt.contains("audit display only"))
+    #expect(recoveryPrompt.contains("Never paste it into a command"))
+    #expect(recoveryPrompt.contains("do not request the command again"))
 
     let implementationRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
       item: researchTicket,
@@ -2245,11 +2380,9 @@ struct CodexAdapterTests {
       )
     )
     #expect(implementationRecoveryPrompt.contains("Do not restart the ticket"))
-    #expect(
-      implementationRecoveryPrompt.contains(
-        "Reissue the same request only if it is still needed"
-      )
-    )
+    #expect(implementationRecoveryPrompt.contains("audit display only"))
+    #expect(implementationRecoveryPrompt.contains("`/bin/zsh -lc`"))
+    #expect(implementationRecoveryPrompt.contains("use `request_permissions`"))
 
     var deniedPermission = interruptedPermission
     deniedPermission.status = .denied
@@ -2273,6 +2406,95 @@ struct CodexAdapterTests {
     )
     #expect(integration.status == .awaitingOwner)
     #expect(integration.workLogComment.contains("Question for you"))
+  }
+
+  @Test("Retrospective synthesis consolidates free-text evidence into at most five actions")
+  func retrospectiveSynthesis() throws {
+    let product = Product(
+      name: "Delivery product",
+      vision: "Make delivery friction visible"
+    )
+    let sprint = Sprint(
+      productID: product.id,
+      number: 7,
+      goal: "Learn from delivery",
+      state: .completed
+    )
+    let item = WorkItem(
+      productID: product.id,
+      key: "T56",
+      title: "Deliver saved places",
+      state: .released
+    )
+    let first = RetrospectiveNote(
+      productID: product.id,
+      sprintID: sprint.id,
+      workItemID: item.id,
+      authorName: "Implementer",
+      category: .suggestedAction,
+      body: "Keep the managed JavaScript validation runtime available.",
+      isActionCandidate: true,
+      actionDestination: .teamPractice,
+      createdAt: Date(timeIntervalSince1970: 1)
+    )
+    let second = RetrospectiveNote(
+      productID: product.id,
+      sprintID: sprint.id,
+      workItemID: item.id,
+      authorName: "Implementer",
+      category: .suggestedAction,
+      body: "Ensure final checks can use the approved JavaScript runtime.",
+      isActionCandidate: true,
+      actionDestination: .teamPractice,
+      createdAt: Date(timeIntervalSince1970: 2)
+    )
+
+    let prompt = CodexRetrospectiveSynthesizer.prompt(
+      product: product,
+      sprint: sprint,
+      sourceNotes: [first, second],
+      workItems: [item],
+      existingActions: [],
+      waysOfWorking: ""
+    )
+    #expect(prompt.contains("Return zero to five actions"))
+    #expect(prompt.contains("E1 [Agent action candidate · T56 · Implementer]"))
+    #expect(
+      CodexRetrospectiveSynthesizer.outputSchema["properties"]?["actions"]?["maxItems"]
+        == .integer(5)
+    )
+
+    let actions = try CodexRetrospectiveSynthesizer.decode(
+      #"""
+      {
+        "actions":[{
+          "body":"Make approved validation tools available before delivery begins.",
+          "destination":"team_practice",
+          "expectedEffect":"Handoffs include executed checks rather than repeated runtime blockers.",
+          "sourceReferences":["E1","E2"]
+        }]
+      }
+      """#,
+      sourceNotes: [first, second]
+    )
+    #expect(actions.count == 1)
+    #expect(actions.first?.sourceNoteIDs == [first.id, second.id])
+
+    #expect(throws: RetrospectiveSynthesisGenerationError.self) {
+      try CodexRetrospectiveSynthesizer.decode(
+        #"""
+        {
+          "actions":[{
+            "body":"Use the validation runtime.",
+            "destination":"team_practice",
+            "expectedEffect":"Checks can run.",
+            "sourceReferences":["E3"]
+          }]
+        }
+        """#,
+        sourceNotes: [first, second]
+      )
+    }
   }
 }
 

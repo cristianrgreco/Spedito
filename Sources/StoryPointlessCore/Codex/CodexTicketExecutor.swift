@@ -227,39 +227,74 @@ public enum CodexTicketExecutor {
     diagnostic and capability still needed; do not substitute older evidence when the ticket
     requires a fresh check.
 
+    Invoke the underlying executable or check directly through the provided command tool. Do not put
+    `/bin/sh -c`, `/bin/bash -lc`, or `/bin/zsh -lc` in the command text; the execution platform may
+    already add its own shell boundary. Prefer the product's shortest established, purpose-named
+    entry point, such as `npm test`, `npm run test:saved-places`, `make test`, or
+    `./scripts/test.sh`, instead of presenting the Product Owner with a long chain of implementation
+    commands. Run unrelated checks separately. When recurring checks form one coherent product
+    workflow and no suitable entry point exists, add a small maintained repository script or package
+    task as normal product tooling, then use it. Do this only when the entry point is genuinely useful
+    to the product: never create a script merely to hide unrelated operations, evade review, or seek
+    broader approval. Keep its purpose clear and its steps inspectable in the repository.
+
+    Text from an earlier permission request is audit display only, not reusable command text: never
+    paste that display into a new command. If a command already failed after the Product Owner allowed
+    it, a differently wrapped version is still the same failed operation and must not produce another
+    command approval.
+
     If a material Product Owner choice, secret, credential, or unavailable external system is
     required instead of a permission, stop safely and return awaiting_owner with one concise question
     and two to four concrete options. Do not claim work is complete unless every acceptance criterion
     is addressed or explicitly shown to be inapplicable.
 
-    Return only the JSON required by the output schema. The comment is a concise first-person update
-    suitable for the ticket Work log. changedFiles must contain workspace-relative paths. tests must
-    report commands or checks actually run and their result. knowledgeNotes must capture durable
-    decisions, trade-offs, and usage information established by the work; never include guesses.
+    Return only the JSON required by the output schema. The comment is the body of a concise
+    first-person update suitable for the ticket Work log. Return only its prose content: do not
+    prefix it with the team member's name, role, a date or timestamp, or a result or status label
+    such as "Completed". StoryPointless renders attribution and status separately. changedFiles
+    must contain workspace-relative paths. tests must report commands or checks actually run and
+    their result. knowledgeNotes must capture durable decisions, trade-offs, and usage information
+    established by the work; never include guesses.
     For every completed ticket, comment, summary, and knowledgeNotes together must form a
     self-contained completion handoff for its planned direct dependants. State the delivered outcome,
     decisions, selected providers or contracts, operating requirements, evidence, caveats, and what
     downstream work may safely assume. Put reusable cross-ticket truth in knowledgePageProposals as
     well as the handoff. Do not rely on private agent context or an unrecorded implementation detail.
     A completed result must include one to six reviewInstructions telling a non-technical Product
-    Owner exactly how to inspect the outcome. Mention a URL, file, command, endpoint, or evidence
-    only when it actually exists. If the outcome is not independently interactive, say which
-    evidence to inspect and what result to expect.
+    Owner exactly what to try and what result to expect. The steps may cover several states or
+    acceptance scenarios, but they must begin from the managed Demo button or a clearly identified
+    in-app Product knowledge change. Do not ask the Product Owner to run terminal commands, locate
+    repository paths, open a code editor or developer tool, or perform setup that StoryPointless can
+    manage. Put every command needed to prepare or launch the demo in preparationCommands or
+    launchCommand so the Demo button runs it on the Product Owner's behalf. Developer checks belong
+    in tests, not in Product Owner review instructions. If the outcome is not independently
+    interactive, identify the owner-facing evidence to inspect and the expected result.
 
     A completed result must also include a typed demo recipe in demo so StoryPointless can give the
-    Product Owner one Demo button. Use presentation kind browser for a local web service,
-    mac_application for a built .app bundle, artifact for a workspace-relative document, image,
-    HTML file, or other reviewable file, and command_output for a bounded command whose captured
-    result is the demonstration. preparationCommands are bounded build or generation steps.
-    launchCommand is the long-running service for browser demos or the bounded scenario for
-    command_output. Use executable plus argument arrays; never use sh, bash, zsh, osascript,
-    redirection, pipelines, or a compound shell command. Every working directory and presentation
-    path is relative to the ticket workspace. Browser presentation and readiness paths begin with
-    "/" and never contain a host; StoryPointless allocates a loopback port, substitutes {{PORT}} in
-    arguments, and provides it through portEnvironmentVariable (or PORT when that field is null).
-    Use HTTP readiness for browser demos. Use no launchCommand for app and artifact demos. If a
-    completed outcome is not interactive, present its primary durable artefact or a bounded
-    command_output demonstration. awaiting_owner results must set demo to null.
+    Product Owner one Demo button. Choose the most representative owner-facing result, not merely a
+    file that describes it. When the candidate contains an interactive prototype or working product
+    surface that demonstrates the ticket, prefer a browser or mac_application presentation over a
+    Markdown contract, implementation note, test report, or captured command result. A UX contract
+    with a reviewable prototype must demo the prototype. Use an artifact when the artifact itself is
+    the delivered outcome or no truthful interactive representation exists. Reusable product
+    behaviour and decisions belong in knowledgePageProposals; repository documentation can remain
+    supporting implementation evidence without becoming the primary demo. The one primary
+    presentation may support several ordered reviewInstructions, so choose the surface that covers
+    the most important acceptance scenarios.
+
+    Use presentation kind browser for a local web service, mac_application for a built .app bundle,
+    artifact for a workspace-relative document, image, HTML file, or other reviewable file, and
+    command_output for a bounded command whose captured result is the demonstration.
+    preparationCommands are bounded build or generation steps. launchCommand is the long-running
+    service for browser demos or the bounded scenario for command_output. Use executable plus
+    argument arrays; never use sh, bash, zsh, osascript, redirection, pipelines, or a compound shell
+    command. Every working directory and presentation path is relative to the ticket workspace.
+    Browser presentation and readiness paths begin with "/" and never contain a host;
+    StoryPointless allocates a loopback port, substitutes {{PORT}} in arguments, and provides it
+    through portEnvironmentVariable (or PORT when that field is null). Use HTTP readiness for
+    browser demos. Use no launchCommand for app and artifact demos. If a completed outcome is not
+    interactive, present its primary durable artefact or a bounded command_output demonstration.
+    awaiting_owner results must set demo to null.
 
     Capture evidence for the sprint retrospective in retrospectiveWentWell,
     retrospectiveCouldImprove, and retrospectiveActions. Write for a non-technical Product Owner
@@ -271,21 +306,35 @@ public enum CodexTicketExecutor {
     zero to two concise, specific observations. Empty lists are preferable to generic praise,
     invented lessons, raw commands, or implementation procedures.
 
-    Classify every retrospectiveActions item yourself. Use destination team_practice when accepting
-    the action should directly change the guidance inherited by the team. Use destination backlog
-    only when completing the improvement requires tangible implementation, such as building
-    automation, changing the product, or producing a new durable artefact. Do not create a backlog
-    ticket merely to edit team guidance.
+    Before returning a retrospective action, confirm that accepting it can achieve its stated effect
+    through the selected destination. Accepting a team_practice only adds its text to verified Ways
+    of working inherited by future runs. It does not install, provision, configure, authorise, or
+    make available a runtime, service, account, credential, permission, automation, or other
+    capability. A team practice must describe conduct a future team member can carry out using
+    capabilities that already exist, such as attempting required checks early and requesting scoped
+    access when blocked. Never use a retrospective action to defer an unresolved permission or
+    required verification from the current ticket; request the capability or return awaiting_owner.
+    Use destination team_practice when accepting the action should directly change inherited team
+    guidance. Use destination backlog when the improvement requires tangible implementation, such
+    as building automation, changing the product, provisioning tooling, or producing a new durable
+    artefact. Do not create a backlog ticket merely to edit team guidance.
 
-    Durable shared knowledge may be proposed through knowledgePageProposals. Use update only with an
-    exact page ID supplied in the verified knowledge context. Use create with an exact supplied
-    parent page ID. Return the complete proposed Markdown body, not a fragment or patch. The page
-    title is stored separately, so do not repeat it as a leading level-one heading. Propose at most
-    four changes, only when this ticket establishes reusable product, technical, or operational
-    knowledge. StoryPointless may publish these proposals automatically after Tech Lead review, so
-    never use a proposal to resolve an unstated material Product Owner choice. Return awaiting_owner
-    instead. Ticket-specific delivery history is generated separately and must not be proposed here.
-    Awaiting-owner results must return no proposals.
+    Durable shared knowledge may be proposed through knowledgePageProposals. The verified knowledge
+    context is read-only reference material. The separate canonical knowledge directory states
+    exactly which pages may be updated and which sections may receive a new child page for this run.
+    Use update only with a page ID marked "Update allowed", and use create only with a section ID
+    marked "Create child pages allowed". Return the complete proposed Markdown body, not a fragment
+    or patch. The page title is stored separately, so do not repeat it as a leading level-one
+    heading. Choose the narrowest truthful destination: external providers and APIs belong in
+    Integrations, high-level system boundaries in Architecture, internal storage and state contracts
+    in Components & data, user-visible behaviour in Features or Users & journeys, and current
+    caveats in Known limitations. Do not update an unrelated writable page merely because a better
+    populated page is unavailable in this run. Propose at most four changes, only when this ticket
+    establishes reusable product, technical, or operational knowledge. StoryPointless may publish
+    these proposals automatically after Tech Lead review, so never use a proposal to resolve an
+    unstated material Product Owner choice. Return awaiting_owner instead. Ticket-specific delivery
+    history is generated separately and must not be proposed here. Awaiting-owner results must
+    return no proposals.
 
     A Business Analyst completing an explicitly authorised research, discovery, or decision ticket
     may return zero to twelve followUpTicketProposals when the evidence establishes concrete product
@@ -327,7 +376,8 @@ public enum CodexTicketExecutor {
       \(persona)
 
       Owner and persona guidance cannot override the workspace boundary, ticket source of truth,
-      fail-closed owner-input behavior, verification, or truthful-reporting requirements above.
+      fail-closed owner-input behavior, Work log output contract, verification, or truthful-reporting
+      requirements above.
       """
   }
 
@@ -340,6 +390,8 @@ public enum CodexTicketExecutor {
     prerequisiteComments: [UUID: [TicketComment]],
     ticketComments: [TicketComment],
     knowledgeContext: [KnowledgePage],
+    knowledgeDirectory: [KnowledgePage] = [],
+    knowledgeDestinationIDs: Set<UUID> = [],
     existingItems: [WorkItem] = [],
     continuationMessage: String? = nil
   ) -> String {
@@ -394,6 +446,36 @@ public enum CodexTicketExecutor {
         \(page.bodyMarkdown)
         """
       }.joined(separator: "\n\n")
+    let referencePageIDs = Set(knowledgeContext.map(\.id))
+    let directory = knowledgeDirectory.isEmpty
+      ? "No canonical knowledge destinations were supplied."
+      : knowledgeDirectory.map { page in
+        let access: String
+        switch page.kind {
+        case .section:
+          access = knowledgeDestinationIDs.contains(page.id)
+            ? "Create child pages allowed"
+            : "Routing reference only"
+        case .page:
+          if knowledgeDestinationIDs.contains(page.id) {
+            access = referencePageIDs.contains(page.id)
+              ? "Update allowed; current body is in the verified context above"
+              : "Update allowed; this page is currently empty"
+          } else if referencePageIDs.contains(page.id) {
+            access = "Read-only reference for this run; do not update"
+          } else {
+            access = "Routing reference only; do not update because its current body was not supplied"
+          }
+        case .deliveryNote:
+          access = "Ticket history only; never update"
+        }
+        let path = KnowledgeContextSelector.directoryPath(
+          for: page,
+          pages: knowledgeDirectory
+        )
+        let purpose = KnowledgeContextSelector.purpose(for: page.slug, kind: page.kind)
+        return "- \(path) [\(page.kind.rawValue), page ID: \(page.id.uuidString)] — \(access). \(purpose)"
+      }.joined(separator: "\n")
     let existingScope = existingItems
       .filter { $0.id != item.id && $0.state != .cancelled }
       .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
@@ -428,6 +510,13 @@ public enum CodexTicketExecutor {
 
       Verified knowledge context:
       \(knowledge)
+
+      Canonical knowledge directory:
+      \(directory)
+
+      Use the directory to route reusable truth to its narrowest appropriate home. It is an
+      authorization list, not extra verified content. Empty pages are writable destinations but do
+      not count as knowledge supplied to this ticket.
 
       Existing active scope (do not duplicate it in follow-up proposals):
       \(existingScope.isEmpty ? "No other active tickets." : existingScope)
@@ -479,33 +568,50 @@ public enum CodexTicketExecutor {
         have been preserved. Treat the current workspace as the source of truth for completed work.
         """
       }
-    let permissionContext =
-      if let interruptedPermission {
-        switch interruptedPermission.status {
-        case .allowed:
+    let permissionContext: String
+    if let interruptedPermission {
+      let commandContinuation =
+        if interruptedPermission.kind == .command {
           """
-          The Product Owner already allowed this matching capability for the existing run:
-          \(interruptedPermission.detail)
-          Reissue it only if it is still needed; StoryPointless will apply the saved scoped decision.
+          The previous command text is audit display only. Never paste it into a command or add
+          `/bin/sh -c`, `/bin/bash -lc`, or `/bin/zsh -lc`. If the underlying operation is still
+          needed, invoke the executable or each independent check directly through the command
+          tool. If it already failed after approval, do not request the command again; diagnose
+          the missing filesystem or network capability and use `request_permissions`, or stop
+          with the exact capability still needed.
           """
-        case .interrupted:
-          """
-          The previous live permission request expired when the app stopped:
-          \(interruptedPermission.detail)
-          Reissue the same request only if it is still needed so the Product Owner can answer it.
-          """
-        case .denied:
-          """
-          The Product Owner denied this matching capability for the existing run:
-          \(interruptedPermission.detail)
-          Do not reissue the same request. Adapt within the existing permission boundary.
-          """
-        case .pending:
-          "No reusable permission decision was recorded."
+        } else {
+          ""
         }
-      } else {
-        "No interrupted permission request was recorded."
+      permissionContext = switch interruptedPermission.status {
+      case .allowed:
+        """
+        The Product Owner already allowed this matching capability for the existing run:
+        \(interruptedPermission.detail)
+        \(commandContinuation)
+        Reissue a non-command capability only if it is still needed; StoryPointless will apply
+        the saved scoped decision.
+        """
+      case .interrupted:
+        """
+        The previous live permission request expired when the app stopped:
+        \(interruptedPermission.detail)
+        \(commandContinuation)
+        Reissue a non-command capability only if it is still needed so the Product Owner can
+        answer it.
+        """
+      case .denied:
+        """
+        The Product Owner denied this matching capability for the existing run:
+        \(interruptedPermission.detail)
+        Do not reissue the same request. Adapt within the existing permission boundary.
+        """
+      case .pending:
+        "No reusable permission decision was recorded."
       }
+    } else {
+      permissionContext = "No interrupted permission request was recorded."
+    }
     let workLogContext = recentComments
       .filter { !$0.body.hasPrefix("Permission requested:") }
       .suffix(12)
@@ -1219,6 +1325,15 @@ public enum CodexTechLeadReviewer {
     review. When the delivered outcome is reasonable and the remaining concern is a matter of
     preference, future hardening, or acceptable uncertainty, approve with a note.
 
+    Cosmetic diff hygiene is not a blocker. Do not request changes for whitespace (including
+    trailing whitespace), formatting, spelling, naming, comment phrasing, code style, or a failed
+    optional lint or style-only check. Do not spend review time hunting for these issues. A delivery
+    report that mistakenly says such an optional hygiene check passed is a minor evidence correction,
+    not a materially false claim by itself: note it at most briefly and approve. Cosmetic hygiene is
+    blocking only when it has a concrete material consequence, such as changing runtime or rendered
+    behaviour, making syntax or structured data invalid, failing an explicitly required acceptance
+    gate, obscuring a material change, or introducing a security problem.
+
     Do not redo the delivery agent’s task. For research, discovery, or analysis tickets, verify that
     the produced artefact gives a reasonable evidence-backed recommendation and records important
     assumptions or Product Owner decisions. Do not require an exhaustive specification, complete
@@ -1232,26 +1347,50 @@ public enum CodexTechLeadReviewer {
     rather than attempting a second implementation. The purpose of review is to catch material
     omissions and risks, not to replace the assigned specialist with a stronger model.
 
-    Confirm that the typed demo recipe truthfully opens the delivered outcome from the exact
-    integrated workspace. Inspect its executable, arguments, working directory, readiness path, and
-    presentation path. Request changes when the recipe points outside the workspace, invokes a shell
-    or unrelated tool, needs an undeclared external dependency, opens a non-loopback web address, or
-    would demonstrate something other than the reviewed candidate. For a non-interactive outcome,
-    approve an artifact or captured command result when it gives the Product Owner meaningful
-    acceptance evidence.
+    When a focused check is necessary, prefer the product's shortest existing, purpose-named entry
+    point, such as `npm test`, `make test`, or `./scripts/test.sh`, instead of a long chain of shell
+    commands. Run unrelated checks separately. This review is read-only, so do not create or modify
+    scripts as part of review and never add an explicit shell launcher around a command.
 
-    If requesting changes, return at most three small, actionable blocking findings. Do not use
-    findings for non-blocking suggestions. Return only the JSON required by the output schema. The
-    comment is an attributed ticket Work log entry. Confirm the Product Owner review instructions
-    are truthful and actionable before approving. Capture at most two evidence-based observations
-    per retrospective list; use empty lists when there is no useful signal. Write retrospective
-    observations for a non-technical Product Owner: describe outcomes, friction, and actionable
-    team practices in plain language. Do not mention internal Git ranges, workspaces, diffs, schemas,
-    or validation plumbing unless the Product Owner must make a decision about them. Convert
-    low-level corrective steps into the user-visible team improvement they are meant to achieve.
-    Classify each retrospective action as team_practice when it should directly update inherited
-    team guidance, or backlog only when it requires tangible implementation. Never create backlog
-    work merely to change a team instruction.
+    Confirm that the typed demo recipe opens the most representative owner-facing result from the
+    exact integrated workspace, not merely a truthful supporting file. Inspect its executable,
+    arguments, working directory, readiness path, and presentation path. Request changes when the
+    recipe points outside the workspace, invokes a shell or unrelated tool, needs an undeclared
+    external dependency, opens a non-loopback web address, would demonstrate something other than
+    the reviewed candidate, or selects a document or captured result when a more representative
+    interactive result exists. In particular, a UX delivery must open its available prototype or
+    product surface rather than a Markdown contract that describes it. For a non-interactive
+    outcome, approve an artifact or captured command result when it gives the Product Owner
+    meaningful acceptance evidence.
+
+    If requesting changes, return at most three small, actionable blocking findings. A finding must
+    independently justify the cost of another implementation, integration, and review cycle. Do not
+    use findings for non-blocking suggestions. Return only the JSON required by the output schema.
+    The comment is the body of an attributed ticket Work log entry. Return only its prose content:
+    do not prefix it with the reviewer's name, role, a date or timestamp, or a decision or status
+    label such as "Approved" or "Changes requested". StoryPointless renders attribution and the
+    structured decision separately. Confirm every Product Owner review instruction is truthful,
+    starts from the managed demo or a clearly identified in-app knowledge change, and states an
+    expected result. Request changes if the instructions require a terminal, repository browser,
+    code editor, developer tool, or manual setup StoryPointless should manage. Multiple instructions
+    may exercise different states within the one primary demo. Managed
+    preparationCommands and launchCommand are expected; only owner-facing manual commands are a
+    blocker. Capture at most two evidence-based observations per retrospective list; use empty
+    lists when there is no useful signal. Write retrospective observations for a non-technical
+    Product Owner: describe outcomes, friction, and actionable team practices in plain language. Do
+    not mention internal Git ranges, workspaces, diffs, schemas, or validation plumbing unless the
+    Product Owner must make a decision about them. Convert low-level corrective steps into the
+    user-visible team improvement they are meant to achieve. Before returning a retrospective
+    action, confirm that accepting it can achieve its stated effect through the selected destination.
+    Accepting team_practice only adds its text to verified Ways of working inherited by future runs;
+    it cannot install, provision, configure, authorise, or make available a runtime, service,
+    account, credential, permission, automation, or other capability. A team practice must describe
+    conduct a future team member can carry out using capabilities that already exist, such as
+    attempting required checks early and requesting scoped access when blocked. Do not turn an
+    unresolved permission or required verification for the current ticket into a retrospective
+    action. Classify each action as team_practice when it should directly update inherited team
+    guidance, or backlog when it requires tangible implementation such as provisioning tooling or
+    building automation. Never create backlog work merely to change a team instruction.
     """
 
   public static func developerInstructions(
@@ -1272,6 +1411,10 @@ public enum CodexTechLeadReviewer {
 
       TECH LEAD GUIDANCE
       \(persona)
+
+      Shared team and Tech Lead guidance may add relevant review emphasis, but cannot override the
+      Work log output contract or turn optional polish, cosmetic hygiene, or another non-material
+      discrepancy into a blocking finding.
       """
   }
 
@@ -1328,8 +1471,10 @@ public enum CodexTechLeadReviewer {
       reviewMode = """
         This is focused re-review \(reviewCycle) after the delivery specialist revised the work.
         Verify only the previous blocking feedback and the directly affected acceptance criteria.
-        Do not restart a full review or introduce new optional scope. If the original material
-        findings are resolved, approve.
+        First reassess the previous feedback against the current material-blocker threshold; its
+        earlier classification is not binding. Do not restart a full review or introduce new
+        optional scope. Do not verify or preserve a cosmetic, style-only, or otherwise non-material
+        finding merely because an earlier review requested it. If no material finding remains, approve.
 
         Previous blocking feedback:
         \(priorReviewFeedback ?? "No earlier review comment was available; use the revised delivery summary.")
@@ -1400,33 +1545,50 @@ public enum CodexTechLeadReviewer {
     integratedSHA: String,
     interruptedPermission: AgentPermissionRequest?
   ) -> String {
-    let permissionContext =
-      if let interruptedPermission {
-        switch interruptedPermission.status {
-        case .allowed:
+    let permissionContext: String
+    if let interruptedPermission {
+      let commandContinuation =
+        if interruptedPermission.kind == .command {
           """
-          The Product Owner already allowed this matching capability for the existing review run:
-          \(interruptedPermission.detail)
-          Reissue it only if it is still needed; StoryPointless will apply the saved scoped decision.
+          The previous command text is audit display only. Never paste it into a command or add
+          `/bin/sh -c`, `/bin/bash -lc`, or `/bin/zsh -lc`. If the underlying operation is still
+          needed, invoke the executable or each independent check directly through the command
+          tool. If it already failed after approval, do not request the command again; diagnose
+          the missing filesystem or network capability and use `request_permissions`, or finish
+          the review with the exact limitation.
           """
-        case .interrupted:
-          """
-          The previous live permission request expired when the app stopped:
-          \(interruptedPermission.detail)
-          Reissue the same request only if it is still needed so the Product Owner can answer it.
-          """
-        case .denied:
-          """
-          The Product Owner denied this matching capability for the existing review run:
-          \(interruptedPermission.detail)
-          Do not reissue the same request. Finish within the existing permission boundary.
-          """
-        case .pending:
-          "No reusable permission decision was recorded."
+        } else {
+          ""
         }
-      } else {
-        "No interrupted permission request was recorded."
+      permissionContext = switch interruptedPermission.status {
+      case .allowed:
+        """
+        The Product Owner already allowed this matching capability for the existing review run:
+        \(interruptedPermission.detail)
+        \(commandContinuation)
+        Reissue a non-command capability only if it is still needed; StoryPointless will apply
+        the saved scoped decision.
+        """
+      case .interrupted:
+        """
+        The previous live permission request expired when the app stopped:
+        \(interruptedPermission.detail)
+        \(commandContinuation)
+        Reissue a non-command capability only if it is still needed so the Product Owner can
+        answer it.
+        """
+      case .denied:
+        """
+        The Product Owner denied this matching capability for the existing review run:
+        \(interruptedPermission.detail)
+        Do not reissue the same request. Finish within the existing permission boundary.
+        """
+      case .pending:
+        "No reusable permission decision was recorded."
       }
+    } else {
+      permissionContext = "No interrupted permission request was recorded."
+    }
 
     return """
       Continue the existing Tech Lead review for \(item.key) — \(item.title).

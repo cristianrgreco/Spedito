@@ -75,7 +75,8 @@ No UI type is allowed to become the authoritative workflow state machine.
 SQLite contains normalized current state and an append-only audit/activity log.
 Initial tables cover:
 
-- products;
+- products with an indexed active/archive lifecycle state and a durable
+  curated display-color token;
 - work items and immutable contract versions;
 - Story/Task/Bug work-item classification, with a later optional epic foreign
   key whose aggregate state remains derived from child tickets;
@@ -89,6 +90,9 @@ Initial tables cover:
   work-item dependency edges;
 - sprints, sprint assignments, forecast slots, concurrency policy, internal
   safety limits, and frozen ticket snapshots;
+- immutable retrospective notes and action candidates, one durable synthesis
+  state per completed sprint, frozen synthesis-source links, consolidated final
+  actions, and their many-to-many evidence links;
 - decision records and knowledge claims; and
 - schema migrations.
 
@@ -112,6 +116,13 @@ final notification cannot strand the owner-facing UI indefinitely.
 
 Full event sourcing is deliberately avoided. Current relational state is
 authoritative; events explain how it changed and support recovery and audit.
+
+Product archival is a reversible status transition, not a cascading delete.
+The application suspends the selected product's scheduler and live demo
+processes before recording the transition, active product queries exclude the
+archived row, and all product-owned records and filesystem workspaces remain
+intact. Restoration returns the same product identifier to active selection so
+its durable execution state can recover through the normal scheduler path.
 
 ## 5. Execution identities
 
@@ -172,6 +183,13 @@ resolution. The Tech Lead reviews the final integrated candidate, not an isolate
 branch. The board keeps this understandable as **In Review**, while the card and
 Work log distinguish **Integrating changes**, **Resolving a conflict**, and
 **Tech Lead reviewing**.
+
+The Tech Lead may return a candidate only for a concrete material defect that
+justifies the full implementation, integration, and review loop. Cosmetic diff
+hygiene and optional style-only checks are non-blocking unless they cause a
+behavioural, rendering, validity, required-gate, reviewability, or security
+failure. Re-review applies the same threshold to previous feedback, so an
+earlier blocker label does not perpetuate a non-material cycle.
 
 Git implementation is behind a protocol. The spike may use a known executable;
 the distributed product must provide its own compatible Git implementation and
@@ -249,7 +267,10 @@ current turn. Delivery instructions prohibit copying or staging the workspace
 under `/tmp` or another root as a permission workaround. Each delivery thread
 overrides that named profile with read-only access to the exact active product's
 central `.git` directory. The assigned worktree remains read/write, but Git
-metadata is not writable. The StoryPointless-owned App Server process supplies
+metadata is not writable. Delivery turns inherit the thread-scoped profile;
+they do not reselect the process-wide delivery profile at `turn/start`, because
+that would discard the product-specific Git rule. The StoryPointless-owned App
+Server process supplies
 `GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_PAGER=cat`, so
 read-only status, diff, history, and conflict inspection is noninteractive and
 does not attempt optional index refreshes. Agents may inspect Git but cannot
@@ -269,10 +290,22 @@ denied` result with non-mutating executable and symlink inspection, request the
 smallest exact filesystem or network capability, and retry the original command
 without adding shell wrappers. An identical sandbox failure after command
 approval is treated as evidence that a different capability is missing, not as
-a reason to repeat the same approval. If the permissions tool is unavailable or
+a reason to repeat the same approval. Recovery prompts label prior permission
+details as audit display only: the agent never pastes a displayed command back
+into the command tool, omits explicit `sh -c`, `bash -lc`, and `zsh -lc` launchers,
+and prefers a short, existing, purpose-named project entry point over a shell
+chain. When recurring checks are one coherent workflow and the product has no
+suitable entry point, an Implementer may add a maintained repository script or
+package task as normal product tooling; it must not conceal unrelated operations
+or exist only to obtain broader approval. Read-only reviewers may use an existing
+entry point but cannot create one. If the permissions tool is unavailable or
 the exact capability cannot be established within the current boundary, the
 agent fails closed with the diagnostic and required access instead of silently
 substituting older verification evidence.
+The permission Work log card presents the agent's plain-language purpose first
+and places the unchanged exact command and additional access in a disclosure.
+Persistence and matching continue to use the exact request, so this presentation
+change does not alter one-time or saved-product approval semantics.
 Application coordination maps its thread and turn to the durable AgentRun,
 projects **Needs your input**, and stores the exact scope, rationale, signature,
 and decision. **Allow once** accepts only the exact command or file change, or
@@ -365,6 +398,14 @@ Conversation starts a replacement review against the same SHA only after
 revision returns the candidate to integration and full review, with an explicit
 Work log explanation. A candidate already in **Ready for Demo** keeps its
 reviewed revision; only its owned demo process is stopped and restarted.
+Product switching is not an execution suspension boundary. The application owns
+one product-scoped scheduler task per active sprint, and each scheduler reloads
+its own product, plan, tickets, profiles, permission records, and knowledge from
+the durable store. The selected product controls only the published UI
+projection. Background Implementer, Integrator, and Tech Lead turns therefore
+continue without interruption, while their telemetry, permission cards, demo
+preparation, and refreshes remain product-scoped. Product archival suspends only
+the archived product; app shutdown suspends every product.
 
 Owner-facing clarification records are durable independently of their Codex
 thread. When a persisted read-only thread is no longer available, the adapter
@@ -386,6 +427,21 @@ Run traces, ticket history, and curated product knowledge remain separate.
 Only reviewed knowledge is injected into future context packs or presented as
 current truth. Basic “why/how” queries are part of the first vertical slice and
 must return citations or an explicit unknown.
+
+Canonical page templates store an empty body until verified knowledge exists;
+empty-state instructions remain a presentation concern. Delivery context
+selection lives in Core and uses direct ticket provenance plus bounded,
+taxonomy-weighted relevance. Body overlap contributes only a capped score so
+page length cannot create a self-reinforcing catch-all.
+
+Readable context and writable destinations are separate durable run records.
+`agent_run_knowledge_pages` contains only non-empty verified pages supplied as
+reference material. `agent_run_knowledge_destinations` authorizes complete
+updates to empty or relevant canonical pages and child-page creation beneath
+canonical sections. Proposal validation uses the destination records rather
+than treating every readable page as writable. The prompt still shows the full
+canonical directory as routing metadata, without presenting unavailable page
+bodies as verified context.
 
 ## 10. Near-term implementation sequence
 
@@ -446,7 +502,12 @@ must return citations or an explicit unknown.
    knowledge-change diffs remain.
 10. **Partial:** durable agent observations, reviewable agent and Product Owner
    retrospective proposals, Ways of working promotion, and backlog-ticket
-   creation with automatic refinement entry are implemented. Structured sprint
+   creation with automatic refinement entry are implemented. Per-run free-text
+   action candidates remain immutable evidence; sprint completion creates one
+   durable read-only Business Analyst synthesis that links zero to five
+   consolidated final actions to their frozen source notes. Interrupted
+   synthesis is requeued, invalid output fails safely for retry, and the Product
+   Owner can explicitly continue without AI suggestions. Structured metric
    evidence snapshots, retrospective experiments, and normalized before/after
    reporting remain; the existing UI shell must continue to render unavailable
    metrics honestly until these events exist.

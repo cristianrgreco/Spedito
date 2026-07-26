@@ -287,6 +287,26 @@ A workspace containing the product vision, members, repositories,
 environments, knowledge, delivery policies, safety limits, and one or more
 delivery views.
 
+Each product has a durable identifying color used by its initial tile in the
+product library and current-product header. The first product uses the app accent
+color; later products receive a distinct color from a curated light/dark-safe
+palette so switching products is immediately visible. Assigned colors do not
+change across relaunches.
+
+Switching the selected product changes only what the Product Owner is viewing.
+Active delivery continues in the background for every product without
+interrupting, restarting, or requeuing its Implementer, Integrator, or Tech Lead.
+Product-scoped progress and permission requests become visible when that product
+is opened.
+
+Product settings provide a destructive-looking but non-destructive **Archive
+product** action with explicit confirmation. Archiving safely suspends live
+delivery, removes the product from active navigation and selection, and
+preserves its Backlog, Work logs, Product knowledge, source workspace, and
+delivery history. Archived products remain available from the product library
+and can be restored and reopened. Product archival does not silently cancel
+ticket scope, discard worktrees, or physically delete audit records.
+
 ### 8.2 Human owner
 
 The accountable person for a product or work item. The owner approves material
@@ -546,6 +566,12 @@ Backlog, the same actions sit in a full-width proposed-ticket group row between
 the shared table headings and the proposed rows, so normal ticket columns
 remain aligned and the scope of "all" stays explicit.
 
+When a ticket belongs to an epic, both its editable details and delivery Work
+log show that relationship as a compact link to the Epic details. The link
+remains available from completed delivery history and preserves any unsaved
+ticket edits while the owner inspects the epic. Archived Epic details are
+read-only.
+
 Agreeing constraints for an unnamed real external source does not select that
 source when current evidence about candidates, terms, suitability or operation
 is still required. Clarification choices distinguish a separate Business
@@ -634,10 +660,12 @@ rationale, acceptance criteria, and **Accept**, **Reject**, **Discuss**, and
 batch-review actions. Acceptance removes the proposal card and creates the
 normal backlog ticket; rejection never creates scope.
 
-Suggested tickets are not backlog records until the owner accepts them. The
+Suggested tickets are not backlog records until the owner accepts them. Temporary
+references such as `S1` are shown separately and are never part of the ticket title. The
 owner can accept, edit, or reject each suggestion, inspect why one item blocks
-another, and accept or reject the remaining reviewed batch with confirmation.
-Bulk acceptance only creates backlog records; it never scopes or starts a sprint.
+another, accept the remaining reviewed batch directly, or dismiss the remaining
+batch with confirmation. Bulk acceptance only creates backlog records; it never
+scopes or starts a sprint.
 Accepting a suggestion with still-proposed prerequisites first names the full
 transitive prerequisite set, then accepts the selected suggestion and those
 prerequisites atomically with their dependency relationships.
@@ -900,7 +928,17 @@ technical review because two Codex turns can still make correlated mistakes.
 Reviewer findings are durable, author-attributed ticket comments linked to the
 exact candidate revision. Blocking findings return the implementation run to
 active work; informational findings remain visible without changing state. The
-Lead performs the ordinary review run automatically. A specialist reviewer can
+reviewer requests changes only when a concrete material defect independently
+justifies another implementation, integration, and review cycle. Cosmetic
+whitespace, formatting, spelling, naming, comment phrasing, code-style
+preferences, and optional lint or style-only failures are informational at most,
+including when the delivery note mistakenly reports such an optional check as
+passing. They block only when they have a concrete consequence for behaviour,
+rendering, valid syntax or structured data, an explicitly required acceptance
+gate, reviewability of a material change, or security. A focused re-review
+reassesses earlier feedback against this threshold rather than preserving its
+blocking classification automatically.
+The Lead performs the ordinary review run automatically. A specialist reviewer can
 be introduced later by policy without restoring a required reviewer field to
 every planning row.
 
@@ -988,14 +1026,38 @@ At sprint end, the system generates an evidence-based retrospective:
 - context that was missing or stale; and
 - suggested policy, knowledge, and backlog changes.
 
+Ticket Implementers and reviewers contribute immutable free-text observations
+and possible action candidates throughout delivery. Those candidates are
+evidence, not separate Product Owner decisions. When the sprint completes, one
+read-only Business Analyst retrospective-facilitation turn receives the frozen
+sprint evidence, existing Ways of working, earlier retrospective decisions, and
+active Backlog scope. It groups differently worded candidates by the decision
+the Product Owner would take, removes work already covered elsewhere, and
+returns zero to five final actions. Each final action names its destination and
+expected measurable effect and links to every supporting source observation, so
+recurrence remains visible without creating repeated decisions.
+
+The synthesis is durable and version-safe. An interruption can be retried
+without losing or rewriting the source notes; an invalid structured result fails
+safely. If Codex remains unavailable, the Product Owner may explicitly continue
+without AI suggestions. Synthesis never accepts an action, changes Ways of
+working, or creates Backlog scope automatically.
+
 Action items have an owner, due condition, and expected measurable effect. The
 next retrospective checks whether each action improved the relevant metric.
 Retrospectives live beside Reports in a dedicated **Improve** navigation
 section rather than being mixed into the reference knowledge base. Decisions
 and validated lessons may still promote into Knowledge after owner review.
+Opening Retrospectives selects the latest completed sprint when one exists;
+the active sprint is used only until the product has completed its first sprint.
+An active sprint presents a read-only preview of accumulating evidence and
+explains that final actions will be consolidated after completion. It does not
+offer accept, dismiss, bulk-decision, or Product Owner proposal actions until
+the sprint is complete.
 
-After the sprint is complete and before its retrospective is concluded, the
-Product Owner can add a proposal directly from the Retrospectives view. They
+After the sprint is complete, the final synthesis has completed or been
+explicitly skipped, and before its retrospective is concluded, the Product
+Owner can add a proposal directly from the Retrospectives view. They
 choose whether it changes **Ways of working** or creates a **Backlog ticket**.
 The proposal is attributed to the Product Owner and joins the same reviewable
 decision queue as agent suggestions; it is not applied silently. Accepting a
@@ -1376,11 +1438,26 @@ This creates three intentionally different layers: the full run trace for audit,
 the ticket history for delivery context, and the curated knowledge base for
 reusable product truth.
 
+Unused canonical pages have empty stored bodies. Owner-facing guidance for an
+empty page is presentation text, not verified knowledge and not agent context.
+Before delivery, StoryPointless separates the small set of verified pages an
+agent may read from a canonical destination directory. The directory explains
+where product, journey, architecture, component, integration, operational, and
+limitation knowledge belongs. Empty canonical pages and relevant populated pages
+may receive complete proposed updates; sections may receive focused child-page
+proposals. These permissions are persisted with the run and do not make empty
+pages or directory descriptions part of the verified context.
+
 ### 14.5 Context packs
 
 Before a run starts, StoryPointless builds a small, inspectable context pack
 from the contract, relevant decisions, code map, prior failures, policies, and
 related work. The agent and owner can see why each item was included.
+
+Page selection prioritises direct provenance, canonical subject and title
+relevance, and prerequisite handoffs. Full-body term overlap is capped so a long
+general page cannot become the default context and update destination merely by
+accumulating vocabulary.
 
 Context-pack quality becomes a first-class metric: relevance, token cost,
 missing-context escalations, stale-claim rate, and reuse success.
@@ -1433,7 +1510,20 @@ completed sprint establishes a baseline; at least two comparable sprints are
 needed to suggest direction, and attribution requires a linked retrospective
 experiment. Each experiment connects an observation, proposed policy/knowledge/
 scope change, baseline, expected effect, and later measurement. Missing evidence
-renders as unavailable rather than zero or a reassuring synthetic trend.
+renders as unavailable rather than zero or a reassuring synthetic trend. Before
+the first sprint is complete, Reports presents a clear empty state instead of
+zero-valued metric cards.
+
+Sprint performance is presented as one tabbed chronological chart rather than a
+growing card or vertical stack for every measure. The Product Owner can switch
+between cycle time, agent effort, and outcomes and review. Cycle time shows
+elapsed wall time, while agent time is normalized per delivered outcome so sprint
+size does not dominate the comparison. Duration axes use seconds, minutes, or
+hours as appropriate so their tick values remain easy to scan. The latest twelve
+sprints are shown by default with an option to see the full history. Selecting a
+sprint reveals exact delivery, correction, and interruption values. Missing
+measurements leave a visible gap, and outcome counts and correction cycles remain
+visually distinct.
 
 ## 16. Trust, safety, and governance
 
@@ -2335,7 +2425,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-200 | Proposed starter backlog | **Autosuggest Tickets** starts one recoverable BA suggestion session; truthful temporary placeholders become rationale-backed ticket proposals with acceptance criteria, forecasts, and dependency edges, and the owner can accept, edit, discuss, or reject each without rejected work becoming scope |
 | SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through accept/rejectable diffs |
 | SP-202 | Safety controls and live usage telemetry | Run warns or pauses on abnormal consumption; UI foregrounds remaining shared account usage and distinguishes per-thread context/compactions, cumulative economics, and internal safety status without requiring a PO-entered token budget |
-| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees the exact action and rationale, chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
+| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees its plain-language purpose first and can disclose the exact action and additional access, then chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. Agents prefer a short, purpose-named project entry point over a shell chain; an Implementer may add one as maintained product tooling only when it represents a coherent reusable workflow, never to conceal unrelated operations or broaden approval. The persisted request shows the decision in place without adding a duplicate Product Owner message to the Work log. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
 | SP-204 | Local checks and evidence ingestion | Test results and artifacts are linked and independently verifiable |
 | SP-205 | Review pass | Lead receives the contract and exact integrated candidate in a separate checkout and records a typed attestation; policy can require an additional specialist reviewer for higher-risk work |
 | SP-206 | Preview acceptance loop | Owner opens a local link for the attested commit, comments with traceable feedback, sees the item return to active work, and accepts or rejects a versioned replacement preview |
