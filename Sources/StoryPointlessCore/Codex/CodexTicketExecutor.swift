@@ -482,7 +482,13 @@ public enum CodexTicketExecutor {
           \(interruptedPermission.detail)
           Reissue the same request only if it is still needed so the Product Owner can answer it.
           """
-        case .pending, .denied:
+        case .denied:
+          """
+          The Product Owner denied this matching capability for the existing run:
+          \(interruptedPermission.detail)
+          Do not reissue the same request. Adapt within the existing permission boundary.
+          """
+        case .pending:
           "No reusable permission decision was recorded."
         }
       } else {
@@ -1397,7 +1403,13 @@ public enum CodexTechLeadReviewer {
           \(interruptedPermission.detail)
           Reissue the same request only if it is still needed so the Product Owner can answer it.
           """
-        case .pending, .denied:
+        case .denied:
+          """
+          The Product Owner denied this matching capability for the existing review run:
+          \(interruptedPermission.detail)
+          Do not reissue the same request. Finish within the existing permission boundary.
+          """
+        case .pending:
           "No reusable permission decision was recorded."
         }
       } else {

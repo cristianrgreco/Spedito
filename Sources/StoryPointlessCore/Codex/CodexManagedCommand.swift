@@ -357,6 +357,10 @@ public enum AgentPermissionRequestStatus: String, Codable, Sendable {
   case allowed
   case denied
   case interrupted
+
+  public var needsOwnerDecision: Bool {
+    self == .pending || self == .interrupted
+  }
 }
 
 public struct AgentPermissionRequest: Identifiable, Codable, Hashable, Sendable {

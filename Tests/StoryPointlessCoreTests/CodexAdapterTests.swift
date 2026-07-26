@@ -296,6 +296,56 @@ struct CodexAdapterTests {
     #expect(requests[2].params["permissionProfile"] == nil)
   }
 
+  @Test("Persisted Conversations are explicitly resumed with their scoped permissions")
+  func persistedThreadsAreResumed() async throws {
+    let transport = SuggestionTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    let readOnlyThreadID = try await client.resumeReadOnlyThread(
+      threadID: "review-thread",
+      workingDirectory: URL(fileURLWithPath: "/private/tmp/review-workspace"),
+      developerInstructions: "Continue the review",
+      allowsApprovals: true
+    )
+    let workspaceThreadID = try await client.resumeWorkspaceThread(
+      threadID: "implementation-thread",
+      workingDirectory: URL(fileURLWithPath: "/private/tmp/ticket-workspace"),
+      developerInstructions: "Continue the implementation",
+      model: "gpt-5.6-terra",
+      readOnlyGitDirectory: URL(fileURLWithPath: "/private/tmp/product/.git")
+    )
+    let requests = await transport.requests()
+
+    #expect(readOnlyThreadID == "review-thread")
+    #expect(workspaceThreadID == "implementation-thread")
+    #expect(
+      requests.map(\.method)
+        == ["initialize", "thread/resume", "thread/resume"]
+    )
+    #expect(requests[1].params["threadId"]?.stringValue == "review-thread")
+    #expect(requests[1].params["approvalPolicy"]?.stringValue == "on-request")
+    #expect(
+      requests[1].params["permissions"]?.stringValue
+        == CodexPermissionProfiles.readOnly
+    )
+    #expect(
+      requests[1].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
+        == ["/private/tmp/review-workspace"]
+    )
+    #expect(requests[2].params["threadId"]?.stringValue == "implementation-thread")
+    #expect(
+      requests[2].params["permissions"]?.stringValue
+        == CodexPermissionProfiles.delivery
+    )
+    #expect(requests[2].params["model"]?.stringValue == "gpt-5.6-terra")
+    #expect(
+      requests[2].params["config"]?["permissions.storypointless-delivery"]?[
+        "filesystem"
+      ]?["/private/tmp/product/.git"]?.stringValue == "read"
+    )
+  }
+
   @Test("Delivery isolates the ticket while demos retain reviewed runtime reads")
   func managedPermissionProfiles() {
     let arguments = CodexPermissionProfiles.appServerArguments.joined(separator: " ")
@@ -2139,6 +2189,15 @@ struct CodexAdapterTests {
       )
     )
 
+    var deniedPermission = interruptedPermission
+    deniedPermission.status = .denied
+    let deniedRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: researchTicket,
+      interruptedPermission: deniedPermission
+    )
+    #expect(deniedRecoveryPrompt.contains("Product Owner denied"))
+    #expect(deniedRecoveryPrompt.contains("Do not reissue the same request"))
+
     let replacementImplementationPrompt = CodexTicketExecutor.recoveryPrompt(
       item: researchTicket,
       interruptedPermission: nil,
@@ -2389,6 +2448,11 @@ private actor SuggestionTransport: CodexRPCTransport {
       ])
     case "thread/start":
       return .object(["thread": .object(["id": .string("thread-1")])])
+    case "thread/resume":
+      guard let threadID = params["threadId"]?.stringValue else {
+        throw CodexRPCError(code: -32_602, message: "Missing threadId")
+      }
+      return .object(["thread": .object(["id": .string(threadID)])])
     case "turn/start":
       return .object(["turn": .object(["id": .string("turn-1")])])
     case "model/list":

@@ -278,7 +278,11 @@ can adapt. The turn timeout does not advance while a supported permission
 request is outstanding. StoryPointless may also transparently reapply an
 identical recorded decision within the same durable AgentRun. If the app
 restarts, a pending connection-scoped request becomes interrupted and the
-resumed run can request it again; saved product grants remain durable.
+run remains in **Needs your input** rather than being admitted by the scheduler.
+The Product Owner can still Allow or Deny the durable interrupted request. That
+decision queues the preserved run, and a matching request from its resumed
+Conversation receives the recorded answer automatically. Saved product grants
+remain durable.
 
 The same adapter owns buffered and streaming `command/exec`, output deltas, and
 termination for candidate demos. The durable run stores the thread identifier
@@ -317,16 +321,21 @@ filesystem state when no agent-authored checkpoint exists.
 
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral
-Conversation; a Product Owner stop leaves the run interrupted until they resume
-it. On restart StoryPointless first recovers a valid completed structured result
-when one exists. Otherwise it starts a focused continuation turn in the same
-Conversation, telling the team member to use the current workspace and prior
-context rather than restart the ticket or repeat completed work and checks. A
-live approval request cannot survive the old App Server connection, so its
-durable interrupted record is included in the continuation and is reissued only
-if it remains necessary. A missing Conversation starts a replacement with the
-full ticket contract plus an explicit preserved-workspace continuation
-instruction.
+Conversation, except when a live permission decision was outstanding; that run
+remains awaiting the Product Owner. A Product Owner stop also leaves the run
+interrupted until they resume it. On restart StoryPointless explicitly calls App
+Server `thread/resume` to load the persisted Conversation into the new server
+process, then first recovers a valid completed structured result when one exists.
+Otherwise it starts a focused continuation turn, telling the team member to use
+the current workspace and prior context rather than restart the ticket or repeat
+completed work and checks. A live approval request cannot survive the old App
+Server connection, so its durable interrupted record remains an actionable
+**Needs your input** item. Allow or Deny stores the scoped decision and only then
+queues the run; if the resumed agent still needs the matching capability,
+StoryPointless applies that decision automatically. A missing Conversation is
+established only when `thread/resume` reports it unavailable; the replacement
+receives the full ticket contract plus an explicit preserved-workspace
+continuation instruction.
 If the recorded ticket worktree is missing, StoryPointless does not claim that
 its uncaptured changes were preserved: it records the loss in the Work log and
 prepares a fresh isolated ticket workspace.
@@ -336,10 +345,11 @@ including one paused at a scoped permission request, retains its review run,
 non-ephemeral Conversation, integration path, and integrated SHA. On restart
 StoryPointless verifies or reconstructs the detached checkout at that exact SHA,
 recovers a valid completed structured result when one exists, or starts a
-continuation turn in the same Conversation. An expired live approval request is
-reissued only if the continuing agent still needs it; saved matching run or
-product grants apply normally. A missing Conversation starts a replacement
-review against the same SHA. Only a missing, mutated, or unverifiable integrated
+continuation turn after explicitly resuming the same Conversation. An expired
+live approval request keeps the review paused until the Product Owner decides;
+saved matching run or product grants apply normally once it resumes. A missing
+Conversation starts a replacement review against the same SHA only after
+`thread/resume` fails. Only a missing, mutated, or unverifiable integrated
 revision returns the candidate to integration and full review, with an explicit
 Work log explanation. A candidate already in **Ready for Demo** keeps its
 reviewed revision; only its owned demo process is stopped and restarted.

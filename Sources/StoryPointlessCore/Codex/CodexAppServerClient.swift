@@ -259,6 +259,71 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     return threadID
   }
 
+  public func resumeReadOnlyThread(
+    threadID: String,
+    workingDirectory: URL,
+    developerInstructions: String,
+    model: String? = nil,
+    allowsApprovals: Bool = false
+  ) async throws -> String {
+    var params: [String: JSONValue] = [
+      "approvalPolicy": .string(allowsApprovals ? "on-request" : "never"),
+      "cwd": .string(workingDirectory.path),
+      "developerInstructions": .string(developerInstructions),
+      "permissions": .string(CodexPermissionProfiles.readOnly),
+      "personality": .string("pragmatic"),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
+      "threadId": .string(threadID),
+    ]
+    if let model, model != "default" {
+      params["model"] = .string(model)
+    }
+    return try await resumeThread(params: params)
+  }
+
+  public func resumeWorkspaceThread(
+    threadID: String,
+    workingDirectory: URL,
+    developerInstructions: String,
+    model: String? = nil,
+    readOnlyGitDirectory: URL? = nil
+  ) async throws -> String {
+    var params: [String: JSONValue] = [
+      "approvalPolicy": .string("on-request"),
+      "cwd": .string(workingDirectory.path),
+      "developerInstructions": .string(developerInstructions),
+      "permissions": .string(CodexPermissionProfiles.delivery),
+      "personality": .string("pragmatic"),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
+      "threadId": .string(threadID),
+    ]
+    if let readOnlyGitDirectory {
+      params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
+        readOnlyGitDirectory: readOnlyGitDirectory
+      )
+    }
+    if let model, model != "default" {
+      params["model"] = .string(model)
+    }
+    return try await resumeThread(params: params)
+  }
+
+  private func resumeThread(params: [String: JSONValue]) async throws -> String {
+    guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    let response = try await transport.request(
+      method: "thread/resume",
+      params: .object(params)
+    )
+    guard let threadID = response["thread"]?["id"]?.stringValue else {
+      throw CodexClientError.invalidThreadResponse
+    }
+    return threadID
+  }
+
   public func startStructuredTurn(
     threadID: String,
     prompt: String,

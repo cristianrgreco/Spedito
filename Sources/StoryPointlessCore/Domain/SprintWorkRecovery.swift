@@ -52,7 +52,9 @@ public struct SprintWorkRecoveryPolicy: Sendable {
 
     return runs.filter { run in
       guard
-        run.status == .awaitingOwner,
+        run.status == .awaitingOwner
+          || run.status == .queued
+          || run.status == .interrupted,
         let request = latestRequestByRunID[run.id]
       else {
         return false
@@ -69,17 +71,52 @@ public struct SprintWorkRecoveryPolicy: Sendable {
     permissionRequests
       .filter {
         $0.agentRunID == runID
-          && ($0.status == .interrupted || $0.status == .allowed)
+          && (
+            $0.status == .interrupted
+              || $0.status == .allowed
+              || $0.status == .denied
+          )
       }
       .max(by: { $0.updatedAt < $1.updatedAt })
   }
 
+  public func actionablePermissionRequest(
+    for workItemID: UUID,
+    runs: [AgentRun],
+    permissionRequests: [AgentPermissionRequest]
+  ) -> AgentPermissionRequest? {
+    let awaitingRunsByID = Dictionary(
+      uniqueKeysWithValues: runs
+        .filter { $0.status == .awaitingOwner }
+        .map { ($0.id, $0) }
+    )
+    return permissionRequests
+      .filter { request in
+        guard
+          request.workItemID == workItemID,
+          let run = awaitingRunsByID[request.agentRunID]
+        else {
+          return false
+        }
+        return request.status == .pending
+          || (
+            request.status == .interrupted
+              && request.updatedAt >= run.updatedAt
+          )
+      }
+      .max(by: { $0.createdAt < $1.createdAt })
+  }
+
   public func implementationRunStatusAfterTurnStops(
     taskWasCancelled: Bool,
-    wasManuallyStopped: Bool
+    wasManuallyStopped: Bool,
+    wasAwaitingPermission: Bool = false
   ) -> AgentRunStatus {
     if wasManuallyStopped {
       return .interrupted
+    }
+    if taskWasCancelled && wasAwaitingPermission {
+      return .awaitingOwner
     }
     return taskWasCancelled ? .queued : .failed
   }

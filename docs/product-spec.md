@@ -1290,9 +1290,11 @@ enters **Awaiting owner**. The Work log presents those options as selectable
 answers, keeps a free-form alternative, and places the chosen text in the
 Product Owner response for review before resuming. A Product Owner reply on that
 ticket resumes the same run and thread. If StoryPointless relaunches while that
-run is active or waiting on a live permission request, it preserves the same
-Conversation and ticket workspace and starts only a focused continuation turn;
-it does not brief the team member as though the ticket were new.
+run is active, it preserves and explicitly resumes the same Conversation and
+ticket workspace, then starts only a focused continuation turn; it does not
+brief the team member as though the ticket were new. If a live permission
+request was awaiting a decision, relaunch keeps the run paused and keeps the
+durable request actionable until the Product Owner chooses Allow or Deny.
 
 Before completing a prerequisite, its agent posts a concise final ticket comment
 containing the requirements, decisions, selected providers or contracts,
@@ -1767,18 +1769,21 @@ throughout the run so StoryPointless can create a clearly labelled system
 recovery note from the last durable milestone, diff, and check result. On next
 launch it detects stale leases and reconciles worktrees and processes.
 Implementation runs suspended by the app are queued to continue automatically
-in the same Conversation and workspace; runs deliberately stopped by the
-Product Owner remain visibly paused until resumed. Neither becomes `Cancelled`
-merely because the app closed.
+in the same Conversation and workspace unless they were waiting on a permission
+decision. Those runs remain visibly paused for the Product Owner, as do runs
+deliberately stopped by the Product Owner until explicitly resumed. Neither
+becomes `Cancelled` merely because the app closed.
 
 Before starting another implementation turn, StoryPointless recovers a valid
 completed structured result if the previous turn finished after the last
-durable run update. Otherwise it sends a focused continuation instruction that
+durable run update. Otherwise it explicitly resumes the persisted Conversation
+in the new App Server process and sends a focused continuation instruction that
 preserves prior work, decisions, and checks. A live permission request that
-expired with the old process is included as recovery context and is requested
-again only if the capability remains necessary. If the Conversation is missing,
-a replacement receives the full ticket contract and the preserved workspace,
-with an explicit instruction not to restart completed work. If the ticket
+expired with the old process remains actionable; Allow or Deny queues the run
+and its scoped decision is applied if the resumed agent still needs the matching
+capability. If explicit Conversation resume reports it missing, a replacement
+receives the full ticket contract and the preserved workspace, with an explicit
+instruction not to restart completed work. If the ticket
 workspace itself is missing, uncaptured changes are not recoverable;
 StoryPointless explains that fallback in the Work log before preparing a fresh
 isolated workspace.
@@ -1787,9 +1792,10 @@ An interrupted Tech Lead review remains bound to its exact integrated revision.
 StoryPointless preserves the review run, Conversation, integrated SHA, and
 detached workspace. After relaunch it verifies or reconstructs that exact
 checkout, recovers a completed structured review result when available, and
-otherwise continues the same Conversation. A live permission request that
-expired with the old process is reissued only when still needed, and an existing
-matching scoped grant applies to the continuing run. Relaunch alone never causes
+otherwise explicitly resumes and continues the same Conversation. A live
+permission request that expired with the old process keeps the review paused
+until the Product Owner decides, and that decision or an existing matching
+scoped grant applies to the continuing run. Relaunch alone never causes
 integration or full review to repeat. A new integration and review are required
 only when the exact recorded revision is missing, changed, or cannot be verified,
 and that fallback is explained in the ticket Work log. **Ready for Demo**
@@ -2316,7 +2322,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-200 | Proposed starter backlog | **Autosuggest Tickets** starts one recoverable BA suggestion session; truthful temporary placeholders become rationale-backed ticket proposals with acceptance criteria, forecasts, and dependency edges, and the owner can accept, edit, discuss, or reject each without rejected work becoming scope |
 | SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through accept/rejectable diffs |
 | SP-202 | Safety controls and live usage telemetry | Run warns or pauses on abnormal consumption; UI foregrounds remaining shared account usage and distinguishes per-thread context/compactions, cumulative economics, and internal safety status without requiring a PO-entered token budget |
-| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees the exact action and rationale, chooses **Allow once**, **Always allow for this product**, or **Deny**, and the same turn continues without a terminal or global binary whitelist. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
+| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees the exact action and rationale, chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
 | SP-204 | Local checks and evidence ingestion | Test results and artifacts are linked and independently verifiable |
 | SP-205 | Review pass | Lead receives the contract and exact integrated candidate in a separate checkout and records a typed attestation; policy can require an additional specialist reviewer for higher-risk work |
 | SP-206 | Preview acceptance loop | Owner opens a local link for the attested commit, comments with traceable feedback, sees the item return to active work, and accepts or rejects a versioned replacement preview |

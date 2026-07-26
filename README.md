@@ -89,15 +89,19 @@ Owner demo feedback follows the same revision loop,
 while **Approve and complete** promotes the reviewed integrated SHA to local `trunk`,
 moves the ticket to Done, and admits newly unblocked work. Interrupted runs are
 recovered from their durable records and preserved workspace on the next launch.
-An **In Progress** implementation paused by app shutdown is requeued automatically,
-continues in the same Conversation and ticket workspace with a focused recovery
-instruction, and does not receive the original “start the ticket” briefing again.
+An **In Progress** implementation paused by app shutdown is requeued automatically
+unless it was waiting on a permission decision. Ordinary work explicitly resumes
+the persisted Conversation and continues in the same ticket workspace with a focused
+recovery instruction; it does not receive the original “start the ticket” briefing again.
 Any completed structured result is recovered before another implementation turn is
 started. A Product Owner stop remains paused until they explicitly resume it.
-An interrupted Tech Lead permission request continues in the same Conversation against
-the same integrated SHA; StoryPointless reconstructs that exact detached checkout when
-needed and repeats integration or full review only when the recorded revision cannot be
-verified. If an In Progress ticket workspace itself is missing, StoryPointless explains
+An expired permission request remains visibly actionable and keeps its implementation,
+Tech Lead review, or conflict-resolution run paused after relaunch. Once the Product
+Owner chooses Allow or Deny, StoryPointless explicitly resumes the persisted Conversation
+and applies that decision if the same request is still needed. Tech Lead recovery remains
+bound to the same integrated SHA; StoryPointless reconstructs that exact detached checkout
+when needed and repeats integration or full review only when the recorded revision cannot
+be verified. If an In Progress ticket workspace itself is missing, StoryPointless explains
 that uncaptured implementation work could not be recovered before preparing a fresh
 isolated workspace. Backlog and refinement are separate from the simplified
 active sprint board, whose owner-facing stages are In Progress, In Review, Ready for
@@ -195,9 +199,9 @@ as a labelled suggestion batch, inherit the source epic and research dependency 
 accepted, and remain outside committed scope until the Product Owner reviews them.
 Bounded verified pages are selected for future execution prompts rather than sending
 the whole wiki. Normal app termination interrupts the active turn, persists the
-interruption, preserves its Conversation and workspace, and queues implementation to
-continue on the next launch. A live permission request expires with the old process and
-is reissued only when the continuing agent still needs it.
+interruption, preserves its Conversation and workspace, and queues ordinary implementation
+to continue on the next launch. A live permission request expires with the old process,
+remains paused for an explicit owner decision, and resumes only after that decision.
 
 Execution and Tech Lead results also record at most two concrete observations in
 each retrospective category. The Retrospectives view presents these as attributed,

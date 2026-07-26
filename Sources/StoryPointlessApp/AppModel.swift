@@ -3082,6 +3082,7 @@ final class AppModel: ObservableObject {
       runs: runs.filter { $0.productID == productID },
       permissionRequests: permissionRequests.filter { $0.productID == productID }
     )
+    let expiredPermissionRunIDs = Set(expiredPermissionRuns.map(\.id))
     for run in expiredPermissionRuns {
       let isImplementer = implementerByItemID[run.workItemID] == run.profileID
       let latestCandidate = storedCandidates
@@ -3099,22 +3100,37 @@ final class AppModel: ObservableObject {
           )
         }?.id == run.id
       let canResume = isImplementer || canResumeConflict || canResumeReview
-      _ = try? await store.updateAgentRun(
-        id: run.id,
-        status: canResume ? .queued : .interrupted,
-        eventActor: "StoryPointless",
-        eventDetail: canResume
-          ? "Expired permission decision queued to resume in the preserved workspace"
-          : "Permission request expired when the app stopped"
-      )
-      _ = try? await store.appendComment(
-        workItemID: run.workItemID,
-        authorKind: .system,
-        authorName: "StoryPointless",
-        body: canResume
-          ? "The previous permission request expired when StoryPointless stopped. The ticket workspace is preserved and work has been queued to resume automatically. If the capability is still needed, a new permission request will appear with live Allow and Deny buttons."
-          : "The previous permission request expired when StoryPointless stopped. The interrupted review will restart against the preserved candidate."
-      )
+      let recoveredStatus: AgentRunStatus = canResume ? .awaitingOwner : .interrupted
+      if run.status != recoveredStatus {
+        _ = try? await store.updateAgentRun(
+          id: run.id,
+          status: recoveredStatus,
+          eventActor: "StoryPointless",
+          eventDetail: canResume
+            ? "Expired permission request remains paused for Product Owner input"
+            : "Permission request expired when the app stopped"
+        )
+        let latestRequest = permissionRequests
+          .filter { $0.agentRunID == run.id }
+          .max(by: { $0.updatedAt < $1.updatedAt })
+        if canResume,
+          let latestRequest,
+          let updatedRequest = try? await store.updateAgentPermissionRequest(
+            id: latestRequest.id,
+            status: .interrupted
+          )
+        {
+          replacePermissionRequest(updatedRequest)
+        }
+        _ = try? await store.appendComment(
+          workItemID: run.workItemID,
+          authorKind: .system,
+          authorName: "StoryPointless",
+          body: canResume
+            ? "The live permission request expired when StoryPointless stopped. The Conversation and workspace are preserved, and the request remains above for your decision. Work will resume only after you choose Allow or Deny."
+            : "The previous permission request expired when StoryPointless stopped. This run cannot continue automatically."
+        )
+      }
     }
     for candidate in storedCandidates where candidate.status == .readyForDemo {
       guard
@@ -3200,21 +3216,41 @@ final class AppModel: ObservableObject {
     {
       guard
         let threadID = run.codexThreadID,
-        let response = try? await client.latestCompletedAgentMessage(threadID: threadID),
-        let workspacePath = run.worktreePath
+        let workspacePath = run.worktreePath,
+        let assignee = profiles.first(where: { $0.id == run.profileID }),
+        let product = selectedProduct,
+        product.id == productID,
+        let productWorkspace = try? Self.productWorkspaceURL(productID: productID)
+      else { continue }
+      let workspace = URL(fileURLWithPath: workspacePath, isDirectory: true)
+      guard
+        let resumedThreadID = try? await client.resumeWorkspaceThread(
+          threadID: threadID,
+          workingDirectory: workspace,
+          developerInstructions: CodexTicketExecutor.developerInstructions(
+            productInstructions: inheritedAgentInstructions(for: product),
+            personaInstructions: assignee.effectiveInstructions,
+            assignee: assignee
+          ),
+          model: assignee.model,
+          readOnlyGitDirectory: productWorkspace.appendingPathComponent(
+            ".git",
+            isDirectory: true
+          )
+        ),
+        let response = try? await client.latestCompletedAgentMessage(
+          threadID: resumedThreadID
+        )
       else { continue }
       do {
         let result = try CodexTicketExecutor.decode(response)
-        guard let assignee = profiles.first(where: { $0.id == run.profileID }) else {
-          continue
-        }
         try CodexTicketExecutor.validateFollowUpTicketProposals(
           in: result,
           assignee: assignee
         )
         try await validateDeliveryEvidence(
           result,
-          workspaceURL: URL(fileURLWithPath: workspacePath, isDirectory: true)
+          workspaceURL: workspace
         )
         await processExecutionResult(
           result,
@@ -3385,7 +3421,13 @@ final class AppModel: ObservableObject {
           runs: runs,
           reviewerProfileIDs: reviewerProfileIDs
         ) {
-          if reviewRun.status != .completed {
+          if expiredPermissionRunIDs.contains(reviewRun.id) {
+            _ = try? await store.updateAgentRun(
+              id: reviewRun.id,
+              status: .awaitingOwner,
+              worktreePath: integration.url.path
+            )
+          } else if reviewRun.status != .completed {
             _ = try? await store.updateAgentRun(
               id: reviewRun.id,
               status: .queued,
@@ -3496,7 +3538,12 @@ final class AppModel: ObservableObject {
           $0.workItemID == candidate.workItemID && $0.profileID == techLead.id
         }
         if let latest = candidateRuns.max(by: { $0.createdAt < $1.createdAt }) {
-          if latest.status == .interrupted || latest.status == .failed {
+          if expiredPermissionRunIDs.contains(latest.id) {
+            _ = try? await store.updateAgentRun(
+              id: latest.id,
+              status: .awaitingOwner
+            )
+          } else if latest.status == .interrupted || latest.status == .failed {
             _ = try? await store.updateAgentRun(
               id: latest.id,
               status: .queued,
@@ -3614,7 +3661,10 @@ final class AppModel: ObservableObject {
           for: reviewingCandidate,
           runs: runs,
           reviewerProfileIDs: reviewerProfileIDs
-        )
+        ),
+        reviewRun.status == .queued
+          || reviewRun.status == .running
+          || reviewRun.status == .completed
       {
         await resumeTechLeadReview(
           candidate: reviewingCandidate,
@@ -3756,10 +3806,39 @@ final class AppModel: ObservableObject {
         personaInstructions: assignee.effectiveInstructions,
         assignee: assignee
       )
-      let reusedExistingThread = run.codexThreadID != nil
+      let existingThreadID = run.codexThreadID
+      var replacedUnavailableThread = false
       let threadID: String
-      if let existingThreadID = run.codexThreadID {
-        threadID = existingThreadID
+      if let existingThreadID {
+        do {
+          threadID = try await client.resumeWorkspaceThread(
+            threadID: existingThreadID,
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: assignee.model,
+            readOnlyGitDirectory: productWorkspace.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
+          )
+        } catch let error as CodexRPCError where error.isThreadNotFound {
+          threadID = try await client.startWorkspaceThread(
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: assignee.model,
+            readOnlyGitDirectory: productWorkspace.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
+          )
+          replacedUnavailableThread = true
+          _ = try await store.appendComment(
+            workItemID: item.id,
+            authorKind: .system,
+            authorName: "StoryPointless",
+            body: "The previous Conversation could not be recovered. I started a replacement in the preserved ticket workspace and continued the work."
+          )
+        }
       } else {
         threadID = try await client.startWorkspaceThread(
           workingDirectory: workspace,
@@ -3775,7 +3854,11 @@ final class AppModel: ObservableObject {
         id: run.id,
         status: .running,
         codexThreadID: threadID,
-        worktreePath: workspace.path
+        worktreePath: workspace.path,
+        eventActor: replacedUnavailableThread ? "StoryPointless" : nil,
+        eventDetail: replacedUnavailableThread
+          ? "Replaced an unavailable Conversation and preserved the ticket workspace"
+          : nil
       )
       await reloadSelectedProduct()
 
@@ -3842,7 +3925,9 @@ final class AppModel: ObservableObject {
       )
       var activeThreadID = threadID
       var turnPrompt =
-        reusedExistingThread ? continuationPrompt : executionPrompt
+        existingThreadID != nil && !replacedUnavailableThread
+          ? continuationPrompt
+          : executionPrompt
       let turnID: String
       do {
         turnID = try await client.startStructuredTurn(
@@ -3931,14 +4016,25 @@ final class AppModel: ObservableObject {
       stopLiveActivityMonitoring(runID: run.id)
       activeExecutionTurns.removeValue(forKey: run.id)
       let wasManuallyStopped = manuallyStoppedRunIDs.remove(run.id) != nil
+      let wasAwaitingPermission =
+        permissionRequests
+        .filter { $0.agentRunID == run.id }
+        .max(by: { $0.updatedAt < $1.updatedAt })?
+        .status.needsOwnerDecision == true
       let status = sprintWorkRecoveryPolicy.implementationRunStatusAfterTurnStops(
         taskWasCancelled: Task.isCancelled,
-        wasManuallyStopped: wasManuallyStopped
+        wasManuallyStopped: wasManuallyStopped,
+        wasAwaitingPermission: wasAwaitingPermission
       )
       let wasSuspendedByApp = Task.isCancelled && !wasManuallyStopped
+      let wasSuspendedAtPermission = wasSuspendedByApp && wasAwaitingPermission
       let eventDetail: String
       let workLogBody: String
-      if wasSuspendedByApp {
+      if wasSuspendedAtPermission {
+        eventDetail = "App stopped; permission request remains paused for Product Owner input"
+        workLogBody =
+          "StoryPointless stopped while this run was waiting for a permission decision. Its Conversation and ticket workspace are preserved, and work will remain paused after relaunch until the Product Owner chooses Allow or Deny."
+      } else if wasSuspendedByApp {
         eventDetail = "App stopped; preserved work queued to continue"
         workLogBody =
           "StoryPointless paused this run while stopping. Its Conversation and ticket workspace are preserved, and it is queued to continue automatically."
@@ -4270,25 +4366,45 @@ final class AppModel: ObservableObject {
         integratedSHA: integratedSHA
       )
       let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-
-      if let existingThreadID = reviewRun.codexThreadID,
-        let recoveredResponse = try? await client.latestCompletedAgentMessage(
-          threadID: existingThreadID,
-          notBefore: reviewRun.createdAt.addingTimeInterval(-30)
-        ),
-        let recoveredReview = try? CodexTechLeadReviewer.decode(recoveredResponse)
-      {
-        try await applyTechLeadReviewResult(
-          recoveredReview,
-          implementation: implementation,
-          candidate: candidate,
-          implementationRun: implementationRun,
-          reviewRun: reviewRun,
-          reviewCycle: reviewCycle,
-          plan: plan,
-          integration: integration
-        )
-        return
+      let developerInstructions = CodexTechLeadReviewer.developerInstructions(
+        productInstructions: inheritedAgentInstructions(for: product),
+        personaInstructions: techLead.effectiveInstructions,
+        reviewer: techLead
+      )
+      var resumedReviewThreadID: String?
+      var replacedUnavailableThread = false
+      if let existingThreadID = reviewRun.codexThreadID {
+        do {
+          let resumedThreadID = try await client.resumeReadOnlyThread(
+            threadID: existingThreadID,
+            workingDirectory: integration.url,
+            developerInstructions: developerInstructions,
+            model: techLead.model,
+            allowsApprovals: true
+          )
+          resumedReviewThreadID = resumedThreadID
+          if
+            let recoveredResponse = try? await client.latestCompletedAgentMessage(
+              threadID: resumedThreadID,
+              notBefore: reviewRun.createdAt.addingTimeInterval(-30)
+            ),
+            let recoveredReview = try? CodexTechLeadReviewer.decode(recoveredResponse)
+          {
+            try await applyTechLeadReviewResult(
+              recoveredReview,
+              implementation: implementation,
+              candidate: candidate,
+              implementationRun: implementationRun,
+              reviewRun: reviewRun,
+              reviewCycle: reviewCycle,
+              plan: plan,
+              integration: integration
+            )
+            return
+          }
+        } catch let error as CodexRPCError where error.isThreadNotFound {
+          replacedUnavailableThread = true
+        }
       }
 
       let reviewComments = try await store.fetchComments(workItemID: item.id)
@@ -4320,8 +4436,8 @@ final class AppModel: ObservableObject {
 
       var threadID: String
       var turnPrompt: String
-      if let existingThreadID = reviewRun.codexThreadID {
-        threadID = existingThreadID
+      if let resumedReviewThreadID {
+        threadID = resumedReviewThreadID
         turnPrompt = CodexTechLeadReviewer.recoveryPrompt(
           item: item,
           integratedSHA: integration.integratedSHA,
@@ -4330,15 +4446,19 @@ final class AppModel: ObservableObject {
       } else {
         threadID = try await client.startReadOnlyThread(
           workingDirectory: integration.url,
-          developerInstructions: CodexTechLeadReviewer.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions: techLead.effectiveInstructions,
-            reviewer: techLead
-          ),
+          developerInstructions: developerInstructions,
           model: techLead.model,
           allowsApprovals: true
         )
         turnPrompt = fullReviewPrompt
+        if replacedUnavailableThread {
+          _ = try await store.appendComment(
+            workItemID: item.id,
+            authorKind: .system,
+            authorName: "StoryPointless",
+            body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same integrated revision; implementation and integration were not repeated."
+          )
+        }
       }
 
       _ = try await store.updateAgentRun(
@@ -4347,7 +4467,9 @@ final class AppModel: ObservableObject {
         codexThreadID: threadID,
         worktreePath: integration.url.path,
         eventActor: "StoryPointless",
-        eventDetail: "Continuing Tech Lead review against the same integrated revision"
+        eventDetail: replacedUnavailableThread
+          ? "Replaced an unavailable review Conversation"
+          : "Continuing Tech Lead review against the same integrated revision"
       )
       await reloadSelectedProduct()
 
@@ -4364,11 +4486,7 @@ final class AppModel: ObservableObject {
       } catch let error as CodexRPCError where error.isThreadNotFound {
         threadID = try await client.startReadOnlyThread(
           workingDirectory: integration.url,
-          developerInstructions: CodexTechLeadReviewer.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions: techLead.effectiveInstructions,
-            reviewer: techLead
-          ),
+          developerInstructions: developerInstructions,
           model: techLead.model,
           allowsApprovals: true
         )
@@ -4986,7 +5104,34 @@ final class AppModel: ObservableObject {
       )
       var revisionThreadID: String
       if let existingThreadID = implementationRun.codexThreadID {
-        revisionThreadID = existingThreadID
+        do {
+          revisionThreadID = try await client.resumeWorkspaceThread(
+            threadID: existingThreadID,
+            workingDirectory: revisionWorkspace,
+            developerInstructions: developerInstructions,
+            model: implementer.model,
+            readOnlyGitDirectory: repositoryURL.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
+          )
+        } catch let error as CodexRPCError where error.isThreadNotFound {
+          revisionThreadID = try await client.startWorkspaceThread(
+            workingDirectory: revisionWorkspace,
+            developerInstructions: developerInstructions,
+            model: implementer.model,
+            readOnlyGitDirectory: repositoryURL.appendingPathComponent(
+              ".git",
+              isDirectory: true
+            )
+          )
+          _ = try await store.appendComment(
+            workItemID: item.id,
+            authorKind: .system,
+            authorName: "StoryPointless",
+            body: "The delivery agent’s previous Conversation was unavailable. I started a replacement in the preserved ticket workspace and passed it the Tech Lead’s feedback."
+          )
+        }
       } else {
         revisionThreadID = try await client.startWorkspaceThread(
           workingDirectory: revisionWorkspace,
@@ -4997,13 +5142,13 @@ final class AppModel: ObservableObject {
             isDirectory: true
           )
         )
-        _ = try await store.updateAgentRun(
-          id: implementationRun.id,
-          status: .running,
-          codexThreadID: revisionThreadID,
-          worktreePath: revisionWorkspace.path
-        )
       }
+      _ = try await store.updateAgentRun(
+        id: implementationRun.id,
+        status: .running,
+        codexThreadID: revisionThreadID,
+        worktreePath: revisionWorkspace.path
+      )
 
       let turnID: String
       do {
@@ -5212,17 +5357,49 @@ final class AppModel: ObservableObject {
       let developerInstructions = CodexConflictIntegrator.developerInstructions(
         productInstructions: inheritedAgentInstructions(for: product)
       )
-      var threadID = try await client.startWorkspaceThread(
-        workingDirectory: workspace,
-        developerInstructions: developerInstructions,
-        model: techLead.model,
-        readOnlyGitDirectory: productGitDirectory
-      )
+      var replacedUnavailableThread = false
+      var threadID: String
+      if let existingThreadID = resolutionRun.codexThreadID {
+        do {
+          threadID = try await client.resumeWorkspaceThread(
+            threadID: existingThreadID,
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: techLead.model,
+            readOnlyGitDirectory: productGitDirectory
+          )
+        } catch let error as CodexRPCError where error.isThreadNotFound {
+          threadID = try await client.startWorkspaceThread(
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: techLead.model,
+            readOnlyGitDirectory: productGitDirectory
+          )
+          replacedUnavailableThread = true
+          _ = try await store.appendComment(
+            workItemID: item.id,
+            authorKind: .system,
+            authorName: "StoryPointless",
+            body: "The Integrator’s previous Conversation was unavailable. I started a replacement in the preserved conflict workspace."
+          )
+        }
+      } else {
+        threadID = try await client.startWorkspaceThread(
+          workingDirectory: workspace,
+          developerInstructions: developerInstructions,
+          model: techLead.model,
+          readOnlyGitDirectory: productGitDirectory
+        )
+      }
       _ = try await store.updateAgentRun(
         id: resolutionRun.id,
         status: .running,
         codexThreadID: threadID,
-        worktreePath: workspace.path
+        worktreePath: workspace.path,
+        eventActor: replacedUnavailableThread ? "StoryPointless" : nil,
+        eventDetail: replacedUnavailableThread
+          ? "Replaced an unavailable Integrator Conversation"
+          : nil
       )
       let comments = try await store.fetchComments(workItemID: item.id)
       let resolutionPrompt = CodexConflictIntegrator.prompt(
@@ -6040,9 +6217,11 @@ final class AppModel: ObservableObject {
   }
 
   func pendingPermissionRequest(workItemID: UUID) -> AgentPermissionRequest? {
-    permissionRequests
-      .filter { $0.workItemID == workItemID && $0.status == .pending }
-      .max(by: { $0.createdAt < $1.createdAt })
+    sprintWorkRecoveryPolicy.actionablePermissionRequest(
+      for: workItemID,
+      runs: runs,
+      permissionRequests: permissionRequests
+    )
   }
 
   func decidePermissionRequest(
@@ -6051,15 +6230,21 @@ final class AppModel: ObservableObject {
     rememberForProduct: Bool = false
   ) async {
     guard
-      request.status == .pending,
+      request.status.needsOwnerDecision,
       let store,
-      let client = codexClient,
-      let serverRequest = liveApprovalRequests[request.id]
+      let client = codexClient
     else {
       errorMessage =
-        "This permission request is no longer attached to a live agent turn. Retry the ticket so the agent can request it again."
+        "This permission request is no longer waiting for a decision."
       return
     }
+    let serverRequest = liveApprovalRequests[request.id]
+    guard request.status != .pending || serverRequest != nil else {
+      errorMessage =
+        "This permission request is no longer attached to a live agent turn. Relaunch StoryPointless to recover it before deciding."
+      return
+    }
+    let resumesAfterDecision = request.status == .interrupted
     do {
       let proposedGrant: AgentPermissionGrant?
       if allow && rememberForProduct {
@@ -6084,13 +6269,15 @@ final class AppModel: ObservableObject {
       if let proposedGrant {
         savedGrant = try await store.saveAgentPermissionGrant(proposedGrant)
       }
-      do {
-        try await client.resolveApprovalRequest(serverRequest, allow: allow)
-      } catch {
-        if let proposedGrant, savedGrant?.id == proposedGrant.id {
-          _ = try? await store.revokeAgentPermissionGrant(id: proposedGrant.id)
+      if let serverRequest {
+        do {
+          try await client.resolveApprovalRequest(serverRequest, allow: allow)
+        } catch {
+          if let proposedGrant, savedGrant?.id == proposedGrant.id {
+            _ = try? await store.revokeAgentPermissionGrant(id: proposedGrant.id)
+          }
+          throw error
         }
-        throw error
       }
       liveApprovalRequests.removeValue(forKey: request.id)
       let updated = try await store.updateAgentPermissionRequest(
@@ -6119,7 +6306,13 @@ final class AppModel: ObservableObject {
         run.status == .awaitingOwner
       {
         let eventDetail =
-          if allow && rememberForProduct {
+          if resumesAfterDecision && allow && rememberForProduct {
+            "Saved the recovered capability for this product; queued the Conversation to resume"
+          } else if resumesAfterDecision && allow {
+            "Allowed the recovered capability once; queued the Conversation to resume"
+          } else if resumesAfterDecision {
+            "Denied the recovered capability; queued the Conversation so the agent can adapt"
+          } else if allow && rememberForProduct {
             "Saved and allowed the requested capability for this product"
           } else if allow {
             "Allowed the requested capability once"
@@ -6128,12 +6321,15 @@ final class AppModel: ObservableObject {
           }
         _ = try await store.updateAgentRun(
           id: request.agentRunID,
-          status: .running,
+          status: resumesAfterDecision ? .queued : .running,
           eventActor: "Product Owner",
           eventDetail: eventDetail
         )
       }
       await reloadSelectedProduct()
+      if resumesAfterDecision {
+        scheduleSprintExecution()
+      }
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -6191,13 +6387,20 @@ final class AppModel: ObservableObject {
       }
     )
 
-    if permissionRequests.contains(where: {
-      $0.agentRunID == runID
-        && $0.signature == presentation.signature
-        && $0.status == .allowed
-    }) {
+    if let priorDecision = (
+      permissionRequests
+        .filter {
+          $0.agentRunID == runID
+            && $0.signature == presentation.signature
+            && ($0.status == .allowed || $0.status == .denied)
+        }
+        .max(by: { $0.updatedAt < $1.updatedAt })
+    ) {
       do {
-        try await client.resolveApprovalRequest(request, allow: true)
+        try await client.resolveApprovalRequest(
+          request,
+          allow: priorDecision.status == .allowed
+        )
         return
       } catch {
         // Fall through to a visible request if the automatic response could not be sent.

@@ -159,7 +159,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered == nil)
   }
 
-  @Test("An interrupted live permission decision recovers its paused run")
+  @Test("An interrupted live permission decision recovers a run queued during shutdown")
   func interruptedPermissionDecisionIsRecoverable() {
     let productID = UUID()
     let workItemID = UUID()
@@ -170,7 +170,7 @@ struct SprintWorkRecoveryTests {
       productID: productID,
       workItemID: workItemID,
       profileID: UUID(),
-      status: .awaitingOwner,
+      status: .queued,
       updatedAt: requestDate.addingTimeInterval(-1)
     )
     let request = AgentPermissionRequest(
@@ -235,6 +235,90 @@ struct SprintWorkRecoveryTests {
     #expect(recovered.isEmpty)
   }
 
+  @Test("Only the current permission pause remains actionable after relaunch")
+  func actionablePermissionRequestIsRunStateAware() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let runUpdatedAt = Date()
+    let run = AgentRun(
+      id: runID,
+      productID: productID,
+      workItemID: workItemID,
+      profileID: UUID(),
+      status: .awaitingOwner,
+      updatedAt: runUpdatedAt
+    )
+    let liveRequest = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn",
+      serverRequestID: "live-request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "command|swift test",
+      status: .pending,
+      updatedAt: runUpdatedAt.addingTimeInterval(-1)
+    )
+    let recoveredRequest = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn",
+      serverRequestID: "recovered-request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "command|swift test",
+      status: .interrupted,
+      updatedAt: runUpdatedAt.addingTimeInterval(1)
+    )
+    let staleRequest = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn",
+      serverRequestID: "stale-request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "command|swift test",
+      status: .interrupted,
+      updatedAt: runUpdatedAt.addingTimeInterval(-1)
+    )
+    let policy = SprintWorkRecoveryPolicy()
+
+    #expect(
+      policy.actionablePermissionRequest(
+        for: workItemID,
+        runs: [run],
+        permissionRequests: [liveRequest]
+      )?.id == liveRequest.id
+    )
+    #expect(
+      policy.actionablePermissionRequest(
+        for: workItemID,
+        runs: [run],
+        permissionRequests: [recoveredRequest]
+      )?.id == recoveredRequest.id
+    )
+    #expect(
+      policy.actionablePermissionRequest(
+        for: workItemID,
+        runs: [run],
+        permissionRequests: [staleRequest]
+      ) == nil
+    )
+  }
+
   @Test("Permission continuation uses the latest reusable decision for the same run")
   func latestPermissionContinuationIsRunScoped() {
     let productID = UUID()
@@ -293,7 +377,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.id == latestInterrupted.id)
   }
 
-  @Test("App suspension requeues implementation while a manual stop remains paused")
+  @Test("App suspension preserves a permission pause while other work requeues")
   func implementationTurnStopDispositionPreservesOwnerIntent() {
     let policy = SprintWorkRecoveryPolicy()
 
@@ -302,6 +386,13 @@ struct SprintWorkRecoveryTests {
         taskWasCancelled: true,
         wasManuallyStopped: false
       ) == .queued
+    )
+    #expect(
+      policy.implementationRunStatusAfterTurnStops(
+        taskWasCancelled: true,
+        wasManuallyStopped: false,
+        wasAwaitingPermission: true
+      ) == .awaitingOwner
     )
     #expect(
       policy.implementationRunStatusAfterTurnStops(

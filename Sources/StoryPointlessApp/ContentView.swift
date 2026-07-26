@@ -8779,6 +8779,7 @@ private struct SprintTicketDetailView: View {
     let requestProfile = run.flatMap { run in
       model.profiles.first { $0.id == run.profileID }
     }
+    let isActionable = pendingPermissionRequest?.id == request.id
     return workLogArtifactRow(
       actorName: requestProfile?.name ?? "StoryPointless",
       profile: requestProfile,
@@ -8805,13 +8806,26 @@ private struct SprintTicketDetailView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(permissionStatusTitle(request.status))
+            Text(
+              permissionStatusTitle(
+                request.status,
+                isActionable: isActionable
+              )
+            )
               .font(.caption.weight(.semibold))
-              .foregroundStyle(permissionStatusTint(request.status))
+              .foregroundStyle(
+                permissionStatusTint(
+                  request.status,
+                  isActionable: isActionable
+                )
+              )
               .padding(.horizontal, 8)
               .padding(.vertical, 4)
               .background(
-                permissionStatusTint(request.status).opacity(0.1),
+                permissionStatusTint(
+                  request.status,
+                  isActionable: isActionable
+                ).opacity(0.1),
                 in: Capsule()
               )
           }
@@ -8821,7 +8835,7 @@ private struct SprintTicketDetailView: View {
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
 
-          if request.status == .pending {
+          if isActionable {
             HStack {
               Spacer()
               Button("Deny") {
@@ -8850,7 +8864,10 @@ private struct SprintTicketDetailView: View {
             }
           }
 
-          if let explanation = permissionExplanation(request) {
+          if let explanation = permissionExplanation(
+            request,
+            isActionable: isActionable
+          ) {
             Text(explanation)
               .font(.caption)
               .foregroundStyle(.secondary)
@@ -8868,28 +8885,32 @@ private struct SprintTicketDetailView: View {
   }
 
   private func permissionStatusTitle(
-    _ status: AgentPermissionRequestStatus
+    _ status: AgentPermissionRequestStatus,
+    isActionable: Bool
   ) -> String {
     switch status {
     case .pending: "Needs your input"
     case .allowed: "Allowed"
     case .denied: "Denied"
-    case .interrupted: "Interrupted"
+    case .interrupted: isActionable ? "Needs your input" : "Interrupted"
     }
   }
 
   private func permissionStatusTint(
-    _ status: AgentPermissionRequestStatus
+    _ status: AgentPermissionRequestStatus,
+    isActionable: Bool
   ) -> Color {
     switch status {
     case .pending: .orange
     case .allowed: .green
-    case .denied, .interrupted: .secondary
+    case .denied: .secondary
+    case .interrupted: isActionable ? .orange : .secondary
     }
   }
 
   private func permissionExplanation(
-    _ request: AgentPermissionRequest
+    _ request: AgentPermissionRequest,
+    isActionable: Bool
   ) -> String? {
     switch request.status {
     case .pending:
@@ -8898,6 +8919,8 @@ private struct SprintTicketDetailView: View {
       } else {
         nil
       }
+    case .interrupted where isActionable:
+      "StoryPointless restarted after this request. Your decision will be applied when the same Conversation resumes."
     case .allowed, .denied, .interrupted:
       nil
     }
