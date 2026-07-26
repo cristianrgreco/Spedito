@@ -29,7 +29,7 @@ struct PlanningDropPolicyTests {
 
     #expect(!evaluation.isValid)
     #expect(evaluation.blockingConstraint == .sprintScope)
-    #expect(evaluation.message == "Move T1 too; T2 depends on it.")
+    #expect(evaluation.message == "Move T1 too; T2 depends on it")
   }
 
   @Test("A prerequisite cannot leave a sprint while its dependant remains")
@@ -44,7 +44,7 @@ struct PlanningDropPolicyTests {
 
     #expect(!evaluation.isValid)
     #expect(evaluation.blockingConstraint == .sprintScope)
-    #expect(evaluation.message == "Move T2 too; it depends on T1.")
+    #expect(evaluation.message == "Move T2 too; it depends on T1")
   }
 
   @Test("A complete dependency branch can enter the sprint atomically")
@@ -81,12 +81,12 @@ struct PlanningDropPolicyTests {
 
     #expect(!abovePrerequisite.isValid)
     #expect(abovePrerequisite.blockingConstraint == .rank)
-    #expect(abovePrerequisite.message == "Place T2 below T1.")
+    #expect(abovePrerequisite.message == "Place T2 below T1")
     #expect(beforeDownstream.isValid)
     #expect(beforeDownstream.rankAction == .preserve)
     #expect(!belowDownstream.isValid)
     #expect(belowDownstream.blockingConstraint == .rank)
-    #expect(belowDownstream.message == "Place T2 above T3.")
+    #expect(belowDownstream.message == "Place T2 above T3")
   }
 
   @Test("Returning through a no-op target retains the active drag target")
@@ -107,6 +107,17 @@ struct PlanningDropPolicyTests {
     )
 
     #expect(currentTarget == noOpTarget)
+  }
+
+  @Test("Drop previews retain the table's resting geometry")
+  func dropPreviewsRetainTableGeometry() {
+    #expect(
+      PlanningTicketDropSlotLayout.height(showsRestingDivider: false) == 0
+    )
+    #expect(
+      PlanningTicketDropSlotLayout.height(showsRestingDivider: true)
+        == PlanningTicketDropSlotLayout.dividerHeight
+    )
   }
 
   @Test("Repeated invalid previews do not relax after visiting the valid position")

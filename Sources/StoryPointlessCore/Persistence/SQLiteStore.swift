@@ -267,6 +267,7 @@ public actor SQLiteStore {
       productID: productID,
       title: provisionalTitle,
       goal: goal,
+      color: try nextEpicColor(productID: productID),
       rank: try nextEpicRank(productID: productID)
     )
     try transaction {
@@ -274,8 +275,8 @@ public actor SQLiteStore {
         """
         INSERT INTO epics (
             id, product_id, title, goal, success_criteria_json, constraints,
-            status, rank, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            status, color, rank, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(epic.id.uuidString, to: 1, in: statement)
@@ -285,9 +286,10 @@ public actor SQLiteStore {
         try bind(try encodeStringArray(epic.successCriteria), to: 5, in: statement)
         try bind(epic.constraints, to: 6, in: statement)
         try bind(epic.status.rawValue, to: 7, in: statement)
-        try bind(Int64(epic.rank), to: 8, in: statement)
-        try bind(epic.createdAt.timeIntervalSince1970, to: 9, in: statement)
-        try bind(epic.updatedAt.timeIntervalSince1970, to: 10, in: statement)
+        try bind(epic.color.rawValue, to: 8, in: statement)
+        try bind(Int64(epic.rank), to: 9, in: statement)
+        try bind(epic.createdAt.timeIntervalSince1970, to: 10, in: statement)
+        try bind(epic.updatedAt.timeIntervalSince1970, to: 11, in: statement)
         try stepDone(statement)
       }
       _ = try insertEvent(
@@ -300,11 +302,43 @@ public actor SQLiteStore {
     return epic
   }
 
+  private func nextEpicColor(productID: UUID) throws -> EpicColor {
+    let existingColors = try withStatement(
+      """
+      SELECT color
+      FROM epics
+      WHERE product_id = ? AND status = 'open'
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var colors: [EpicColor] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        let rawValue = try text(statement, column: 0)
+        guard let color = EpicColor(rawValue: rawValue) else {
+          throw PersistenceError.corruptData("Invalid epic color")
+        }
+        colors.append(color)
+      }
+      return colors
+    }
+
+    let usedColors = Set(existingColors)
+    if let unusedColor = EpicColor.assignmentOrder.first(where: {
+      !usedColors.contains($0)
+    }) {
+      return unusedColor
+    }
+    return EpicColor.assignmentOrder[
+      existingColors.count % EpicColor.assignmentOrder.count
+    ]
+  }
+
   public func fetchEpics(productID: UUID) throws -> [Epic] {
     try withStatement(
       """
       SELECT id, product_id, title, goal, success_criteria_json, constraints,
-             status, rank, created_at, updated_at
+             status, color, rank, created_at, updated_at
       FROM epics
       WHERE product_id = ?
       ORDER BY rank ASC, created_at ASC;
@@ -2156,7 +2190,7 @@ public actor SQLiteStore {
     guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw SprintPlanningError.notReady(["Add a sprint goal."])
     }
-    guard (1...64).contains(concurrencyLimit) else {
+    guard concurrencyLimit > 0 else {
       throw SprintPlanningError.invalidConcurrency
     }
     if let tokenBudgetLimit, tokenBudgetLimit <= 0 {
@@ -2324,11 +2358,11 @@ public actor SQLiteStore {
         SprintReadinessIssue(id: "sprint.empty", message: "Select at least one ticket."))
     }
 
-    if !(1...64).contains(sprint.concurrencyLimit) {
+    if sprint.concurrencyLimit <= 0 {
       issues.append(
         SprintReadinessIssue(
           id: "sprint.parallelism",
-          message: "Parallelism must be between 1 and 64."
+          message: "Parallelism must be greater than zero."
         )
       )
     }
@@ -6619,6 +6653,194 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    if try !migrationApplied(version: 49, database: database) {
+      if try columnExists("color", in: "epics", database: database) {
+        try execute(
+          """
+          BEGIN IMMEDIATE;
+
+          WITH ordered_epics AS (
+            SELECT
+              id,
+              ROW_NUMBER() OVER (
+                PARTITION BY product_id
+                ORDER BY created_at ASC, id ASC
+              ) AS position
+            FROM epics
+          )
+          UPDATE epics
+          SET color = CASE (
+            SELECT (position - 1) % 6
+            FROM ordered_epics
+            WHERE ordered_epics.id = epics.id
+          )
+            WHEN 0 THEN 'blue'
+            WHEN 1 THEN 'teal'
+            WHEN 2 THEN 'green'
+            WHEN 3 THEN 'orange'
+            WHEN 4 THEN 'pink'
+            ELSE 'indigo'
+          END;
+
+          INSERT INTO schema_migrations (version, applied_at)
+          VALUES (49, unixepoch());
+
+          COMMIT;
+          """,
+          database: database
+        )
+      } else {
+        try execute(
+          """
+          BEGIN IMMEDIATE;
+
+          ALTER TABLE epics
+          ADD COLUMN color TEXT NOT NULL DEFAULT 'blue';
+
+          WITH ordered_epics AS (
+            SELECT
+              id,
+              ROW_NUMBER() OVER (
+                PARTITION BY product_id
+                ORDER BY created_at ASC, id ASC
+              ) AS position
+            FROM epics
+          )
+          UPDATE epics
+          SET color = CASE (
+            SELECT (position - 1) % 6
+            FROM ordered_epics
+            WHERE ordered_epics.id = epics.id
+          )
+            WHEN 0 THEN 'blue'
+            WHEN 1 THEN 'teal'
+            WHEN 2 THEN 'green'
+            WHEN 3 THEN 'orange'
+            WHEN 4 THEN 'pink'
+            ELSE 'indigo'
+          END;
+
+          INSERT INTO schema_migrations (version, applied_at)
+          VALUES (49, unixepoch());
+
+          COMMIT;
+          """,
+          database: database
+        )
+      }
+    }
+
+    if try !migrationApplied(version: 50, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        WITH ordered_epics AS (
+          SELECT
+            id,
+            ROW_NUMBER() OVER (
+              PARTITION BY product_id
+              ORDER BY created_at ASC, id ASC
+            ) AS position
+          FROM epics
+        )
+        UPDATE epics
+        SET color = CASE (
+          SELECT (position - 1) % 6
+          FROM ordered_epics
+          WHERE ordered_epics.id = epics.id
+        )
+          WHEN 0 THEN 'blue'
+          WHEN 1 THEN 'teal'
+          WHEN 2 THEN 'green'
+          WHEN 3 THEN 'orange'
+          WHEN 4 THEN 'pink'
+          ELSE 'indigo'
+        END;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (50, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 51, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        WITH ordered_epics AS (
+          SELECT
+            id,
+            ROW_NUMBER() OVER (
+              PARTITION BY product_id, status
+              ORDER BY created_at ASC, id ASC
+            ) AS position
+          FROM epics
+        )
+        UPDATE epics
+        SET color = CASE (
+          SELECT (position - 1) % 6
+          FROM ordered_epics
+          WHERE ordered_epics.id = epics.id
+        )
+          WHEN 0 THEN 'blue'
+          WHEN 1 THEN 'teal'
+          WHEN 2 THEN 'green'
+          WHEN 3 THEN 'orange'
+          WHEN 4 THEN 'pink'
+          ELSE 'indigo'
+        END;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (51, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 52, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        WITH ordered_epics AS (
+          SELECT
+            id,
+            ROW_NUMBER() OVER (
+              PARTITION BY product_id, status
+              ORDER BY created_at ASC, id ASC
+            ) AS position
+          FROM epics
+        )
+        UPDATE epics
+        SET color = CASE (
+          SELECT (position - 1) % 6
+          FROM ordered_epics
+          WHERE ordered_epics.id = epics.id
+        )
+          WHEN 0 THEN 'blue'
+          WHEN 1 THEN 'green'
+          WHEN 2 THEN 'indigo'
+          WHEN 3 THEN 'orange'
+          WHEN 4 THEN 'teal'
+          ELSE 'pink'
+        END;
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (52, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
   }
 
   private static func columnExists(
@@ -7837,7 +8059,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, title, goal, success_criteria_json, constraints,
-             status, rank, created_at, updated_at
+             status, color, rank, created_at, updated_at
       FROM epics WHERE id = ?;
       """
     ) { statement in
@@ -7853,7 +8075,8 @@ public actor SQLiteStore {
     guard
       let id = UUID(uuidString: try text(statement, column: 0)),
       let productID = UUID(uuidString: try text(statement, column: 1)),
-      let status = EpicStatus(rawValue: try text(statement, column: 6))
+      let status = EpicStatus(rawValue: try text(statement, column: 6)),
+      let color = EpicColor(rawValue: try text(statement, column: 7))
     else {
       throw PersistenceError.corruptData("Invalid epic")
     }
@@ -7865,9 +8088,10 @@ public actor SQLiteStore {
       successCriteria: try decodeStringArray(try text(statement, column: 4)),
       constraints: try text(statement, column: 5),
       status: status,
-      rank: Int(sqlite3_column_int64(statement, 7)),
-      createdAt: date(statement, column: 8),
-      updatedAt: date(statement, column: 9)
+      color: color,
+      rank: Int(sqlite3_column_int64(statement, 8)),
+      createdAt: date(statement, column: 9),
+      updatedAt: date(statement, column: 10)
     )
   }
 

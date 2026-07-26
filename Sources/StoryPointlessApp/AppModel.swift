@@ -139,7 +139,7 @@ struct PlanningDropPolicy {
     guard !movingIDs.isEmpty, movingIDs == requestedMovingIDs else {
       return .invalid(
         .unavailable,
-        message: "These tickets are no longer available for planning."
+        message: "These tickets are no longer available for planning"
       )
     }
 
@@ -172,8 +172,8 @@ struct PlanningDropPolicy {
         itemsByID[edge.dependsOnWorkItemID]?.key ?? "its prerequisite"
       let message =
         intoCandidateSprint
-        ? "Move \(prerequisiteKey) too; \(dependentKey) depends on it."
-        : "Move \(dependentKey) too; it depends on \(prerequisiteKey)."
+        ? "Move \(prerequisiteKey) too; \(dependentKey) depends on it"
+        : "Move \(dependentKey) too; it depends on \(prerequisiteKey)"
       return .invalid(.sprintScope, message: message)
     }
 
@@ -186,7 +186,7 @@ struct PlanningDropPolicy {
     {
       return .invalid(
         .unavailable,
-        message: "That drop position is no longer available."
+        message: "That drop position is no longer available"
       )
     }
 
@@ -261,8 +261,8 @@ struct PlanningDropPolicy {
       let message =
         movingIDs.contains(edge.dependsOnWorkItemID)
           && !movingIDs.contains(edge.workItemID)
-        ? "Place \(prerequisiteKey) above \(dependentKey)."
-        : "Place \(dependentKey) below \(prerequisiteKey)."
+        ? "Place \(prerequisiteKey) above \(dependentKey)"
+        : "Place \(dependentKey) below \(prerequisiteKey)"
       return .invalid(.rank, message: message)
     }
 

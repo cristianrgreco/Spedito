@@ -81,7 +81,8 @@ Initial tables cover:
 - Story/Task/Bug work-item classification and an optional epic foreign key;
   Epic Created/Planned/In progress/Complete progress remains derived from
   non-archived child tickets, while persisted Open/Closed/Archived status
-  records only owner lifecycle decisions;
+  records only owner lifecycle decisions and a durable display-color token
+  visually connects an Epic to its tickets;
 - comments and activity events, including an optional structured Product Owner
   question with two to four answer options;
 - agent profiles and runs;

@@ -18,11 +18,15 @@ staggered dependency outline above the backlog; suggestions remain outside
 backlog scope until the owner accepts them. The backlog itself is now a compact,
 ranked list split into **Next sprint** and **Backlog** sections. Entire ticket
 rows can be dragged between them without changing rank when the destination
-does not express a new ordering. During a drag, dependency-safe insertion
-positions are shown in blue and an invalid hovered position turns red with its
-constraint. Invalid destination rows are de-emphasized while valid targets stay
-at full opacity; top/bottom ranking actions also reject dependency-invalid
-orders. Full-width separators reinforce the shared column layout. Explicit row
+does not express a new ordering. Every Epic receives the next durable color in
+a contrast-spaced, stable per-product palette; matching left-edge markers connect
+its Epic row and tickets across the backlog and Sprint Board. During a drag,
+dependency-safe insertion positions are shown in blue and an invalid hovered
+position turns red with its constraint. Invalid destination rows are
+de-emphasized while valid targets stay at full opacity. Insertion lines and
+constraint labels overlay the fixed row boundaries rather than resizing the
+table; top/bottom ranking actions also reject dependency-invalid orders.
+Full-width separators reinforce the shared column layout. Explicit row
 selection, section-wide select-all, bulk actions, and grouped drag/drop move
 several tickets between Backlog and Next sprint in one dependency-safe plan
 update. Any row opens a full editor for type, priority, context, acceptance

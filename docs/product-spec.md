@@ -375,9 +375,13 @@ The backlog should present epics as compact, collapsible groups with an outcome,
 derived progress, and clear **No epic** group. Open epics appear first; closed
 epics collapse into one full-width summary row within the same epic table and can
 be expanded inline without duplicating the table headers. The disclosure choice is
-remembered per product. Owners can drag tickets between groups without affecting
-workflow state. Small products do not need an epic, and autosuggestion should avoid
-generating empty hierarchy for its own sake.
+remembered per product. Each Epic receives the next durable color from the
+product's contrast-spaced blue, green, indigo, orange, teal, and pink sequence,
+cycling only after the palette is exhausted. Its Epic row and every associated
+ticket row show the same left-edge marker in the Backlog, and associated ticket
+cards retain that marker on the Sprint Board. Owners can drag tickets between
+groups without affecting workflow state. Small products do not need an epic,
+and autosuggestion should avoid generating empty hierarchy for its own sake.
 Archiving an epic also archives its unfinished backlog tickets and rejects its
 outstanding proposed tickets atomically while preserving their epic association
 for history. Any in-flight proposal generation is cancelled so late results
@@ -733,8 +737,10 @@ sprint board. Its primary information is product scope and planning confidence:
   dragging, every dependency-safe insertion position is indicated in blue; an
   invalid hovered position turns red and names the sprint-scope or ranking
   constraint before the owner drops the tickets. Invalid destination rows are
-  de-emphasized while valid targets remain at full opacity. Colour is reinforced
-  by a warning symbol, text, and an accessibility label;
+  de-emphasized while valid targets remain at full opacity. Insertion lines and
+  constraint labels overlay fixed row boundaries so beginning or moving a drag
+  never reflows the table. Colour is reinforced by a warning symbol, text, and
+  an accessibility label;
 - backlog rank is the authoritative delivery order, while priority remains a
   lightweight urgency/value signal rather than silently re-sorting owner intent;
 - dependencies remain explicit graph relationships in the canonical flat list.

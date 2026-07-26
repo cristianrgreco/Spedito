@@ -71,6 +71,21 @@ struct SprintReportPresentationTests {
     #expect(labels.count <= 5)
   }
 
+  @Test("Sprint axes pad the first and latest sprint by half an interval")
+  func sprintAxisDomain() {
+    let data = (1...8).map { datum(sprintNumber: $0) }
+
+    #expect(
+      SprintReportPresentation.sprintAxisDomain(in: data) == 0.5...8.5
+    )
+    #expect(
+      SprintReportPresentation.sprintAxisDomain(
+        in: [datum(sprintNumber: 7)]
+      ) == 6.5...7.5
+    )
+    #expect(SprintReportPresentation.sprintAxisDomain(in: []) == nil)
+  }
+
   @Test("Duration axes plot in a natural unit before choosing ticks")
   func durationScale() {
     let seconds = SprintReportDurationScale(maximumDuration: 45)

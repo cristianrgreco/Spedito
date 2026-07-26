@@ -246,4 +246,52 @@ struct WorkflowPolicyTests {
     )
     #expect(secondEligible?.id == secondRun.id)
   }
+
+  @Test("Scheduler admits every independent implementation run without a ticket cap")
+  func uncappedIndependentRunAdmission() {
+    let productID = UUID()
+    let implementerID = UUID()
+    let sprint = Sprint(
+      productID: productID,
+      number: 1,
+      goal: "Deliver every independent outcome",
+      state: .active,
+      concurrencyLimit: 1
+    )
+    let workItems = (1...65).map { index in
+      WorkItem(
+        productID: productID,
+        key: "T-\(index)",
+        title: "Independent outcome \(index)",
+        state: .queued,
+        rank: index
+      )
+    }
+    let sprintItems = workItems.map { item in
+      SprintItem(
+        sprintID: sprint.id,
+        workItemID: item.id,
+        implementerProfileID: implementerID,
+        estimatedTokens: 100
+      )
+    }
+    let runs = zip(workItems, sprintItems).map { item, sprintItem in
+      AgentRun(
+        productID: productID,
+        sprintID: sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        profileID: implementerID
+      )
+    }
+
+    let eligible = SprintRunAdmission.eligibleImplementationRuns(
+      plan: SprintPlan(sprint: sprint, items: sprintItems),
+      runs: runs,
+      workItems: workItems,
+      dependencies: []
+    )
+
+    #expect(eligible.map(\.id) == runs.map(\.id))
+  }
 }

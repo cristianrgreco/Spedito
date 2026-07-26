@@ -99,6 +99,24 @@ public enum EpicStatus: String, Codable, CaseIterable, Hashable, Sendable {
   }
 }
 
+public enum EpicColor: String, Codable, CaseIterable, Hashable, Sendable {
+  case blue
+  case teal
+  case green
+  case orange
+  case pink
+  case indigo
+
+  static let assignmentOrder: [EpicColor] = [
+    .blue,
+    .green,
+    .indigo,
+    .orange,
+    .teal,
+    .pink,
+  ]
+}
+
 public enum EpicProgress: String, Codable, CaseIterable, Hashable, Sendable {
   case created
   case planned
@@ -148,6 +166,7 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
   public var successCriteria: [String]
   public var constraints: String
   public var status: EpicStatus
+  public var color: EpicColor
   public var rank: Int
   public let createdAt: Date
   public var updatedAt: Date
@@ -160,6 +179,7 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
     successCriteria: [String] = [],
     constraints: String = "",
     status: EpicStatus = .open,
+    color: EpicColor = .blue,
     rank: Int = 0,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -171,9 +191,39 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
     self.successCriteria = successCriteria
     self.constraints = constraints
     self.status = status
+    self.color = color
     self.rank = rank
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case productID
+    case title
+    case goal
+    case successCriteria
+    case constraints
+    case status
+    case color
+    case rank
+    case createdAt
+    case updatedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(UUID.self, forKey: .id)
+    productID = try container.decode(UUID.self, forKey: .productID)
+    title = try container.decode(String.self, forKey: .title)
+    goal = try container.decode(String.self, forKey: .goal)
+    successCriteria = try container.decodeIfPresent([String].self, forKey: .successCriteria) ?? []
+    constraints = try container.decodeIfPresent(String.self, forKey: .constraints) ?? ""
+    status = try container.decodeIfPresent(EpicStatus.self, forKey: .status) ?? .open
+    color = try container.decodeIfPresent(EpicColor.self, forKey: .color) ?? .blue
+    rank = try container.decodeIfPresent(Int.self, forKey: .rank) ?? 0
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
   }
 }
 
@@ -1007,7 +1057,7 @@ public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
     case .emptySprint:
       "Select at least one ready ticket."
     case .invalidConcurrency:
-      "Sprint parallelism must be between 1 and 64."
+      "Sprint parallelism must be greater than zero."
     case .invalidTokenBudget:
       "The sprint token budget must be greater than zero."
     case .duplicateWorkItem:

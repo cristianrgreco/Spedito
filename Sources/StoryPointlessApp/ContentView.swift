@@ -950,6 +950,19 @@ private extension ProductColor {
   }
 }
 
+private extension EpicColor {
+  var displayColor: Color {
+    switch self {
+    case .blue: .blue
+    case .teal: .teal
+    case .green: .green
+    case .orange: .orange
+    case .pink: .pink
+    case .indigo: .indigo
+    }
+  }
+}
+
 private struct ProductIcon: View {
   let product: Product
   let size: CGFloat
@@ -2764,6 +2777,11 @@ private struct EpicPlanningRow: View {
             .frame(height: 2)
         }
       }
+      .overlay(alignment: .leading) {
+        Rectangle()
+          .fill(epic.color.displayColor)
+          .frame(width: 4)
+      }
     }
     .buttonStyle(.plain)
     .onHover { hovering in
@@ -3262,6 +3280,11 @@ private struct CandidateSprintRow: View {
       .first { $0.workItemID == item.id }
   }
 
+  private var epicColor: Color? {
+    guard let epicID = item.epicID else { return nil }
+    return model.epics.first { $0.id == epicID }?.color.displayColor
+  }
+
   private var owner: AgentProfile? {
     guard let ownerID = sprintItem?.implementerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
@@ -3371,6 +3394,14 @@ private struct CandidateSprintRow: View {
         ? Color.accentColor.opacity(0.1)
         : (isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
     )
+    .overlay(alignment: .leading) {
+      if let epicColor {
+        Rectangle()
+          .fill(epicColor)
+          .frame(width: 4)
+          .accessibilityHidden(true)
+      }
+    }
     .contentShape(Rectangle())
     .saturation(dropEvaluation?.isValid == false ? 0.2 : 1)
     .opacity(
@@ -3498,7 +3529,7 @@ private struct PlanningTicketList: View {
       .padding(.horizontal, 2)
       .padding(.bottom, 1)
 
-      Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+      VStack(spacing: 0) {
         PlanningTicketTableHeader(
           itemCount: items.count,
           selectedItemCount: selectedItemCount,
@@ -3511,7 +3542,6 @@ private struct PlanningTicketList: View {
           )
 
         Divider()
-          .gridCellUnsizedAxes(.horizontal)
 
         if items.isEmpty && suggestionBatch == nil {
           VStack(spacing: 7) {
@@ -3557,7 +3587,6 @@ private struct PlanningTicketList: View {
             maxHeight: .infinity,
             alignment: .center
           )
-          .gridCellColumns(6)
           .dropDestination(
             for: String.self,
             action: { values, _ in performDrop(values, at: 0) },
@@ -3566,7 +3595,6 @@ private struct PlanningTicketList: View {
         } else {
           if let suggestionBatch {
             InlineBacklogSuggestions(batch: suggestionBatch)
-              .gridCellColumns(6)
           }
 
           ForEach(0...items.count, id: \.self) { index in
@@ -3585,7 +3613,6 @@ private struct PlanningTicketList: View {
               activeDropTarget: $activeDropTarget,
               onDrop: { values in performDrop(values, at: index) }
             )
-            .gridCellColumns(6)
 
             if index < items.count {
               let item = items[index]
@@ -3745,8 +3772,15 @@ private enum PlanningTicketTableLayout {
   static let referenceWidth = PlanningTicketTableMetrics.referenceWidth
   static let dependenciesWidth: CGFloat = 76
   static let assigneeWidth = PlanningTicketTableMetrics.assigneeWidth
-  static let readinessWidth = PlanningTicketTableMetrics.readinessWidth
   static let priorityWidth = PlanningTicketTableMetrics.priorityWidth
+}
+
+enum PlanningTicketDropSlotLayout {
+  static let dividerHeight: CGFloat = 1
+
+  static func height(showsRestingDivider: Bool) -> CGFloat {
+    showsRestingDivider ? dividerHeight : 0
+  }
 }
 
 private struct PlanningTicketTableHeader: View {
@@ -3771,52 +3805,48 @@ private struct PlanningTicketTableHeader: View {
   }
 
   var body: some View {
-    GridRow(alignment: .center) {
-      PlanningSelectionCheckbox(
-        symbol: selectionSymbol,
-        isActive: selectedItemCount > 0,
-        isDisabled: itemCount == 0,
-        helpText: selectionHelp,
-        action: onToggleSelection
-      )
-      .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
-      Text("Ticket")
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
-        .gridColumnAlignment(.leading)
-      Text("Dependencies")
-        .frame(
-          width: PlanningTicketTableLayout.dependenciesWidth,
-          alignment: .leading
+    Grid(horizontalSpacing: 0) {
+      GridRow(alignment: .center) {
+        PlanningSelectionCheckbox(
+          symbol: selectionSymbol,
+          isActive: selectedItemCount > 0,
+          isDisabled: itemCount == 0,
+          helpText: selectionHelp,
+          action: onToggleSelection
         )
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.leading)
-      Text("Assignee")
-        .frame(
-          width: PlanningTicketTableLayout.assigneeWidth,
-          alignment: .center
-        )
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.center)
-      Text("Readiness")
-        .frame(
-          width: PlanningTicketTableLayout.readinessWidth,
-          alignment: .center
-        )
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .gridColumnAlignment(.center)
-      Text("Priority")
-        .frame(
-          width: PlanningTicketTableLayout.priorityWidth,
-          alignment: .center
-        )
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
-        .gridColumnAlignment(.center)
+        .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
+        Text("Ticket")
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+          .gridColumnAlignment(.leading)
+        Text("Dependencies")
+          .frame(
+            width: PlanningTicketTableLayout.dependenciesWidth,
+            alignment: .leading
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .gridColumnAlignment(.leading)
+        Text("Assignee")
+          .frame(
+            width: PlanningTicketTableLayout.assigneeWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .gridColumnAlignment(.center)
+        Text("Priority")
+          .frame(
+            width: PlanningTicketTableLayout.priorityWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
+          .gridColumnAlignment(.center)
+      }
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .frame(height: 32)
     }
-    .font(.caption.weight(.semibold))
-    .foregroundStyle(.secondary)
-    .frame(height: 32)
+    .frame(maxWidth: .infinity)
   }
 }
 
@@ -3852,77 +3882,84 @@ private struct PlanningTicketDropSlot: View {
   }
 
   var body: some View {
-    ZStack {
-      if isActive {
-        HStack(spacing: 7) {
-          Image(
-            systemName:
-              evaluation?.isValid == false
-              ? "exclamationmark.triangle.fill" : "circle.fill"
-          )
-          .font(.system(size: 7, weight: .bold))
-          .foregroundStyle(indicatorColor)
-          Rectangle()
-            .fill(indicatorColor)
-            .frame(height: 2)
-          Text(activeLabel)
+    Color.clear
+      .frame(
+        height: PlanningTicketDropSlotLayout.height(
+          showsRestingDivider: showsRestingDivider
+        )
+      )
+      .overlay {
+        if isActive {
+          HStack(spacing: 7) {
+            Rectangle()
+              .fill(indicatorColor)
+              .frame(height: 2)
+            Label {
+              Text(activeLabel)
+                .lineLimit(1)
+            } icon: {
+              Image(
+                systemName:
+                  evaluation?.isValid == false
+                  ? "exclamationmark.triangle.fill" : "circle.fill"
+              )
+              .font(.system(size: 7, weight: .bold))
+            }
             .font(.caption2.weight(.semibold))
             .foregroundStyle(indicatorColor)
-            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.regularMaterial, in: Capsule())
+            Rectangle()
+              .fill(indicatorColor)
+              .frame(height: 2)
+          }
+          .padding(.horizontal, 10)
+          .fixedSize(horizontal: false, vertical: true)
+          .transition(.opacity.combined(with: .scale(scale: 0.96)))
+        } else if showsValidPosition {
+          HStack(spacing: 5) {
+            Circle()
+              .fill(Color.accentColor.opacity(0.65))
+              .frame(width: 4, height: 4)
+            Rectangle()
+              .fill(Color.accentColor.opacity(0.48))
+              .frame(height: 2)
+          }
+          .padding(.horizontal, 10)
+        } else if showsRestingDivider {
           Rectangle()
-            .fill(indicatorColor)
-            .frame(height: 2)
+            .fill(Color(nsColor: .separatorColor))
+            .frame(height: PlanningTicketDropSlotLayout.dividerHeight)
+            .padding(.horizontal, 1)
         }
-        .padding(.horizontal, 14)
-        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-      } else if showsValidPosition {
-        HStack(spacing: 5) {
-          Circle()
-            .fill(Color.accentColor.opacity(0.65))
-            .frame(width: 4, height: 4)
-          Rectangle()
-            .fill(Color.accentColor.opacity(0.48))
-            .frame(height: 2)
-        }
-        .padding(.horizontal, 10)
-      } else if showsRestingDivider {
-        Rectangle()
-          .fill(Color(nsColor: .separatorColor))
-          .frame(height: 1)
-          .padding(.horizontal, 1)
       }
-    }
-    .frame(
-      height:
+      .zIndex(isActive ? 10 : (showsValidPosition ? 1 : 0))
+      .contentShape(Rectangle())
+      .accessibilityLabel(
         isActive
-        ? 26
-        : ((showsRestingDivider || showsValidPosition) ? 2 : 0)
-    )
-    .contentShape(Rectangle())
-    .accessibilityLabel(
-      isActive
-        ? activeLabel
-        : (showsValidPosition ? "Valid drop position" : "Ticket separator")
-    )
-    .help(
-      isActive
-        ? activeLabel
-        : (showsValidPosition ? "Valid drop position" : "")
-    )
-    .dropDestination(
-      for: String.self,
-      action: { values, _ in onDrop(values) },
-      isTargeted: { targeted in
-        withAnimation(.snappy(duration: 0.16)) {
-          activeDropTarget = PlanningDropTargetState.updated(
-            current: activeDropTarget,
-            target: target,
-            isTargeted: targeted
-          )
+          ? activeLabel
+          : (showsValidPosition ? "Valid drop position" : "Ticket separator")
+      )
+      .help(
+        isActive
+          ? activeLabel
+          : (showsValidPosition ? "Valid drop position" : "")
+      )
+      .dropDestination(
+        for: String.self,
+        action: { values, _ in onDrop(values) },
+        isTargeted: { targeted in
+          withAnimation(.snappy(duration: 0.16)) {
+            activeDropTarget = PlanningDropTargetState.updated(
+              current: activeDropTarget,
+              target: target,
+              isTargeted: targeted
+            )
+          }
         }
-      }
-    )
-    .animation(.snappy(duration: 0.18), value: isActive)
+      )
+      .animation(.snappy(duration: 0.18), value: isActive)
   }
 }
 
@@ -3959,34 +3996,14 @@ private struct PlanningTicketRow: View {
     model.candidateSprintPlan?.items.first { $0.workItemID == item.id }
   }
 
+  private var epicColor: Color? {
+    guard let epicID = item.epicID else { return nil }
+    return model.epics.first { $0.id == epicID }?.color.displayColor
+  }
+
   private var assignedImplementer: AgentProfile? {
     guard let ownerID = sprintItem?.implementerProfileID ?? item.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
-  }
-
-  private var missingReadinessFields: [String] {
-    var fields: [String] = []
-    if item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      fields.append("context")
-    }
-    if item.acceptanceCriteria.isEmpty {
-      fields.append("criteria")
-    }
-    return fields
-  }
-
-  private var readinessLabel: String {
-    switch missingReadinessFields {
-    case []:
-      let count = item.acceptanceCriteria.count
-      return "\(count) \(count == 1 ? "criterion" : "criteria")"
-    case ["context"]:
-      return "No context"
-    case ["criteria"]:
-      return "No criteria"
-    default:
-      return "\(missingReadinessFields.count) missing"
-    }
   }
 
   private var archiveMenuTitle: AttributedString {
@@ -4008,91 +4025,81 @@ private struct PlanningTicketRow: View {
   }
 
   var body: some View {
-    GridRow(alignment: .center) {
-      PlanningSelectionCheckbox(
-        symbol: isSelected ? "checkmark.square.fill" : "square",
-        isActive: isSelected,
-        isDisabled: false,
-        helpText: isSelected ? "Deselect ticket" : "Select ticket",
-        action: onToggleSelection
-      )
-      .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
+    Grid(horizontalSpacing: 0) {
+      GridRow(alignment: .center) {
+        PlanningSelectionCheckbox(
+          symbol: isSelected ? "checkmark.square.fill" : "square",
+          isActive: isSelected,
+          isDisabled: false,
+          helpText: isSelected ? "Deselect ticket" : "Select ticket",
+          action: onToggleSelection
+        )
+        .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
 
-      HStack(spacing: 8) {
-        Image(systemName: item.type.symbolName)
-          .foregroundStyle(item.type.tint)
-          .frame(width: 16)
-        Text(item.key)
-          .font(.caption.monospaced().weight(.semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: PlanningTicketTableLayout.referenceWidth, alignment: .leading)
-        Text(item.title)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
-          .lineLimit(2)
-          .layoutPriority(1)
-        Spacer(minLength: 4)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
-      .contentShape(Rectangle())
-
-      Group {
-        if !activePrerequisites.isEmpty {
-          Label(
-            activePrerequisites.map(\.key).joined(separator: ", "),
-            systemImage: "arrow.turn.down.right"
-          )
-          .foregroundStyle(.indigo)
-          .help(
-            "Waiting for \(activePrerequisites.map(\.key).joined(separator: ", "))"
-          )
-        } else {
-          Text("None")
-            .foregroundStyle(.tertiary)
+        HStack(spacing: 8) {
+          Image(systemName: item.type.symbolName)
+            .foregroundStyle(item.type.tint)
+            .frame(width: 16)
+          Text(item.key)
+            .font(.caption.monospaced().weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: PlanningTicketTableLayout.referenceWidth, alignment: .leading)
+          Text(item.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
+            .lineLimit(2)
+            .layoutPriority(1)
+          Spacer(minLength: 4)
         }
-      }
-      .font(.caption)
-      .lineLimit(1)
-      .frame(
-        width: PlanningTicketTableLayout.dependenciesWidth,
-        alignment: .leading
-      )
-      .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+        .contentShape(Rectangle())
 
-      PlanningAssigneeIcon(profile: assignedImplementer)
-        .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-
-      Image(
-        systemName: missingReadinessFields.isEmpty
-          ? "checkmark.circle.fill" : "exclamationmark.circle"
-      )
-      .font(.system(size: 13, weight: .semibold))
-      .foregroundStyle(missingReadinessFields.isEmpty ? .green : .orange)
-      .frame(
-        width: PlanningTicketTableLayout.readinessWidth,
-        alignment: .center
-      )
-      .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-      .accessibilityLabel(readinessLabel)
-      .help(
-        missingReadinessFields.isEmpty
-          ? "The ticket has context and acceptance criteria."
-          : "Add \(missingReadinessFields.joined(separator: " and ")) before sprint execution."
-      )
-
-      SprintPriorityIndicator(priority: item.priority)
+        Group {
+          if !activePrerequisites.isEmpty {
+            Label(
+              activePrerequisites.map(\.key).joined(separator: ", "),
+              systemImage: "arrow.turn.down.right"
+            )
+            .foregroundStyle(.indigo)
+            .help(
+              "Waiting for \(activePrerequisites.map(\.key).joined(separator: ", "))"
+            )
+          } else {
+            Text("None")
+              .foregroundStyle(.tertiary)
+          }
+        }
+        .font(.caption)
+        .lineLimit(1)
         .frame(
-          width: PlanningTicketTableLayout.priorityWidth,
-          alignment: .center
+          width: PlanningTicketTableLayout.dependenciesWidth,
+          alignment: .leading
         )
         .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-        .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
+
+        PlanningAssigneeIcon(profile: assignedImplementer)
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+
+        SprintPriorityIndicator(priority: item.priority)
+          .frame(
+            width: PlanningTicketTableLayout.priorityWidth,
+            alignment: .center
+          )
+          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
+          .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
+      }
     }
     .frame(minHeight: PlanningTicketTableMetrics.rowHeight)
-    .background {
-      Rectangle()
-        .fill(rowBackground)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(rowBackground)
+    .overlay(alignment: .leading) {
+      if let epicColor {
+        Rectangle()
+          .fill(epicColor)
+          .frame(width: 4)
+          .accessibilityHidden(true)
+      }
     }
     .saturation(dropEvaluation?.isValid == false ? 0.2 : 1)
     .opacity(
@@ -4745,19 +4752,6 @@ private struct InlineTicketSuggestionRow: View {
           .padding(.leading, PlanningTicketTableLayout.columnSpacing)
           .accessibilityLabel(suggestion.suggestedRole.title)
           .help(suggestion.suggestedRole.title)
-
-        Image(systemName: "checkmark.circle.fill")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(.green)
-          .frame(
-            width: PlanningTicketTableLayout.readinessWidth,
-            alignment: .center
-          )
-          .padding(.leading, PlanningTicketTableLayout.columnSpacing)
-          .accessibilityLabel(
-            "\(suggestion.acceptanceCriteria.count) acceptance criteria"
-          )
-          .help("\(suggestion.acceptanceCriteria.count) acceptance criteria")
 
         SprintPriorityIndicator(priority: suggestion.priority)
           .frame(
@@ -7997,6 +7991,19 @@ enum SprintReportPresentation {
     return labels
   }
 
+  static func sprintAxisDomain(
+    in data: [SprintReportDatum]
+  ) -> ClosedRange<Double>? {
+    let sprintNumbers = data.map(\.sprintNumber)
+    guard
+      let firstSprintNumber = sprintNumbers.min(),
+      let lastSprintNumber = sprintNumbers.max()
+    else {
+      return nil
+    }
+    return (Double(firstSprintNumber) - 0.5)...(Double(lastSprintNumber) + 0.5)
+  }
+
   static func countAxisValues(
     maximumCount: Int,
     desiredIntervals: Int = 4
@@ -8100,6 +8107,10 @@ private struct SprintTimeTrendChart: View {
     SprintReportPresentation.axisSprintNumbers(in: data)
   }
 
+  private var sprintAxisDomain: ClosedRange<Double> {
+    SprintReportPresentation.sprintAxisDomain(in: data) ?? 0.5...1.5
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
@@ -8167,6 +8178,7 @@ private struct SprintTimeTrendChart: View {
               .lineStyle(StrokeStyle(lineWidth: 1))
           }
         }
+        .chartXScale(domain: sprintAxisDomain)
         .chartYScale(domain: 0...maximumPlottedValue)
         .chartYAxis {
           AxisMarks(position: .leading) { value in
@@ -8216,6 +8228,10 @@ private struct SprintOutcomeChart: View {
 
   private var axisSprintNumbers: [Int] {
     SprintReportPresentation.axisSprintNumbers(in: data)
+  }
+
+  private var sprintAxisDomain: ClosedRange<Double> {
+    SprintReportPresentation.sprintAxisDomain(in: data) ?? 0.5...1.5
   }
 
   private var countAxisValues: [Int] {
@@ -8281,6 +8297,7 @@ private struct SprintOutcomeChart: View {
             .lineStyle(StrokeStyle(lineWidth: 1))
         }
       }
+      .chartXScale(domain: sprintAxisDomain)
       .chartYScale(domain: 0...Double(maximumCount) * 1.12)
       .chartYAxis {
         AxisMarks(position: .leading, values: countAxisValues) { value in
@@ -9476,6 +9493,11 @@ private struct WorkItemCard: View {
     model.sprintPlan?.items.first { $0.workItemID == item.id }
   }
 
+  private var epicColor: Color? {
+    guard let epicID = item.epicID else { return nil }
+    return model.epics.first { $0.id == epicID }?.color.displayColor
+  }
+
   private var itemRuns: [AgentRun] {
     model.runs.filter { $0.workItemID == item.id }
   }
@@ -9671,6 +9693,14 @@ private struct WorkItemCard: View {
         cardShape.stroke(Color.white.opacity(0.1), lineWidth: 1)
       }
     }
+    .overlay(alignment: .leading) {
+      if let epicColor {
+        Rectangle()
+          .fill(epicColor)
+          .frame(width: 4)
+      }
+    }
+    .clipShape(cardShape)
     .shadow(
       color: showsWorkflowActions ? cardShadow : .clear,
       radius: showsWorkflowActions ? cardShadowRadius : 0,
@@ -13555,68 +13585,42 @@ private struct SprintPlanningView: View {
           }
         }
 
-        HStack(alignment: .top, spacing: 16) {
-          VStack(alignment: .leading, spacing: 0) {
-            HStack {
-              VStack(alignment: .leading, spacing: 2) {
-                Text("Sprint scope")
-                  .font(.headline)
-                Text("Choose the delivery assignee for every ticket before starting the sprint.")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-              }
-              Spacer()
-              Text("Priority and order come from the backlog")
+        VStack(alignment: .leading, spacing: 0) {
+          HStack {
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Sprint scope")
+                .font(.headline)
+              Text("Choose the delivery assignee for every ticket before starting the sprint.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            .padding(14)
+            Spacer()
+            Text("Priority and order come from the backlog")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          .padding(14)
 
-            Divider()
+          Divider()
 
-            ScrollView {
-              LazyVStack(spacing: 0) {
-                ForEach(Array(waves.enumerated()), id: \.offset) { waveIndex, wave in
-                  SprintPlanningWave(
-                    number: waveIndex + 1,
-                    lines: wave,
-                    isLast: waveIndex == waves.count - 1,
-                    deliveryProfiles: deliveryProfiles,
-                    assigneeBinding: assigneeBinding(for:)
-                  )
-                }
+          ScrollView {
+            LazyVStack(spacing: 0) {
+              ForEach(Array(waves.enumerated()), id: \.offset) { waveIndex, wave in
+                SprintPlanningWave(
+                  number: waveIndex + 1,
+                  lines: wave,
+                  isLast: waveIndex == waves.count - 1,
+                  deliveryProfiles: deliveryProfiles,
+                  assigneeBinding: assigneeBinding(for:)
+                )
               }
             }
           }
-          .background(.background, in: RoundedRectangle(cornerRadius: 14))
-          .overlay {
-            RoundedRectangle(cornerRadius: 14)
-              .stroke(.separator.opacity(0.65), lineWidth: 1)
-          }
-
-          VStack(alignment: .leading, spacing: 14) {
-            Label("Planning analysis", systemImage: "chart.bar.doc.horizontal")
-              .font(.headline)
-
-            PlanningAnalysisRow(
-              title: "Parallel delivery",
-              detail: executionSummary,
-              symbol: "arrow.triangle.branch"
-            )
-            PlanningAnalysisRow(
-              title: "Review strategy",
-              detail: "The Tech Lead reviews implementation work during execution; the Product Owner approves each demo.",
-              symbol: "checkmark.bubble"
-            )
-            PlanningAnalysisRow(
-              title: "Forecast confidence",
-              detail: "Broad until completed runs calibrate this product. Ranges include implementation and verification.",
-              symbol: "waveform.path.ecg"
-            )
-          }
-          .padding(18)
-          .frame(width: 300, alignment: .topLeading)
-          .background(.indigo.opacity(0.055), in: RoundedRectangle(cornerRadius: 14))
+        }
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+          RoundedRectangle(cornerRadius: 14)
+            .stroke(.separator.opacity(0.65), lineWidth: 1)
         }
       }
 
@@ -13655,13 +13659,6 @@ private struct SprintPlanningView: View {
     .padding(26)
     .frame(minWidth: 1_000, idealWidth: 1_160, minHeight: 680, idealHeight: 780)
     .onAppear(perform: prepare)
-  }
-
-  private var executionSummary: String {
-    guard let widest = waves.map(\.count).max(), widest > 1 else {
-      return "Dependencies require mostly sequential delivery across \(waves.count) waves."
-    }
-    return "The dependency graph allows up to \(widest) tickets to run together across \(waves.count) waves."
   }
 
   private var saveBlockerText: String {
@@ -13922,33 +13919,10 @@ private struct SprintPlanningTicketRow: View {
   }
 }
 
-private struct PlanningAnalysisRow: View {
-  let title: String
-  let detail: String
-  let symbol: String
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: symbol)
-        .foregroundStyle(.indigo)
-        .frame(width: 18)
-      VStack(alignment: .leading, spacing: 3) {
-        Text(title)
-          .font(.subheadline.weight(.semibold))
-        Text(detail)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-  }
-}
-
 private struct LegacySprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   @State private var goal = ""
-  @State private var concurrencyLimit = 4
   @State private var selections: [UUID: TicketPlanSelection] = [:]
   @State private var currentIndex = 0
   @State private var showingSummary = false
@@ -13972,6 +13946,10 @@ private struct LegacySprintPlanningView: View {
 
   private var implementers: [AgentProfile] {
     model.profiles.filter { $0.role.canImplement }
+  }
+
+  private var concurrencyLimit: Int {
+    max(1, readyItems.count)
   }
 
   private var defaultConversationRecipient: AgentProfile? {
@@ -14366,9 +14344,6 @@ private struct LegacySprintPlanningView: View {
       VStack(alignment: .leading, spacing: 16) {
         TextField("Sprint goal", text: $goal)
           .textFieldStyle(.roundedBorder)
-        Stepper(value: $concurrencyLimit, in: 1...64) {
-          LabeledContent("Maximum parallel work", value: concurrencyLimit.formatted())
-        }
 
         Text("Sprint tickets")
           .font(.headline)
@@ -14456,7 +14431,6 @@ private struct LegacySprintPlanningView: View {
 
     if let plan = model.candidateSprintPlan {
       goal = plan.sprint.goal
-      concurrencyLimit = plan.sprint.concurrencyLimit
       for sprintItem in plan.items {
         selections[sprintItem.workItemID] = TicketPlanSelection(
           implementerID: sprintItem.implementerProfileID

@@ -60,6 +60,105 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Epics follow the palette order and survive restart")
+  func epicColorsAreAssignedAndPersisted() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Colorful planning",
+      vision: "Keep related delivery work easy to scan"
+    )
+    let epics = try await [
+      store.createEpic(productID: product.id, outcome: "First outcome"),
+      store.createEpic(productID: product.id, outcome: "Second outcome"),
+      store.createEpic(productID: product.id, outcome: "Third outcome"),
+    ]
+
+    #expect(epics.map(\.color) == [.blue, .green, .indigo])
+
+    let assignedColors = Dictionary(
+      uniqueKeysWithValues: epics.map { ($0.id, $0.color) }
+    )
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recoveredColors = Dictionary(
+      uniqueKeysWithValues:
+        try await reopened.fetchEpics(productID: product.id).map { ($0.id, $0.color) }
+    )
+    #expect(recoveredColors == assignedColors)
+    await reopened.close()
+  }
+
+  @Test("Epic color migration backfills existing Epics")
+  func epicColorMigrationBackfillsExistingEpics() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic color migration",
+      vision: "Preserve existing outcomes"
+    )
+    let first = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep the first outcome"
+    )
+    let second = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep the second outcome"
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      ALTER TABLE epics DROP COLUMN color;
+      DELETE FROM schema_migrations WHERE version = 49;
+      DELETE FROM schema_migrations WHERE version = 50;
+      DELETE FROM schema_migrations WHERE version = 51;
+      DELETE FROM schema_migrations WHERE version = 52;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let migrated = try await reopened.fetchEpics(productID: product.id)
+    #expect(Set(migrated.map(\.id)) == [first.id, second.id])
+    #expect(migrated.map(\.color) == [.blue, .green])
+    await reopened.close()
+  }
+
+  @Test("Epic color migration resequences existing assignments")
+  func epicColorMigrationResequencesExistingAssignments() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic color resequencing",
+      vision: "Keep the palette predictable"
+    )
+    _ = try await store.createEpic(productID: product.id, outcome: "First outcome")
+    _ = try await store.createEpic(productID: product.id, outcome: "Second outcome")
+    _ = try await store.createEpic(productID: product.id, outcome: "Third outcome")
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE epics SET color = 'pink' WHERE product_id = '\(product.id.uuidString)';
+      DELETE FROM schema_migrations WHERE version = 50;
+      DELETE FROM schema_migrations WHERE version = 51;
+      DELETE FROM schema_migrations WHERE version = 52;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let migrated = try await reopened.fetchEpics(productID: product.id)
+    #expect(migrated.map(\.color) == [.blue, .green, .indigo])
+    await reopened.close()
+  }
+
   @Test("Epic lifecycle migration preserves open and owner-confirmed outcomes")
   func epicLifecycleMigrationMapsLegacyStatuses() async throws {
     let fixture = try DatabaseFixture()
@@ -549,6 +648,42 @@ struct SQLiteStoreTests {
     #expect(recoveredPlan.items.count == 2)
     #expect(recoveredRuns.count == 2)
     await reopened.close()
+  }
+
+  @Test("Sprint planning accepts parallelism above the legacy ceiling")
+  func sprintPlanningHasNoLegacyParallelismCeiling() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Elastic delivery",
+      vision: "Plan every eligible ticket"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver an independent outcome"
+    )
+
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Allow an elastic execution wave",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 65,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+
+    #expect(draft.sprint.concurrencyLimit == 65)
+    #expect(try await store.sprintReadinessIssues(sprintID: draft.sprint.id).isEmpty)
+    await store.close()
   }
 
   @Test("Missing acceptance intent keeps a sprint draft and creates no runs")
