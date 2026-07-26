@@ -14,6 +14,19 @@ private extension EnvironmentValues {
   }
 }
 
+struct ConversationDetailSheetSizing {
+  static func size(for containerSize: CGSize) -> CGSize {
+    CGSize(
+      width: min(1_080, max(900, containerSize.width - 72)),
+      height: min(740, max(620, containerSize.height - 72))
+    )
+  }
+
+  static func conversationWidth(for detailWidth: CGFloat) -> CGFloat {
+    min(430, max(360, detailWidth * 0.4))
+  }
+}
+
 struct ContentView: View {
   @EnvironmentObject private var model: AppModel
 
@@ -169,6 +182,14 @@ enum RetrospectivePhase: Equatable {
   case collecting
   case reviewing
   case concluded
+
+  var pickerTitle: String {
+    switch self {
+    case .collecting: "In progress"
+    case .reviewing: "Needs conclusion"
+    case .concluded: "Concluded"
+    }
+  }
 
   init(sprint: Sprint) {
     if sprint.retrospectiveConcludedAt != nil {
@@ -448,7 +469,7 @@ private struct ProductWorkspaceView: View {
   private func presentInitialEpicIfNeeded() {
     guard
       let productID = model.selectedProductID,
-      model.activeEpics.isEmpty,
+      model.openEpics.isEmpty,
       model.workItems.isEmpty,
       !showingProductLibrary
     else { return }
@@ -1973,33 +1994,46 @@ private struct AddPersonaView: View {
   }
 }
 
-private enum PlanningDropSection: Equatable {
+enum PlanningDropSection: Equatable {
   case candidateSprint
   case backlog
 }
 
-private struct PlanningDropTarget: Equatable {
+struct PlanningDropTarget: Equatable {
   let section: PlanningDropSection
   let index: Int
+}
+
+enum PlanningDropTargetState {
+  static func updated(
+    current: PlanningDropTarget?,
+    target: PlanningDropTarget,
+    isTargeted: Bool
+  ) -> PlanningDropTarget? {
+    if isTargeted {
+      return target
+    }
+    return current == target ? nil : current
+  }
 }
 
 struct EpicPlanningSections {
   let allEpics: [Epic]
   let openEpics: [Epic]
-  let completedEpics: [Epic]
+  let closedEpics: [Epic]
   let deliveredTicketCount: Int
 
   init(epics: [Epic], workItems: [WorkItem]) {
     let visibleEpics = epics.filter { $0.status != .archived }
-    let visibleOpenEpics = visibleEpics.filter { $0.status == .active }
-    let visibleCompletedEpics = visibleEpics.filter { $0.status == .complete }
-    let completedEpicIDs = Set(visibleCompletedEpics.map(\.id))
+    let visibleOpenEpics = visibleEpics.filter { $0.status == .open }
+    let visibleClosedEpics = visibleEpics.filter { $0.status == .closed }
+    let closedEpicIDs = Set(visibleClosedEpics.map(\.id))
     allEpics = visibleEpics
     openEpics = visibleOpenEpics
-    completedEpics = visibleCompletedEpics
+    closedEpics = visibleClosedEpics
     deliveredTicketCount = workItems.filter {
       guard let epicID = $0.epicID else { return false }
-      return completedEpicIDs.contains(epicID) && $0.state == .released
+      return closedEpicIDs.contains(epicID) && $0.state == .released
     }.count
   }
 
@@ -2018,23 +2052,25 @@ enum TicketEpicNavigation {
 }
 
 struct BacklogPlanningSizing {
+  static let tableRowHeight: CGFloat = 40
+  static let tableRowDividerHeight: CGFloat = 1
   static let emptyEpicHeight: CGFloat = 166
   static let epicChromeHeight: CGFloat = 66
-  static let epicRowHeight: CGFloat = 49
+  static let epicRowHeight = tableRowHeight + tableRowDividerHeight
   static let minimumBacklogHeight: CGFloat = 260
   static let maximumPreferredBacklogContentHeight: CGFloat = 420
   static let backlogChromeHeight: CGFloat = 132
-  static let backlogRowHeight: CGFloat = 54
+  static let backlogRowHeight = tableRowHeight + tableRowDividerHeight
 
   static func epicHeight(
     openEpicCount: Int,
-    completedEpicCount: Int,
-    completedEpicsExpanded: Bool
+    closedEpicCount: Int,
+    closedEpicsExpanded: Bool
   ) -> CGFloat {
     let visibleRowCount =
       openEpicCount
-      + (completedEpicCount > 0 ? 1 : 0)
-      + (completedEpicsExpanded ? completedEpicCount : 0)
+      + (closedEpicCount > 0 ? 1 : 0)
+      + (closedEpicsExpanded ? closedEpicCount : 0)
 
     guard visibleRowCount > 0 else { return emptyEpicHeight }
     return CGFloat(visibleRowCount) * epicRowHeight + epicChromeHeight
@@ -2095,8 +2131,8 @@ private struct BacklogView: View {
   @State private var planningDropTarget: PlanningDropTarget?
   @State private var dragResetTask: Task<Void, Never>?
   @State private var dropExitResetTask: Task<Void, Never>?
-  @State private var completedEpicsExpanded = false
-  @State private var completedExpansionProductID: UUID?
+  @State private var closedEpicsExpanded = false
+  @State private var closedExpansionProductID: UUID?
 
   private var allPlanningItems: [WorkItem] {
     model.workItems.filter { [.backlog, .refining, .ready].contains($0.state) }
@@ -2120,7 +2156,7 @@ private struct BacklogView: View {
 
   private var epicSections: EpicPlanningSections {
     EpicPlanningSections(
-      epics: model.activeEpics,
+      epics: model.planningEpics,
       workItems: model.workItems
     )
   }
@@ -2194,8 +2230,8 @@ private struct BacklogView: View {
         let sprintWidth = max(0, availableWidth - leftWidth - dividerThickness)
         let epicHeight = BacklogPlanningSizing.epicHeight(
           openEpicCount: epicSections.openEpics.count,
-          completedEpicCount: epicSections.completedEpics.count,
-          completedEpicsExpanded: completedEpicsExpanded
+          closedEpicCount: epicSections.closedEpics.count,
+          closedEpicsExpanded: closedEpicsExpanded
         )
         let suggestionCount = visibleSuggestionBatch?.suggestions
           .filter { $0.status == .proposed }
@@ -2215,7 +2251,7 @@ private struct BacklogView: View {
                 sections: epicSections,
                 workItems: model.workItems,
                 minimumHeight: epicHeight,
-                isCompletedExpanded: $completedEpicsExpanded,
+                isClosedExpanded: $closedEpicsExpanded,
                 onAddEpic: onNewEpic,
                 onOpen: { selectedEpic = $0 }
               )
@@ -2318,12 +2354,12 @@ private struct BacklogView: View {
       model.backlogFocusEpicID = nil
     }
     .onChange(of: model.selectedProductID, initial: true) { _, productID in
-      restoreCompletedEpicExpansion(for: productID)
+      restoreClosedEpicExpansion(for: productID)
     }
-    .onChange(of: completedEpicsExpanded) { _, isExpanded in
+    .onChange(of: closedEpicsExpanded) { _, isExpanded in
       guard
         let productID = model.selectedProductID,
-        completedExpansionProductID == productID
+        closedExpansionProductID == productID
       else { return }
       EpicPlanningDisclosureDefaults.setExpanded(isExpanded, for: productID)
     }
@@ -2354,14 +2390,14 @@ private struct BacklogView: View {
     }
   }
 
-  private func restoreCompletedEpicExpansion(for productID: UUID?) {
-    completedExpansionProductID = nil
+  private func restoreClosedEpicExpansion(for productID: UUID?) {
+    closedExpansionProductID = nil
     guard let productID else {
-      completedEpicsExpanded = false
+      closedEpicsExpanded = false
       return
     }
-    completedEpicsExpanded = EpicPlanningDisclosureDefaults.isExpanded(for: productID)
-    completedExpansionProductID = productID
+    closedEpicsExpanded = EpicPlanningDisclosureDefaults.isExpanded(for: productID)
+    closedExpansionProductID = productID
   }
 
 }
@@ -2372,7 +2408,7 @@ private struct EpicPlanningList: View {
   let sections: EpicPlanningSections
   let workItems: [WorkItem]
   let minimumHeight: CGFloat
-  @Binding var isCompletedExpanded: Bool
+  @Binding var isClosedExpanded: Bool
   let onAddEpic: () -> Void
   let onOpen: (Epic) -> Void
   @State private var targetedEpicID: UUID?
@@ -2427,18 +2463,18 @@ private struct EpicPlanningList: View {
             }
           }
 
-          if !sections.completedEpics.isEmpty {
+          if !sections.closedEpics.isEmpty {
             if !sections.openEpics.isEmpty {
               Divider()
             }
-            CompletedEpicsDisclosureRow(
-              epicCount: sections.completedEpics.count,
+            ClosedEpicsDisclosureRow(
+              epicCount: sections.closedEpics.count,
               deliveredTicketCount: sections.deliveredTicketCount,
-              isExpanded: $isCompletedExpanded
+              isExpanded: $isClosedExpanded
             )
 
-            if isCompletedExpanded {
-              ForEach(sections.completedEpics) { epic in
+            if isClosedExpanded {
+              ForEach(sections.closedEpics) { epic in
                 Divider()
                 epicRow(epic)
               }
@@ -2455,7 +2491,7 @@ private struct EpicPlanningList: View {
       .clipShape(RoundedRectangle(cornerRadius: 14))
       .overlay {
         RoundedRectangle(cornerRadius: 14)
-          .stroke(Color.secondary.opacity(colorScheme == .dark ? 0.32 : 0.2), lineWidth: 1)
+          .stroke(PlanningDropSurfaceStyle.tableBorder(for: colorScheme), lineWidth: 1)
       }
       .overlay(alignment: .bottom) {
         if !sections.isEmpty {
@@ -2546,14 +2582,14 @@ private struct EpicPlanningList: View {
   }
 }
 
-private struct CompletedEpicsDisclosureRow: View {
+private struct ClosedEpicsDisclosureRow: View {
   let epicCount: Int
   let deliveredTicketCount: Int
   @Binding var isExpanded: Bool
   @State private var isHovering = false
 
   private var epicLabel: String {
-    "\(epicCount) completed \(epicCount == 1 ? "epic" : "epics")"
+    "\(epicCount) closed \(epicCount == 1 ? "epic" : "epics")"
   }
 
   private var ticketLabel: String {
@@ -2582,7 +2618,11 @@ private struct CompletedEpicsDisclosureRow: View {
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 16)
-      .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+      .frame(
+        maxWidth: .infinity,
+        minHeight: BacklogPlanningSizing.tableRowHeight,
+        alignment: .leading
+      )
       .contentShape(Rectangle())
       .background(isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
     }
@@ -2592,7 +2632,7 @@ private struct CompletedEpicsDisclosureRow: View {
         isHovering = hovering
       }
     }
-    .help(isExpanded ? "Hide completed epics" : "Show completed epics")
+    .help(isExpanded ? "Hide closed epics" : "Show closed epics")
   }
 }
 
@@ -2636,25 +2676,29 @@ private struct EpicPlanningRow: View {
     tickets.filter { $0.state == .released }.count
   }
 
-  private var displayStatus: String {
-    if epic.status != .complete, !tickets.isEmpty, completedCount == tickets.count {
-      return "Ready to complete"
-    }
-    return epic.status.title
+  private var progress: EpicProgress {
+    EpicProgress(tickets: tickets)
   }
 
-  private var isReadyToComplete: Bool {
-    epic.status != .complete && !tickets.isEmpty && completedCount == tickets.count
+  private var displayStatus: String {
+    switch epic.status {
+    case .open:
+      return progress.title
+    case .closed, .archived:
+      return epic.status.title
+    }
   }
 
   private var statusColor: Color {
-    if isReadyToComplete {
-      return .purple
-    }
     switch epic.status {
-    case .active:
-      return .blue
-    case .complete:
+    case .open:
+      switch progress {
+      case .created: return .secondary
+      case .planned: return .blue
+      case .inProgress: return .orange
+      case .complete: return .green
+      }
+    case .closed:
       return .green
     case .archived:
       return .secondary
@@ -2706,7 +2750,7 @@ private struct EpicPlanningRow: View {
         }
       }
       .padding(.horizontal, 16)
-      .frame(minHeight: 48)
+      .frame(minHeight: BacklogPlanningSizing.tableRowHeight)
       .contentShape(Rectangle())
       .background(
         isDropTargeted
@@ -2742,6 +2786,7 @@ private struct EpicPlanningRow: View {
       Button(action: onRefine) {
         Label("Refine with AI", systemImage: "wand.and.stars")
       }
+      .disabled(epic.status != .open)
       Divider()
       Button(action: onMoveTop) {
         Label("Move to top", systemImage: "arrow.up.to.line")
@@ -2766,7 +2811,12 @@ private struct EpicPlanningRow: View {
 
 private enum PlanningDropSurfaceStyle {
   static let targetedBackground = Color.accentColor.opacity(0.11)
+  static let invalidTargetedBackground = Color.red.opacity(0.11)
   static let tableHeaderBackground = AnyShapeStyle(.quaternary.opacity(0.18))
+
+  static func tableBorder(for colorScheme: ColorScheme) -> Color {
+    Color.secondary.opacity(colorScheme == .dark ? 0.32 : 0.2)
+  }
 
   static func restingBackground(for colorScheme: ColorScheme) -> Color {
     Color.secondary.opacity(colorScheme == .dark ? 0.075 : 0.035)
@@ -2795,6 +2845,19 @@ private struct CandidateSprintPanel: View {
   }
   private var isDropTargeted: Bool {
     activeDropTarget?.section == .candidateSprint
+      && activeDropEvaluation != nil
+  }
+  private var activeDropEvaluation: PlanningDropEvaluation? {
+    guard
+      let activeDropTarget,
+      activeDropTarget.section == section
+    else {
+      return nil
+    }
+    return dropEvaluation(
+      ids: draggedWorkItemIDs,
+      at: activeDropTarget.index
+    )
   }
 
   var body: some View {
@@ -2842,14 +2905,36 @@ private struct CandidateSprintPanel: View {
 
         if items.isEmpty {
           VStack(spacing: 7) {
-            Image(systemName: "tray.and.arrow.down")
+            Image(
+              systemName:
+                activeDropEvaluation?.isValid == false
+                ? "exclamationmark.triangle.fill"
+                : "tray.and.arrow.down"
+            )
               .font(.title2)
-              .foregroundStyle(.tertiary)
-            Text("Drag backlog tickets here")
+              .foregroundStyle(
+                activeDropEvaluation?.isValid == false
+                  ? Color.red : Color.secondary
+              )
+            Text(
+              activeDropEvaluation?.isValid == false
+                ? "Can't drop here" : "Drag backlog tickets here"
+            )
               .font(.subheadline.weight(.medium))
-            Text("Only scoped work enters sprint planning.")
+            Text(
+              activeDropEvaluation?.message
+                ?? (
+                  isDropTargeted
+                    ? "Backlog rank will stay unchanged."
+                    : "Only scoped work enters sprint planning."
+                )
+            )
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(
+                activeDropEvaluation?.isValid == false
+                  ? Color.red : Color.secondary
+              )
+              .multilineTextAlignment(.center)
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .contentShape(Rectangle())
@@ -2870,6 +2955,10 @@ private struct CandidateSprintPanel: View {
                     ids: draggedWorkItemIDs,
                     at: index
                   ),
+                  evaluation: dropEvaluation(
+                    ids: draggedWorkItemIDs,
+                    at: index
+                  ),
                   activeDropTarget: $activeDropTarget,
                   onDrop: { values in performDrop(values, at: index) }
                 )
@@ -2884,6 +2973,10 @@ private struct CandidateSprintPanel: View {
                     isSelected: selectedWorkItemIDs.contains(item.id),
                     dragSelection: dragSelection,
                     isBeingDragged: draggedWorkItemIDs.contains(item.id),
+                    dropEvaluation: dropEvaluation(
+                      ids: draggedWorkItemIDs,
+                      at: index + 1
+                    ),
                     onToggleSelection: {
                       if selectedWorkItemIDs.contains(item.id) {
                         selectedWorkItemIDs.remove(item.id)
@@ -2907,7 +3000,11 @@ private struct CandidateSprintPanel: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       .background(
         isDropTargeted
-          ? PlanningDropSurfaceStyle.targetedBackground
+          ? (
+            activeDropEvaluation?.isValid == false
+              ? PlanningDropSurfaceStyle.invalidTargetedBackground
+              : PlanningDropSurfaceStyle.targetedBackground
+          )
           : PlanningDropSurfaceStyle.restingBackground(for: colorScheme)
       )
       .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -2952,7 +3049,16 @@ private struct CandidateSprintPanel: View {
       onDragCompleted()
       return true
     }
-    let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
+    let targetID = dropTargetID(ids: ids, at: safeIndex)
+    let evaluation = model.planningDropEvaluation(
+      ids: ids,
+      intoCandidateSprint: true,
+      before: targetID
+    )
+    guard evaluation.isValid else {
+      onDragCompleted()
+      return true
+    }
     model.dropPlanningItems(
       movingItems,
       intoCandidateSprint: true,
@@ -2965,12 +3071,29 @@ private struct CandidateSprintPanel: View {
   private func setDropTarget(_ targeted: Bool, index: Int) {
     let target = PlanningDropTarget(section: section, index: index)
     withAnimation(.snappy(duration: 0.16)) {
-      if targeted && !isNoOpDrop(ids: draggedWorkItemIDs, at: index) {
-        activeDropTarget = target
-      } else if activeDropTarget == target {
-        activeDropTarget = nil
-      }
+      activeDropTarget = PlanningDropTargetState.updated(
+        current: activeDropTarget,
+        target: target,
+        isTargeted: targeted
+      )
     }
+  }
+
+  private func dropEvaluation(
+    ids: Set<UUID>,
+    at index: Int
+  ) -> PlanningDropEvaluation? {
+    guard !ids.isEmpty else { return nil }
+    return model.planningDropEvaluation(
+      ids: ids,
+      intoCandidateSprint: true,
+      before: dropTargetID(ids: ids, at: index)
+    )
+  }
+
+  private func dropTargetID(ids: Set<UUID>, at index: Int) -> UUID? {
+    let safeIndex = min(max(index, 0), items.count)
+    return items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
   }
 
   private func isNoOpDrop(ids: Set<UUID>, at index: Int) -> Bool {
@@ -2988,7 +3111,7 @@ private struct CandidateSprintPanel: View {
 }
 
 private enum PlanningTicketTableMetrics {
-  static let rowHeight: CGFloat = 48
+  static let rowHeight = BacklogPlanningSizing.tableRowHeight
   static let columnSpacing: CGFloat = 6
   static let horizontalPadding: CGFloat = 10
   static let ticketLeadingSpacing: CGFloat = 10
@@ -3126,6 +3249,7 @@ private struct CandidateSprintRow: View {
   let isSelected: Bool
   let dragSelection: Set<UUID>
   let isBeingDragged: Bool
+  let dropEvaluation: PlanningDropEvaluation?
   let onToggleSelection: () -> Void
   let onDragBegan: () -> Void
   let onDrop: ([String]) -> Bool
@@ -3248,7 +3372,12 @@ private struct CandidateSprintRow: View {
         : (isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
     )
     .contentShape(Rectangle())
-    .opacity(isBeingDragged ? 0.28 : 1)
+    .saturation(dropEvaluation?.isValid == false ? 0.2 : 1)
+    .opacity(
+      isBeingDragged
+        ? 0.28
+        : (dropEvaluation?.isValid == false ? 0.45 : 1)
+    )
     .onTapGesture(perform: onOpen)
     .onHover { isHovering = $0 }
     .onDrag {
@@ -3263,6 +3392,7 @@ private struct CandidateSprintRow: View {
       action: { values, _ in onDrop(values) },
       isTargeted: onDropTargeted
     )
+    .animation(.easeOut(duration: 0.12), value: dropEvaluation?.isValid)
     .contextMenu {
       Button(action: onOpen) {
         Label("Open ticket", systemImage: "doc.text.magnifyingglass")
@@ -3301,6 +3431,19 @@ private struct PlanningTicketList: View {
 
   private var isDropTargeted: Bool {
     activeDropTarget?.section == section
+      && activeDropEvaluation != nil
+  }
+  private var activeDropEvaluation: PlanningDropEvaluation? {
+    guard
+      let activeDropTarget,
+      activeDropTarget.section == section
+    else {
+      return nil
+    }
+    return dropEvaluation(
+      ids: draggedWorkItemIDs,
+      at: activeDropTarget.index
+    )
   }
 
   private var itemIDs: Set<UUID> {
@@ -3372,18 +3515,41 @@ private struct PlanningTicketList: View {
 
         if items.isEmpty && suggestionBatch == nil {
           VStack(spacing: 7) {
-            Image(systemName: isCandidateSection ? "tray.and.arrow.down" : "text.badge.plus")
+            Image(
+              systemName:
+                activeDropEvaluation?.isValid == false
+                ? "exclamationmark.triangle.fill"
+                : (isCandidateSection ? "tray.and.arrow.down" : "text.badge.plus")
+            )
               .font(.title2)
-              .foregroundStyle(.tertiary)
-            Text(isCandidateSection ? "Drag backlog tickets here" : "No backlog tickets")
+              .foregroundStyle(
+                activeDropEvaluation?.isValid == false
+                  ? Color.red : Color.secondary
+              )
+            Text(
+              activeDropEvaluation?.isValid == false
+                ? "Can't drop here"
+                : (isCandidateSection ? "Drag backlog tickets here" : "No backlog tickets")
+            )
               .font(.subheadline.weight(.medium))
             Text(
-              isCandidateSection
-                ? "Dependencies must be added before the work that relies on them."
-                : "Add a ticket, or create an epic and let AI plan the outcome."
-          )
-          .font(.caption)
-          .foregroundStyle(.secondary)
+              activeDropEvaluation?.message
+                ?? (
+                  isDropTargeted
+                    ? "Backlog rank will stay unchanged."
+                    : (
+                      isCandidateSection
+                        ? "Dependencies must be added before the work that relies on them."
+                        : "Add a ticket, or create an epic and let AI plan the outcome."
+                    )
+                )
+            )
+            .font(.caption)
+            .foregroundStyle(
+              activeDropEvaluation?.isValid == false
+                ? Color.red : Color.secondary
+            )
+            .multilineTextAlignment(.center)
           }
           .frame(
             maxWidth: .infinity,
@@ -3412,6 +3578,10 @@ private struct PlanningTicketList: View {
                 ids: draggedWorkItemIDs,
                 at: index
               ),
+              evaluation: dropEvaluation(
+                ids: draggedWorkItemIDs,
+                at: index
+              ),
               activeDropTarget: $activeDropTarget,
               onDrop: { values in performDrop(values, at: index) }
             )
@@ -3428,6 +3598,10 @@ private struct PlanningTicketList: View {
                 isSelected: selectedWorkItemIDs.contains(item.id),
                 dragSelection: dragSelection,
                 isBeingDragged: draggedWorkItemIDs.contains(item.id),
+                dropEvaluation: dropEvaluation(
+                  ids: draggedWorkItemIDs,
+                  at: index + 1
+                ),
                 onDragBegan: { onDragBegan(dragSelection) },
                 onDrop: { values in performDrop(values, at: index + 1) },
                 onDropTargeted: { targeted in setDropTarget(targeted, index: index + 1) },
@@ -3451,7 +3625,13 @@ private struct PlanningTicketList: View {
           .frame(height: 32)
       }
       .background(
-        isDropTargeted ? PlanningDropSurfaceStyle.targetedBackground : Color.clear
+        isDropTargeted
+          ? (
+            activeDropEvaluation?.isValid == false
+              ? PlanningDropSurfaceStyle.invalidTargetedBackground
+              : PlanningDropSurfaceStyle.targetedBackground
+          )
+          : Color.clear
       )
       .background(restingBackground)
       .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -3496,7 +3676,16 @@ private struct PlanningTicketList: View {
       onDragCompleted()
       return true
     }
-    let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
+    let targetID = dropTargetID(ids: ids, at: safeIndex)
+    let evaluation = model.planningDropEvaluation(
+      ids: ids,
+      intoCandidateSprint: isCandidateSection,
+      before: targetID
+    )
+    guard evaluation.isValid else {
+      onDragCompleted()
+      return true
+    }
     model.dropPlanningItems(
       movingItems,
       intoCandidateSprint: isCandidateSection,
@@ -3509,12 +3698,29 @@ private struct PlanningTicketList: View {
   private func setDropTarget(_ targeted: Bool, index: Int) {
     let target = PlanningDropTarget(section: section, index: index)
     withAnimation(.snappy(duration: 0.16)) {
-      if targeted && !isNoOpDrop(ids: draggedWorkItemIDs, at: index) {
-        activeDropTarget = target
-      } else if activeDropTarget == target {
-        activeDropTarget = nil
-      }
+      activeDropTarget = PlanningDropTargetState.updated(
+        current: activeDropTarget,
+        target: target,
+        isTargeted: targeted
+      )
     }
+  }
+
+  private func dropEvaluation(
+    ids: Set<UUID>,
+    at index: Int
+  ) -> PlanningDropEvaluation? {
+    guard !ids.isEmpty else { return nil }
+    return model.planningDropEvaluation(
+      ids: ids,
+      intoCandidateSprint: isCandidateSection,
+      before: dropTargetID(ids: ids, at: index)
+    )
+  }
+
+  private func dropTargetID(ids: Set<UUID>, at index: Int) -> UUID? {
+    let safeIndex = min(max(index, 0), items.count)
+    return items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
   }
 
   private func isNoOpDrop(ids: Set<UUID>, at index: Int) -> Bool {
@@ -3619,6 +3825,7 @@ private struct PlanningTicketDropSlot: View {
   let index: Int
   let showsRestingDivider: Bool
   let showsInsertionIndicator: Bool
+  let evaluation: PlanningDropEvaluation?
   @Binding var activeDropTarget: PlanningDropTarget?
   let onDrop: ([String]) -> Bool
 
@@ -3627,28 +3834,57 @@ private struct PlanningTicketDropSlot: View {
   }
 
   private var isActive: Bool {
-    showsInsertionIndicator && activeDropTarget == target
+    showsInsertionIndicator
+      && evaluation != nil
+      && activeDropTarget == target
+  }
+
+  private var indicatorColor: Color {
+    evaluation?.isValid == false ? .red : .accentColor
+  }
+
+  private var activeLabel: String {
+    evaluation?.message ?? "Drop here"
+  }
+
+  private var showsValidPosition: Bool {
+    showsInsertionIndicator && evaluation?.isValid == true
   }
 
   var body: some View {
     ZStack {
       if isActive {
         HStack(spacing: 7) {
-          Circle()
-            .fill(Color.accentColor)
-            .frame(width: 6, height: 6)
+          Image(
+            systemName:
+              evaluation?.isValid == false
+              ? "exclamationmark.triangle.fill" : "circle.fill"
+          )
+          .font(.system(size: 7, weight: .bold))
+          .foregroundStyle(indicatorColor)
           Rectangle()
-            .fill(Color.accentColor)
+            .fill(indicatorColor)
             .frame(height: 2)
-          Text("Drop here")
+          Text(activeLabel)
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(Color.accentColor)
+            .foregroundStyle(indicatorColor)
+            .lineLimit(1)
           Rectangle()
-            .fill(Color.accentColor)
+            .fill(indicatorColor)
             .frame(height: 2)
         }
         .padding(.horizontal, 14)
         .transition(.opacity.combined(with: .scale(scale: 0.96)))
+      } else if showsValidPosition {
+        HStack(spacing: 5) {
+          Circle()
+            .fill(Color.accentColor.opacity(0.65))
+            .frame(width: 4, height: 4)
+          Rectangle()
+            .fill(Color.accentColor.opacity(0.48))
+            .frame(height: 2)
+        }
+        .padding(.horizontal, 10)
       } else if showsRestingDivider {
         Rectangle()
           .fill(Color(nsColor: .separatorColor))
@@ -3656,18 +3892,33 @@ private struct PlanningTicketDropSlot: View {
           .padding(.horizontal, 1)
       }
     }
-    .frame(height: isActive ? 22 : (showsRestingDivider ? 1 : 0))
+    .frame(
+      height:
+        isActive
+        ? 26
+        : ((showsRestingDivider || showsValidPosition) ? 2 : 0)
+    )
     .contentShape(Rectangle())
+    .accessibilityLabel(
+      isActive
+        ? activeLabel
+        : (showsValidPosition ? "Valid drop position" : "Ticket separator")
+    )
+    .help(
+      isActive
+        ? activeLabel
+        : (showsValidPosition ? "Valid drop position" : "")
+    )
     .dropDestination(
       for: String.self,
       action: { values, _ in onDrop(values) },
       isTargeted: { targeted in
         withAnimation(.snappy(duration: 0.16)) {
-          if targeted && showsInsertionIndicator {
-            activeDropTarget = target
-          } else if activeDropTarget == target {
-            activeDropTarget = nil
-          }
+          activeDropTarget = PlanningDropTargetState.updated(
+            current: activeDropTarget,
+            target: target,
+            isTargeted: targeted
+          )
         }
       }
     )
@@ -3682,6 +3933,7 @@ private struct PlanningTicketRow: View {
   let isSelected: Bool
   let dragSelection: Set<UUID>
   let isBeingDragged: Bool
+  let dropEvaluation: PlanningDropEvaluation?
   let onDragBegan: () -> Void
   let onDrop: ([String]) -> Bool
   let onDropTargeted: (Bool) -> Void
@@ -3842,7 +4094,12 @@ private struct PlanningTicketRow: View {
       Rectangle()
         .fill(rowBackground)
     }
-    .opacity(isBeingDragged ? 0.28 : 1)
+    .saturation(dropEvaluation?.isValid == false ? 0.2 : 1)
+    .opacity(
+      isBeingDragged
+        ? 0.28
+        : (dropEvaluation?.isValid == false ? 0.45 : 1)
+    )
     .contentShape(Rectangle())
     .onTapGesture(perform: onOpen)
     .onHover { hovering in
@@ -3862,6 +4119,7 @@ private struct PlanningTicketRow: View {
       action: { values, _ in onDrop(values) },
       isTargeted: onDropTargeted
     )
+    .animation(.easeOut(duration: 0.12), value: dropEvaluation?.isValid)
     .animation(.snappy(duration: 0.18), value: isBeingDragged)
     .animation(.easeOut(duration: 0.12), value: isHovering)
     .help(
@@ -5853,14 +6111,13 @@ private struct RetrospectivesView: View {
         if !availablePlans.isEmpty {
           Picker("Sprint", selection: selectedSprintBinding) {
             ForEach(availablePlans, id: \.sprint.id) { plan in
-              Text(
-                "Sprint \(plan.sprint.number) · \(plan.sprint.state == .active ? "Active" : "Completed")"
-              )
-              .tag(plan.sprint.id)
+              let phase = RetrospectivePhase(sprint: plan.sprint)
+              Text("Sprint \(plan.sprint.number) · \(phase.pickerTitle)")
+                .tag(plan.sprint.id)
             }
           }
           .labelsHidden()
-          .frame(width: 190)
+          .frame(width: 230)
         }
       }
       .padding(24)
@@ -9342,7 +9599,9 @@ private struct WorkItemCard: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
+    let cardShape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+
+    return VStack(alignment: .leading, spacing: 7) {
       HStack(spacing: 8) {
         ticketIdentity
         Spacer(minLength: 0)
@@ -9394,26 +9653,30 @@ private struct WorkItemCard: View {
     .padding(.horizontal, WorkItemCardLayout.edgePadding)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
-      ZStack {
-        cardBackground
-        if isInteractiveHover {
-          Color.accentColor.opacity(0.055)
+      cardShape
+        .fill(cardBackground)
+        .overlay {
+          if isInteractiveHover {
+            cardShape.fill(Color.accentColor.opacity(0.055))
+          }
         }
-      }
-      .clipShape(RoundedRectangle(cornerRadius: 11))
     }
     .overlay {
-      if colorScheme == .dark {
-        RoundedRectangle(cornerRadius: 11)
-          .stroke(Color.white.opacity(0.1), lineWidth: 1)
+      if !showsWorkflowActions {
+        cardShape.strokeBorder(
+          PlanningDropSurfaceStyle.tableBorder(for: colorScheme),
+          lineWidth: 1
+        )
+      } else if colorScheme == .dark {
+        cardShape.stroke(Color.white.opacity(0.1), lineWidth: 1)
       }
     }
     .shadow(
-      color: cardShadow,
-      radius: cardShadowRadius,
-      y: cardShadowOffset
+      color: showsWorkflowActions ? cardShadow : .clear,
+      radius: showsWorkflowActions ? cardShadowRadius : 0,
+      y: showsWorkflowActions ? cardShadowOffset : 0
     )
-    .contentShape(RoundedRectangle(cornerRadius: 11))
+    .contentShape(cardShape)
     .onTapGesture {
       onOpen?(item)
     }
@@ -13975,18 +14238,9 @@ private struct LegacySprintPlanningView: View {
         .defaultScrollAnchor(.bottom)
         .overlay {
           if comments.isEmpty && pendingProposals[item.id] == nil {
-            VStack(spacing: 7) {
-              Image(systemName: "bubble.left.and.bubble.right")
-                .font(.title3)
-                .foregroundStyle(.tertiary)
-              Text("No messages yet")
-                .font(.subheadline.weight(.medium))
-              Text("Ask for clarification or request a ticket review.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ConversationEmptyState(
+              detail: "Ask for clarification or request a ticket review."
+            )
           }
         }
         .onChange(of: commentsByItemID[item.id]?.count ?? 0) { _, _ in
@@ -15217,16 +15471,12 @@ private struct TicketDetailView: View {
       && !isSaving
   }
 
-  private var detailWidth: CGFloat {
-    min(1_320, max(900, workspaceContainerSize.width - 72))
-  }
-
-  private var detailHeight: CGFloat {
-    min(820, max(620, workspaceContainerSize.height - 72))
+  private var detailSize: CGSize {
+    ConversationDetailSheetSizing.size(for: workspaceContainerSize)
   }
 
   private var conversationWidth: CGFloat {
-    min(460, max(360, detailWidth * 0.35))
+    ConversationDetailSheetSizing.conversationWidth(for: detailSize.width)
   }
 
   private var currentSavedSnapshot: SprintPlanningTicketSnapshot? {
@@ -15296,6 +15546,12 @@ private struct TicketDetailView: View {
     bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
+  private var needsInitialRefinement: Bool {
+    guard let item else { return false }
+    return item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || item.acceptanceCriteria.isEmpty
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       HStack(spacing: 12) {
@@ -15309,31 +15565,6 @@ private struct TicketDetailView: View {
         Text("Ticket details")
           .font(.title2.bold())
         Spacer()
-        Button {
-          startRefinement()
-        } label: {
-          if isRefining {
-            HStack(spacing: 7) {
-              ProgressView()
-                .controlSize(.small)
-              Text("Reviewing…")
-            }
-          } else {
-            Label("Refine with AI", systemImage: "wand.and.stars")
-          }
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(.purple)
-        .disabled(
-          isRefining
-            || hasUnsavedChanges
-            || !model.canRefineTicket
-        )
-        .help(
-          hasUnsavedChanges
-            ? "Save your edits before starting a new review."
-            : "Ask the Business Analyst for reviewable ticket and dependency suggestions."
-        )
         Button("Close") { dismiss() }
       }
       .padding(.horizontal, 24)
@@ -15482,14 +15713,14 @@ private struct TicketDetailView: View {
       .padding(.horizontal, 20)
       .frame(height: 62)
     }
-    .frame(width: detailWidth, height: detailHeight)
+    .frame(width: detailSize.width, height: detailSize.height)
     .background(InitialFocusClearer())
     .task {
       assigneeID = savedAssigneeID
       restoreTicketAssistantSession()
       await restorePendingRefinementQuestion()
       guard
-        startRefinementOnAppear,
+        startRefinementOnAppear || needsInitialRefinement,
         !didStartInitialRefinement,
         refinementReply == nil,
         model.canRefineTicket
@@ -15499,10 +15730,11 @@ private struct TicketDetailView: View {
     }
     .onChange(of: model.canRefineTicket) { _, canRefine in
       guard
-        startRefinementOnAppear,
+        startRefinementOnAppear || needsInitialRefinement,
         canRefine,
         !didStartInitialRefinement,
-        refinementReply == nil
+        refinementReply == nil,
+        !hasUnsavedChanges
       else { return }
       didStartInitialRefinement = true
       startRefinement()
@@ -16267,6 +16499,11 @@ enum TicketConversationHistory {
     analystName: String?
   ) -> [TicketComment] {
     var displayed: [TicketComment] = []
+    let explicitlyAnsweredQuestions = Set(
+      comments.flatMap { comment in
+        comment.answeredQuestions.map(\.question)
+      }
+    )
 
     for comment in comments where comment.id != pendingQuestionID {
       var presentedComment = comment
@@ -16282,11 +16519,13 @@ enum TicketConversationHistory {
         let questions = TicketRefinementQuestion.parseTicketCommentBody(
           questionComment.body
         )
-        answeredQuestions = inferredAnswers(
-          to: questions,
-          from: comment.body,
-          analystName: analystName
-        )
+        if questions.allSatisfy({ !explicitlyAnsweredQuestions.contains($0) }) {
+          answeredQuestions = inferredAnswers(
+            to: questions,
+            from: comment.body,
+            analystName: analystName
+          )
+        }
         if !answeredQuestions.isEmpty {
           presentedComment = TicketComment(
             id: comment.id,
@@ -16304,19 +16543,41 @@ enum TicketConversationHistory {
       if
         !answeredQuestions.isEmpty,
         let analystName,
-        let questionComment = displayed.last,
-        questionComment.authorKind == .agent,
-        questionComment.authorName == analystName,
-        TicketRefinementQuestion.parseTicketCommentBody(questionComment.body)
-          == answeredQuestions.map(\.question)
+        let questionIndex = displayed.lastIndex(where: { comment in
+          guard
+            comment.authorKind == .agent,
+            comment.authorName == analystName
+          else { return false }
+          return TicketRefinementQuestion.parseTicketCommentBody(comment.body)
+            == answeredQuestions.map(\.question)
+        })
       {
-        displayed.removeLast()
+        displayed.remove(at: questionIndex)
       }
 
       displayed.append(presentedComment)
     }
 
     return displayed
+  }
+
+  static func pendingQuestionInsertionIndex(
+    in displayedComments: [TicketComment],
+    sourceComments: [TicketComment],
+    pendingQuestionID: UUID
+  ) -> Int? {
+    guard
+      let questionIndex = sourceComments.firstIndex(where: {
+        $0.id == pendingQuestionID
+      })
+    else { return nil }
+
+    let laterCommentIDs = Set(
+      sourceComments[sourceComments.index(after: questionIndex)...].map(\.id)
+    )
+    return displayedComments.firstIndex(where: {
+      laterCommentIDs.contains($0.id)
+    }) ?? displayedComments.endIndex
   }
 
   private static func inferredAnswers(
@@ -16357,6 +16618,172 @@ enum TicketConversationHistory {
   }
 }
 
+private struct ConversationEmptyState: View {
+  let detail: String
+
+  var body: some View {
+    VStack(spacing: 7) {
+      Image(systemName: "bubble.left.and.bubble.right")
+        .font(.title3)
+        .foregroundStyle(.tertiary)
+      Text("No messages yet")
+        .font(.subheadline.weight(.medium))
+      Text(detail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
+private struct TeamConversationComposer: View {
+  let profiles: [AgentProfile]
+  @Binding var recipientID: UUID?
+  @Binding var message: String
+  let isSending: Bool
+  let isResponding: Bool
+  let sendError: String?
+  let onSend: () -> Void
+  @FocusState private var isFocused: Bool
+
+  private var selectedRecipient: AgentProfile? {
+    guard let recipientID else { return nil }
+    return profiles.first { $0.id == recipientID }
+  }
+
+  private var canSend: Bool {
+    selectedRecipient != nil
+      && !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !isSending
+      && !isResponding
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 9) {
+      HStack {
+        Text("To")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Menu {
+          ForEach(profiles) { profile in
+            Button {
+              recipientID = profile.id
+            } label: {
+              HStack {
+                Label(profile.name, systemImage: profile.role.symbolName)
+                if recipientID == profile.id {
+                  Image(systemName: "checkmark")
+                }
+              }
+            }
+          }
+        } label: {
+          HStack(spacing: 6) {
+            Image(systemName: selectedRecipient?.role.symbolName ?? "person")
+              .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
+            Text(selectedRecipient?.name ?? "Choose a teammate")
+              .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
+            Image(systemName: "chevron.down")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(.tertiary)
+          }
+          .padding(.horizontal, 9)
+          .padding(.vertical, 5)
+          .background(
+            (selectedRecipient?.role.tint ?? Color.secondary).opacity(0.1),
+            in: Capsule()
+          )
+        }
+        .menuStyle(.borderlessButton)
+        Spacer()
+      }
+
+      if let sendError {
+        Label(sendError, systemImage: "exclamationmark.triangle")
+          .font(.caption)
+          .foregroundStyle(.orange)
+      }
+
+      ZStack(alignment: .topLeading) {
+        if message.isEmpty && !isFocused {
+          Text("Ask a question or discuss a change…")
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .allowsHitTesting(false)
+        }
+        TextEditor(text: $message)
+          .scrollContentBackground(.hidden)
+          .font(.body)
+          .focused($isFocused)
+          .padding(8)
+          .onKeyPress(phases: .down) { keyPress in
+            guard keyPress.key == .return else {
+              return .ignored
+            }
+            if keyPress.modifiers.contains(.shift) {
+              return .ignored
+            }
+            if canSend {
+              onSend()
+            }
+            return .handled
+          }
+      }
+      .frame(height: 74)
+      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      .overlay {
+        RoundedRectangle(cornerRadius: 8)
+          .stroke(.separator.opacity(0.7), lineWidth: 1)
+      }
+
+      HStack(alignment: .center) {
+        Text("Return to send · Shift-Return for a new line")
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
+        Spacer()
+        Button(isSending ? "Sending…" : "Send", action: onSend)
+          .buttonStyle(.borderedProminent)
+          .controlSize(.small)
+          .disabled(!canSend)
+      }
+    }
+    .padding(14)
+    .background(.quaternary.opacity(0.25))
+  }
+}
+
+private struct ConversationRespondingStatus: View {
+  let profile: AgentProfile?
+  let fallbackName: String
+  let status: String
+  let onStop: () -> Void
+
+  var body: some View {
+    let tint = profile?.role.tint ?? Color.purple
+    HStack(spacing: 7) {
+      ProgressView()
+        .controlSize(.mini)
+        .tint(tint)
+      HStack(spacing: 0) {
+        Text(profile?.name ?? fallbackName)
+          .fontWeight(.semibold)
+          .foregroundStyle(tint)
+        Text(" \(status)")
+          .foregroundStyle(.primary)
+      }
+      .font(.caption)
+      Spacer()
+      Button("Stop", action: onStop)
+        .controlSize(.mini)
+    }
+    .padding(.horizontal, 14)
+    .frame(height: 38)
+    .background(tint.opacity(0.075))
+  }
+}
+
 private struct TicketConversationView<ReviewContent: View>: View {
   @EnvironmentObject private var model: AppModel
   let workItemID: UUID
@@ -16379,7 +16806,6 @@ private struct TicketConversationView<ReviewContent: View>: View {
   @State private var selectedRefinementOptions: [Int: String] = [:]
   @State private var otherRefinementAnswers: [Int: String] = [:]
   @State private var hasSubmittedRefinementAnswers = false
-  @FocusState private var isComposerFocused: Bool
 
   private var isAwaitingRefinementAnswer: Bool {
     !refinementQuestions.isEmpty
@@ -16394,9 +16820,6 @@ private struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private var selectedRecipient: AgentProfile? {
-    if isAwaitingRefinementAnswer {
-      return businessAnalyst
-    }
     guard let recipientID else { return nil }
     return model.profiles.first { $0.id == recipientID }
   }
@@ -16421,22 +16844,11 @@ private struct TicketConversationView<ReviewContent: View>: View {
     isAgentResponding || respondingRecipient != nil
   }
 
-  private var canSendMessage: Bool {
-    canSend(message)
-  }
-
-  private func canSend(_ content: String) -> Bool {
-    selectedRecipient != nil
-      && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !isSending
-      && !isAnyAgentResponding
-  }
-
   private var otherChoiceKey: String { "\u{0}other" }
 
   private var canSubmitRefinementAnswers: Bool {
     !refinementQuestions.isEmpty
-      && selectedRecipient != nil
+      && businessAnalyst != nil
       && refinementQuestions.indices.allSatisfy { index in
         guard let selection = selectedRefinementOptions[index] else { return false }
         return selection != otherChoiceKey
@@ -16458,11 +16870,23 @@ private struct TicketConversationView<ReviewContent: View>: View {
   private var pendingRefinementComment: TicketComment? {
     guard
       isShowingRefinementChoices,
-      let last = comments.last,
-      last.authorKind == .agent,
-      last.authorName == businessAnalyst?.name
+      let analystName = businessAnalyst?.name
     else { return nil }
-    return last
+    return comments.last { comment in
+      comment.authorKind == .agent
+        && comment.authorName == analystName
+        && TicketRefinementQuestion.parseTicketCommentBody(comment.body)
+          == refinementQuestions
+    }
+  }
+
+  private var pendingRefinementInsertionIndex: Int? {
+    guard let pendingRefinementComment else { return nil }
+    return TicketConversationHistory.pendingQuestionInsertionIndex(
+      in: displayedComments,
+      sourceComments: comments,
+      pendingQuestionID: pendingRefinementComment.id
+    )
   }
 
   private var showsEmptyConversation: Bool {
@@ -16502,7 +16926,13 @@ private struct TicketConversationView<ReviewContent: View>: View {
       ScrollViewReader { proxy in
         ScrollView {
           VStack(alignment: .leading, spacing: 12) {
-            ForEach(displayedComments) { comment in
+            ForEach(Array(displayedComments.enumerated()), id: \.element.id) {
+              index,
+              comment in
+              if pendingRefinementInsertionIndex == index {
+                refinementQuestionCards
+              }
+
               if comment.answeredQuestions.isEmpty {
                 TicketCommentBubble(
                   comment: comment,
@@ -16520,7 +16950,11 @@ private struct TicketConversationView<ReviewContent: View>: View {
               }
             }
 
-            if isShowingRefinementChoices {
+            if
+              isShowingRefinementChoices,
+              pendingRefinementInsertionIndex == nil
+                || pendingRefinementInsertionIndex == displayedComments.endIndex
+            {
               refinementQuestionCards
             }
 
@@ -16539,18 +16973,9 @@ private struct TicketConversationView<ReviewContent: View>: View {
         .defaultScrollAnchor(.bottom)
         .overlay {
           if showsEmptyConversation {
-            VStack(spacing: 7) {
-              Image(systemName: "bubble.left.and.bubble.right")
-                .font(.title3)
-                .foregroundStyle(.tertiary)
-              Text("No messages yet")
-                .font(.subheadline.weight(.medium))
-              Text("Ask for clarification or request a ticket review.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ConversationEmptyState(
+              detail: "Ask for clarification or request a ticket review."
+            )
           }
         }
         .onChange(of: comments.count) { _, _ in
@@ -16602,7 +17027,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
           Button {
             submitRefinementAnswers()
           } label: {
-            Label("Continue", systemImage: "wand.and.stars")
+            Label("Submit answers", systemImage: "paperplane.fill")
           }
           .buttonStyle(.borderedProminent)
           .tint(.purple)
@@ -16614,135 +17039,34 @@ private struct TicketConversationView<ReviewContent: View>: View {
         .background(tint.opacity(0.075))
       } else if isAnyAgentResponding {
         let teammate = activeStatusProfile ?? businessAnalyst
-        let tint = teammate?.role.tint ?? Color.purple
-        HStack(spacing: 7) {
-          ProgressView()
-            .controlSize(.mini)
-            .tint(tint)
-          HStack(spacing: 0) {
-            Text(teammate?.name ?? "Business Analyst")
-              .fontWeight(.semibold)
-              .foregroundStyle(tint)
-            Text(
-              isAgentResponding
-                ? isAwaitingRefinementAnswer
-                  ? " is reviewing your response…"
-                  : " is reviewing this ticket…"
-                : " is thinking…"
-            )
-              .foregroundStyle(.primary)
-          }
-          .font(.caption)
-          Spacer()
-          Button("Stop") {
+        ConversationRespondingStatus(
+          profile: teammate,
+          fallbackName: "Business Analyst",
+          status:
+            isAgentResponding
+            ? isAwaitingRefinementAnswer
+              ? "is reviewing your response…"
+              : "is reviewing this ticket…"
+            : "is thinking…",
+          onStop: {
             if isAgentResponding {
               onStopRefinement()
             } else {
               model.cancelTicketConversationMessage()
             }
           }
-          .controlSize(.mini)
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 38)
-        .background(tint.opacity(0.075))
+        )
       }
 
-      if !isAwaitingRefinementAnswer {
-        VStack(alignment: .leading, spacing: 9) {
-        if !isAwaitingRefinementAnswer && !isAnyAgentResponding {
-          HStack {
-            Text("To")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            Menu {
-              ForEach(model.profiles) { profile in
-                Button {
-                  recipientID = profile.id
-                } label: {
-                  HStack {
-                    Label(profile.name, systemImage: profile.role.symbolName)
-                    if recipientID == profile.id {
-                      Image(systemName: "checkmark")
-                    }
-                  }
-                }
-              }
-            } label: {
-              HStack(spacing: 6) {
-                Image(systemName: selectedRecipient?.role.symbolName ?? "person")
-                  .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
-                Text(selectedRecipient?.name ?? "Choose a teammate")
-                  .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
-                Image(systemName: "chevron.down")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(.tertiary)
-              }
-              .padding(.horizontal, 9)
-              .padding(.vertical, 5)
-              .background(
-                (selectedRecipient?.role.tint ?? Color.secondary).opacity(0.1),
-                in: Capsule()
-              )
-            }
-            .menuStyle(.borderlessButton)
-            Spacer()
-          }
-        }
-
-        if let sendError {
-          Label(sendError, systemImage: "exclamationmark.triangle")
-            .font(.caption)
-            .foregroundStyle(.orange)
-        }
-
-        ZStack(alignment: .topLeading) {
-          if message.isEmpty && !isComposerFocused {
-            Text("Ask a question or request a change…")
-              .foregroundStyle(.tertiary)
-              .padding(.horizontal, 12)
-              .padding(.vertical, 8)
-              .allowsHitTesting(false)
-          }
-          TextEditor(text: $message)
-            .scrollContentBackground(.hidden)
-            .font(.body)
-            .focused($isComposerFocused)
-            .padding(8)
-            .onKeyPress(phases: .down) { keyPress in
-              guard keyPress.key == .return else {
-                return .ignored
-              }
-              if keyPress.modifiers.contains(.shift) {
-                return .ignored
-              }
-              if canSendMessage {
-                send()
-              }
-              return .handled
-            }
-        }
-        .frame(height: 74)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-          RoundedRectangle(cornerRadius: 8)
-            .stroke(.separator.opacity(0.7), lineWidth: 1)
-        }
-
-        HStack(alignment: .center) {
-          Text("Return to send · Shift-Return for a new line")
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-          Spacer()
-          Button(isSending ? "Sending…" : "Send") { send() }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(!canSendMessage)
-        }
-      }
-      .padding(14)
-      .background(.quaternary.opacity(0.25))
-      }
+      TeamConversationComposer(
+        profiles: model.profiles,
+        recipientID: $recipientID,
+        message: $message,
+        isSending: isSending,
+        isResponding: isAnyAgentResponding,
+        sendError: sendError,
+        onSend: send
+      )
     }
     .task(id: refreshToken) {
       comments = await model.comments(for: workItemID)
@@ -16993,34 +17317,49 @@ private struct TicketConversationView<ReviewContent: View>: View {
       ? selectedAnswers[0]
       : selectedAnswers.enumerated().map { "\($0.offset + 1). \($0.element)" }
         .joined(separator: "\n")
+    guard let businessAnalyst else { return }
     hasSubmittedRefinementAnswers = true
-    send(ownerMessage: answer, answeredQuestions: answeredQuestions)
-  }
-
-  private func send(
-    ownerMessage explicitMessage: String? = nil,
-    answeredQuestions: [TicketAnsweredQuestion] = []
-  ) {
-    let ownerMessage = (explicitMessage ?? message)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let recipient = selectedRecipient, canSend(ownerMessage) else { return }
     isSending = true
     sendError = nil
-    let body = "@\(recipient.name) \(ownerMessage)"
-    if !isAwaitingRefinementAnswer {
-      respondingRecipientID = recipient.id
-    }
     Task {
+      let body = "@\(businessAnalyst.name) \(answer)"
       if let comment = await model.appendOwnerComment(
         workItemID: workItemID,
         body: body,
         answeredQuestions: answeredQuestions
       ) {
         comments.append(comment)
+        await onRefinementAnswer?(answer)
+        comments = await model.comments(for: workItemID)
+      } else {
+        sendError = model.errorMessage ?? "Your answers couldn't be saved. Try again."
+        hasSubmittedRefinementAnswers = false
+      }
+      isSending = false
+    }
+  }
+
+  private func send() {
+    let ownerMessage = message
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      let recipient = selectedRecipient,
+      !ownerMessage.isEmpty,
+      !isSending,
+      !isAnyAgentResponding
+    else { return }
+    isSending = true
+    sendError = nil
+    respondingRecipientID = recipient.id
+    let body = "@\(recipient.name) \(ownerMessage)"
+    Task {
+      if let comment = await model.appendOwnerComment(
+        workItemID: workItemID,
+        body: body
+      ) {
+        comments.append(comment)
         message = ""
-        if isAwaitingRefinementAnswer {
-          await onRefinementAnswer?(ownerMessage)
-        } else if let savedItem = model.workItems.first(where: { $0.id == workItemID }) {
+        if let savedItem = model.workItems.first(where: { $0.id == workItemID }) {
           do {
             let savedSnapshot = SprintPlanningTicketSnapshot(item: savedItem)
             let base =
@@ -17047,9 +17386,6 @@ private struct TicketConversationView<ReviewContent: View>: View {
         comments = await model.comments(for: workItemID)
       } else {
         sendError = model.errorMessage ?? "Your message couldn't be saved. Try again."
-        if isAwaitingRefinementAnswer {
-          hasSubmittedRefinementAnswers = false
-        }
       }
       respondingRecipientID = nil
       isSending = false
@@ -17252,7 +17588,7 @@ private struct NewTicketView: View {
               .font(.subheadline.weight(.semibold))
             Picker("Epic", selection: $selectedEpicID) {
               Text("No epic").tag(UUID?.none)
-              ForEach(model.activeEpics) { epic in
+              ForEach(model.openEpics) { epic in
                 Text(epic.title).tag(Optional(epic.id))
               }
             }
@@ -17264,7 +17600,7 @@ private struct NewTicketView: View {
           Label(
             model.canRefineTicket
               ? "The ticket is saved immediately, then the Business Analyst asks questions and proposes reviewable improvements."
-              : "The ticket is saved as a draft. You can refine it with AI when the team connection is available.",
+              : "The ticket is saved as a draft. The Business Analyst review starts automatically when the team connection becomes available.",
             systemImage: "checkmark.shield"
           )
           .font(.caption)
@@ -17310,7 +17646,7 @@ private struct NewTicketView: View {
       )
       isCreating = false
       if let item {
-        onCreated(item, model.canRefineTicket)
+        onCreated(item, true)
       }
     }
   }
@@ -17327,7 +17663,6 @@ private struct NewEpicView: View {
     if let createdEpic {
       EpicDetailView(
         epic: createdEpic,
-        startPlanningOnAppear: true,
         onClose: { isPresented = false }
       )
     } else {
@@ -17338,7 +17673,7 @@ private struct NewEpicView: View {
   private var captureView: some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(model.activeEpics.isEmpty ? "Plan your first outcome" : "New epic")
+        Text(model.openEpics.isEmpty ? "Plan your first outcome" : "New epic")
           .font(.title.bold())
         Text(
           "Describe the product outcome. The Business Analyst will shape the epic and propose the tickets needed to deliver it."
@@ -17409,14 +17744,13 @@ private struct NewEpicView: View {
 private struct EpicDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.workspaceContainerSize) private var workspaceContainerSize
   let epic: Epic
-  let startPlanningOnAppear: Bool
   let onClose: (() -> Void)?
   @State private var title: String
   @State private var goal: String
   @State private var successCriteria: [EpicDetailItemDraft]
   @State private var constraints: [EpicDetailItemDraft]
-  @State private var status: EpicStatus
   @State private var isSaving = false
   @State private var didStartPlanning = false
   @State private var selectedTicket: WorkItem?
@@ -17424,11 +17758,9 @@ private struct EpicDetailView: View {
 
   init(
     epic: Epic,
-    startPlanningOnAppear: Bool = false,
     onClose: (() -> Void)? = nil
   ) {
     self.epic = epic
-    self.startPlanningOnAppear = startPlanningOnAppear
     self.onClose = onClose
     _title = State(initialValue: epic.title)
     _goal = State(initialValue: epic.goal)
@@ -17438,7 +17770,6 @@ private struct EpicDetailView: View {
     _constraints = State(
       initialValue: Self.itemDrafts(from: epic.constraints)
     )
-    _status = State(initialValue: epic.status)
   }
 
   var body: some View {
@@ -17449,16 +17780,6 @@ private struct EpicDetailView: View {
         Text("Epic details")
           .font(.title2.bold())
         Spacer()
-        if conversation == nil, !isArchived {
-          Button {
-            model.planEpic(epic)
-          } label: {
-            Label("Refine with AI", systemImage: "wand.and.stars")
-          }
-          .buttonStyle(.borderedProminent)
-          .tint(.purple)
-          .disabled(!model.canPlanEpic)
-        }
         Button("Close", action: close)
       }
       .padding(22)
@@ -17469,27 +17790,14 @@ private struct EpicDetailView: View {
           VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top, spacing: 16) {
               EditableTextField(title: "Title", prompt: "Epic title", text: $title)
-                .disabled(isArchived)
+                .disabled(isReadOnly)
               VStack(alignment: .leading, spacing: 7) {
                 Text("Status")
                   .font(.subheadline.weight(.semibold))
-                if isArchived {
-                  Text(EpicStatus.archived.title)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 5)
-                } else {
-                  Picker("Status", selection: $status) {
-                    ForEach(
-                      EpicStatus.allCases.filter { $0 != .archived },
-                      id: \.self
-                    ) { status in
-                      Text(status.title).tag(status)
-                    }
-                  }
-                  .labelsHidden()
-                  .pickerStyle(.menu)
-                }
+                Text(displayStatus)
+                  .font(.callout.weight(.semibold))
+                  .foregroundStyle(displayStatusColor)
+                  .padding(.vertical, 5)
               }
               .frame(width: 130, alignment: .leading)
             }
@@ -17499,7 +17807,7 @@ private struct EpicDetailView: View {
               text: $goal,
               minHeight: 110
             )
-            .disabled(isArchived)
+            .disabled(isReadOnly)
             EpicDetailItemsEditor(
               title: "Success criteria",
               guidance: "Each item should describe one measurable product outcome.",
@@ -17509,7 +17817,7 @@ private struct EpicDetailView: View {
               systemImage: "checklist",
               items: $successCriteria
             )
-            .disabled(isArchived)
+            .disabled(isReadOnly)
             EpicDetailItemsEditor(
               title: "Constraints and context",
               guidance: "Capture each material constraint, assumption, or relevant fact separately.",
@@ -17519,9 +17827,9 @@ private struct EpicDetailView: View {
               systemImage: "slider.horizontal.3",
               items: $constraints
             )
-            .disabled(isArchived)
+            .disabled(isReadOnly)
             EpicTicketsSection(
-              epic: epic,
+              epic: latestEpic,
               tickets: activeEpicTickets,
               archivedCount: archivedEpicTicketCount,
               suggestionBatch: epicSuggestionBatch,
@@ -17538,8 +17846,8 @@ private struct EpicDetailView: View {
 
         Divider()
 
-        EpicPlanningConversationPanel(epic: epic)
-          .frame(width: 430)
+        EpicPlanningConversationPanel(epic: latestEpic)
+          .frame(width: conversationWidth)
           .frame(maxHeight: .infinity)
       }
       .frame(maxHeight: .infinity)
@@ -17551,17 +17859,31 @@ private struct EpicDetailView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
         Spacer()
-        if isReadyToComplete {
+        if isClosed {
           Button {
-            completeEpic()
+            reopenEpic()
           } label: {
             Label(
-              isSaving ? "Completing…" : "Complete epic",
+              isSaving ? "Reopening…" : "Reopen epic",
+              systemImage: "arrow.uturn.backward.circle"
+            )
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(isSaving)
+          .help("Return this epic to active planning")
+        } else if canCloseEpic {
+          Button {
+            confirmCloseEpic()
+          } label: {
+            Label(
+              isSaving
+                ? "Closing…"
+                : (hasUnsavedChanges ? "Save and close epic" : "Close epic"),
               systemImage: "checkmark.circle.fill"
             )
           }
           .buttonStyle(.borderedProminent)
-          .disabled(!canSave || isSaving)
+          .disabled(isSaving || (hasUnsavedChanges && !canSave))
           .help("Confirm that this epic's outcome has been delivered")
         } else if hasUnsavedChanges {
           Button("Save") { save() }
@@ -17577,14 +17899,13 @@ private struct EpicDetailView: View {
       .padding(18)
     }
     .background(InitialFocusClearer())
-    .frame(width: 1_080, height: 740)
+    .frame(width: detailSize.width, height: detailSize.height)
     .task(id: epic.id) {
       await model.restoreEpicPlanningConversation(for: epic)
-      guard startPlanningOnAppear, !didStartPlanning else { return }
-      didStartPlanning = true
-      if conversation == nil, model.canPlanEpic {
-        model.planEpic(epic)
-      }
+      startPlanningIfNeeded()
+    }
+    .onChange(of: model.canPlanEpic) { _, _ in
+      startPlanningIfNeeded()
     }
     .onChange(of: conversation?.isComplete == true) { _, isComplete in
       guard isComplete else { return }
@@ -17616,8 +17937,23 @@ private struct EpicDetailView: View {
     return model.epicPlanningConversation
   }
 
+  private var detailSize: CGSize {
+    ConversationDetailSheetSizing.size(for: workspaceContainerSize)
+  }
+
+  private var conversationWidth: CGFloat {
+    ConversationDetailSheetSizing.conversationWidth(for: detailSize.width)
+  }
+
+  private var needsInitialPlanning: Bool {
+    conversation?.hasStartedPlanning != true
+      && latestEpic.successCriteria.isEmpty
+      && activeEpicTickets.isEmpty
+      && proposedEpicSuggestions.isEmpty
+  }
+
   private var canSave: Bool {
-    !isArchived
+    isOpen
       && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
@@ -17630,12 +17966,47 @@ private struct EpicDetailView: View {
     latestEpic.status == .archived
   }
 
+  private var isClosed: Bool {
+    latestEpic.status == .closed
+  }
+
+  private var isOpen: Bool {
+    latestEpic.status == .open
+  }
+
+  private var isReadOnly: Bool {
+    !isOpen
+  }
+
+  private var progress: EpicProgress {
+    EpicProgress(tickets: activeEpicTickets)
+  }
+
+  private var displayStatus: String {
+    isOpen ? progress.title : latestEpic.status.title
+  }
+
+  private var displayStatusColor: Color {
+    switch latestEpic.status {
+    case .closed:
+      return .green
+    case .archived:
+      return .secondary
+    case .open:
+      switch progress {
+      case .created: return .secondary
+      case .planned: return .blue
+      case .inProgress: return .orange
+      case .complete: return .green
+      }
+    }
+  }
+
   private var hasUnsavedChanges: Bool {
     title != latestEpic.title
       || goal != latestEpic.goal
       || criteria != latestEpic.successCriteria
       || constraintsText != latestEpic.constraints
-      || status != latestEpic.status
   }
 
   private var criteria: [String] {
@@ -17662,23 +18033,33 @@ private struct EpicDetailView: View {
       .sorted { $0.position < $1.position } ?? []
   }
 
-  private var isReadyToComplete: Bool {
-    status != .complete
-      && !activeEpicTickets.isEmpty
-      && activeEpicTickets.allSatisfy { $0.state == .released }
+  private var canCloseEpic: Bool {
+    isOpen
+      && progress == .complete
+      && proposedEpicSuggestions.isEmpty
+      && conversation?.isRunning != true
+      && conversation?.isGeneratingPlan != true
+      && epicSuggestionBatch?.session.status != .generating
   }
 
   private var footerStatus: String {
     if isArchived {
       return "This archived epic is available as read-only delivery history."
     }
-    if isReadyToComplete {
-      return "All active tickets are delivered. Confirm that the epic outcome is complete."
+    if isClosed {
+      return "The epic outcome is confirmed and available as read-only delivery history."
     }
-    if conversation?.isGeneratingPlan == true
+    if conversation?.isRunning == true
+      || conversation?.isGeneratingPlan == true
       || epicSuggestionBatch?.session.status == .generating
     {
       return "The Business Analyst is preparing the proposed ticket plan."
+    }
+    if progress == .complete, !proposedEpicSuggestions.isEmpty {
+      return "All accepted tickets are delivered. Review the remaining proposals before closing."
+    }
+    if progress == .complete {
+      return "All accepted tickets are delivered. Close the epic to confirm its outcome."
     }
     let count = proposedEpicSuggestions.count
     if count > 0 {
@@ -17687,7 +18068,16 @@ private struct EpicDetailView: View {
     if conversation?.isComplete == true {
       return "The epic plan is up to date."
     }
-    return "Resolve the outcome with the Business Analyst before tickets are proposed."
+    switch progress {
+    case .created:
+      return "Resolve the outcome with the Business Analyst before tickets are proposed."
+    case .planned:
+      return "Tickets are planned and delivery has not started."
+    case .inProgress:
+      return "Delivery is in progress."
+    case .complete:
+      return "All accepted tickets are delivered. Close the epic to confirm its outcome."
+    }
   }
 
   private var activeEpicTickets: [WorkItem] {
@@ -17710,9 +18100,19 @@ private struct EpicDetailView: View {
     }
   }
 
-  private func save(status statusOverride: EpicStatus? = nil) {
+  private func startPlanningIfNeeded() {
+    guard
+      !didStartPlanning,
+      isOpen,
+      needsInitialPlanning,
+      model.canPlanEpic
+    else { return }
+    didStartPlanning = true
+    model.planEpic(latestEpic)
+  }
+
+  private func save() {
     guard canSave else { return }
-    let savedStatus = statusOverride ?? status
     isSaving = true
     Task {
       let updated = await model.updateEpic(
@@ -17720,8 +18120,7 @@ private struct EpicDetailView: View {
         title: title,
         goal: goal,
         successCriteria: criteria,
-        constraints: constraintsText,
-        status: savedStatus
+        constraints: constraintsText
       )
       isSaving = false
       if updated != nil {
@@ -17730,9 +18129,43 @@ private struct EpicDetailView: View {
     }
   }
 
-  private func completeEpic() {
-    guard isReadyToComplete else { return }
-    save(status: .complete)
+  private func confirmCloseEpic() {
+    guard canCloseEpic else { return }
+    isSaving = true
+    Task {
+      var epicToClose: Epic? = latestEpic
+      if hasUnsavedChanges {
+        epicToClose = await model.updateEpic(
+          epic,
+          title: title,
+          goal: goal,
+          successCriteria: criteria,
+          constraints: constraintsText
+        )
+      }
+      let updated: Epic? =
+        if let epicToClose {
+          await model.closeEpic(epicToClose)
+        } else {
+          nil
+        }
+      isSaving = false
+      if updated != nil {
+        close()
+      }
+    }
+  }
+
+  private func reopenEpic() {
+    guard isClosed else { return }
+    isSaving = true
+    Task {
+      let updated = await model.reopenEpic(latestEpic)
+      isSaving = false
+      if updated != nil {
+        syncFromLatestEpic()
+      }
+    }
   }
 
   private func syncFromLatestEpic() {
@@ -17741,7 +18174,6 @@ private struct EpicDetailView: View {
     goal = latest.goal
     successCriteria = latest.successCriteria.map(EpicDetailItemDraft.init(text:))
     constraints = Self.itemDrafts(from: latest.constraints)
-    status = latest.status
   }
 
   private static func itemDrafts(from text: String) -> [EpicDetailItemDraft] {
@@ -17807,7 +18239,7 @@ private struct EpicTicketsSection: View {
           TicketSuggestionBatchActions(suggestions: proposedSuggestions)
         } else if allDelivered {
           Label(
-            epic.status == .complete ? "Outcome confirmed" : "Ready to complete",
+            epic.status == .closed ? "Outcome confirmed" : "Complete",
             systemImage: "checkmark.circle.fill"
           )
           .font(.caption.weight(.semibold))
@@ -17882,9 +18314,9 @@ private struct EpicTicketsSection: View {
           .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
       }
 
-      if allDelivered, epic.status != .complete {
+      if allDelivered, epic.status == .open {
         Text(
-          "All active tickets are delivered. Confirm the product outcome, then set this epic to Complete."
+          "All accepted tickets are delivered. Confirm the product outcome, then close this epic."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -18031,11 +18463,30 @@ private struct EpicTicketsSection: View {
   }
 }
 
+enum EpicPlanningConversationTimeline {
+  static func pendingQuestionMessageID(
+    in messages: [EpicPlanningConversationMessage],
+    questions: [TicketRefinementQuestion]
+  ) -> UUID? {
+    guard !questions.isEmpty else { return nil }
+    return messages.last(where: {
+      $0.author == .businessAnalyst
+        && $0.kind != .chat
+        && $0.answeredQuestions.isEmpty
+    })?.id
+  }
+}
+
 private struct EpicPlanningConversationPanel: View {
   @EnvironmentObject private var model: AppModel
   let epic: Epic
   @State private var selectedOptions: [Int: String] = [:]
   @State private var otherAnswers: [Int: String] = [:]
+  @State private var message = ""
+  @State private var recipientID: UUID?
+  @State private var isSending = false
+  @State private var respondingRecipientID: UUID?
+  @State private var sendError: String?
 
   private let otherChoice = "__other__"
 
@@ -18048,6 +18499,41 @@ private struct EpicPlanningConversationPanel: View {
     model.profiles.first { $0.role == .businessAnalyst }
   }
 
+  private var selectedRecipient: AgentProfile? {
+    guard let recipientID else { return nil }
+    return model.profiles.first { $0.id == recipientID }
+  }
+
+  private var respondingRecipient: AgentProfile? {
+    let activeRecipientID =
+      respondingRecipientID
+      ?? (
+        model.epicConversationEpicID == epic.id
+          ? model.epicConversationRecipientID
+          : nil
+      )
+    guard let activeRecipientID else { return nil }
+    return model.profiles.first { $0.id == activeRecipientID }
+  }
+
+  private var defaultRecipient: AgentProfile? {
+    analyst
+      ?? model.profiles.first { $0.role == .lead }
+      ?? model.profiles.first
+  }
+
+  private var isPlanningResponding: Bool {
+    conversation?.isRunning == true || conversation?.isGeneratingPlan == true
+  }
+
+  private var isChatResponding: Bool {
+    respondingRecipient != nil
+  }
+
+  private var isAnyAgentResponding: Bool {
+    isPlanningResponding || isChatResponding
+  }
+
   private var tint: Color {
     analyst?.role.tint ?? .purple
   }
@@ -18055,6 +18541,14 @@ private struct EpicPlanningConversationPanel: View {
   private var showsEmptyConversation: Bool {
     guard let conversation else { return true }
     return conversation.messages.isEmpty && conversation.questions.isEmpty
+  }
+
+  private var pendingQuestionMessageID: UUID? {
+    guard let conversation else { return nil }
+    return EpicPlanningConversationTimeline.pendingQuestionMessageID(
+      in: conversation.messages,
+      questions: conversation.questions
+    )
   }
 
   var body: some View {
@@ -18077,8 +18571,14 @@ private struct EpicPlanningConversationPanel: View {
                 } else {
                   answeredQuestionCards(message.answeredQuestions)
                 }
+                if message.id == pendingQuestionMessageID {
+                  questionCards(conversation.questions)
+                }
               }
-              if !conversation.questions.isEmpty {
+              if
+                !conversation.questions.isEmpty,
+                pendingQuestionMessageID == nil
+              {
                 questionCards(conversation.questions)
               }
             }
@@ -18093,18 +18593,9 @@ private struct EpicPlanningConversationPanel: View {
         .defaultScrollAnchor(.bottom)
         .overlay {
           if showsEmptyConversation {
-            VStack(spacing: 7) {
-              Image(systemName: "bubble.left.and.bubble.right")
-                .font(.title3)
-                .foregroundStyle(.tertiary)
-              Text("No messages yet")
-                .font(.subheadline.weight(.medium))
-              Text("Messages will appear here when the Business Analyst responds.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ConversationEmptyState(
+              detail: "Ask any team member about this epic."
+            )
           }
         }
         .onChange(of: conversation?.messages.count ?? 0) { _, _ in
@@ -18120,6 +18611,25 @@ private struct EpicPlanningConversationPanel: View {
 
       Divider()
       conversationStatus
+      if isChatResponding {
+        ConversationRespondingStatus(
+          profile: respondingRecipient,
+          fallbackName: "Team member",
+          status: "is thinking…",
+          onStop: model.cancelEpicConversationMessage
+        )
+      }
+      if epic.status == .open {
+        TeamConversationComposer(
+          profiles: model.profiles,
+          recipientID: $recipientID,
+          message: $message,
+          isSending: isSending,
+          isResponding: isAnyAgentResponding,
+          sendError: sendError,
+          onSend: send
+        )
+      }
     }
     .frame(maxHeight: .infinity)
     .clipped()
@@ -18127,28 +18637,26 @@ private struct EpicPlanningConversationPanel: View {
       selectedOptions.removeAll()
       otherAnswers.removeAll()
     }
+    .task(id: epic.id) {
+      if recipientID == nil {
+        recipientID = defaultRecipient?.id
+      }
+    }
   }
 
   @ViewBuilder
   private var conversationStatus: some View {
     if let conversation {
       if conversation.isRunning || conversation.isGeneratingPlan {
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.mini).tint(tint)
-          Text(
+        ConversationRespondingStatus(
+          profile: analyst,
+          fallbackName: "Business Analyst",
+          status:
             conversation.isGeneratingPlan
-              ? "\(analyst?.name ?? "Business Analyst") is preparing the epic and tickets…"
-              : "\(analyst?.name ?? "Business Analyst") is thinking…"
-          )
-          .font(.caption)
-          .foregroundStyle(.primary)
-          Spacer()
-          Button("Stop") { model.cancelEpicPlanning() }
-            .controlSize(.mini)
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 42)
-        .background(tint.opacity(0.075))
+            ? "is preparing the epic and tickets…"
+            : "is thinking…",
+          onStop: model.cancelEpicPlanning
+        )
       } else if !conversation.questions.isEmpty {
         HStack {
           Text("\(analyst?.name ?? "Business Analyst") is waiting for your response.")
@@ -18158,12 +18666,12 @@ private struct EpicPlanningConversationPanel: View {
           Button {
             submitAnswers(conversation.questions)
           } label: {
-            Label("Continue", systemImage: "wand.and.stars")
+            Label("Submit answers", systemImage: "paperplane.fill")
           }
           .buttonStyle(.borderedProminent)
           .tint(.purple)
           .controlSize(.small)
-          .disabled(!canSubmit(conversation.questions))
+          .disabled(!canSubmit(conversation.questions) || isAnyAgentResponding)
         }
         .padding(14)
         .background(tint.opacity(0.075))
@@ -18189,29 +18697,42 @@ private struct EpicPlanningConversationPanel: View {
   @ViewBuilder
   private func messageRow(_ message: EpicPlanningConversationMessage) -> some View {
     let isOwner = message.author == .owner
+    let profile = profile(for: message)
+    let accent = message.author == .system ? Color.secondary : profile?.role.tint ?? tint
+    let displayName =
+      switch message.author {
+      case .owner: "Me"
+      case .businessAnalyst: analyst?.name ?? "Business Analyst"
+      case .agent: message.participantName ?? profile?.name ?? "Team member"
+      case .system: "StoryPointless"
+      }
+    let symbolName =
+      message.author == .system
+      ? "gearshape.fill"
+      : profile?.role.symbolName ?? "sparkles"
     HStack(alignment: .top, spacing: 8) {
       if isOwner { Spacer(minLength: 46) }
       if !isOwner {
         Circle()
-          .fill(tint.opacity(0.12))
+          .fill(accent.opacity(0.12))
           .overlay {
-            Image(systemName: analyst?.role.symbolName ?? "text.magnifyingglass")
+            Image(systemName: symbolName)
               .font(.caption)
-              .foregroundStyle(tint)
+              .foregroundStyle(accent)
           }
           .frame(width: 28, height: 28)
       }
       VStack(alignment: isOwner ? .trailing : .leading, spacing: 4) {
-        Text(isOwner ? "Me" : analyst?.name ?? "Business Analyst")
+        Text(displayName)
           .font(.caption.weight(.semibold))
-          .foregroundStyle(isOwner ? Color.primary : tint)
+          .foregroundStyle(isOwner ? Color.primary : accent)
         Text(message.body)
           .font(.callout)
           .textSelection(.enabled)
           .padding(.horizontal, 11)
           .padding(.vertical, 9)
           .background(
-            isOwner ? Color.accentColor.opacity(0.1) : tint.opacity(0.075),
+            isOwner ? Color.accentColor.opacity(0.1) : accent.opacity(0.075),
             in: RoundedRectangle(cornerRadius: 11)
           )
       }
@@ -18228,6 +18749,22 @@ private struct EpicPlanningConversationPanel: View {
         Spacer(minLength: 46)
       }
     }
+  }
+
+  private func profile(
+    for message: EpicPlanningConversationMessage
+  ) -> AgentProfile? {
+    if let participantID = message.participantID,
+      let profile = model.profiles.first(where: { $0.id == participantID })
+    {
+      return profile
+    }
+    if let participantName = message.participantName,
+      let profile = model.profiles.first(where: { $0.name == participantName })
+    {
+      return profile
+    }
+    return message.author == .businessAnalyst ? analyst : nil
   }
 
   private func questionCards(_ questions: [TicketRefinementQuestion]) -> some View {
@@ -18362,6 +18899,33 @@ private struct EpicPlanningConversationPanel: View {
     .buttonStyle(.plain)
   }
 
+  private func send() {
+    let ownerMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      let recipient = selectedRecipient,
+      !ownerMessage.isEmpty,
+      !isSending,
+      !isAnyAgentResponding
+    else { return }
+    isSending = true
+    respondingRecipientID = recipient.id
+    sendError = nil
+    message = ""
+    Task {
+      do {
+        _ = try await model.sendEpicConversationMessage(
+          for: epic,
+          to: recipient,
+          ownerMessage: ownerMessage
+        )
+      } catch {
+        sendError = error.localizedDescription
+      }
+      respondingRecipientID = nil
+      isSending = false
+    }
+  }
+
   private func canSubmit(_ questions: [TicketRefinementQuestion]) -> Bool {
     questions.indices.allSatisfy { index in
       guard let option = selectedOptions[index] else { return false }
@@ -18374,7 +18938,7 @@ private struct EpicPlanningConversationPanel: View {
   }
 
   private func submitAnswers(_ questions: [TicketRefinementQuestion]) {
-    guard canSubmit(questions) else { return }
+    guard canSubmit(questions), !isAnyAgentResponding else { return }
     let answeredQuestions = questions.enumerated().map { index, question in
       let selection = selectedOptions[index] ?? ""
       let answer =

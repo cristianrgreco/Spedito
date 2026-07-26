@@ -60,6 +60,41 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Epic lifecycle migration preserves open and owner-confirmed outcomes")
+  func epicLifecycleMigrationMapsLegacyStatuses() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic migration",
+      vision: "Preserve existing planning history"
+    )
+    let openEpic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Continue an open outcome"
+    )
+    let closedEpic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Preserve a confirmed outcome"
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE epics SET status = 'active' WHERE id = '\(openEpic.id.uuidString)';
+      UPDATE epics SET status = 'complete' WHERE id = '\(closedEpic.id.uuidString)';
+      DELETE FROM schema_migrations WHERE version = 48;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let epics = try await reopened.fetchEpics(productID: product.id)
+    #expect(epics.first { $0.id == openEpic.id }?.status == .open)
+    #expect(epics.first { $0.id == closedEpic.id }?.status == .closed)
+    await reopened.close()
+  }
+
   @Test("Product, ticket, comments, profiles, and audit events survive restart")
   func durableWorkflow() async throws {
     let fixture = try DatabaseFixture()
@@ -1080,14 +1115,13 @@ struct SQLiteStoreTests {
       productID: product.id,
       outcome: "Customers can save favourite locations"
     )
-    #expect(initialEpic.status == .active)
+    #expect(initialEpic.status == .open)
     let epic = try await store.updateEpic(
       id: initialEpic.id,
       title: "Saved locations",
       goal: "Customers can return to important forecasts without searching again.",
       successCriteria: ["A customer can save and revisit a location"],
-      constraints: "Remain local-first.",
-      status: .active
+      constraints: "Remain local-first."
     )
     let session = try await store.beginTicketSuggestionSession(
       productID: product.id,
@@ -1126,6 +1160,114 @@ struct SQLiteStoreTests {
         .session.epicID == epic.id
     )
     await reopened.close()
+  }
+
+  @Test("Epics close only after delivery and reopen before accepting more work")
+  func epicClosureFollowsDerivedProgress() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Epic lifecycle",
+      vision: "Keep delivery progress and owner confirmation distinct"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Customers can finish an important journey"
+    )
+
+    await #expect(throws: PersistenceError.self) {
+      try await store.closeEpic(id: epic.id)
+    }
+
+    let ticket = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver the journey",
+      acceptanceCriteria: ["The journey can be completed"],
+      epicID: epic.id
+    )
+    await #expect(throws: PersistenceError.self) {
+      try await store.closeEpic(id: epic.id)
+    }
+
+    for state in [
+      WorkItemState.refining, .ready, .queued, .running, .integrating, .verifying,
+      .acceptance, .readyToRelease, .released,
+    ] {
+      _ = try await store.transitionWorkItem(
+        id: ticket.id,
+        to: state,
+        actor: "Test",
+        reason: "Prepare the completed Epic"
+      )
+    }
+
+    let session = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    let batch = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Consider an optional extension",
+          body: "Keep unresolved scope reviewable.",
+          acceptanceCriteria: ["The owner decides whether it belongs"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "Confirm the closure boundary"
+        )
+      ]
+    )
+    await #expect(throws: PersistenceError.self) {
+      try await store.closeEpic(id: epic.id)
+    }
+    let proposal = try #require(batch.suggestions.first)
+    _ = try await store.decideTicketSuggestion(id: proposal.id, decision: .rejected)
+
+    let closed = try await store.closeEpic(id: epic.id)
+    #expect(closed.status == .closed)
+    await #expect(throws: PersistenceError.self) {
+      try await store.updateEpic(
+        id: epic.id,
+        title: epic.title,
+        goal: epic.goal,
+        successCriteria: [],
+        constraints: ""
+      )
+    }
+    await #expect(throws: PersistenceError.self) {
+      try await store.createWorkItem(
+        productID: product.id,
+        title: "Extend a closed outcome",
+        epicID: epic.id
+      )
+    }
+    let ungrouped = try await store.createWorkItem(
+      productID: product.id,
+      title: "Keep new scope outside the closed outcome"
+    )
+    await #expect(throws: PersistenceError.self) {
+      try await store.assignWorkItemToEpic(id: ungrouped.id, epicID: epic.id)
+    }
+    await #expect(throws: PersistenceError.self) {
+      try await store.beginTicketSuggestionSession(
+        productID: product.id,
+        epicID: epic.id
+      )
+    }
+
+    let reopened = try await store.reopenEpic(id: epic.id)
+    #expect(reopened.status == .open)
+    let followUp = try await store.assignWorkItemToEpic(id: ungrouped.id, epicID: epic.id)
+    #expect(followUp.epicID == epic.id)
+
+    let activity = try await store.fetchActivity(productID: product.id)
+    #expect(activity.map(\.kind).contains("epic.closed"))
+    #expect(activity.map(\.kind).contains("epic.reopened"))
+    await store.close()
   }
 
   @Test("Epic planning conversations survive restart")
@@ -1171,6 +1313,15 @@ struct SQLiteStoreTests {
               answer: "Signed-in customers"
             )
           ]
+        ),
+        EpicPlanningConversationMessage(
+          id: UUID(uuidString: "566720CF-3398-493A-B52F-9009B987C426")!,
+          author: .owner,
+          body: "@UX Designer Which existing pattern should we reuse?",
+          createdAt: Date(timeIntervalSince1970: 1_728_000_015),
+          kind: .chat,
+          participantID: UUID(uuidString: "395FCA59-DA75-4B34-882F-F8B5FE547CD7"),
+          participantName: "UX Designer"
         ),
       ],
       questions: [timingQuestion],
@@ -1416,14 +1567,14 @@ struct SQLiteStoreTests {
     await #expect(throws: PersistenceError.self) {
       try await store.archiveEpic(id: epic.id)
     }
-    #expect(
-      try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }?.status
-        == .active
+    let preservedEpic = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }
     )
-    #expect(
-      try await store.fetchWorkItems(productID: product.id).first { $0.id == ticket.id }?.state
-        == .queued
+    #expect(preservedEpic.status == .open)
+    let preservedTicket = try #require(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == ticket.id }
     )
+    #expect(preservedTicket.state == .queued)
     await store.close()
   }
 

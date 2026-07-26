@@ -1260,6 +1260,18 @@ struct CodexAdapterTests {
             )
           ]
         ),
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "@UX Designer Which existing pattern should we reuse?",
+          kind: .chat,
+          participantName: "UX Designer"
+        ),
+        EpicPlanningConversationMessage(
+          author: .agent,
+          body: "Reuse the established compact result row.",
+          kind: .chat,
+          participantName: "UX Designer"
+        ),
       ]
     )
 
@@ -1273,6 +1285,8 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Constraints for an unnamed"))
     #expect(prompt.contains("authorisation for Business Analyst research"))
     #expect(prompt.contains("let the team choose"))
+    #expect(!prompt.contains("Which existing pattern should we reuse?"))
+    #expect(!prompt.contains("compact result row"))
   }
 
   @Test("Interrupted final epic planning reconstructs every durable owner answer")
@@ -1893,7 +1907,7 @@ struct CodexAdapterTests {
 
     #expect(instructions.contains("single team member"))
     #expect(instructions.contains("Do not modify files"))
-    #expect(instructions.contains("Refine with AI"))
+    #expect(instructions.contains("automatic Business Analyst refinement"))
     #expect(instructions.contains("Business Analyst — Business Analyst"))
     #expect(prompt.contains("T-4"))
     #expect(prompt.contains("Why was this colour chosen?"))
@@ -1910,6 +1924,69 @@ struct CodexAdapterTests {
         #"{"message":"  ","proposal":null}"#,
         currentItem: item
       )
+    }
+  }
+
+  @Test("Ordinary Epic chat is read-only, single-recipient, and separate from refinement")
+  func epicConversation() throws {
+    let product = Product(
+      name: "Weather",
+      vision: "Show weather for a chosen location",
+      instructions: "Use UK English."
+    )
+    let epic = Epic(
+      productID: product.id,
+      title: "Saved places",
+      goal: "Customers can return to forecasts without searching again",
+      successCriteria: ["Customers can save and reopen a place"]
+    )
+    let designer = AgentProfile(
+      productID: product.id,
+      name: "UX Designer",
+      role: .uxDesigner,
+      model: "gpt-5.6-sol",
+      reasoningEffort: "medium"
+    )
+    let instructions = CodexEpicConversation.developerInstructions(
+      productInstructions: product.instructions,
+      personaInstructions: designer.effectiveInstructions,
+      recipient: designer
+    )
+    let prompt = CodexEpicConversation.prompt(
+      product: product,
+      epic: epic,
+      relatedItems: [],
+      proposedItems: [],
+      previousMessages: [
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "@UX Designer Which existing pattern should we reuse?",
+          kind: .chat,
+          participantID: designer.id,
+          participantName: designer.name
+        ),
+        EpicPlanningConversationMessage(
+          author: .businessAnalyst,
+          body: "This governed clarification must not appear as ordinary chat."
+        ),
+      ],
+      ownerMessage: "Would the compact result row work here?"
+    )
+    let reply = try CodexEpicConversation.decode(
+      #"{"message":"Yes. The compact result row fits the current hierarchy."}"#
+    )
+
+    #expect(instructions.contains("single team member"))
+    #expect(instructions.contains("Do not modify files"))
+    #expect(instructions.contains("UX Designer — UX Designer"))
+    #expect(instructions.contains("never answers"))
+    #expect(prompt.contains("Saved places"))
+    #expect(prompt.contains("Which existing pattern should we reuse?"))
+    #expect(prompt.contains("Would the compact result row work here?"))
+    #expect(!prompt.contains("governed clarification"))
+    #expect(reply.message.contains("compact result row"))
+    #expect(throws: EpicConversationGenerationError.self) {
+      _ = try CodexEpicConversation.decode(#"{"message":" "}"#)
     }
   }
 

@@ -53,6 +53,27 @@ struct RetrospectiveSprintSelectionTests {
     #expect(RetrospectivePhase(sprint: concluded.sprint) == .concluded)
   }
 
+  @Test("Retrospective picker labels distinguish unfinished and concluded reviews")
+  func retrospectivePickerLabelsDistinguishConclusionState() {
+    let productID = UUID()
+    let active = plan(productID: productID, number: 3, state: .active)
+    let unfinished = plan(productID: productID, number: 2, state: .completed)
+    let concluded = plan(
+      productID: productID,
+      number: 1,
+      state: .completed,
+      retrospectiveConcludedAt: Date()
+    )
+
+    let activePhase = RetrospectivePhase(sprint: active.sprint)
+    let unfinishedPhase = RetrospectivePhase(sprint: unfinished.sprint)
+    let concludedPhase = RetrospectivePhase(sprint: concluded.sprint)
+
+    #expect(activePhase.pickerTitle == "In progress")
+    #expect(unfinishedPhase.pickerTitle == "Needs conclusion")
+    #expect(concludedPhase.pickerTitle == "Concluded")
+  }
+
   @Test("Synthesized actions credit each source observation owner once")
   func synthesizedActionAttributionUsesSourceOwners() {
     let productID = UUID()

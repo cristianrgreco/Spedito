@@ -17,11 +17,15 @@ Proposals are classified as Story, Task, or Bug and appear as a vertically
 staggered dependency outline above the backlog; suggestions remain outside
 backlog scope until the owner accepts them. The backlog itself is now a compact,
 ranked list split into **Next sprint** and **Backlog** sections. Entire ticket
-rows can be dragged between them, and top/bottom ranking actions reject
-dependency-invalid orders. Full-width separators reinforce the shared column
-layout. Explicit row selection, section-wide select-all, bulk actions, and
-grouped drag/drop move several tickets between Backlog and Next sprint in one
-dependency-safe plan update. Any row opens a full editor for type, priority, context, acceptance
+rows can be dragged between them without changing rank when the destination
+does not express a new ordering. During a drag, dependency-safe insertion
+positions are shown in blue and an invalid hovered position turns red with its
+constraint. Invalid destination rows are de-emphasized while valid targets stay
+at full opacity; top/bottom ranking actions also reject dependency-invalid
+orders. Full-width separators reinforce the shared column layout. Explicit row
+selection, section-wide select-all, bulk actions, and grouped drag/drop move
+several tickets between Backlog and Next sprint in one dependency-safe plan
+update. Any row opens a full editor for type, priority, context, acceptance
 criteria, flexible custom fields, dependency context, and a durable ticket-level
 conversation addressed to one selected team member at a time; there is no implicit
 team-wide broadcast. Owners can add or remove blockers while creating or editing manual
@@ -31,7 +35,16 @@ uses aligned cards with explicit **Blocked by** and **Blocks** relationships rat
 than tree indentation. Sprint Planning now places an editable ticket beside its durable
 conversation. The owner chooses exactly one team member for each message; that member
 runs one real read-only, schema-constrained turn using its configured model, effort, and
-instructions. It can reply normally or propose a business-readable ticket change. A
+instructions. Pending Business Analyst questions keep their own choices, inline
+**Other** fields, and explicit **Submit answers** action without hiding or repurposing
+the ordinary team composer. Question cards remain where they were asked in the
+conversation timeline, so later chat follows them chronologically. Ticket and Epic
+details use the same adaptive sheet and conversation proportions. Their initial
+Business Analyst refinement starts automatically rather than presenting a redundant
+header action. Epic details also reuses the same recipient picker, composer,
+empty state, and replying status for durable read-only questions to any selected team
+member; ordinary Epic chat remains separate from governed refinement answers. A ticket
+team member can reply normally or propose a business-readable ticket change. A
 proposal can be accepted or rejected, but acceptance is disabled if the owner or another
 process changed the exact ticket snapshot the agent saw. Hung turns are interrupted after
 a bounded wait instead of leaving an endless spinner. Scoped tickets can be reviewed
@@ -184,9 +197,11 @@ Sprint Planning. Sprint Planning keeps edits local until the owner saves, with
 last saved plan. Ordinary Tech Lead review is an execution-stage system run rather
 than a second per-ticket planning picker.
 Epics are optional backlog groups rather than executable ticket types. The Backlog
-keeps open epics prominent while completed epics collapse into a remembered inline
-summary that expands within the same table. Ticket details show their Epic as a
-clickable relationship in both planning and delivery history.
+derives **Created**, **Planned**, **In progress**, and **Complete** from accepted
+ticket delivery, while closed epics collapse into a remembered inline summary that
+expands within the same table. Closing separately records the Product Owner's
+confirmation of the broader outcome. Ticket details show their Epic as a clickable
+relationship in both planning and delivery history.
 An **Improve** sidebar section now separates sprint Retrospectives from
 longitudinal Reports. Both are evidence-first: each starts with a clear empty
 state, and Reports shows current operational counts after the first completed
@@ -263,10 +278,11 @@ prevent already-covered work from being proposed again. The durable synthesis ca
 be retried after interruption or explicitly skipped when Codex is unavailable.
 The Retrospectives view presents attributed, ticket-linked evidence for **Went
 well** and **Could improve**, plus the consolidated review queue, opening on the
-latest completed sprint when one exists. An active sprint is a read-only preview:
-evidence remains visible, but final actions and decisions wait until the sprint
-is complete. After a sprint completes, final action preparation resolves, and
-before its retrospective is concluded,
+latest completed sprint when one exists. Its sprint picker labels retrospectives
+as **Needs conclusion**, **Concluded**, or **In progress**. An active sprint is
+a read-only preview: evidence remains visible, but final actions and decisions
+wait until the sprint is complete. After a sprint completes, final action
+preparation resolves, and before its retrospective is concluded,
 the Product Owner can add their own attributed proposal for **Ways of working** or a
 **Backlog ticket** alongside the agents’ suggestions. Accepting a ways-of-working
 proposal updates inherited team guidance; accepting a ticket creates it in the

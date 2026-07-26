@@ -5,20 +5,38 @@ import Testing
 
 @Suite("Epic planning presentation")
 struct EpicPlanningPresentationTests {
-  @Test("Open and completed epics are separated while archived epics stay hidden")
+  @Test("Ticket and Epic conversation details share the same adaptive sheet size")
+  func conversationDetailsShareSheetSize() {
+    let laptopWorkspace = CGSize(width: 1_440, height: 900)
+    let largeWorkspace = CGSize(width: 1_920, height: 1_200)
+
+    #expect(
+      ConversationDetailSheetSizing.size(for: laptopWorkspace)
+        == CGSize(width: 1_080, height: 740)
+    )
+    #expect(
+      ConversationDetailSheetSizing.size(for: largeWorkspace)
+        == CGSize(width: 1_080, height: 740)
+    )
+    #expect(
+      ConversationDetailSheetSizing.conversationWidth(for: 1_080) == 430
+    )
+  }
+
+  @Test("Open and closed epics are separated while archived epics stay hidden")
   func epicsAreSeparatedByStatus() {
     let productID = UUID()
     let openEpic = Epic(
       productID: productID,
       title: "Open",
       goal: "Deliver an open outcome",
-      status: .active
+      status: .open
     )
-    let completedEpic = Epic(
+    let closedEpic = Epic(
       productID: productID,
-      title: "Complete",
-      goal: "Deliver a completed outcome",
-      status: .complete
+      title: "Closed",
+      goal: "Preserve a confirmed outcome",
+      status: .closed
     )
     let archivedEpic = Epic(
       productID: productID,
@@ -28,29 +46,29 @@ struct EpicPlanningPresentationTests {
     )
 
     let sections = EpicPlanningSections(
-      epics: [completedEpic, archivedEpic, openEpic],
+      epics: [closedEpic, archivedEpic, openEpic],
       workItems: []
     )
 
-    #expect(sections.allEpics.map(\.id) == [completedEpic.id, openEpic.id])
+    #expect(sections.allEpics.map(\.id) == [closedEpic.id, openEpic.id])
     #expect(sections.openEpics.map(\.id) == [openEpic.id])
-    #expect(sections.completedEpics.map(\.id) == [completedEpic.id])
+    #expect(sections.closedEpics.map(\.id) == [closedEpic.id])
   }
 
-  @Test("Completed summary counts only delivered tickets from completed epics")
-  func completedSummaryCountsDeliveredTickets() {
+  @Test("Closed summary counts only delivered tickets from closed epics")
+  func closedSummaryCountsDeliveredTickets() {
     let productID = UUID()
     let openEpic = Epic(
       productID: productID,
       title: "Open",
       goal: "Deliver an open outcome",
-      status: .active
+      status: .open
     )
-    let completedEpic = Epic(
+    let closedEpic = Epic(
       productID: productID,
-      title: "Complete",
-      goal: "Deliver a completed outcome",
-      status: .complete
+      title: "Closed",
+      goal: "Preserve a confirmed outcome",
+      status: .closed
     )
     let tickets = [
       WorkItem(
@@ -58,14 +76,14 @@ struct EpicPlanningPresentationTests {
         key: "T1",
         title: "Delivered",
         state: .released,
-        epicID: completedEpic.id
+        epicID: closedEpic.id
       ),
       WorkItem(
         productID: productID,
         key: "T2",
         title: "Archived",
         state: .cancelled,
-        epicID: completedEpic.id
+        epicID: closedEpic.id
       ),
       WorkItem(
         productID: productID,
@@ -77,7 +95,7 @@ struct EpicPlanningPresentationTests {
     ]
 
     let sections = EpicPlanningSections(
-      epics: [openEpic, completedEpic],
+      epics: [openEpic, closedEpic],
       workItems: tickets
     )
 
@@ -125,8 +143,8 @@ struct EpicPlanningPresentationTests {
     #expect(TicketEpicNavigation.destination(for: ticket, in: [epic]) == nil)
   }
 
-  @Test("Completed disclosure defaults to collapsed and persists per product")
-  func completedDisclosurePersistsPerProduct() throws {
+  @Test("Closed disclosure defaults to collapsed and persists per product")
+  func closedDisclosurePersistsPerProduct() throws {
     let suiteName = "EpicPlanningPresentationTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
     defer {
@@ -168,8 +186,8 @@ struct EpicPlanningPresentationTests {
     let dividerHeight: CGFloat = 37
     let epicHeight = BacklogPlanningSizing.epicHeight(
       openEpicCount: 3,
-      completedEpicCount: 4,
-      completedEpicsExpanded: false
+      closedEpicCount: 4,
+      closedEpicsExpanded: false
     )
     let backlogHeight = BacklogPlanningSizing.backlogHeight(
       availableHeight: availableHeight,
@@ -178,27 +196,59 @@ struct EpicPlanningPresentationTests {
       rowCount: 5
     )
 
-    #expect(epicHeight == 262)
-    #expect(backlogHeight == 623)
+    #expect(epicHeight == 230)
+    #expect(backlogHeight == 655)
     #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
   }
 
-  @Test("Expanded completed Epics contribute to the planning section height")
-  func expandedCompletedEpicsContributeToHeight() {
+  @Test("Expanded closed Epics contribute to the planning section height")
+  func expandedClosedEpicsContributeToHeight() {
     let collapsedHeight = BacklogPlanningSizing.epicHeight(
       openEpicCount: 2,
-      completedEpicCount: 3,
-      completedEpicsExpanded: false
+      closedEpicCount: 3,
+      closedEpicsExpanded: false
     )
     let expandedHeight = BacklogPlanningSizing.epicHeight(
       openEpicCount: 2,
-      completedEpicCount: 3,
-      completedEpicsExpanded: true
+      closedEpicCount: 3,
+      closedEpicsExpanded: true
     )
 
     #expect(
       expandedHeight - collapsedHeight
         == CGFloat(3) * BacklogPlanningSizing.epicRowHeight
     )
+  }
+
+  @Test("Pending Epic questions stay attached to the analyst message that asked them")
+  func pendingEpicQuestionsStayInChronologicalPosition() throws {
+    let question = TicketRefinementQuestion(
+      prompt: "Which audience should this outcome serve first?",
+      options: ["New customers", "Existing customers"]
+    )
+    let analystQuestion = EpicPlanningConversationMessage(
+      author: .businessAnalyst,
+      body: "I need one product decision before I can propose the tickets."
+    )
+    let laterOwnerChat = EpicPlanningConversationMessage(
+      author: .owner,
+      body: "@UX Designer What would each option mean for the flow?",
+      kind: .chat
+    )
+    let laterAgentChat = EpicPlanningConversationMessage(
+      author: .agent,
+      body: "The first option needs more onboarding guidance.",
+      kind: .chat,
+      participantName: "UX Designer"
+    )
+
+    let anchorID = try #require(
+      EpicPlanningConversationTimeline.pendingQuestionMessageID(
+        in: [analystQuestion, laterOwnerChat, laterAgentChat],
+        questions: [question]
+      )
+    )
+
+    #expect(anchorID == analystQuestion.id)
   }
 }

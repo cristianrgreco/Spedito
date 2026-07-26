@@ -295,10 +295,15 @@ public enum CodexEpicClarificationGenerator {
     _ messages: [EpicPlanningConversationMessage]
   ) -> String {
     let entries = messages.compactMap { message -> String? in
+      guard message.kind != .chat else { return nil }
       switch message.author {
       case .businessAnalyst:
         let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
         return body.isEmpty ? nil : "Business Analyst: \(body)"
+      case .agent:
+        let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = message.participantName ?? "Team member"
+        return body.isEmpty ? nil : "\(name): \(body)"
       case .owner:
         if !message.answeredQuestions.isEmpty {
           let answers = message.answeredQuestions.map {

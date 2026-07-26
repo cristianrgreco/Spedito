@@ -78,8 +78,10 @@ Initial tables cover:
 - products with an indexed active/archive lifecycle state and a durable
   curated display-color token;
 - work items and immutable contract versions;
-- Story/Task/Bug work-item classification, with a later optional epic foreign
-  key whose aggregate state remains derived from child tickets;
+- Story/Task/Bug work-item classification and an optional epic foreign key;
+  Epic Created/Planned/In progress/Complete progress remains derived from
+  non-archived child tickets, while persisted Open/Closed/Archived status
+  records only owner lifecycle decisions;
 - comments and activity events, including an optional structured Product Owner
   question with two to four answer options;
 - agent profiles and runs;
@@ -251,8 +253,11 @@ or debug-fixture candidates, performs the required `initialize` / `initialized`
 handshake over JSONL stdio, opts into the pinned experimental protocol fields
 used by permission profiles, and fails closed on mismatched versions and
 unsupported server-initiated requests. Read-only, schema-constrained threads
-power backlog suggestions, refinement, and planning conversations. Delivery and
-independent Tech Lead review use `approvalPolicy: on-request`.
+power backlog suggestions, refinement, planning conversations, and ordinary
+single-recipient Ticket and Epic chat. Structured Business Analyst answers
+remain separate from ordinary messages and are the only inputs that advance
+their governed refinement turn. Delivery and independent Tech Lead review use
+`approvalPolicy: on-request`.
 
 Delivery selects the named `storypointless-delivery` profile: Codex's minimal
 platform/runtime reads, one writable ticket worktree, exact database and
@@ -470,11 +475,14 @@ bodies as verified context.
    backlog tickets become real cross-batch edges, and failed proposal sessions can
    be retried or dismissed. Accept/reject is durable and only acceptance creates
    scope. Ticket editing, custom fields,
-   dependency-safe ranking, next-sprint drag/drop, and durable ticket comments are
-   complete. Ticket chat replies and reviewable action proposals use optimistic
-   base versions and stale-proposal protection. Product/sprint conversations,
-   profile DMs, context packs, batch review, and independently scheduled
-   conversation threads remain.
+   dependency-safe ranking, preflight-validating next-sprint drag/drop, and
+   durable ticket comments are complete. Cross-section drops preserve global
+   rank unless their selected insertion point requires a reorder, and the same
+   policy validates both the preview and persisted action. Ticket chat replies
+   and reviewable action proposals use optimistic base versions and
+   stale-proposal protection. Product/sprint conversations, profile DMs,
+   context packs, batch review, and independently scheduled conversation
+   threads remain.
 5. Lightweight epic records and collapsible backlog grouping, without placing
    epics on the execution board or requiring them for small products.
 6. **Partial:** the durable scheduler admits all dependency-free implementation

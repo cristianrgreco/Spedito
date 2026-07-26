@@ -7,9 +7,65 @@ import Testing
 struct WorkflowPolicyTests {
   private let policy = WorkflowPolicy()
 
-  @Test("Open epics do not imply delivery is active")
-  func openEpicLabel() {
-    #expect(EpicStatus.active.title == "Open")
+  @Test("Epic progress is derived from its active tickets")
+  func epicProgress() {
+    let productID = UUID()
+    let epicID = UUID()
+
+    #expect(EpicProgress(tickets: []).title == "Created")
+    #expect(
+      EpicProgress(
+        tickets: [
+          WorkItem(
+            productID: productID,
+            key: "T1",
+            title: "Plan delivery",
+            state: .refining,
+            epicID: epicID
+          )
+        ]
+      ) == .planned
+    )
+    #expect(
+      EpicProgress(
+        tickets: [
+          WorkItem(
+            productID: productID,
+            key: "T1",
+            title: "Deliver the outcome",
+            state: .running,
+            epicID: epicID
+          ),
+          WorkItem(
+            productID: productID,
+            key: "T2",
+            title: "Verify the outcome",
+            state: .ready,
+            epicID: epicID
+          ),
+        ]
+      ) == .inProgress
+    )
+    #expect(
+      EpicProgress(
+        tickets: [
+          WorkItem(
+            productID: productID,
+            key: "T1",
+            title: "Delivered",
+            state: .released,
+            epicID: epicID
+          ),
+          WorkItem(
+            productID: productID,
+            key: "T2",
+            title: "Archived",
+            state: .cancelled,
+            epicID: epicID
+          ),
+        ]
+      ) == .complete
+    )
   }
 
   @Test("Happy-path transitions are available")

@@ -50,7 +50,7 @@ public enum CodexTicketConversation {
     asks to capture an agreed choice, or when your answer directly resolves an ambiguity in the delivery
     contract. Preserve every field you do not intend to change. Never claim the proposal was applied.
     Use null when the exchange is only explanatory or exploratory. Dependency analysis, duplicate checks,
-    and broad refinement belong to the separate Refine with AI workflow. Return only the JSON requested
+    and broad refinement belong to the automatic Business Analyst refinement flow. Return only the JSON requested
     by the output schema.
     """
 

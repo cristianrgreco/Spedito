@@ -86,15 +86,56 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
 }
 
 public enum EpicStatus: String, Codable, CaseIterable, Hashable, Sendable {
-  case active
-  case complete
+  case open
+  case closed
   case archived
 
   public var title: String {
     switch self {
-    case .active: "Open"
-    case .complete: "Complete"
+    case .open: "Open"
+    case .closed: "Closed"
     case .archived: "Archived"
+    }
+  }
+}
+
+public enum EpicProgress: String, Codable, CaseIterable, Hashable, Sendable {
+  case created
+  case planned
+  case inProgress = "in_progress"
+  case complete
+
+  public init(tickets: [WorkItem]) {
+    let activeTickets = tickets.filter { $0.state != .cancelled }
+    guard !activeTickets.isEmpty else {
+      self = .created
+      return
+    }
+    if activeTickets.allSatisfy({ $0.state == .released }) {
+      self = .complete
+      return
+    }
+    let deliveryStates: Set<WorkItemState> = [
+      .queued,
+      .running,
+      .integrating,
+      .verifying,
+      .acceptance,
+      .readyToRelease,
+      .released,
+    ]
+    self =
+      activeTickets.contains { deliveryStates.contains($0.state) }
+      ? .inProgress
+      : .planned
+  }
+
+  public var title: String {
+    switch self {
+    case .created: "Created"
+    case .planned: "Planned"
+    case .inProgress: "In progress"
+    case .complete: "Complete"
     }
   }
 }
@@ -118,7 +159,7 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
     goal: String,
     successCriteria: [String] = [],
     constraints: String = "",
-    status: EpicStatus = .active,
+    status: EpicStatus = .open,
     rank: Int = 0,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -617,7 +658,13 @@ public struct EpicPlanningConversationMessage: Identifiable, Codable, Hashable, 
   public enum Author: String, Codable, Hashable, Sendable {
     case owner
     case businessAnalyst = "business_analyst"
+    case agent
     case system
+  }
+
+  public enum Kind: String, Codable, Hashable, Sendable {
+    case refinement
+    case chat
   }
 
   public let id: UUID
@@ -625,19 +672,28 @@ public struct EpicPlanningConversationMessage: Identifiable, Codable, Hashable, 
   public let body: String
   public let createdAt: Date
   public let answeredQuestions: [EpicPlanningAnsweredQuestion]
+  public let kind: Kind?
+  public let participantID: UUID?
+  public let participantName: String?
 
   public init(
     id: UUID = UUID(),
     author: Author,
     body: String,
     createdAt: Date = Date(),
-    answeredQuestions: [EpicPlanningAnsweredQuestion] = []
+    answeredQuestions: [EpicPlanningAnsweredQuestion] = [],
+    kind: Kind = .refinement,
+    participantID: UUID? = nil,
+    participantName: String? = nil
   ) {
     self.id = id
     self.author = author
     self.body = body
     self.createdAt = createdAt
     self.answeredQuestions = answeredQuestions
+    self.kind = kind
+    self.participantID = participantID
+    self.participantName = participantName
   }
 }
 
@@ -647,6 +703,7 @@ public struct EpicPlanningConversationSnapshot: Codable, Hashable, Sendable {
   public var questions: [TicketRefinementQuestion]
   public var isComplete: Bool
   public var threadID: String?
+  public var hasStartedPlanning: Bool?
   public var updatedAt: Date
 
   public init(
@@ -655,6 +712,7 @@ public struct EpicPlanningConversationSnapshot: Codable, Hashable, Sendable {
     questions: [TicketRefinementQuestion],
     isComplete: Bool,
     threadID: String? = nil,
+    hasStartedPlanning: Bool = true,
     updatedAt: Date = Date()
   ) {
     self.epicID = epicID
@@ -662,6 +720,7 @@ public struct EpicPlanningConversationSnapshot: Codable, Hashable, Sendable {
     self.questions = questions
     self.isComplete = isComplete
     self.threadID = threadID
+    self.hasStartedPlanning = hasStartedPlanning
     self.updatedAt = updatedAt
   }
 }

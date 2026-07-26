@@ -81,6 +81,119 @@ struct TicketConversationHistoryTests {
         == "Which empty state should the ticket deliver?"
     )
   }
+
+  @Test("Ordinary chat does not disconnect a later structured answer from its question")
+  func chatCanOccurBeforeStructuredAnswer() throws {
+    let workItemID = UUID()
+    let question = TicketRefinementQuestion(
+      prompt: "Which empty state should the ticket deliver?",
+      options: ["A concise explanation", "A retry action"]
+    )
+    let questionComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "Business Analyst",
+      body: """
+        Which empty state should the ticket deliver?
+        • A concise explanation
+        • A retry action
+        """
+    )
+    let ownerChat = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@Business Analyst Why is the recommended option preferred?"
+    )
+    let analystReply = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "Business Analyst",
+      body: "It keeps the empty state focused on the next useful action."
+    )
+    let answerComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@Business Analyst A concise explanation",
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: question,
+          selectedOption: "A concise explanation",
+          answer: "A concise explanation"
+        )
+      ]
+    )
+
+    let displayed = TicketConversationHistory.displayedComments(
+      from: [questionComment, ownerChat, analystReply, answerComment],
+      pendingQuestionID: nil,
+      analystName: "Business Analyst"
+    )
+
+    #expect(displayed.map(\.id) == [ownerChat.id, analystReply.id, answerComment.id])
+    #expect(displayed.first?.answeredQuestions.isEmpty == true)
+    #expect(displayed.last?.answeredQuestions.first?.question == question)
+  }
+
+  @Test("A pending question stays before chat sent after it")
+  func pendingQuestionStaysInChronologicalPosition() throws {
+    let workItemID = UUID()
+    let earlierComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@Business Analyst Please refine this ticket."
+    )
+    let questionComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "Business Analyst",
+      body: """
+        Which empty state should the ticket deliver?
+        • A concise explanation
+        • A retry action
+        """
+    )
+    let laterOwnerChat = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@UX Designer How should this fit the existing screen?"
+    )
+    let laterAgentChat = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "UX Designer",
+      body: "Use the existing inline empty-state treatment."
+    )
+    let sourceComments = [
+      earlierComment,
+      questionComment,
+      laterOwnerChat,
+      laterAgentChat,
+    ]
+    let displayed = TicketConversationHistory.displayedComments(
+      from: sourceComments,
+      pendingQuestionID: questionComment.id,
+      analystName: "Business Analyst"
+    )
+
+    let insertionIndex = try #require(
+      TicketConversationHistory.pendingQuestionInsertionIndex(
+        in: displayed,
+        sourceComments: sourceComments,
+        pendingQuestionID: questionComment.id
+      )
+    )
+
+    #expect(displayed.map(\.id) == [
+      earlierComment.id,
+      laterOwnerChat.id,
+      laterAgentChat.id,
+    ])
+    #expect(insertionIndex == 1)
+  }
 }
 
 private extension Collection {

@@ -380,9 +380,12 @@ public actor SQLiteStore {
     title: String,
     goal: String,
     successCriteria: [String],
-    constraints: String,
-    status: EpicStatus
+    constraints: String
   ) throws -> Epic {
+    let epic = try fetchEpic(id: id)
+    guard epic.status == .open else {
+      throw PersistenceError.corruptData("Reopen this epic before editing it")
+    }
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedTitle.isEmpty, !trimmedGoal.isEmpty else {
@@ -395,8 +398,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       UPDATE epics
-      SET title = ?, goal = ?, success_criteria_json = ?, constraints = ?,
-          status = ?, updated_at = ?
+      SET title = ?, goal = ?, success_criteria_json = ?, constraints = ?, updated_at = ?
       WHERE id = ?;
       """
     ) { statement in
@@ -404,10 +406,101 @@ public actor SQLiteStore {
       try bind(trimmedGoal, to: 2, in: statement)
       try bind(try encodeStringArray(criteria), to: 3, in: statement)
       try bind(constraints.trimmingCharacters(in: .whitespacesAndNewlines), to: 4, in: statement)
-      try bind(status.rawValue, to: 5, in: statement)
-      try bind(updatedAt.timeIntervalSince1970, to: 6, in: statement)
-      try bind(id.uuidString, to: 7, in: statement)
+      try bind(updatedAt.timeIntervalSince1970, to: 5, in: statement)
+      try bind(id.uuidString, to: 6, in: statement)
       try stepDone(statement)
+    }
+    return try fetchEpic(id: id)
+  }
+
+  public func closeEpic(id: UUID) throws -> Epic {
+    let epic = try fetchEpic(id: id)
+    if epic.status == .closed {
+      return epic
+    }
+    guard epic.status == .open else {
+      throw PersistenceError.corruptData("Only an open epic can be closed")
+    }
+    let tickets = try fetchWorkItems(productID: epic.productID)
+      .filter { $0.epicID == epic.id }
+    guard EpicProgress(tickets: tickets) == .complete else {
+      throw PersistenceError.corruptData(
+        "Deliver every accepted ticket before closing this epic"
+      )
+    }
+    let outstandingPlanningCount = try withStatement(
+      """
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM ticket_suggestions AS suggestion
+          JOIN suggestion_sessions AS session ON session.id = suggestion.session_id
+          WHERE session.epic_id = ? AND suggestion.status = 'proposed'
+        )
+        +
+        (
+          SELECT COUNT(*)
+          FROM suggestion_sessions
+          WHERE epic_id = ? AND status = 'generating'
+        );
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      try bind(id.uuidString, to: 2, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+      return Int(sqlite3_column_int64(statement, 0))
+    }
+    guard outstandingPlanningCount == 0 else {
+      throw PersistenceError.corruptData(
+        "Review or dismiss every proposed ticket before closing this epic"
+      )
+    }
+
+    let updatedAt = Date()
+    try transaction {
+      try withStatement(
+        "UPDATE epics SET status = ?, updated_at = ? WHERE id = ?;"
+      ) { statement in
+        try bind(EpicStatus.closed.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: epic.productID,
+        kind: "epic.closed",
+        actor: "Product Owner",
+        detail: epic.title
+      )
+    }
+    return try fetchEpic(id: id)
+  }
+
+  public func reopenEpic(id: UUID) throws -> Epic {
+    let epic = try fetchEpic(id: id)
+    if epic.status == .open {
+      return epic
+    }
+    guard epic.status == .closed else {
+      throw PersistenceError.corruptData("Archived epics cannot be reopened")
+    }
+
+    let updatedAt = Date()
+    try transaction {
+      try withStatement(
+        "UPDATE epics SET status = ?, updated_at = ? WHERE id = ?;"
+      ) { statement in
+        try bind(EpicStatus.open.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: epic.productID,
+        kind: "epic.reopened",
+        actor: "Product Owner",
+        detail: epic.title
+      )
     }
     return try fetchEpic(id: id)
   }
@@ -422,7 +515,7 @@ public actor SQLiteStore {
 
     for id in movingIDs {
       guard let epic = epicsByID[id], epic.productID == firstEpic.productID else {
-        throw PersistenceError.corruptData("Only active epics in this product can be reordered")
+        throw PersistenceError.corruptData("Only visible epics in this product can be reordered")
       }
     }
 
@@ -562,8 +655,8 @@ public actor SQLiteStore {
       guard epic.productID == item.productID else {
         throw PersistenceError.corruptData("Epic and ticket must belong to the same product")
       }
-      guard epic.status != .archived else {
-        throw PersistenceError.corruptData("Tickets cannot be assigned to an archived epic")
+      guard epic.status == .open else {
+        throw PersistenceError.corruptData("Tickets can only be assigned to an open epic")
       }
     }
     try withStatement(
@@ -1049,6 +1142,9 @@ public actor SQLiteStore {
       let epic = try fetchEpic(id: epicID)
       guard epic.productID == productID else {
         throw PersistenceError.corruptData("Epic and suggestion session must share a product")
+      }
+      guard epic.status == .open else {
+        throw PersistenceError.corruptData("Only an open epic can be planned")
       }
     }
     let session = SuggestionSession(productID: productID, epicID: epicID)
@@ -6506,6 +6602,23 @@ public actor SQLiteStore {
         database: database
       )
     }
+
+    if try !migrationApplied(version: 48, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE epics SET status = 'open' WHERE status = 'active';
+        UPDATE epics SET status = 'closed' WHERE status = 'complete';
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (48, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
   }
 
   private static func columnExists(
@@ -7162,6 +7275,9 @@ public actor SQLiteStore {
       let epic = try fetchEpic(id: epicID)
       guard epic.productID == productID else {
         throw PersistenceError.corruptData("Epic and ticket must belong to the same product")
+      }
+      guard epic.status == .open else {
+        throw PersistenceError.corruptData("Tickets can only be created in an open epic")
       }
     }
     let nextNumber = try nextWorkItemNumber(productID: productID)

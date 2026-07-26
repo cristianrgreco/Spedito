@@ -356,14 +356,23 @@ An **epic** is a separate planning container, not a fourth ticket type and not
 an executable work item. It describes a broader outcome and contains zero or
 more tickets. Its progress, forecast, usage, blockers, and quality signals are
 derived from those children; it is never directly assigned to an agent or moved
-into a sprint. Tickets may belong to at most one epic initially. An unresolved
-epic is labelled **Open**, not **Active**, because proposed or backlog tickets do
-not imply that delivery is underway. When every active ticket in an open epic is
-**Done**, its detail footer presents a prominent **Complete epic** action so the
-Product Owner can confirm the delivered outcome directly.
+into a sprint. Tickets may belong to at most one epic initially. An open epic's
+progress is derived from its accepted, non-archived tickets:
+
+- **Created:** it has no accepted tickets;
+- **Planned:** it has tickets, but none has entered delivery;
+- **In progress:** at least one ticket has entered delivery or is delivered,
+  while at least one remains undelivered; and
+- **Complete:** every accepted ticket is **Done**.
+
+Complete ticket delivery does not by itself confirm the broader product outcome.
+A complete epic presents a prominent **Close epic** action. Closing is the
+Product Owner's durable confirmation that the outcome has been achieved. Closed
+epics are read-only delivery history until explicitly reopened; tickets and
+ticket proposals can belong only to an open epic.
 
 The backlog should present epics as compact, collapsible groups with an outcome,
-derived progress, and clear **No epic** group. Open epics appear first; completed
+derived progress, and clear **No epic** group. Open epics appear first; closed
 epics collapse into one full-width summary row within the same epic table and can
 be expanded inline without duplicating the table headers. The disclosure choice is
 remembered per product. Owners can drag tickets between groups without affecting
@@ -574,8 +583,8 @@ and the scope of "all" stays explicit.
 When a ticket belongs to an epic, both its editable details and delivery Work
 log show that relationship as a compact link to the Epic details. The link
 remains available from completed delivery history and preserves any unsaved
-ticket edits while the owner inspects the epic. Archived Epic details are
-read-only.
+ticket edits while the owner inspects the epic. Closed and archived Epic details
+are read-only.
 
 Agreeing constraints for an unnamed real external source does not select that
 source when current evidence about candidates, terms, suitability or operation
@@ -593,6 +602,15 @@ Epic clarification is durable across application restarts. If its underlying
 Codex thread has expired, StoryPointless starts a replacement read-only thread,
 supplies the preserved Business Analyst conversation and Product Owner answers,
 and continues without asking the owner to re-enter or discard resolved input.
+Epic details also keeps the ordinary team composer available before, during, and
+after clarification. The Product Owner may address any one team member without
+submitting or dismissing the Business Analyst's structured questions. Each
+question retains its own choices and inline **Other** text field; only the
+separate **Submit answers** action records those governed answers and advances
+epic refinement. Ordinary chat remains durable context but is not treated as an
+authoritative refinement answer or permission to change epic scope. Active
+question cards remain anchored to the Business Analyst message that introduced
+them, and any later ordinary chat appears below them in chronological order.
 
 Role-aware suggestions should produce a coherent delivery graph rather than a
 list of generic engineering tasks. For a weather product, an illustrative
@@ -695,7 +713,9 @@ sprint board. Its primary information is product scope and planning confidence:
 - the full workspace is a vertically scrolling, compact ranked list rather than
   a Kanban board;
 - **Next sprint** and **Backlog** are the two visible planning sections; dragging
-  between them changes sprint intent but never starts execution;
+  between them changes sprint intent but never starts execution. A
+  cross-section move preserves the ticket's authoritative backlog rank when the
+  chosen destination does not express a different relative position;
 - rows have explicit multi-selection and section-wide select-all. Bulk buttons
   or dragging any selected row move the selected set in one persisted operation;
   selecting a complete dependency branch succeeds, while an invalid partial
@@ -704,8 +724,17 @@ sprint board. Its primary information is product scope and planning confidence:
   belong to the backlog header rather than a global title-bar toolbar;
 - every row opens a focused ticket surface with editable core and custom fields,
   dependency context, and a durable ticket-level team thread;
-- top/bottom rank shortcuts and future row reordering preserve dependency order,
-  explaining why an invalid move is refused;
+- Ticket and Epic detail surfaces share the same laptop-safe adaptive sheet
+  geometry. Initial Business Analyst refinement begins automatically when an
+  incomplete open item is shown and the team connection is available; the
+  header does not repeat that lifecycle as a manual AI action, while a failed
+  refinement retains its contextual retry action;
+- top/bottom rank shortcuts and row reordering preserve dependency order. While
+  dragging, every dependency-safe insertion position is indicated in blue; an
+  invalid hovered position turns red and names the sprint-scope or ranking
+  constraint before the owner drops the tickets. Invalid destination rows are
+  de-emphasized while valid targets remain at full opacity. Colour is reinforced
+  by a warning symbol, text, and an accessibility label;
 - backlog rank is the authoritative delivery order, while priority remains a
   lightweight urgency/value signal rather than silently re-sorting owner intent;
 - dependencies remain explicit graph relationships in the canonical flat list.
@@ -824,13 +853,18 @@ main experience.
 
 ### 9.7 Team conversations
 
-The product owner can talk to the team without leaving StoryPointless. A ticket
-conversation addresses exactly one profile by default: its assigned implementer
-when available, otherwise the business analyst (falling back to the lead). It
-never fans a message out to every configured profile. Additional participants
-must be invited explicitly. The
+The product owner can talk to the team without leaving StoryPointless. Ticket
+and Epic conversations address exactly one selected profile per message. A
+ticket defaults to its assigned implementer when available, otherwise the
+business analyst (falling back to the lead); an Epic defaults to the business
+analyst. Neither surface fans a message out to every configured profile.
+Additional participants must be invited explicitly. Pending structured
+Business Analyst questions remain independently answerable and never replace
+the ordinary composer. Their question cards remain at the point where the
+Business Analyst asked them, while later chat continues below in chronological
+order. The
 conversation surface supports direct messages, product and sprint rooms,
-automatic ticket rooms, and named groups of selected profiles. Every room shows
+automatic ticket and Epic rooms, and named groups of selected profiles. Every room shows
 its active context boundary—for example product knowledge, selected tickets,
 sprint plan, or an exact repository revision—so the owner can see what the
 agents know and change that scope deliberately.
@@ -1060,6 +1094,9 @@ section rather than being mixed into the reference knowledge base. Decisions
 and validated lessons may still promote into Knowledge after owner review.
 Opening Retrospectives selects the latest completed sprint when one exists;
 the active sprint is used only until the product has completed its first sprint.
+The sprint picker identifies each retrospective as **Needs conclusion**,
+**Concluded**, or **In progress**, so the sprint's completed state cannot be
+mistaken for the retrospective's conclusion state.
 An active sprint presents a read-only preview of accumulating evidence and
 explains that final actions will be consolidated after completion. It does not
 offer accept, dismiss, bulk-decision, or Product Owner proposal actions until

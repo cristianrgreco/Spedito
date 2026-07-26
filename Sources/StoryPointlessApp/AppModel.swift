@@ -31,6 +31,7 @@ struct EpicPlanningConversationState: Equatable {
   let epicID: UUID
   var messages: [EpicPlanningConversationMessage]
   var questions: [TicketRefinementQuestion]
+  var hasStartedPlanning: Bool
   var isRunning: Bool
   var isGeneratingPlan: Bool
   var isComplete: Bool
@@ -76,6 +77,199 @@ struct ProductExecutionLifecyclePolicy {
   }
 }
 
+enum PlanningDropConstraint: Equatable {
+  case sprintScope
+  case rank
+  case unavailable
+}
+
+enum PlanningDropRankAction: Equatable {
+  case preserve
+  case move(before: UUID?)
+}
+
+struct PlanningDropEvaluation: Equatable {
+  let rankAction: PlanningDropRankAction?
+  let blockingConstraint: PlanningDropConstraint?
+  let message: String?
+
+  var isValid: Bool {
+    blockingConstraint == nil
+  }
+
+  static func valid(_ rankAction: PlanningDropRankAction) -> Self {
+    PlanningDropEvaluation(
+      rankAction: rankAction,
+      blockingConstraint: nil,
+      message: nil
+    )
+  }
+
+  static func invalid(
+    _ constraint: PlanningDropConstraint,
+    message: String
+  ) -> Self {
+    PlanningDropEvaluation(
+      rankAction: nil,
+      blockingConstraint: constraint,
+      message: message
+    )
+  }
+}
+
+struct PlanningDropPolicy {
+  private static let planningStates: Set<WorkItemState> = [
+    .backlog,
+    .refining,
+    .ready,
+  ]
+
+  static func evaluate(
+    workItems: [WorkItem],
+    dependencies: [WorkItemDependency],
+    candidateIDs: Set<UUID>,
+    externalCandidatePrerequisiteIDs: Set<UUID>,
+    movingIDs requestedMovingIDs: Set<UUID>,
+    intoCandidateSprint: Bool,
+    before requestedTargetID: UUID?
+  ) -> PlanningDropEvaluation {
+    let planningItems = workItems.filter { planningStates.contains($0.state) }
+    let planningIDs = Set(planningItems.map(\.id))
+    let movingIDs = requestedMovingIDs.intersection(planningIDs)
+    guard !movingIDs.isEmpty, movingIDs == requestedMovingIDs else {
+      return .invalid(
+        .unavailable,
+        message: "These tickets are no longer available for planning."
+      )
+    }
+
+    let desiredCandidateIDs =
+      intoCandidateSprint
+      ? candidateIDs.union(movingIDs)
+      : candidateIDs.subtracting(movingIDs)
+    let availableCandidateIDs =
+      desiredCandidateIDs.union(externalCandidatePrerequisiteIDs)
+    let itemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    let sortedDependencies = dependencies.sorted { lhs, rhs in
+      let lhsDependent = itemsByID[lhs.workItemID]
+      let rhsDependent = itemsByID[rhs.workItemID]
+      if lhsDependent?.rank != rhsDependent?.rank {
+        return (lhsDependent?.rank ?? .max) < (rhsDependent?.rank ?? .max)
+      }
+      if lhsDependent?.key != rhsDependent?.key {
+        return (lhsDependent?.key ?? "") < (rhsDependent?.key ?? "")
+      }
+      return (itemsByID[lhs.dependsOnWorkItemID]?.key ?? "")
+        < (itemsByID[rhs.dependsOnWorkItemID]?.key ?? "")
+    }
+
+    if let edge = sortedDependencies.first(where: {
+      desiredCandidateIDs.contains($0.workItemID)
+        && !availableCandidateIDs.contains($0.dependsOnWorkItemID)
+    }) {
+      let dependentKey = itemsByID[edge.workItemID]?.key ?? "The dependant ticket"
+      let prerequisiteKey =
+        itemsByID[edge.dependsOnWorkItemID]?.key ?? "its prerequisite"
+      let message =
+        intoCandidateSprint
+        ? "Move \(prerequisiteKey) too; \(dependentKey) depends on it."
+        : "Move \(dependentKey) too; it depends on \(prerequisiteKey)."
+      return .invalid(.sprintScope, message: message)
+    }
+
+    let nonMovingDestinationItems = planningItems.filter { item in
+      !movingIDs.contains(item.id)
+        && desiredCandidateIDs.contains(item.id) == intoCandidateSprint
+    }
+    if let requestedTargetID,
+      !nonMovingDestinationItems.contains(where: { $0.id == requestedTargetID })
+    {
+      return .invalid(
+        .unavailable,
+        message: "That drop position is no longer available."
+      )
+    }
+
+    let movingItems = planningItems.filter { movingIDs.contains($0.id) }
+    var desiredDestinationIDs = nonMovingDestinationItems.map(\.id)
+    let destinationInsertionIndex =
+      requestedTargetID.flatMap { targetID in
+        desiredDestinationIDs.firstIndex(of: targetID)
+      } ?? desiredDestinationIDs.endIndex
+    desiredDestinationIDs.insert(
+      contentsOf: movingItems.map(\.id),
+      at: destinationInsertionIndex
+    )
+
+    let currentDestinationIDs = planningItems.compactMap { item -> UUID? in
+      guard desiredCandidateIDs.contains(item.id) == intoCandidateSprint else {
+        return nil
+      }
+      return item.id
+    }
+
+    let rankAction: PlanningDropRankAction
+    if currentDestinationIDs == desiredDestinationIDs {
+      rankAction = .preserve
+    } else if let requestedTargetID {
+      rankAction = .move(before: requestedTargetID)
+    } else if let lastDestinationID = nonMovingDestinationItems.last?.id {
+      let remainingItems = planningItems.filter { !movingIDs.contains($0.id) }
+      let lastDestinationIndex = remainingItems.firstIndex {
+        $0.id == lastDestinationID
+      }
+      let anchorID = lastDestinationIndex.flatMap { index in
+        remainingItems.dropFirst(index + 1).first?.id
+      }
+      rankAction = .move(before: anchorID)
+    } else {
+      // An empty destination section does not express a new global rank.
+      rankAction = .preserve
+    }
+
+    let reorderedItems: [WorkItem]
+    switch rankAction {
+    case .preserve:
+      reorderedItems = planningItems
+    case .move(let targetID):
+      var remainingItems = planningItems.filter { !movingIDs.contains($0.id) }
+      let insertionIndex =
+        targetID.flatMap { targetID in
+          remainingItems.firstIndex { $0.id == targetID }
+        } ?? remainingItems.endIndex
+      remainingItems.insert(contentsOf: movingItems, at: insertionIndex)
+      reorderedItems = remainingItems
+    }
+
+    let indexByID = Dictionary(
+      uniqueKeysWithValues: reorderedItems.enumerated().map {
+        ($0.element.id, $0.offset)
+      }
+    )
+    if let edge = sortedDependencies.first(where: { edge in
+      guard
+        let dependentIndex = indexByID[edge.workItemID],
+        let prerequisiteIndex = indexByID[edge.dependsOnWorkItemID]
+      else {
+        return false
+      }
+      return dependentIndex < prerequisiteIndex
+    }) {
+      let dependentKey = itemsByID[edge.workItemID]?.key ?? "The dependant ticket"
+      let prerequisiteKey =
+        itemsByID[edge.dependsOnWorkItemID]?.key ?? "its prerequisite"
+      let message =
+        movingIDs.contains(edge.dependsOnWorkItemID)
+          && !movingIDs.contains(edge.workItemID)
+        ? "Place \(prerequisiteKey) above \(dependentKey)."
+        : "Place \(dependentKey) below \(prerequisiteKey)."
+      return .invalid(.rank, message: message)
+    }
+
+    return .valid(rankAction)
+  }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
   @Published private(set) var products: [Product] = []
@@ -113,6 +307,9 @@ final class AppModel: ObservableObject {
   @Published private(set) var isTicketConversationMessageRunning = false
   @Published private(set) var ticketConversationWorkItemID: UUID?
   @Published private(set) var ticketConversationRecipientID: UUID?
+  @Published private(set) var isEpicConversationMessageRunning = false
+  @Published private(set) var epicConversationEpicID: UUID?
+  @Published private(set) var epicConversationRecipientID: UUID?
   @Published private(set) var ticketRefinementResults: [UUID: TicketRefinementSessionResult] = [:]
   @Published private(set) var ticketConversationResults: [UUID: TicketConversationSessionResult] = [:]
   @Published private(set) var epicPlanningConversation: EpicPlanningConversationState?
@@ -124,13 +321,17 @@ final class AppModel: ObservableObject {
 
   let requiresKnowledgeApproval = StoryPointlessFeatureFlags.requiresKnowledgeApproval
 
-  var activeEpics: [Epic] {
+  var planningEpics: [Epic] {
     epics
       .filter { $0.status != .archived }
       .sorted {
         if $0.rank != $1.rank { return $0.rank < $1.rank }
         return $0.createdAt < $1.createdAt
       }
+  }
+
+  var openEpics: [Epic] {
+    planningEpics.filter { $0.status == .open }
   }
 
   var candidateSprintPlan: SprintPlan? {
@@ -149,8 +350,10 @@ final class AppModel: ObservableObject {
   private var suggestionTask: Task<Void, Never>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
   private var ticketConversationThreadIDs: [PlanningConversationKey: String] = [:]
+  private var epicConversationThreadIDs: [PlanningConversationKey: String] = [:]
   private var activePlanningTurn: (threadID: String, turnID: String)?
   private var activeTicketConversationTurn: (threadID: String, turnID: String)?
+  private var activeEpicConversationTurn: (threadID: String, turnID: String)?
   private var activeTicketRefinementTurn: (threadID: String, turnID: String)?
   private var epicPlanningThreadID: String?
   private var activeEpicPlanningTurn: (threadID: String, turnID: String)?
@@ -217,6 +420,7 @@ final class AppModel: ObservableObject {
     guard suggestionBatch?.session.status != .generating else { return false }
     guard !isPlanningMessageRunning else { return false }
     guard !isTicketConversationMessageRunning else { return false }
+    guard !isEpicConversationMessageRunning else { return false }
     guard refiningWorkItemID == nil else { return false }
     return pendingSuggestionCount == 0
   }
@@ -232,6 +436,7 @@ final class AppModel: ObservableObject {
     guard suggestionBatch?.session.status != .generating else { return false }
     guard !isPlanningMessageRunning else { return false }
     guard !isTicketConversationMessageRunning else { return false }
+    guard !isEpicConversationMessageRunning else { return false }
     return refiningWorkItemID == nil
   }
 
@@ -300,6 +505,9 @@ final class AppModel: ObservableObject {
     if isTicketConversationMessageRunning {
       return "A team member is replying in a ticket conversation."
     }
+    if isEpicConversationMessageRunning {
+      return "A team member is replying in an epic conversation."
+    }
     if refiningWorkItemID != nil {
       return "The Business Analyst is reviewing a ticket."
     }
@@ -362,6 +570,7 @@ final class AppModel: ObservableObject {
     suggestionTask?.cancel()
     planningThreadIDs.removeAll()
     ticketConversationThreadIDs.removeAll()
+    epicConversationThreadIDs.removeAll()
     selectedProductID = product.id
     rememberSelectedProduct(product.id)
     await reloadSelectedProduct()
@@ -396,6 +605,7 @@ final class AppModel: ObservableObject {
     activeEpicPlanningTurn = nil
     planningThreadIDs.removeAll()
     ticketConversationThreadIDs.removeAll()
+    epicConversationThreadIDs.removeAll()
 
     do {
       _ = try await store.archiveProduct(id: product.id)
@@ -494,8 +704,7 @@ final class AppModel: ObservableObject {
     title: String,
     goal: String,
     successCriteria: [String],
-    constraints: String,
-    status: EpicStatus
+    constraints: String
   ) async -> Epic? {
     guard let store else { return nil }
     do {
@@ -504,11 +713,34 @@ final class AppModel: ObservableObject {
         title: title,
         goal: goal,
         successCriteria: successCriteria,
-        constraints: constraints,
-        status: status
+        constraints: constraints
       )
       await reloadSelectedProduct()
       return updated
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+  }
+
+  func closeEpic(_ epic: Epic) async -> Epic? {
+    guard let store else { return nil }
+    do {
+      let closed = try await store.closeEpic(id: epic.id)
+      await reloadSelectedProduct()
+      return closed
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+  }
+
+  func reopenEpic(_ epic: Epic) async -> Epic? {
+    guard let store else { return nil }
+    do {
+      let reopened = try await store.reopenEpic(id: epic.id)
+      await reloadSelectedProduct()
+      return reopened
     } catch {
       errorMessage = error.localizedDescription
       return nil
@@ -565,6 +797,7 @@ final class AppModel: ObservableObject {
     else {
       if refiningWorkItemID != nil || isPlanningMessageRunning
         || isTicketConversationMessageRunning
+        || isEpicConversationMessageRunning
         || suggestionBatch?.session.status == .generating
       {
         throw TicketRefinementGenerationError.anotherCodexTaskIsRunning
@@ -668,6 +901,7 @@ final class AppModel: ObservableObject {
   ) async throws -> TicketConversationReply {
     guard
       !isTicketConversationMessageRunning,
+      !isEpicConversationMessageRunning,
       !isPlanningMessageRunning,
       refiningWorkItemID == nil,
       suggestionBatch?.session.status != .generating
@@ -799,9 +1033,173 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func sendEpicConversationMessage(
+    for epic: Epic,
+    to recipient: AgentProfile,
+    ownerMessage: String
+  ) async throws -> EpicConversationReply {
+    guard
+      !isEpicConversationMessageRunning,
+      !isTicketConversationMessageRunning,
+      !isPlanningMessageRunning,
+      refiningWorkItemID == nil,
+      suggestionBatch?.session.status != .generating,
+      epicPlanningConversation?.isRunning != true,
+      epicPlanningConversation?.isGeneratingPlan != true
+    else {
+      throw EpicConversationGenerationError.anotherCodexTaskIsRunning
+    }
+    guard
+      let client = codexClient,
+      let product = selectedProduct,
+      product.id == epic.productID,
+      epic.status == .open,
+      recipient.productID == product.id,
+      profiles.contains(where: { $0.id == recipient.id })
+    else {
+      throw CodexClientError.notConnected
+    }
+    let trimmedMessage = ownerMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedMessage.isEmpty else {
+      throw EpicConversationGenerationError.invalidResponse("Enter a message first.")
+    }
+
+    await restoreEpicPlanningConversation(for: epic)
+    guard !Task.isCancelled, selectedProductID == epic.productID else {
+      throw CodexClientError.notConnected
+    }
+    let previousMessages =
+      epicPlanningConversation?.epicID == epic.id
+      ? epicPlanningConversation?.messages ?? []
+      : []
+    ensureEpicConversationState(for: epic.id)
+    updateEpicPlanningConversation {
+      $0.messages.append(
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "@\(recipient.name) \(trimmedMessage)",
+          kind: .chat,
+          participantID: recipient.id,
+          participantName: recipient.name
+        )
+      )
+    }
+
+    isEpicConversationMessageRunning = true
+    epicConversationEpicID = epic.id
+    epicConversationRecipientID = recipient.id
+    defer {
+      isEpicConversationMessageRunning = false
+      epicConversationEpicID = nil
+      epicConversationRecipientID = nil
+      activeEpicConversationTurn = nil
+    }
+
+    let currentEpic = epics.first(where: { $0.id == epic.id }) ?? epic
+    let relatedItems = workItems.filter {
+      $0.epicID == epic.id && $0.state != .cancelled
+    }
+    let proposedItems =
+      suggestionBatch?.session.epicID == epic.id
+      ? suggestionBatch?.suggestions.filter { $0.status == .proposed } ?? []
+      : []
+    let conversationKey = PlanningConversationKey(
+      workItemID: epic.id,
+      profileID: recipient.id
+    )
+
+    do {
+      let threadID: String
+      if let existingThreadID = epicConversationThreadIDs[conversationKey] {
+        threadID = existingThreadID
+      } else {
+        let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
+        threadID = try await client.startReadOnlyThread(
+          workingDirectory: workingDirectory,
+          developerInstructions: CodexEpicConversation.developerInstructions(
+            productInstructions: inheritedAgentInstructions(for: product),
+            personaInstructions: recipient.effectiveInstructions,
+            recipient: recipient
+          ),
+          model: recipient.model
+        )
+        epicConversationThreadIDs[conversationKey] = threadID
+      }
+      let turnID = try await client.startStructuredTurn(
+        threadID: threadID,
+        prompt: CodexEpicConversation.prompt(
+          product: product,
+          epic: currentEpic,
+          relatedItems: relatedItems,
+          proposedItems: proposedItems,
+          previousMessages: previousMessages,
+          ownerMessage: trimmedMessage
+        ),
+        effort: recipient.reasoningEffort,
+        outputSchema: CodexEpicConversation.outputSchema
+      )
+      activeEpicConversationTurn = (threadID: threadID, turnID: turnID)
+      let response = try await client.waitForFinalAgentMessage(
+        threadID: threadID,
+        turnID: turnID
+      )
+      let reply = try CodexEpicConversation.decode(response)
+      updateEpicPlanningConversation {
+        $0.messages.append(
+          EpicPlanningConversationMessage(
+            author: .agent,
+            body: reply.message,
+            kind: .chat,
+            participantID: recipient.id,
+            participantName: recipient.name
+          )
+        )
+      }
+      return reply
+    } catch {
+      epicConversationThreadIDs.removeValue(forKey: conversationKey)
+      updateEpicPlanningConversation {
+        $0.messages.append(
+          EpicPlanningConversationMessage(
+            author: .system,
+            body: "\(recipient.name) couldn't reply: \(error.localizedDescription)",
+            kind: .chat
+          )
+        )
+      }
+      throw error
+    }
+  }
+
+  func cancelEpicConversationMessage() {
+    guard let client = codexClient, let activeEpicConversationTurn else { return }
+    Task {
+      try? await client.interruptTurn(
+        threadID: activeEpicConversationTurn.threadID,
+        turnID: activeEpicConversationTurn.turnID
+      )
+    }
+  }
+
   func dismissTicketAssistantResult(workItemID: UUID) {
     ticketRefinementResults.removeValue(forKey: workItemID)
     ticketConversationResults.removeValue(forKey: workItemID)
+  }
+
+  private func ensureEpicConversationState(for epicID: UUID) {
+    guard epicPlanningConversation?.epicID != epicID else { return }
+    epicPlanningThreadID = nil
+    epicPlanningConversation = EpicPlanningConversationState(
+      epicID: epicID,
+      messages: [],
+      questions: [],
+      hasStartedPlanning: false,
+      isRunning: false,
+      isGeneratingPlan: false,
+      isComplete: false,
+      errorMessage: nil
+    )
+    persistEpicPlanningConversation()
   }
 
   func transition(_ workItem: WorkItem, to state: WorkItemState) {
@@ -1863,7 +2261,8 @@ final class AppModel: ObservableObject {
       !isPlanningMessageRunning,
       suggestionBatch?.session.status != .generating,
       refiningWorkItemID == nil,
-      !isTicketConversationMessageRunning
+      !isTicketConversationMessageRunning,
+      !isEpicConversationMessageRunning
     else {
       throw SprintPlanningConversationError.anotherCodexTaskIsRunning
     }
@@ -2110,36 +2509,35 @@ final class AppModel: ObservableObject {
     let movingIDs = Set(selectedItems.map(\.id))
     let candidatePlan = candidateSprintPlan
     let existingCandidateIDs = Set(candidatePlan?.items.map(\.workItemID) ?? [])
+    let evaluation = planningDropEvaluation(
+      ids: movingIDs,
+      intoCandidateSprint: intoCandidateSprint,
+      before: targetID
+    )
+    guard evaluation.isValid, let rankAction = evaluation.rankAction else {
+      return
+    }
     let desiredCandidateIDs = intoCandidateSprint
       ? existingCandidateIDs.union(movingIDs)
       : existingCandidateIDs.subtracting(movingIDs)
-    let availableCandidateIDs = desiredCandidateIDs.union(externalCandidatePrerequisiteIDs)
-
-    if let invalidEdge = dependencies.first(where: {
-      desiredCandidateIDs.contains($0.workItemID)
-        && !availableCandidateIDs.contains($0.dependsOnWorkItemID)
-    }),
-      let dependent = workItems.first(where: { $0.id == invalidEdge.workItemID }),
-      let prerequisite = workItems.first(where: { $0.id == invalidEdge.dependsOnWorkItemID })
-    {
-      errorMessage = intoCandidateSprint
-        ? "Also move \(prerequisite.key); \(dependent.key) depends on it."
-        : "Also move \(dependent.key); it depends on \(prerequisite.key)."
-      return
-    }
 
     let existingItemsByID = Dictionary(
       uniqueKeysWithValues: (candidatePlan?.items ?? []).map { ($0.workItemID, $0) }
     )
     let shouldSaveSprint = desiredCandidateIDs != existingCandidateIDs
-      || !movingIDs.isDisjoint(with: existingCandidateIDs)
 
     Task {
       do {
-        let reorderedItems = try await store.moveWorkItems(
-          ids: selectedItems.map(\.id),
-          before: targetID
-        )
+        let reorderedItems: [WorkItem]
+        switch rankAction {
+        case .preserve:
+          reorderedItems = workItems
+        case .move(let resolvedTargetID):
+          reorderedItems = try await store.moveWorkItems(
+            ids: selectedItems.map(\.id),
+            before: resolvedTargetID
+          )
+        }
         if shouldSaveSprint {
           let inputs = reorderedItems.compactMap { item -> SprintDraftItemInput? in
             guard desiredCandidateIDs.contains(item.id) else { return nil }
@@ -2166,6 +2564,22 @@ final class AppModel: ObservableObject {
         await reloadSelectedProduct()
       }
     }
+  }
+
+  func planningDropEvaluation(
+    ids: Set<UUID>,
+    intoCandidateSprint: Bool,
+    before targetID: UUID?
+  ) -> PlanningDropEvaluation {
+    PlanningDropPolicy.evaluate(
+      workItems: workItems,
+      dependencies: dependencies,
+      candidateIDs: Set(candidateSprintPlan?.items.map(\.workItemID) ?? []),
+      externalCandidatePrerequisiteIDs: externalCandidatePrerequisiteIDs,
+      movingIDs: ids,
+      intoCandidateSprint: intoCandidateSprint,
+      before: targetID
+    )
   }
 
   var canEditCandidateSprint: Bool {
@@ -2199,15 +2613,17 @@ final class AppModel: ObservableObject {
       guard !Task.isCancelled else { return }
       epicPlanningThreadID = snapshot.threadID
       activeEpicPlanningTurn = nil
+      let hasStartedPlanning = snapshot.hasStartedPlanning ?? true
       epicPlanningConversation = EpicPlanningConversationState(
         epicID: snapshot.epicID,
         messages: snapshot.messages,
         questions: snapshot.questions,
+        hasStartedPlanning: hasStartedPlanning,
         isRunning: false,
         isGeneratingPlan: false,
         isComplete: snapshot.isComplete,
         errorMessage:
-          snapshot.isComplete || !snapshot.questions.isEmpty
+          !hasStartedPlanning || snapshot.isComplete || !snapshot.questions.isEmpty
           ? nil
           : "Epic planning was paused when the app closed. You can safely try again."
       )
@@ -2220,14 +2636,20 @@ final class AppModel: ObservableObject {
     guard
       canPlanEpic,
       let product = selectedProduct,
-      epic.productID == product.id
+      epic.productID == product.id,
+      epic.status == .open
     else { return }
 
     epicPlanningTask?.cancel()
+    let existingMessages =
+      epicPlanningConversation?.epicID == epic.id
+      ? epicPlanningConversation?.messages ?? []
+      : []
     epicPlanningConversation = EpicPlanningConversationState(
       epicID: epic.id,
-      messages: [],
+      messages: existingMessages,
       questions: [],
+      hasStartedPlanning: true,
       isRunning: true,
       isGeneratingPlan: false,
       isComplete: false,
@@ -2314,6 +2736,7 @@ final class AppModel: ObservableObject {
       epicPlanningConversation?.epicID == epic.id,
       epicPlanningConversation?.isRunning == false,
       epicPlanningConversation?.isGeneratingPlan == false,
+      !isEpicConversationMessageRunning,
       let client = codexClient,
       let product = selectedProduct,
       product.id == epic.productID,
@@ -2398,7 +2821,14 @@ final class AppModel: ObservableObject {
       return
     }
 
-    clearEpicPlanningConversation(for: epic.id)
+    epicPlanningThreadID = nil
+    activeEpicPlanningTurn = nil
+    updateEpicPlanningConversation {
+      $0.messages = $0.messages.filter { $0.kind == .chat }
+      $0.questions = []
+      $0.hasStartedPlanning = false
+      $0.errorMessage = nil
+    }
     planEpic(epic)
   }
 
@@ -2586,8 +3016,7 @@ final class AppModel: ObservableObject {
           title: plan.title,
           goal: plan.goal,
           successCriteria: plan.successCriteria,
-          constraints: plan.constraints,
-          status: .active
+          constraints: plan.constraints
         )
         suggestionBatch = try await store.completeTicketSuggestionSession(
           sessionID: startedSession.id,
@@ -2772,7 +3201,8 @@ final class AppModel: ObservableObject {
       messages: conversation.messages,
       questions: conversation.questions,
       isComplete: conversation.isComplete,
-      threadID: epicPlanningThreadID
+      threadID: epicPlanningThreadID,
+      hasStartedPlanning: conversation.hasStartedPlanning
     )
     let previousTask = epicConversationPersistenceTask
     epicConversationPersistenceTask = Task { [weak self] in
