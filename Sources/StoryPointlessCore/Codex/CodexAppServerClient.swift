@@ -526,6 +526,14 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     }
   }
 
+  public func completedAgentMessage(
+    threadID: String,
+    turnID: String
+  ) async throws -> String? {
+    guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    return try await completedTurnResponse(threadID: threadID, turnID: turnID)
+  }
+
   public func latestCompletedAgentMessage(
     threadID: String,
     notBefore: Date? = nil

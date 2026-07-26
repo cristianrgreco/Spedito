@@ -90,6 +90,10 @@ Agent permissions must remain least-privilege:
 - No secrets, credential stores, unrelated products, other ticket worktrees,
   or the StoryPointless database in an agent context.
 - Network access is off unless the Product Owner explicitly permits it.
+- Do not discover package managers or runtime installations and pre-authorize
+  their paths. Keep Codex's scoped permission-request tool available so the
+  assigned agent can diagnose a blocked capability and request the smallest
+  exact filesystem or network access from the Product Owner.
 - Do not weaken sandbox or approval behavior as a convenience fallback.
 - Capability-detect required runtime features and fail closed when safe
   isolation cannot be provided.
@@ -184,6 +188,11 @@ the single durable product sequence `T1`, `T2`, and so on.
 
 ## Making changes
 
+- Never use Computer Use or any other GUI automation to control or inspect the
+  Product Owner's Mac. Do not click, type, scroll, navigate apps, or capture the
+  screen on their behalf. Validate through repository code, tests, durable
+  state, and the required relaunch; leave visual UI inspection to the Product
+  Owner.
 - Inspect the affected implementation and nearby tests before editing.
 - Search with `rg` or `rg --files`.
 - Preserve unrelated work in a dirty worktree.

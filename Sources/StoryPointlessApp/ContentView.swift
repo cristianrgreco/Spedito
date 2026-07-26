@@ -1678,6 +1678,54 @@ private struct PlanningDropTarget: Equatable {
   let index: Int
 }
 
+struct EpicPlanningSections {
+  let allEpics: [Epic]
+  let openEpics: [Epic]
+  let completedEpics: [Epic]
+  let deliveredTicketCount: Int
+
+  init(epics: [Epic], workItems: [WorkItem]) {
+    let visibleEpics = epics.filter { $0.status != .archived }
+    let visibleOpenEpics = visibleEpics.filter { $0.status == .active }
+    let visibleCompletedEpics = visibleEpics.filter { $0.status == .complete }
+    let completedEpicIDs = Set(visibleCompletedEpics.map(\.id))
+    allEpics = visibleEpics
+    openEpics = visibleOpenEpics
+    completedEpics = visibleCompletedEpics
+    deliveredTicketCount = workItems.filter {
+      guard let epicID = $0.epicID else { return false }
+      return completedEpicIDs.contains(epicID) && $0.state == .released
+    }.count
+  }
+
+  var isEmpty: Bool {
+    allEpics.isEmpty
+  }
+}
+
+enum EpicPlanningDisclosureDefaults {
+  private static let prefix = "completedEpicsExpanded"
+
+  static func isExpanded(
+    for productID: UUID,
+    defaults: UserDefaults = .standard
+  ) -> Bool {
+    defaults.bool(forKey: key(for: productID))
+  }
+
+  static func setExpanded(
+    _ isExpanded: Bool,
+    for productID: UUID,
+    defaults: UserDefaults = .standard
+  ) {
+    defaults.set(isExpanded, forKey: key(for: productID))
+  }
+
+  private static func key(for productID: UUID) -> String {
+    "\(prefix).\(productID.uuidString)"
+  }
+}
+
 private struct BacklogView: View {
   @EnvironmentObject private var model: AppModel
   let onNewTicket: (UUID?) -> Void
@@ -1691,6 +1739,8 @@ private struct BacklogView: View {
   @State private var planningDropTarget: PlanningDropTarget?
   @State private var dragResetTask: Task<Void, Never>?
   @State private var dropExitResetTask: Task<Void, Never>?
+  @State private var completedEpicsExpanded = false
+  @State private var completedExpansionProductID: UUID?
 
   private var allPlanningItems: [WorkItem] {
     model.workItems.filter { [.backlog, .refining, .ready].contains($0.state) }
@@ -1710,6 +1760,13 @@ private struct BacklogView: View {
 
   private var backlogItems: [WorkItem] {
     allPlanningItems.filter { !candidateIDs.contains($0.id) }
+  }
+
+  private var epicSections: EpicPlanningSections {
+    EpicPlanningSections(
+      epics: model.activeEpics,
+      workItems: model.workItems
+    )
   }
 
   private var candidateSprintNumber: Int {
@@ -1779,9 +1836,16 @@ private struct BacklogView: View {
         let availableHeight = max(0, proxy.size.height - topPadding - bottomPadding)
         let leftWidth = floor((availableWidth - dividerThickness) * 0.59)
         let sprintWidth = max(0, availableWidth - leftWidth - dividerThickness)
-        let epicHeight = model.activeEpics.isEmpty
+        let completedSectionRowCount = epicSections.completedEpics.isEmpty ? 0 : 1
+        let visibleCompletedEpicCount =
+          completedEpicsExpanded ? epicSections.completedEpics.count : 0
+        let visibleEpicRowCount =
+          epicSections.openEpics.count
+          + completedSectionRowCount
+          + visibleCompletedEpicCount
+        let epicHeight = epicSections.isEmpty
           ? CGFloat(166)
-          : min(CGFloat(model.activeEpics.count * 49 + 66), 250)
+          : min(CGFloat(visibleEpicRowCount * 49 + 66), 250)
         let suggestionCount = visibleSuggestionBatch?.suggestions
           .filter { $0.status == .proposed }
           .count ?? 0
@@ -1799,9 +1863,10 @@ private struct BacklogView: View {
           ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
               EpicPlanningList(
-                epics: model.activeEpics,
+                sections: epicSections,
                 workItems: model.workItems,
                 minimumHeight: epicHeight,
+                isCompletedExpanded: $completedEpicsExpanded,
                 onAddEpic: onNewEpic,
                 onOpen: { selectedEpic = $0 }
               )
@@ -1903,6 +1968,16 @@ private struct BacklogView: View {
       guard epicID != nil else { return }
       model.backlogFocusEpicID = nil
     }
+    .onChange(of: model.selectedProductID, initial: true) { _, productID in
+      restoreCompletedEpicExpansion(for: productID)
+    }
+    .onChange(of: completedEpicsExpanded) { _, isExpanded in
+      guard
+        let productID = model.selectedProductID,
+        completedExpansionProductID == productID
+      else { return }
+      EpicPlanningDisclosureDefaults.setExpanded(isExpanded, for: productID)
+    }
   }
 
   private func beginDragging(_ ids: Set<UUID>) {
@@ -1930,14 +2005,25 @@ private struct BacklogView: View {
     }
   }
 
+  private func restoreCompletedEpicExpansion(for productID: UUID?) {
+    completedExpansionProductID = nil
+    guard let productID else {
+      completedEpicsExpanded = false
+      return
+    }
+    completedEpicsExpanded = EpicPlanningDisclosureDefaults.isExpanded(for: productID)
+    completedExpansionProductID = productID
+  }
+
 }
 
 private struct EpicPlanningList: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.colorScheme) private var colorScheme
-  let epics: [Epic]
+  let sections: EpicPlanningSections
   let workItems: [WorkItem]
   let minimumHeight: CGFloat
+  @Binding var isCompletedExpanded: Bool
   let onAddEpic: () -> Void
   let onOpen: (Epic) -> Void
   @State private var targetedEpicID: UUID?
@@ -1949,7 +2035,7 @@ private struct EpicPlanningList: View {
       HStack(spacing: 7) {
         Text("Epics")
           .font(.title3.weight(.semibold))
-        Text(epics.count.formatted())
+        Text(sections.openEpics.count.formatted())
           .font(.caption2.weight(.semibold).monospacedDigit())
           .foregroundStyle(.secondary)
           .padding(.horizontal, 6)
@@ -1970,7 +2056,7 @@ private struct EpicPlanningList: View {
           .background(PlanningDropSurfaceStyle.tableHeaderBackground)
         Divider()
 
-        if epics.isEmpty {
+        if sections.isEmpty {
           VStack(spacing: 6) {
             Image(systemName: "flag.checkered")
               .font(.title3)
@@ -1983,40 +2069,37 @@ private struct EpicPlanningList: View {
           }
           .frame(maxWidth: .infinity, minHeight: 86, maxHeight: .infinity)
         } else {
-          ForEach(epics) { epic in
-            EpicPlanningRow(
-              epic: epic,
-              tickets: workItems.filter {
-                $0.epicID == epic.id && $0.state != .cancelled
-              },
-              isDropTargeted: targetedEpicID == epic.id,
-              onOpen: { onOpen(epic) },
-              onRefine: {
-                model.planEpic(epic)
-                onOpen(epic)
-              },
-              onMoveTop: { model.moveEpics([epic], before: epics.first?.id) },
-              onMoveBottom: { model.moveEpics([epic], before: nil) },
-              onArchive: { confirmingArchive = epic }
-            )
-            .dropDestination(
-              for: String.self,
-              action: { values, _ in move(values, before: epic.id) },
-              isTargeted: { targeted in
-                withAnimation(.easeOut(duration: 0.12)) {
-                  targetedEpicID = targeted ? epic.id : nil
-                }
-              }
-            )
-            if epic.id != epics.last?.id {
+          ForEach(Array(sections.openEpics.enumerated()), id: \.element.id) {
+            index,
+            epic in
+            epicRow(epic)
+            if index < sections.openEpics.count - 1 {
               Divider()
+            }
+          }
+
+          if !sections.completedEpics.isEmpty {
+            if !sections.openEpics.isEmpty {
+              Divider()
+            }
+            CompletedEpicsDisclosureRow(
+              epicCount: sections.completedEpics.count,
+              deliveredTicketCount: sections.deliveredTicketCount,
+              isExpanded: $isCompletedExpanded
+            )
+
+            if isCompletedExpanded {
+              ForEach(sections.completedEpics) { epic in
+                Divider()
+                epicRow(epic)
+              }
             }
           }
         }
       }
       .frame(
         maxWidth: .infinity,
-        maxHeight: epics.isEmpty ? .infinity : nil,
+        maxHeight: sections.isEmpty ? .infinity : nil,
         alignment: .top
       )
       .background(PlanningDropSurfaceStyle.restingBackground(for: colorScheme))
@@ -2026,7 +2109,7 @@ private struct EpicPlanningList: View {
           .stroke(Color.secondary.opacity(colorScheme == .dark ? 0.32 : 0.2), lineWidth: 1)
       }
       .overlay(alignment: .bottom) {
-        if !epics.isEmpty {
+        if !sections.isEmpty {
           Color.clear
             .frame(height: 12)
             .contentShape(Rectangle())
@@ -2070,18 +2153,97 @@ private struct EpicPlanningList: View {
     }
   }
 
+  private func epicRow(_ epic: Epic) -> some View {
+    EpicPlanningRow(
+      epic: epic,
+      tickets: workItems.filter {
+        $0.epicID == epic.id && $0.state != .cancelled
+      },
+      isDropTargeted: targetedEpicID == epic.id,
+      onOpen: { onOpen(epic) },
+      onRefine: {
+        model.planEpic(epic)
+        onOpen(epic)
+      },
+      onMoveTop: {
+        model.moveEpics([epic], before: sections.allEpics.first?.id)
+      },
+      onMoveBottom: { model.moveEpics([epic], before: nil) },
+      onArchive: { confirmingArchive = epic }
+    )
+    .dropDestination(
+      for: String.self,
+      action: { values, _ in move(values, before: epic.id) },
+      isTargeted: { targeted in
+        withAnimation(.easeOut(duration: 0.12)) {
+          targetedEpicID = targeted ? epic.id : nil
+        }
+      }
+    )
+  }
+
   private func move(_ values: [String], before targetID: UUID?) -> Bool {
     let ids = values.compactMap { value -> UUID? in
       guard value.hasPrefix("epic:") else { return nil }
       return UUID(uuidString: String(value.dropFirst(5)))
     }
-    let moving = epics.filter { ids.contains($0.id) }
+    let moving = sections.allEpics.filter { ids.contains($0.id) }
     guard !moving.isEmpty else { return false }
     if moving.count == 1, moving.first?.id == targetID {
       return true
     }
     model.moveEpics(moving, before: targetID)
     return true
+  }
+}
+
+private struct CompletedEpicsDisclosureRow: View {
+  let epicCount: Int
+  let deliveredTicketCount: Int
+  @Binding var isExpanded: Bool
+  @State private var isHovering = false
+
+  private var epicLabel: String {
+    "\(epicCount) completed \(epicCount == 1 ? "epic" : "epics")"
+  }
+
+  private var ticketLabel: String {
+    "\(deliveredTicketCount) delivered \(deliveredTicketCount == 1 ? "ticket" : "tickets")"
+  }
+
+  var body: some View {
+    Button {
+      isExpanded.toggle()
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .rotationEffect(.degrees(isExpanded ? 90 : 0))
+          .frame(width: 12)
+          .animation(.easeInOut(duration: 0.18), value: isExpanded)
+        Text(epicLabel)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(.primary)
+        Text("·")
+          .foregroundStyle(.tertiary)
+        Text(ticketLabel)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 16)
+      .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+      .contentShape(Rectangle())
+      .background(isHovering ? Color.accentColor.opacity(0.055) : Color.clear)
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        isHovering = hovering
+      }
+    }
+    .help(isExpanded ? "Hide completed epics" : "Show completed epics")
   }
 }
 
@@ -2887,6 +3049,11 @@ private struct PlanningTicketList: View {
             isTargeted: { targeted in setDropTarget(targeted, index: 0) }
           )
         } else {
+          if let suggestionBatch {
+            InlineBacklogSuggestions(batch: suggestionBatch)
+              .gridCellColumns(6)
+          }
+
           ForEach(0...items.count, id: \.self) { index in
             PlanningTicketDropSlot(
               section: section,
@@ -2925,11 +3092,6 @@ private struct PlanningTicketList: View {
                 onOpen: { onOpen(item) }
               )
             }
-          }
-
-          if let suggestionBatch {
-            InlineBacklogSuggestions(batch: suggestionBatch)
-              .gridCellColumns(6)
           }
         }
       }
@@ -3491,6 +3653,72 @@ private enum ProposedTicketVisualStyle {
   static var border: Color { .purple.opacity(0.42) }
 }
 
+private struct TicketSuggestionBatchActions: View {
+  @EnvironmentObject private var model: AppModel
+  let suggestions: [TicketSuggestion]
+  @State private var confirmingAcceptance = false
+  @State private var confirmingDismissal = false
+
+  private var proposedSuggestions: [TicketSuggestion] {
+    suggestions
+      .filter { $0.status == .proposed }
+      .sorted { $0.position < $1.position }
+  }
+
+  private var proposalCount: Int {
+    proposedSuggestions.count
+  }
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Button("Dismiss all") {
+        confirmingDismissal = true
+      }
+      .buttonStyle(.bordered)
+
+      Button("Accept all") {
+        confirmingAcceptance = true
+      }
+      .buttonStyle(.borderedProminent)
+    }
+    .controlSize(.small)
+    .disabled(model.isDecidingSuggestions || proposedSuggestions.isEmpty)
+    .confirmationDialog(
+      "Accept all \(proposalCount) proposed tickets?",
+      isPresented: $confirmingAcceptance,
+      titleVisibility: .visible
+    ) {
+      Button("Accept \(proposalCount) \(proposalCount == 1 ? "ticket" : "tickets")") {
+        model.decideTicketSuggestionGroup(proposedSuggestions, accept: true)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "They will be added to the Backlog with their dependency relationships. "
+          + "This does not add them to a Sprint."
+      )
+    }
+    .confirmationDialog(
+      "Dismiss all \(proposalCount) proposed tickets?",
+      isPresented: $confirmingDismissal,
+      titleVisibility: .visible
+    ) {
+      Button(
+        "Dismiss \(proposalCount) \(proposalCount == 1 ? "ticket" : "tickets")",
+        role: .destructive
+      ) {
+        model.decideTicketSuggestionGroup(proposedSuggestions, accept: false)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "They will not enter the Backlog. The decisions remain in history and "
+          + "inform future suggestions."
+      )
+    }
+  }
+}
+
 private func transitiveSuggestionDependents(
   of suggestion: TicketSuggestion,
   in suggestions: [TicketSuggestion]
@@ -3658,14 +3886,10 @@ private struct InlineBacklogSuggestions: View {
           Image(systemName: "wand.and.stars")
             .foregroundStyle(.purple.opacity(0.55))
             .frame(width: 24)
-          VStack(alignment: .leading, spacing: 6) {
-            RoundedRectangle(cornerRadius: 3)
-              .fill(.purple.opacity(0.14))
-              .frame(width: index == 1 ? 250 : 340, height: 10)
-            RoundedRectangle(cornerRadius: 3)
-              .fill(.quaternary)
-              .frame(width: index == 2 ? 180 : 270, height: 8)
-          }
+          TicketSuggestionPlaceholderLines(
+            primaryWidth: index == 1 ? 250 : 340,
+            secondaryWidth: index == 2 ? 180 : 270
+          )
           Spacer()
         }
         .padding(.horizontal, 14)
@@ -3709,6 +3933,37 @@ private struct InlineBacklogSuggestions: View {
 
   private var readyRows: some View {
     VStack(alignment: .leading, spacing: 0) {
+      if !orderedSuggestions.isEmpty {
+        HStack(spacing: 0) {
+          Image(systemName: "wand.and.stars")
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(.purple)
+            .frame(
+              width: PlanningTicketTableMetrics.selectionWidth,
+              height: 32
+            )
+            .padding(.leading, PlanningTicketTableMetrics.horizontalPadding)
+          HStack(spacing: 9) {
+            Text("Proposed tickets")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(.purple)
+            Text(orderedSuggestions.count.formatted())
+              .font(.caption2.weight(.semibold).monospacedDigit())
+              .foregroundStyle(.purple)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 3)
+              .background(.purple.opacity(0.1), in: Capsule())
+          }
+          .padding(.leading, PlanningTicketTableMetrics.ticketLeadingSpacing)
+          Spacer()
+          TicketSuggestionBatchActions(suggestions: orderedSuggestions)
+            .padding(.trailing, PlanningTicketTableMetrics.horizontalPadding)
+        }
+        .frame(minHeight: 42)
+        .background(.purple.opacity(0.055))
+        Divider()
+      }
+
       if let sourceTicket {
         HStack(spacing: 8) {
           Image(systemName: "arrow.triangle.branch")
@@ -3776,6 +4031,35 @@ private struct InlineBacklogSuggestions: View {
     var next = visiting
     next.insert(suggestion.id)
     return 1 + (dependencies.map { dependencyDepth(for: $0, visiting: next) }.max() ?? 0)
+  }
+}
+
+private struct TicketSuggestionPlaceholderLines: View {
+  @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+  let primaryWidth: CGFloat
+  let secondaryWidth: CGFloat
+  @State private var isHighlighted = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      RoundedRectangle(cornerRadius: 3)
+        .fill(.purple.opacity(isHighlighted ? 0.24 : 0.11))
+        .frame(width: primaryWidth, height: 10)
+      RoundedRectangle(cornerRadius: 3)
+        .fill(Color.secondary.opacity(isHighlighted ? 0.19 : 0.09))
+        .frame(width: secondaryWidth, height: 8)
+    }
+    .animation(
+      accessibilityReduceMotion
+        ? nil
+        : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+      value: isHighlighted
+    )
+    .onAppear {
+      if !accessibilityReduceMotion {
+        isHighlighted = true
+      }
+    }
   }
 }
 
@@ -8047,6 +8331,20 @@ enum SprintTicketCommentRouting {
   }
 }
 
+enum SprintTicketWorkLogAttention {
+  static func requiresProductOwnerInput(
+    hasPendingPermissionRequest: Bool,
+    hasActiveOwnerQuestion: Bool,
+    knowledgeProposalsBlockCompletion: Bool,
+    ticketState: WorkItemState
+  ) -> Bool {
+    hasPendingPermissionRequest
+      || hasActiveOwnerQuestion
+      || knowledgeProposalsBlockCompletion
+      || ticketState == .acceptance
+  }
+}
+
 private struct SprintTicketDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -8238,9 +8536,12 @@ private struct SprintTicketDetailView: View {
   }
 
   private var hasPendingWorkLogAction: Bool {
-    pendingPermissionRequest != nil
-      || knowledgeProposalsBlockCompletion
-      || currentItem.state == .acceptance
+    SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: pendingPermissionRequest != nil,
+      hasActiveOwnerQuestion: activeOwnerQuestionComment != nil,
+      knowledgeProposalsBlockCompletion: knowledgeProposalsBlockCompletion,
+      ticketState: currentItem.state
+    )
   }
 
   private var detailWidth: CGFloat {
@@ -15565,7 +15866,9 @@ private struct EpicDetailView: View {
               tickets: activeEpicTickets,
               archivedCount: archivedEpicTicketCount,
               suggestionBatch: epicSuggestionBatch,
-              isGeneratingSuggestions: conversation?.isGeneratingPlan == true,
+              isGeneratingSuggestions:
+                conversation?.isGeneratingPlan == true
+                || epicSuggestionBatch?.session.status == .generating,
               onOpen: { selectedTicket = $0 },
               onOpenSuggestion: { selectedSuggestion = $0 }
             )
@@ -15705,7 +16008,9 @@ private struct EpicDetailView: View {
     if isReadyToComplete {
       return "All active tickets are delivered. Confirm that the epic outcome is complete."
     }
-    if conversation?.isGeneratingPlan == true {
+    if conversation?.isGeneratingPlan == true
+      || epicSuggestionBatch?.session.status == .generating
+    {
       return "The Business Analyst is preparing the proposed ticket plan."
     }
     let count = proposedEpicSuggestions.count
@@ -15831,7 +16136,9 @@ private struct EpicTicketsSection: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
-        if allDelivered {
+        if !proposedSuggestions.isEmpty {
+          TicketSuggestionBatchActions(suggestions: proposedSuggestions)
+        } else if allDelivered {
           Label(
             epic.status == .complete ? "Outcome confirmed" : "Ready to complete",
             systemImage: "checkmark.circle.fill"
@@ -15924,14 +16231,10 @@ private struct EpicTicketsSection: View {
         ProgressView()
           .controlSize(.mini)
           .tint(.purple)
-        VStack(alignment: .leading, spacing: 5) {
-          RoundedRectangle(cornerRadius: 3)
-            .fill(.purple.opacity(0.14))
-            .frame(width: index == 1 ? 150 : 190, height: 9)
-          RoundedRectangle(cornerRadius: 3)
-            .fill(.quaternary)
-            .frame(width: index == 2 ? 100 : 130, height: 7)
-        }
+        TicketSuggestionPlaceholderLines(
+          primaryWidth: index == 1 ? 150 : 190,
+          secondaryWidth: index == 2 ? 100 : 130
+        )
       }
       .padding(.horizontal, 12)
       .frame(maxWidth: .infinity, alignment: .leading)

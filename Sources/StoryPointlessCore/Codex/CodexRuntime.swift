@@ -31,6 +31,7 @@ public enum CodexRuntimeError: Error, Equatable, LocalizedError, Sendable {
   case notFound
   case couldNotInspect(String)
   case incompatible(expected: String, actual: String, path: String)
+  case missingRequiredFeature(name: String, path: String)
 
   public var errorDescription: String? {
     switch self {
@@ -40,6 +41,8 @@ public enum CodexRuntimeError: Error, Equatable, LocalizedError, Sendable {
       "Could not inspect the Codex runtime at \(path)."
     case .incompatible(let expected, let actual, _):
       "Codex runtime \(actual) is incompatible with this build; expected \(expected)."
+    case .missingRequiredFeature(let name, _):
+      "The StoryPointless Codex runtime does not support the required \(name) capability."
     }
   }
 }
@@ -72,6 +75,16 @@ public struct CodexRuntimeResolver: Sendable {
         }
         continue
       }
+      let enabledFeatures = try inspectEnabledFeatures(at: candidate.executableURL)
+      guard enabledFeatures.contains(CodexPermissionProfiles.requestPermissionsFeature) else {
+        if firstIncompatible == nil {
+          firstIncompatible = .missingRequiredFeature(
+            name: CodexPermissionProfiles.requestPermissionsFeature,
+            path: candidate.executableURL.path
+          )
+        }
+        continue
+      }
 
       return CodexRuntimeDescriptor(
         executableURL: candidate.executableURL,
@@ -89,6 +102,18 @@ public struct CodexRuntimeResolver: Sendable {
       .split(whereSeparator: \Character.isWhitespace)
       .last
       .map(String.init)
+  }
+
+  public func parseEnabledFeatures(_ output: String) -> Set<String> {
+    Set(
+      output
+        .split(whereSeparator: \.isNewline)
+        .compactMap { line in
+          let fields = line.split(whereSeparator: \.isWhitespace)
+          guard fields.count >= 2, fields.last == "true" else { return nil }
+          return String(fields[0])
+        }
+    )
   }
 
   private func inspectVersion(at executableURL: URL) throws -> String {
@@ -115,5 +140,35 @@ public struct CodexRuntimeResolver: Sendable {
       throw CodexRuntimeError.couldNotInspect(executableURL.path)
     }
     return version
+  }
+
+  private func inspectEnabledFeatures(at executableURL: URL) throws -> Set<String> {
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = executableURL
+    process.arguments = [
+      "-c",
+      CodexPermissionProfiles.requestPermissionsFeatureOverride,
+      "features",
+      "list",
+    ]
+    process.standardOutput = output
+    process.standardError = output
+
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      throw CodexRuntimeError.couldNotInspect(executableURL.path)
+    }
+
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    guard
+      process.terminationStatus == 0,
+      let text = String(data: data, encoding: .utf8)
+    else {
+      throw CodexRuntimeError.couldNotInspect(executableURL.path)
+    }
+    return parseEnabledFeatures(text)
   }
 }

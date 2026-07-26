@@ -81,6 +81,14 @@ struct CodexAdapterTests {
     let resolver = CodexRuntimeResolver()
     #expect(resolver.parseVersionOutput("codex-cli 0.144.0-alpha.4\n") == "0.144.0-alpha.4")
     #expect(resolver.parseVersionOutput("\n") == nil)
+    #expect(
+      resolver.parseEnabledFeatures(
+        """
+        request_permissions_tool    under development  true
+        exec_permission_approvals  under development  false
+        """
+      ) == ["request_permissions_tool"]
+    )
   }
 
   @Test("JSON values preserve integer request identifiers")
@@ -349,6 +357,9 @@ struct CodexAdapterTests {
   @Test("Delivery isolates the ticket while demos retain reviewed runtime reads")
   func managedPermissionProfiles() {
     let arguments = CodexPermissionProfiles.appServerArguments.joined(separator: " ")
+    #expect(
+      arguments.contains(CodexPermissionProfiles.requestPermissionsFeatureOverride)
+    )
     #expect(arguments.contains(#"":minimal"="read""#))
     #expect(arguments.contains(#"":root"="read""#))
     #expect(arguments.contains(#""~/.codex"="deny""#))
@@ -1190,6 +1201,52 @@ struct CodexAdapterTests {
     #expect(prompt.contains("let the team choose"))
   }
 
+  @Test("Interrupted final epic planning reconstructs every durable owner answer")
+  func finalEpicPlanRecoveryPrompt() {
+    let product = Product(
+      name: "Weather",
+      vision: "Help customers return to forecasts they care about"
+    )
+    let epic = Epic(
+      productID: product.id,
+      title: "Saved places",
+      goal: "Customers can reopen forecasts without searching again"
+    )
+    let question = TicketRefinementQuestion(
+      prompt: "How many places can a customer save?",
+      options: ["Up to 10 (Recommended)", "No product limit"]
+    )
+    let prompt = CodexEpicClarificationGenerator.finalPlanRecoveryPrompt(
+      product: product,
+      epic: epic,
+      existingItems: [],
+      rejectedSuggestions: [],
+      messages: [
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "",
+          answeredQuestions: [
+            EpicPlanningAnsweredQuestion(
+              question: question,
+              selectedOption: "Up to 10 (Recommended)",
+              answer: "Up to 10 (Recommended)"
+            )
+          ]
+        ),
+        EpicPlanningConversationMessage(
+          author: .businessAnalyst,
+          body: "Ready to plan with browser-only saved data."
+        ),
+      ]
+    )
+
+    #expect(prompt.contains("How many places can a customer save?"))
+    #expect(prompt.contains("Up to 10 (Recommended)"))
+    #expect(prompt.contains("Ready to plan with browser-only saved data."))
+    #expect(prompt.contains("Return the complete epic metadata"))
+    #expect(prompt.contains("do not ask the Product Owner to repeat anything"))
+  }
+
   @Test("Epic planning does not turn unresolved owner decisions into discovery tickets")
   func epicPlanningDecisionGuardrails() {
     let product = Product(
@@ -1885,6 +1942,11 @@ struct CodexAdapterTests {
     #expect(instructions.contains("You may use read-only Git inspection"))
     #expect(instructions.contains("owns every Git mutation"))
     #expect(instructions.contains("already available inside the sandbox"))
+    #expect(instructions.contains("command -v"))
+    #expect(instructions.contains("request_permissions"))
+    #expect(instructions.contains("do not merely repeat"))
+    #expect(instructions.contains("add another shell wrapper"))
+    #expect(instructions.contains("substitute older evidence"))
 
     let integrationPrompt = CodexConflictIntegrator.prompt(
       product: product,

@@ -4,6 +4,9 @@ public enum CodexPermissionProfiles {
   public static let readOnly = ":read-only"
   public static let delivery = "storypointless-delivery"
   public static let demo = "storypointless-demo"
+  public static let requestPermissionsFeature = "request_permissions_tool"
+  public static let requestPermissionsFeatureOverride =
+    "features.\(requestPermissionsFeature)=true"
   public static let agentProcessEnvironment = [
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_OPTIONAL_LOCKS": "0",
@@ -13,6 +16,8 @@ public enum CodexPermissionProfiles {
   public static let appServerArguments = [
     "-c",
     #"default_permissions=":read-only""#,
+    "-c",
+    requestPermissionsFeatureOverride,
     "-c",
     deliveryProfileOverride,
     "-c",
@@ -26,6 +31,8 @@ public enum CodexPermissionProfiles {
     [
       "-c",
       #"default_permissions=":read-only""#,
+      "-c",
+      requestPermissionsFeatureOverride,
       "-c",
       deliveryProfileOverride,
       "-c",

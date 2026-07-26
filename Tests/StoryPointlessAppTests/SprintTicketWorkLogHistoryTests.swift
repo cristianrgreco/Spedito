@@ -5,6 +5,30 @@ import Testing
 
 @Suite("Sprint ticket Work log history")
 struct SprintTicketWorkLogHistoryTests {
+  @Test("An active agent question marks the Work log as needing Product Owner input")
+  func activeAgentQuestionNeedsAttention() {
+    let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: false,
+      hasActiveOwnerQuestion: true,
+      knowledgeProposalsBlockCompletion: false,
+      ticketState: .running
+    )
+
+    #expect(requiresInput)
+  }
+
+  @Test("Ordinary in-progress activity does not mark the Work log for attention")
+  func ordinaryActivityDoesNotNeedAttention() {
+    let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
+      hasPendingPermissionRequest: false,
+      hasActiveOwnerQuestion: false,
+      knowledgeProposalsBlockCompletion: false,
+      ticketState: .running
+    )
+
+    #expect(!requiresInput)
+  }
+
   @Test("A selected sprint answer remains on its question without a duplicate comment")
   func selectedAnswerRemainsOnQuestion() throws {
     let workItemID = UUID()

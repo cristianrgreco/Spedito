@@ -261,6 +261,18 @@ product.
 When the App Server sends `item/commandExecution/requestApproval`,
 `item/fileChange/requestApproval`, or `item/permissions/requestApproval`, the
 adapter preserves the bidirectional JSON-RPC request instead of rejecting it.
+StoryPointless enables and capability-checks the pinned runtime's
+`request_permissions_tool`; it does not discover package managers, resolve
+project runtimes, or add runtime paths automatically. Delivery guidance tells
+the assigned agent to diagnose an `operation not permitted` or `permission
+denied` result with non-mutating executable and symlink inspection, request the
+smallest exact filesystem or network capability, and retry the original command
+without adding shell wrappers. An identical sandbox failure after command
+approval is treated as evidence that a different capability is missing, not as
+a reason to repeat the same approval. If the permissions tool is unavailable or
+the exact capability cannot be established within the current boundary, the
+agent fails closed with the diagnostic and required access instead of silently
+substituting older verification evidence.
 Application coordination maps its thread and turn to the durable AgentRun,
 projects **Needs your input**, and stores the exact scope, rationale, signature,
 and decision. **Allow once** accepts only the exact command or file change, or

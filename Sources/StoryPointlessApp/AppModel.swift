@@ -101,6 +101,7 @@ final class AppModel: ObservableObject {
   private let gitWorkspaceManager = GitWorkspaceManager()
   private let demoLauncher = MacOSDemoLauncher()
   private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
+  private let ticketSuggestionRecoveryPolicy = TicketSuggestionRecoveryPolicy()
   private var codexClient: CodexAppServerClient?
   private var suggestionTask: Task<Void, Never>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
@@ -127,6 +128,8 @@ final class AppModel: ObservableObject {
   private var liveActivityMonitorIDs: [UUID: UUID] = [:]
   private var didLoad = false
   private var didResolveInitialProductSelection = false
+  private var automaticallyRecoveredSuggestionSessionIDs: Set<UUID> = []
+  private var isShuttingDown = false
 
   private static let selectedProductDefaultsKey = "selectedProductID"
   private static let maxAutomaticReviewCorrections = 2
@@ -254,7 +257,7 @@ final class AppModel: ObservableObject {
     await reload()
     await recoverDemoSessions()
     await connectCodex()
-    await recoverInterruptedSuggestionSession()
+    await recoverTicketSuggestionSessionIfNeeded()
     scheduleSprintExecution()
   }
 
@@ -292,7 +295,7 @@ final class AppModel: ObservableObject {
     selectedProductID = product.id
     rememberSelectedProduct(product.id)
     await reloadSelectedProduct()
-    await recoverInterruptedSuggestionSession()
+    await recoverTicketSuggestionSessionIfNeeded()
   }
 
   func consumeProductLibraryLaunchPrompt() {
@@ -2292,12 +2295,14 @@ final class AppModel: ObservableObject {
     }
   }
 
-  private func generateEpicPlan(_ epic: Epic) {
+  private func generateEpicPlan(
+    _ epic: Epic,
+    recovering recoveredSession: SuggestionSession? = nil
+  ) {
     guard
       let store,
       let client = codexClient,
-      let product = selectedProduct,
-      let threadID = epicPlanningThreadID
+      let product = selectedProduct
     else { return }
 
     let analyst = profiles.first { $0.role == .businessAnalyst }
@@ -2305,6 +2310,9 @@ final class AppModel: ObservableObject {
     let previouslyRejectedSuggestions =
       suggestionBatch?.session.epicID == epic.id
       ? suggestionBatch?.suggestions.filter { $0.status == .rejected } ?? []
+      : []
+    let durableMessages = epicPlanningConversation?.epicID == epic.id
+      ? epicPlanningConversation?.messages ?? []
       : []
     updateEpicPlanningConversation {
       $0.isRunning = false
@@ -2323,26 +2331,17 @@ final class AppModel: ObservableObject {
         session = startedSession
         suggestionBatch = TicketSuggestionBatch(session: startedSession, suggestions: [])
 
-        let turnID = try await client.startStructuredTurn(
-          threadID: threadID,
-          prompt: CodexEpicClarificationGenerator.finalPlanPrompt(
-            product: product,
-            epic: epic,
-            existingItems: existingItems,
-            rejectedSuggestions: previouslyRejectedSuggestions
-          ),
-          effort: analyst?.reasoningEffort ?? "medium",
-          outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema
-        )
-        activeEpicPlanningTurn = (threadID: threadID, turnID: turnID)
-        try await store.attachCodexTurn(
-          sessionID: startedSession.id,
-          threadID: threadID,
-          turnID: turnID
-        )
-        let response = try await client.waitForFinalAgentMessage(
-          threadID: threadID,
-          turnID: turnID
+        let response = try await runEpicPlanTurn(
+          client: client,
+          store: store,
+          session: startedSession,
+          recoveredSession: recoveredSession,
+          product: product,
+          epic: epic,
+          existingItems: existingItems,
+          rejectedSuggestions: previouslyRejectedSuggestions,
+          durableMessages: durableMessages,
+          analyst: analyst
         )
         try Task.checkCancellation()
         let plan: EpicPlanDraft
@@ -2352,26 +2351,21 @@ final class AppModel: ObservableObject {
             existingItems: existingItems
           )
         } catch let validationError as TicketSuggestionGenerationError {
-          let repairTurnID = try await client.startStructuredTurn(
-            threadID: threadID,
+          guard let repairThreadID = epicPlanningThreadID else {
+            throw CodexClientError.invalidThreadResponse
+          }
+          let repairedResponse = try await runEpicPlanStructuredTurn(
+            client: client,
+            store: store,
+            sessionID: startedSession.id,
+            threadID: repairThreadID,
             prompt:
               CodexTicketSuggestionGenerator.repairPrompt(
                 validationError: validationError.localizedDescription,
                 existingItems: existingItems
               )
               + "\nReturn the complete corrected epic metadata and ticket plan.",
-            effort: analyst?.reasoningEffort ?? "medium",
-            outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema
-          )
-          activeEpicPlanningTurn = (threadID: threadID, turnID: repairTurnID)
-          try await store.attachCodexTurn(
-            sessionID: startedSession.id,
-            threadID: threadID,
-            turnID: repairTurnID
-          )
-          let repairedResponse = try await client.waitForFinalAgentMessage(
-            threadID: threadID,
-            turnID: repairTurnID
+            effort: analyst?.reasoningEffort ?? "medium"
           )
           try Task.checkCancellation()
           plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
@@ -2409,15 +2403,17 @@ final class AppModel: ObservableObject {
         }
       } catch is CancellationError {
         activeEpicPlanningTurn = nil
-        if let session {
+        if let session, !isShuttingDown {
           try? await store.failTicketSuggestionSession(
             sessionID: session.id,
             message: "Epic planning was interrupted. You can safely try again."
           )
         }
-        updateEpicPlanningConversation {
-          $0.isGeneratingPlan = false
-          $0.errorMessage = "Epic planning was interrupted. You can safely try again."
+        if !isShuttingDown {
+          updateEpicPlanningConversation {
+            $0.isGeneratingPlan = false
+            $0.errorMessage = "Epic planning was interrupted. You can safely try again."
+          }
         }
       } catch {
         activeEpicPlanningTurn = nil
@@ -2436,6 +2432,121 @@ final class AppModel: ObservableObject {
         }
       }
     }
+  }
+
+  private func runEpicPlanTurn(
+    client: CodexAppServerClient,
+    store: SQLiteStore,
+    session: SuggestionSession,
+    recoveredSession: SuggestionSession?,
+    product: Product,
+    epic: Epic,
+    existingItems: [WorkItem],
+    rejectedSuggestions: [TicketSuggestion],
+    durableMessages: [EpicPlanningConversationMessage],
+    analyst: AgentProfile?
+  ) async throws -> String {
+    let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
+      productInstructions: inheritedAgentInstructions(for: product),
+      personaInstructions:
+        analyst?.effectiveInstructions
+        ?? AgentPersonaDefaults.instructions(for: .businessAnalyst)
+    )
+    let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
+    var preferredThreadID = epicPlanningThreadID
+
+    if let recoveredThreadID = recoveredSession?.codexThreadID {
+      do {
+        let resumedThreadID = try await client.resumeReadOnlyThread(
+          threadID: recoveredThreadID,
+          workingDirectory: workingDirectory,
+          developerInstructions: developerInstructions,
+          model: analyst?.model
+        )
+        preferredThreadID = resumedThreadID
+        epicPlanningThreadID = resumedThreadID
+        persistEpicPlanningConversation()
+        if let recoveredTurnID = recoveredSession?.codexTurnID,
+          let recoveredResponse = try? await client.completedAgentMessage(
+            threadID: resumedThreadID,
+            turnID: recoveredTurnID
+          )
+        {
+          return recoveredResponse
+        }
+      } catch let error as CodexRPCError where error.isThreadNotFound {
+        preferredThreadID = nil
+      }
+    }
+
+    let standardPrompt = CodexEpicClarificationGenerator.finalPlanPrompt(
+      product: product,
+      epic: epic,
+      existingItems: existingItems,
+      rejectedSuggestions: rejectedSuggestions
+    )
+    if let preferredThreadID {
+      do {
+        return try await runEpicPlanStructuredTurn(
+          client: client,
+          store: store,
+          sessionID: session.id,
+          threadID: preferredThreadID,
+          prompt: standardPrompt,
+          effort: analyst?.reasoningEffort ?? "medium"
+        )
+      } catch let error as CodexRPCError where error.isThreadNotFound {
+        activeEpicPlanningTurn = nil
+      }
+    }
+
+    let replacementThreadID = try await client.startReadOnlyThread(
+      workingDirectory: workingDirectory,
+      developerInstructions: developerInstructions,
+      model: analyst?.model
+    )
+    epicPlanningThreadID = replacementThreadID
+    persistEpicPlanningConversation()
+    return try await runEpicPlanStructuredTurn(
+      client: client,
+      store: store,
+      sessionID: session.id,
+      threadID: replacementThreadID,
+      prompt: CodexEpicClarificationGenerator.finalPlanRecoveryPrompt(
+        product: product,
+        epic: epic,
+        existingItems: existingItems,
+        rejectedSuggestions: rejectedSuggestions,
+        messages: durableMessages
+      ),
+      effort: analyst?.reasoningEffort ?? "medium"
+    )
+  }
+
+  private func runEpicPlanStructuredTurn(
+    client: CodexAppServerClient,
+    store: SQLiteStore,
+    sessionID: UUID,
+    threadID: String,
+    prompt: String,
+    effort: String
+  ) async throws -> String {
+    let turnID = try await client.startStructuredTurn(
+      threadID: threadID,
+      prompt: prompt,
+      effort: effort,
+      outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema
+    )
+    activeEpicPlanningTurn = (threadID: threadID, turnID: turnID)
+    try await store.attachCodexTurn(
+      sessionID: sessionID,
+      threadID: threadID,
+      turnID: turnID
+    )
+    return try await client.waitForFinalAgentMessage(
+      threadID: threadID,
+      turnID: turnID
+    )
   }
 
   private func updateEpicPlanningConversation(
@@ -2482,14 +2593,26 @@ final class AppModel: ObservableObject {
 
   func retryCurrentEpicPlan() {
     guard
-      let epicID = suggestionBatch?.session.epicID,
+      canPlanEpic,
+      let store,
+      let failedSession = suggestionBatch?.session,
+      failedSession.status == .failed,
+      let epicID = failedSession.epicID,
       let epic = epics.first(where: { $0.id == epicID })
     else { return }
-    dismissFailedTicketSuggestions()
-    Task { @MainActor [weak self] in
+
+    Task { [weak self] in
       guard let self else { return }
-      try? await Task.sleep(for: .milliseconds(150))
-      planEpic(epic)
+      do {
+        let restartedSession = try await store.retryTicketSuggestionSession(
+          sessionID: failedSession.id
+        )
+        suggestionBatch = TicketSuggestionBatch(session: restartedSession, suggestions: [])
+        await restoreEpicPlanningConversation(for: epic)
+        generateEpicPlan(epic)
+      } catch {
+        errorMessage = error.localizedDescription
+      }
     }
   }
 
@@ -2583,7 +2706,7 @@ final class AppModel: ObservableObject {
         )
         await reloadSelectedProduct()
       } catch is CancellationError {
-        if let session {
+        if let session, !isShuttingDown {
           try? await store.failTicketSuggestionSession(
             sessionID: session.id,
             message: "Ticket suggestion was interrupted. You can safely try again."
@@ -5840,8 +5963,23 @@ final class AppModel: ObservableObject {
   }
 
   func shutdown() async {
-    suggestionTask?.cancel()
+    isShuttingDown = true
+    let interruptedSuggestionTask = suggestionTask
+    let interruptedEpicPlanningTask = epicPlanningTask
+    interruptedSuggestionTask?.cancel()
+    interruptedEpicPlanningTask?.cancel()
+    if let client = codexClient, let activeEpicPlanningTurn {
+      try? await client.interruptTurn(
+        threadID: activeEpicPlanningTurn.threadID,
+        turnID: activeEpicPlanningTurn.turnID
+      )
+    }
+    await interruptedSuggestionTask?.value
+    await interruptedEpicPlanningTask?.value
     suggestionTask = nil
+    epicPlanningTask = nil
+    activeEpicPlanningTurn = nil
+    await epicConversationPersistenceTask?.value
     await stopAllDemoSessions()
     await suspendSprintExecution()
     approvalRoutingTask?.cancel()
@@ -6524,19 +6662,36 @@ final class AppModel: ObservableObject {
     return String(describing: id)
   }
 
-  private func recoverInterruptedSuggestionSession() async {
+  private func recoverTicketSuggestionSessionIfNeeded() async {
     guard
       let store,
-      let productID = selectedProductID,
+      codexClient != nil,
       let session = suggestionBatch?.session,
-      session.status == .generating
+      !automaticallyRecoveredSuggestionSessionIDs.contains(session.id),
+      let epicID = session.epicID,
+      let epic = epics.first(where: { $0.id == epicID })
     else { return }
 
-    try? await store.failTicketSuggestionSession(
-      sessionID: session.id,
-      message: "StoryPointless closed before this proposal finished. Please try again."
-    )
-    suggestionBatch = try? await store.fetchLatestTicketSuggestionBatch(productID: productID)
+    switch ticketSuggestionRecoveryPolicy.action(for: session) {
+    case .none:
+      return
+    case .resumeInterruptedGeneration:
+      break
+    case .retryLegacyInterruption:
+      do {
+        let restartedSession = try await store.retryTicketSuggestionSession(
+          sessionID: session.id
+        )
+        suggestionBatch = TicketSuggestionBatch(session: restartedSession, suggestions: [])
+      } catch {
+        errorMessage = error.localizedDescription
+        return
+      }
+    }
+
+    automaticallyRecoveredSuggestionSessionIDs.insert(session.id)
+    await restoreEpicPlanningConversation(for: epic)
+    generateEpicPlan(epic, recovering: session)
   }
 
   private static func codexRuntimeCandidates() -> [CodexRuntimeCandidate] {

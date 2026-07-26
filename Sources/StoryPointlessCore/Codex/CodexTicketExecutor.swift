@@ -215,10 +215,22 @@ public enum CodexTicketExecutor {
     the narrowest exact filesystem, network, or command permission through the available approval
     channel and explain why it is needed. Never copy, mirror, archive, or stage the ticket workspace
     in /tmp or another location to work around a permission boundary. Never request general access
-    when a narrower capability will work. If a material Product Owner choice, secret, credential, or
-    unavailable external system is required instead of a permission, stop safely and return
-    awaiting_owner with one concise question and two to four concrete options. Do not claim work is
-    complete unless every acceptance criterion is addressed or explicitly shown to be inapplicable.
+    when a narrower capability will work.
+
+    If a command fails with `operation not permitted` or `permission denied`, do not merely repeat
+    it, add another shell wrapper, or ask for the same command approval again. First use non-mutating
+    diagnostics such as `command -v` or `type -a` to resolve the executable, inspect its symlink
+    target when permitted, and distinguish a missing filesystem or network capability from command
+    approval. Use the `request_permissions` tool to request only the exact path and access needed,
+    then retry the original command without wrapping it. If that tool is unavailable or the missing
+    capability cannot be diagnosed inside the current boundary, stop safely and report the exact
+    diagnostic and capability still needed; do not substitute older evidence when the ticket
+    requires a fresh check.
+
+    If a material Product Owner choice, secret, credential, or unavailable external system is
+    required instead of a permission, stop safely and return awaiting_owner with one concise question
+    and two to four concrete options. Do not claim work is complete unless every acceptance criterion
+    is addressed or explicitly shown to be inapplicable.
 
     Return only the JSON required by the output schema. The comment is a concise first-person update
     suitable for the ticket Work log. changedFiles must contain workspace-relative paths. tests must

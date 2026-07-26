@@ -55,7 +55,11 @@ relaunch. The delivery profile grants the exact
 ticket worktree plus Codex's minimal macOS runtime paths; it does not deny a parent
 directory that the worktree must traverse. Extra Homebrew, SDK, service, or other
 system access therefore becomes a scoped Product Owner permission request instead of
-a failed workspace write or an agent-created `/tmp` copy. Agents are explicitly
+a failed workspace write or an agent-created `/tmp` copy. StoryPointless enables and
+checks Codex's explicit permission-request tool rather than discovering or whitelisting
+package managers and runtime installations itself. Agents diagnose blocked executables,
+request the narrowest exact filesystem or network capability, and do not repeat an
+ineffective command approval or add shell wrappers. Agents are explicitly
 forbidden from copying a ticket workspace elsewhere to bypass that decision. They
 receive read-only access to the active product's central Git metadata, so status,
 diff, history, and conflict inspection do not need Product Owner approval. Their
@@ -148,8 +152,9 @@ Sprint Planning. Sprint Planning keeps edits local until the owner saves, with
 **Save draft & close** available mid-review and **Discard changes** retaining the
 last saved plan. Ordinary Tech Lead review is an execution-stage system run rather
 than a second per-ticket planning picker.
-Epics are intentionally designed as optional backlog groups rather than
-executable ticket types; their grouped backlog UX is a follow-on slice.
+Epics are optional backlog groups rather than executable ticket types. The Backlog
+keeps open epics prominent while completed epics collapse into a remembered inline
+summary that expands within the same table.
 An **Improve** sidebar section now separates sprint Retrospectives from
 longitudinal Reports. Both are evidence-first: the UI shows current operational
 counts but withholds trend claims until comparable completed sprints exist.
@@ -224,7 +229,12 @@ normalized, a malformed dependency graph receives one automatic Business Analyst
 repair attempt, and a persisted failure can always be retried or dismissed. A
 missing-work proposal may also depend on an existing active backlog ticket;
 accepting it creates the real cross-batch ordering constraint rather than reducing
-it to explanatory prose.
+it to explanatory prose. If StoryPointless relaunches during epic ticket
+generation, it automatically recovers the completed structured result or retries
+once from the saved Business Analyst Conversation. Pulsing ticket placeholders
+remain visible in both the Backlog and epic ticket list while recovery runs;
+ordinary generation failures remain owner-controlled instead of retrying on every
+launch.
 
 ## Start here
 

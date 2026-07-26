@@ -902,6 +902,51 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("A failed ticket suggestion session can restart in place")
+  func failedTicketSuggestionsCanRestart() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Restartable suggestions",
+      vision: "Continue planning after an interrupted launch"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Customers can save frequently checked places"
+    )
+    let session = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    try await store.attachCodexTurn(
+      sessionID: session.id,
+      threadID: "thread-before-relaunch",
+      turnID: "turn-before-relaunch"
+    )
+    try await store.failTicketSuggestionSession(
+      sessionID: session.id,
+      message: TicketSuggestionRecoveryPolicy.legacyInterruptionMessage
+    )
+
+    let restarted = try await store.retryTicketSuggestionSession(sessionID: session.id)
+    #expect(restarted.id == session.id)
+    #expect(restarted.status == .generating)
+    #expect(restarted.codexThreadID == nil)
+    #expect(restarted.codexTurnID == nil)
+    #expect(restarted.errorMessage == nil)
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recovered = try #require(
+      await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(recovered.session.id == session.id)
+    #expect(recovered.session.status == .generating)
+    await reopened.close()
+  }
+
   @Test("Epic plans persist and accepted suggestions inherit their epic")
   func epicPlansOwnAcceptedTickets() async throws {
     let fixture = try DatabaseFixture()

@@ -1259,6 +1259,36 @@ public actor SQLiteStore {
     }
   }
 
+  public func retryTicketSuggestionSession(sessionID: UUID) throws -> SuggestionSession {
+    let session = try fetchSuggestionSession(id: sessionID)
+    guard session.status == .failed else { return session }
+    let now = Date()
+    try transaction {
+      try withStatement(
+        """
+        UPDATE suggestion_sessions
+        SET status = 'generating',
+            codex_thread_id = NULL,
+            codex_turn_id = NULL,
+            error_message = NULL,
+            updated_at = ?
+        WHERE id = ? AND status = 'failed';
+        """
+      ) { statement in
+        try bind(now.timeIntervalSince1970, to: 1, in: statement)
+        try bind(sessionID.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: session.productID,
+        kind: "ticket_suggestions.retried",
+        actor: "system",
+        detail: "Proposal generation restarted"
+      )
+    }
+    return try fetchSuggestionSession(id: sessionID)
+  }
+
   public func dismissTicketSuggestionSession(sessionID: UUID) throws {
     let session = try fetchSuggestionSession(id: sessionID)
     guard session.status == .failed else { return }

@@ -203,6 +203,30 @@ public enum CodexEpicClarificationGenerator {
         """
   }
 
+  public static func finalPlanRecoveryPrompt(
+    product: Product,
+    epic: Epic,
+    existingItems: [WorkItem],
+    rejectedSuggestions: [TicketSuggestion],
+    messages: [EpicPlanningConversationMessage]
+  ) -> String {
+    """
+      The previous Codex thread stopped while preparing the final epic plan. Reconstruct the plan from
+      the durable StoryPointless transcript below. Treat every Product Owner answer as authoritative,
+      retain the Business Analyst's confirmed scope, and do not ask the Product Owner to repeat anything.
+
+      Durable conversation:
+      \(durableTranscript(messages))
+
+      \(finalPlanPrompt(
+        product: product,
+        epic: epic,
+        existingItems: existingItems,
+        rejectedSuggestions: rejectedSuggestions
+      ))
+      """
+  }
+
   public static func decode(_ text: String) throws -> EpicClarificationReply {
     guard let data = text.data(using: .utf8) else {
       throw EpicClarificationGenerationError.invalidResponse(
