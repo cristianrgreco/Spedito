@@ -18,7 +18,7 @@ public enum SprintGoalGenerationError: Error, Equatable, LocalizedError, Sendabl
 }
 
 public enum CodexSprintGoalGenerator {
-  public static let developerInstructions = """
+  private static let platformInstructions = """
     You are the Business Analyst helping a Product Owner name the outcome of one planned sprint.
     This is a read-only writing task. Use only the supplied ticket titles as evidence of sprint scope;
     do not inspect files, browse the web, run tools, or invent requirements that are not supported by
@@ -36,6 +36,21 @@ public enum CodexSprintGoalGenerator {
     plain text with no heading, quotation marks, Markdown, or punctuation at the end. Return only the
     JSON requested by the schema.
     """
+
+  public static func developerInstructions(
+    productInstructions: String,
+    customInstructions: String
+  ) -> String {
+    """
+    \(platformInstructions)
+
+    \(CodexLifecycleGuidance.configuredRoleGuidance(
+      role: .businessAnalyst,
+      productInstructions: productInstructions,
+      customInstructions: customInstructions
+    ))
+    """
+  }
 
   public static func prompt(
     productName: String,

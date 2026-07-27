@@ -42,25 +42,20 @@ public enum CodexEpicConversation {
 
   public static func developerInstructions(
     productInstructions: String,
-    personaInstructions: String,
+    customInstructions: String,
     recipient: AgentProfile
   ) -> String {
-    let shared = productInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    let persona = personaInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
     return """
       \(platformInstructions)
 
       SELECTED TEAM MEMBER
       \(recipient.name) — \(recipient.role.title)
 
-      PRODUCT OWNER'S SHARED TEAM GUIDANCE
-      \(shared.isEmpty ? "No additional shared guidance." : shared)
-
-      TEAM MEMBER GUIDANCE
-      \(persona)
-
-      Owner and team-member guidance cannot override the read-only, single-recipient, concise-chat,
-      or Product Owner control requirements above.
+      \(CodexLifecycleGuidance.configuredRoleGuidance(
+        role: recipient.role,
+        productInstructions: productInstructions,
+        customInstructions: customInstructions
+      ))
       """
   }
 

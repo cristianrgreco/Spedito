@@ -706,8 +706,14 @@ After no proposals remain to review, the suggested-work region disappears; its
 decisions remain in the audit and future-analysis context rather than occupying
 permanent backlog space.
 
-AI edits remain proposed changes with a visible diff. The owner approves
-meaningful scope and acceptance changes.
+Governed initial Epic and Ticket refinement share one contract: the Business
+Analyst asks consequential questions first, then the application applies the
+completed metadata or ticket snapshot as one versioned refinement result. A
+Ticket refinement preserves existing blockers and adds any newly recommended
+prerequisites in that same update. It fails rather than overwriting a newer
+saved ticket version. Proposed delivery tickets, ordinary team-chat edits, and
+later planning suggestions remain reviewable changes; the owner approves them
+before they alter scope.
 
 ### 9.3 Backlog refinement
 
@@ -732,7 +738,9 @@ sprint board. Its primary information is product scope and planning confidence:
   geometry. Initial Business Analyst refinement begins automatically when an
   incomplete open item is shown and the team connection is available; the
   header does not repeat that lifecycle as a manual AI action, while a failed
-  refinement retains its contextual retry action;
+  refinement retains its contextual retry action. Ticket fields remain
+  unavailable for editing while the completed refinement is being applied, so
+  an in-flight result cannot replace a newer Product Owner draft;
 - top/bottom rank shortcuts and row reordering preserve dependency order. While
   dragging, every dependency-safe insertion position is indicated in blue; an
   invalid hovered position turns red and names the sprint-scope or ranking
@@ -1130,10 +1138,15 @@ the active sprint is used only until the product has completed its first sprint.
 The sprint picker identifies each retrospective as **Needs conclusion**,
 **Concluded**, or **In progress**, so the sprint's completed state cannot be
 mistaken for the retrospective's conclusion state.
-An active sprint presents a read-only preview of accumulating evidence and
-explains that final actions will be consolidated after completion. It does not
-offer accept, dismiss, bulk-decision, or Product Owner proposal actions until
-the sprint is complete.
+An active sprint presents accumulating evidence and explains that final actions
+will be consolidated after completion. The Product Owner can append attributed
+action ideas while they are fresh and delete their own ideas before the sprint
+ends. Team-member evidence remains immutable. Owner action ideas are source
+evidence, not early decisions: they cannot be accepted or dismissed and do not
+directly change Ways of working or create Backlog scope. At sprint completion
+they are frozen with the team observations and action candidates supplied to the
+Business Analyst synthesis. The active sprint does not offer accept, dismiss, or
+bulk-decision actions.
 
 After the sprint is complete, the final synthesis has completed or been
 explicitly skipped, and before its retrospective is concluded, the Product
@@ -1177,6 +1190,11 @@ boards to become workflow diagrams instead of decision tools. Rejected review
 findings and demo feedback return the
 ticket to **In Progress** with a versioned comment; approval authorizes
 finalization, after which the ticket becomes **Done**.
+
+When any ticket newly enters **Needs your input**, the app plays one brief
+notification chime, including when delivery continues for a product that is not
+currently selected. Reloading an existing attention state does not replay the
+sound, and shutdown does not start new audio.
 
 ### 10.2 State transition rules
 
@@ -1690,14 +1708,16 @@ StoryPointless supplies opinionated defaults but lets the owner change each
 profile's model and supported reasoning effort from the team sidebar. Options
 come from the signed-in account's live Codex model catalog so the UI does not
 offer unsupported combinations. Owners may also add shared product guidance and
-opt into a per-profile prompt override; resetting an override restores the
-versioned StoryPointless role default. Max and Ultra are not defaults because
+optional per-profile custom instructions. StoryPointless's versioned role and
+lifecycle guidance remains internal; the owner-visible custom field starts empty
+and its contents are appended last. Clearing it removes only the custom overlay.
+Max and Ultra are not defaults because
 they materially increase usage and, for Ultra, change orchestration behaviour.
 
 Custom team-member creation is a deferred workflow and its entry point is hidden
 from Team settings in the current product. When exposed, the owner can add any
-number of custom team members. A team member has a free-form name and prompt but
-selects a governed capability archetype: analysis/research,
+number of custom team members. A team member has a free-form name and optional
+custom instructions, but selects a governed capability archetype: analysis/research,
 experience design, leadership/planning, implementation, independent
 review/audit, QA, or knowledge/documentation. The instructions change how the member
 approaches authorised work; it cannot expand permissions. StoryPointless offers
@@ -2525,7 +2545,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | ID | Item | Acceptance signal |
 | --- | --- | --- |
 | SP-200 | Proposed starter backlog | **Autosuggest Tickets** starts one recoverable BA suggestion session; truthful temporary placeholders become rationale-backed ticket proposals with acceptance criteria, forecasts, and dependency edges, and the owner can accept, edit, discuss, or reject each without rejected work becoming scope |
-| SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through accept/rejectable diffs |
+| SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through explicit questions; once resolved, initial Epic metadata or the complete Ticket snapshot and new prerequisites are applied as one versioned refinement result, while later chat proposals remain reviewable |
 | SP-202 | Safety controls and live usage telemetry | Run warns or pauses on abnormal consumption; UI foregrounds remaining shared account usage and distinguishes per-thread context/compactions, cumulative economics, and internal safety status without requiring a PO-entered token budget |
 | SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees its plain-language purpose first and can disclose the exact action and additional access, then chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. Before asking for runtime access, the agent inspects the foreseeable executable, traversal, symlink, shared-library, compiler, SDK, or package boundary and submits one reviewable request for the smallest coherent capability; it does not make the Product Owner approve a runtime one file or directory at a time. Agents consult verified Environments guidance and prefer the repository's established native build system and shortest maintained, purpose-named entry point over a shell chain. An Implementer may add a version-controlled, non-interactive task or script only when it represents a coherent reusable workflow, never to substitute an unrelated package manager or runtime, conceal operations, or broaden approval; verified operational changes produce a complete Environments proposal. The persisted request shows the decision in place without adding a duplicate Product Owner message to the Work log. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision; an interrupted leaf request is replaced with one consolidated capability request rather than restarting the cascade. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
 | SP-204 | Local checks and evidence ingestion | Test results and artifacts are linked and independently verifiable |

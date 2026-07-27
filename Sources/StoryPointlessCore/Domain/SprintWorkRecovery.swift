@@ -10,8 +10,7 @@ public struct SprintWorkRecoveryPolicy: Sendable {
   ) -> AgentRun? {
     guard
       candidate.status == .reviewing,
-      candidate.integratedSHA != nil,
-      let integrationWorktreePath = candidate.integrationWorktreePath
+      let reviewWorktreePath = candidate.integrationWorktreePath
     else {
       return nil
     }
@@ -25,7 +24,7 @@ public struct SprintWorkRecoveryPolicy: Sendable {
           run.workItemID == candidate.workItemID,
           reviewerProfileIDs.contains(run.profileID),
           run.createdAt >= candidate.updatedAt,
-          run.worktreePath == nil || run.worktreePath == integrationWorktreePath
+          run.worktreePath == nil || run.worktreePath == reviewWorktreePath
         else {
           return false
         }

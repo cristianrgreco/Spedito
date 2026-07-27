@@ -1456,7 +1456,7 @@ private struct TeamPromptsView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   @State private var sharedInstructions = ""
-  @State private var personaInstructions: [UUID: String] = [:]
+  @State private var customInstructions: [UUID: String] = [:]
   @State private var personaModels: [UUID: String] = [:]
   @State private var personaEfforts: [UUID: String] = [:]
   @State private var selection: TeamSettingsSelection? = .shared
@@ -1468,7 +1468,7 @@ private struct TeamPromptsView: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("Team settings")
             .font(.title2.bold())
-          Text("Configure each team member's model, reasoning effort, and instructions.")
+          Text("Configure each team member's model, reasoning effort, and custom guidance.")
             .foregroundStyle(.secondary)
         }
         Spacer()
@@ -1716,28 +1716,26 @@ private struct TeamPromptsView: View {
 
         VStack(alignment: .leading, spacing: 9) {
           HStack {
-            Text("Member instructions")
+            Text("Custom instructions")
               .font(.headline)
             Spacer()
-            Button("Restore role default") {
-              personaInstructions[profile.id] = AgentPersonaDefaults.instructions(
-                for: profile.role
-              )
+            Button("Clear custom instructions") {
+              customInstructions[profile.id] = ""
             }
             .buttonStyle(.borderless)
             .font(.caption)
           }
 
           Text(
-            "These instructions refine how this member works without changing its permissions or governed capability."
+            "StoryPointless supplies this member's built-in role guidance. Add only the extra instructions you want applied after it."
           )
           .font(.caption)
           .foregroundStyle(.secondary)
 
           instructionsEditor(
             text: Binding(
-              get: { personaInstructions[profile.id] ?? profile.effectiveInstructions },
-              set: { personaInstructions[profile.id] = $0 }
+              get: { customInstructions[profile.id] ?? profile.customInstructionText },
+              set: { customInstructions[profile.id] = $0 }
             )
           )
         }
@@ -1766,13 +1764,12 @@ private struct TeamPromptsView: View {
       sharedInstructions = model.selectedProduct?.instructions ?? ""
     }
     for profile in model.profiles {
-      personaInstructions[profile.id] =
-        profile.customInstructions ?? AgentPersonaDefaults.instructions(for: profile.role)
+      customInstructions[profile.id] = profile.customInstructionText
       personaModels[profile.id] = profile.model
       personaEfforts[profile.id] = profile.reasoningEffort
     }
     let activeIDs = Set(model.profiles.map(\.id))
-    personaInstructions = personaInstructions.filter { activeIDs.contains($0.key) }
+    customInstructions = customInstructions.filter { activeIDs.contains($0.key) }
     personaModels = personaModels.filter { activeIDs.contains($0.key) }
     personaEfforts = personaEfforts.filter { activeIDs.contains($0.key) }
   }
@@ -1780,14 +1777,7 @@ private struct TeamPromptsView: View {
   private func saveSettings() {
     let instructionUpdates = Dictionary(
       uniqueKeysWithValues: model.profiles.map { profile in
-        let instructions = personaInstructions[profile.id] ?? profile.effectiveInstructions
-        let roleDefault = AgentPersonaDefaults.instructions(for: profile.role)
-        return (
-          profile.id,
-          instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-            == roleDefault.trimmingCharacters(in: .whitespacesAndNewlines)
-            ? "" : instructions
-        )
+        (profile.id, customInstructions[profile.id] ?? profile.customInstructionText)
       }
     )
     model.updateTeamSettings(
@@ -1942,8 +1932,8 @@ private struct AddPersonaView: View {
           }
 
           EditableTextArea(
-            title: "Member instructions",
-            prompt: "Describe how this team member should approach authorised work.",
+            title: "Custom instructions",
+            prompt: "Add optional guidance beyond this member's built-in role.",
             text: $instructions,
             minHeight: 150
           )
@@ -1980,7 +1970,7 @@ private struct AddPersonaView: View {
         selectedModel = defaultModel.model
         effort = defaultModel.defaultReasoningEffort
       }
-      instructions = AgentPersonaDefaults.instructions(for: capability)
+      instructions = ""
     }
   }
 
@@ -1990,7 +1980,7 @@ private struct AddPersonaView: View {
       capability = .businessAnalyst
       selectedModel = model.codexModels.first(where: \.isDefault)?.model ?? "gpt-5.6-terra"
       effort = model.codexModels.first(where: \.isDefault)?.defaultReasoningEffort ?? "medium"
-      instructions = AgentPersonaDefaults.instructions(for: capability)
+      instructions = ""
       return
     }
     name = template.name
@@ -6159,7 +6149,8 @@ private struct RetrospectivesView: View {
           .font(.callout.weight(.semibold))
         Text(
           "Evidence will continue to accumulate until the sprint ends. "
-            + "The Business Analyst will then consolidate it into the final actions for review."
+            + "Add action ideas whenever they occur; the Business Analyst will consider them "
+            + "with the team’s evidence when preparing the final actions."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -6309,9 +6300,7 @@ private struct RetrospectivesView: View {
         RetrospectiveActionPanel(
           sprint: selectedPlan?.sprint,
           synthesis: selectedSynthesis,
-          notes: selectedNotes.filter {
-            $0.category == .suggestedAction && !$0.isActionCandidate
-          },
+          notes: selectedNotes.filter { $0.category == .suggestedAction },
           onOpenRefiningTicket: onOpenRefiningTicket
         )
         .frame(width: decisionWidth)
@@ -6430,25 +6419,36 @@ private struct RetrospectiveActionPanel: View {
   @State private var isDecidingAll = false
   @State private var selectedNoteID: UUID?
   @State private var showingProposal = false
+  @State private var showingActionIdea = false
+
+  private var actionCandidateNotes: [RetrospectiveNote] {
+    notes
+      .filter(\.isActionCandidate)
+      .sorted { $0.createdAt < $1.createdAt }
+  }
+
+  private var decisionNotes: [RetrospectiveNote] {
+    notes.filter { !$0.isActionCandidate }
+  }
 
   private var proposedNotes: [RetrospectiveNote] {
-    notes
+    decisionNotes
       .filter { $0.actionStatus == .proposed }
       .sorted { $0.createdAt < $1.createdAt }
   }
 
   private var acceptedNotes: [RetrospectiveNote] {
-    notes
+    decisionNotes
       .filter { $0.actionStatus == .accepted }
       .sorted { $0.updatedAt < $1.updatedAt }
   }
 
   private var dismissedCount: Int {
-    notes.count { $0.actionStatus == .dismissed }
+    decisionNotes.count { $0.actionStatus == .dismissed }
   }
 
   private var reviewedCount: Int {
-    notes.count - proposedNotes.count
+    decisionNotes.count - proposedNotes.count
   }
 
   private var selectedNote: RetrospectiveNote? {
@@ -6468,6 +6468,10 @@ private struct RetrospectiveActionPanel: View {
     phase == .reviewing && synthesis?.status.isResolved == true
   }
 
+  private var canCaptureActionIdea: Bool {
+    phase == .collecting
+  }
+
   private var isHistorical: Bool {
     phase == .concluded
   }
@@ -6475,7 +6479,10 @@ private struct RetrospectiveActionPanel: View {
   private var decisionSummary: String {
     switch phase {
     case .collecting:
-      return "Evidence still collecting"
+      let ideaCount = actionCandidateNotes.count
+      return actionCandidateNotes.isEmpty
+        ? "Evidence still collecting"
+        : "\(ideaCount) action idea\(ideaCount == 1 ? "" : "s") captured"
     case .concluded:
       let accepted = "\(acceptedNotes.count) accepted"
       guard dismissedCount > 0 else { return accepted }
@@ -6500,7 +6507,7 @@ private struct RetrospectiveActionPanel: View {
 
   private var panelTitle: String {
     switch phase {
-    case .collecting: "Actions after sprint"
+    case .collecting: "Action ideas"
     case .reviewing:
       if synthesis?.status == .pending || synthesis?.status == .generating {
         "Preparing actions"
@@ -6516,12 +6523,12 @@ private struct RetrospectiveActionPanel: View {
   }
 
   private var emptyStateTitle: String {
-    phase == .collecting ? "Final actions come later" : "Decisions complete"
+    phase == .collecting ? "Capture action ideas as they happen" : "Decisions complete"
   }
 
   private var emptyStateDetail: String {
     if phase == .collecting {
-      return "When the sprint completes, the Business Analyst will consolidate the collected evidence into no more than five actions."
+      return "Add an action idea now. The Business Analyst will consider it after the sprint ends."
     }
     return reviewedCount == 0
       ? "The team did not suggest a change."
@@ -6541,6 +6548,15 @@ private struct RetrospectiveActionPanel: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
+        if canCaptureActionIdea {
+          Button {
+            showingActionIdea = true
+          } label: {
+            Label("Add action idea", systemImage: "plus")
+          }
+          .controlSize(.small)
+          .help("Capture an action idea for the retrospective")
+        }
         if canPropose {
           Button {
             showingProposal = true
@@ -6579,6 +6595,8 @@ private struct RetrospectiveActionPanel: View {
 
       if isHistorical {
         historicalDecisions
+      } else if phase == .collecting {
+        capturedActionIdeas
       } else if phase == .reviewing,
         synthesis == nil || synthesis?.status == .pending || synthesis?.status == .generating
       {
@@ -6643,6 +6661,55 @@ private struct RetrospectiveActionPanel: View {
           sprintID: sprint.id,
           isPresented: $showingProposal
         )
+      }
+    }
+    .sheet(isPresented: $showingActionIdea) {
+      if let sprint {
+        RetrospectiveActionIdeaView(
+          sprintID: sprint.id,
+          isPresented: $showingActionIdea
+        )
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var capturedActionIdeas: some View {
+    if actionCandidateNotes.isEmpty {
+      VStack(spacing: 6) {
+        Image(systemName: "square.and.pencil")
+          .font(.title3)
+          .foregroundStyle(.tertiary)
+        Text(emptyStateTitle)
+          .font(.subheadline.weight(.medium))
+        Text(emptyStateDetail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+      .padding(16)
+    } else {
+      ScrollView(.vertical) {
+        LazyVStack(alignment: .leading, spacing: 0) {
+          ForEach(
+            Array(actionCandidateNotes.enumerated()),
+            id: \.element.id
+          ) { index, note in
+            RetrospectiveActionCandidateRow(
+              note: note,
+              allowsDeletion:
+                note.authorName == "Product Owner"
+                && note.profileID == nil
+            )
+            if index < actionCandidateNotes.count - 1 {
+              Divider()
+                .padding(.leading, 39)
+            }
+          }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
       }
     }
   }
@@ -6765,6 +6832,157 @@ private struct RetrospectiveActionPanel: View {
     Task {
       await model.decideRetrospectiveActions(proposedNotes, accept: accept)
       isDecidingAll = false
+    }
+  }
+}
+
+private struct RetrospectiveActionCandidateRow: View {
+  @EnvironmentObject private var model: AppModel
+  let note: RetrospectiveNote
+  let allowsDeletion: Bool
+  @State private var confirmingDeletion = false
+  @State private var isDeleting = false
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 11) {
+      Image(systemName: "lightbulb")
+        .foregroundStyle(.indigo)
+        .frame(width: 28, height: 28)
+        .background(Color.indigo.opacity(0.1), in: Circle())
+
+      VStack(alignment: .leading, spacing: 5) {
+        Text(note.body)
+          .font(.callout.weight(.medium))
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 5) {
+          Text(note.authorName)
+          Text("·")
+          Text(note.createdAt.formatted(date: .abbreviated, time: .shortened))
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+        Label("For Business Analyst review", systemImage: "clock")
+          .font(.caption.weight(.medium))
+          .foregroundStyle(.purple)
+      }
+
+      if allowsDeletion {
+        Button(role: .destructive) {
+          confirmingDeletion = true
+        } label: {
+          Image(systemName: "trash")
+            .foregroundStyle(.red)
+        }
+        .buttonStyle(.borderless)
+        .disabled(isDeleting)
+        .help("Delete this action idea")
+      }
+    }
+    .padding(.vertical, 10)
+    .confirmationDialog(
+      "Delete this action idea?",
+      isPresented: $confirmingDeletion,
+      titleVisibility: .visible
+    ) {
+      Button("Delete action idea", role: .destructive) {
+        isDeleting = true
+        Task {
+          await model.deleteRetrospectiveActionIdea(note)
+          isDeleting = false
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "It will not be included when the Business Analyst prepares the retrospective."
+      )
+    }
+  }
+}
+
+private struct RetrospectiveActionIdeaView: View {
+  @EnvironmentObject private var model: AppModel
+  let sprintID: UUID
+  @Binding var isPresented: Bool
+  @State private var actionIdea = ""
+  @State private var isSubmitting = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Add an action idea")
+          .font(.title.bold())
+        Text(
+          "Capture the idea now. The Business Analyst will consider it with the team’s evidence after the sprint ends."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .padding(24)
+
+      Divider()
+
+      VStack(alignment: .leading, spacing: 18) {
+        EditableTextArea(
+          title: "What change should the team consider?",
+          prompt: "e.g. Confirm required access before starting delivery.",
+          text: $actionIdea,
+          minHeight: 140,
+          focusOnAppear: true
+        )
+
+        Label(
+          "This is source evidence during the sprint, not an early decision. You’ll review any final action after the Business Analyst prepares the retrospective.",
+          systemImage: "clock"
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+      .padding(24)
+
+      Spacer(minLength: 0)
+      Divider()
+
+      HStack(spacing: 10) {
+        Spacer()
+        Button("Cancel") {
+          isPresented = false
+        }
+        Button {
+          submit()
+        } label: {
+          Label(
+            isSubmitting ? "Adding…" : "Add action idea",
+            systemImage: "plus.circle"
+          )
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!canSubmit)
+      }
+      .padding(20)
+    }
+    .frame(width: 620, height: 440)
+  }
+
+  private var canSubmit: Bool {
+    !actionIdea.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !isSubmitting
+  }
+
+  private func submit() {
+    guard canSubmit else { return }
+    isSubmitting = true
+    Task {
+      let note = await model.captureRetrospectiveActionIdea(
+        sprintID: sprintID,
+        body: actionIdea
+      )
+      isSubmitting = false
+      if note != nil {
+        isPresented = false
+      }
     }
   }
 }
@@ -15899,6 +16117,7 @@ private struct TicketDetailView: View {
             customFieldSection
           }
           .padding(24)
+          .disabled(isRefining)
         }
         .frame(maxWidth: .infinity)
 
@@ -16022,8 +16241,17 @@ private struct TicketDetailView: View {
     refinementPanelTitle =
       (model.profiles.first { $0.role == .businessAnalyst }?.name ?? "Business Analyst")
       + " review"
-    refinementReply = result.reply
     refinementError = result.errorMessage
+    if
+      result.errorMessage == nil,
+      result.reply?.proposal.missingQuestions.isEmpty == true
+    {
+      syncFromLatestSavedTicket()
+      refinementReply = nil
+      refinementConflictMessage = nil
+      return
+    }
+    refinementReply = result.reply
     guard let reply = result.reply else {
       refinementConflictMessage = nil
       return
@@ -16039,6 +16267,23 @@ private struct TicketDetailView: View {
     } else {
       refinementConflictMessage = nil
     }
+  }
+
+  private func syncFromLatestSavedTicket() {
+    guard let latest = item else { return }
+    title = latest.title
+    type = latest.type
+    bodyText = latest.body
+    criteria = latest.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
+    priority = latest.priority
+    blockerIDs = savedBlockerIDs
+    customFields = latest.customFields.keys.sorted().map {
+      TicketCustomFieldDraft(name: $0, value: latest.customFields[$0] ?? "")
+    }
+    assigneeID = savedAssigneeID
+    acceptedRefinementFields.removeAll()
+    expandedRefinementFields.removeAll()
+    dismissedDependencyKeys.removeAll()
   }
 
   private func applyConversationSessionResult(_ result: TicketConversationSessionResult) {
@@ -16519,16 +16764,22 @@ private struct TicketDetailView: View {
   ) async {
     do {
       let reply = try await model.refineTicket(item)
-      refinementReply = reply
-      if currentDraftSnapshot != base {
+      if reply.proposal.missingQuestions.isEmpty {
+        syncFromLatestSavedTicket()
+        refinementReply = nil
+        refinementConflictMessage = nil
+      } else if currentDraftSnapshot != base {
+        refinementReply = reply
         refinementConflictMessage =
           "You edited the ticket while the review was running. Save those edits and run a fresh review before accepting suggestions."
       } else if model.workItems.first(where: { $0.id == item.id })?.version
         != reply.proposal.baseVersion
       {
+        refinementReply = reply
         refinementConflictMessage =
           "The saved ticket changed while the review was running. Run a fresh review before accepting suggestions."
       } else {
+        refinementReply = reply
         refinementConflictMessage = nil
       }
     } catch {

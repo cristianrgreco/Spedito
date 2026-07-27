@@ -876,13 +876,15 @@ public struct AgentProfile: Identifiable, Codable, Hashable, Sendable {
     self.updatedAt = updatedAt
   }
 
-  public var effectiveInstructions: String {
-    if let trimmed = customInstructions?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !trimmed.isEmpty
-    {
-      return trimmed
+  public var customInstructionText: String {
+    guard
+      let instructions = customInstructions?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !instructions.isEmpty,
+      instructions != AgentPersonaDefaults.instructions(for: role)
+    else {
+      return ""
     }
-    return AgentPersonaDefaults.instructions(for: role)
+    return instructions
   }
 }
 

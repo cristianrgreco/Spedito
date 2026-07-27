@@ -1425,7 +1425,7 @@ struct CodexAdapterTests {
     )
     let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
       productInstructions: "",
-      personaInstructions: AgentPersonaDefaults.instructions(for: .businessAnalyst)
+      customInstructions: ""
     )
 
     #expect(prompt.contains("invent product decisions"))
@@ -1461,12 +1461,16 @@ struct CodexAdapterTests {
   func promptComposition() {
     let prompt = CodexTicketSuggestionGenerator.developerInstructions(
       productInstructions: "Use UK English.",
-      personaInstructions: "Ask for concrete examples."
+      customInstructions: "Ask for concrete examples."
     )
     #expect(prompt.contains("Do not modify files"))
     #expect(prompt.contains("Use UK English."))
     #expect(prompt.contains("Ask for concrete examples."))
-    #expect(prompt.contains("cannot override"))
+    #expect(prompt.contains("cannot expand permissions"))
+    #expect(
+      prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        .hasSuffix("Ask for concrete examples.")
+    )
     #expect(prompt.contains("conditional implementation ticket"))
   }
 
@@ -1534,7 +1538,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexSprintPlanningConversation.developerInstructions(
       productInstructions: product.instructions,
-      personaInstructions: "Challenge unclear delivery assumptions.",
+      customInstructions: "Challenge unclear delivery assumptions.",
       recipient: lead
     )
     let snapshot = SprintPlanningTicketSnapshot(
@@ -1638,7 +1642,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexTicketRefinementGenerator.developerInstructions(
       productInstructions: product.instructions,
-      personaInstructions: "Keep the Product Owner in control."
+      customInstructions: "Keep the Product Owner in control."
     )
     let prompt = CodexTicketRefinementGenerator.prompt(
       product: product,
@@ -1681,6 +1685,7 @@ struct CodexAdapterTests {
 
     #expect(instructions.contains("analysis only"))
     #expect(instructions.contains("or apply changes"))
+    #expect(instructions.contains("version-checked refinement result"))
     #expect(instructions.contains("Use UK English."))
     #expect(prompt.contains("exact saved version 1"))
     #expect(prompt.contains("T-1"))
@@ -1796,7 +1801,7 @@ struct CodexAdapterTests {
       currentItem: item,
       validRelatedItems: [prerequisite, item]
     )
-    #expect(sparseProposal.message.contains("prepared the suggested changes"))
+    #expect(sparseProposal.message.contains("completed the ticket refinement"))
     #expect(sparseProposal.proposal.title == item.title)
     #expect(sparseProposal.proposal.rationale.contains("independently verifiable"))
 
@@ -1923,7 +1928,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexTicketConversation.developerInstructions(
       productInstructions: product.instructions,
-      personaInstructions: analyst.effectiveInstructions,
+      customInstructions: analyst.customInstructionText,
       recipient: analyst
     )
     let prompt = CodexTicketConversation.prompt(
@@ -2007,7 +2012,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexEpicConversation.developerInstructions(
       productInstructions: product.instructions,
-      personaInstructions: designer.effectiveInstructions,
+      customInstructions: designer.customInstructionText,
       recipient: designer
     )
     let prompt = CodexEpicConversation.prompt(
@@ -2137,7 +2142,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexTicketExecutor.developerInstructions(
       productInstructions: "",
-      personaInstructions: AgentPersonaDefaults.instructions(for: .businessAnalyst),
+      customInstructions: "",
       assignee: analyst
     )
 
@@ -2150,37 +2155,40 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Do not duplicate, replace,"))
     #expect(prompt.contains("Return an empty"))
     #expect(!prompt.contains("Permission requested:"))
+    #expect(instructions.contains("DELIVERY MODE: RESEARCH AND DECISION SUPPORT"))
     #expect(instructions.contains("self-contained completion handoff"))
-    #expect(instructions.contains("Planned direct dependants"))
-    #expect(instructions.contains("materially conflicts with an existing ticket contract"))
+    #expect(instructions.contains("planned direct dependants"))
+    #expect(instructions.contains("accepted ticket contract"))
     #expect(instructions.contains("genuinely new scope"))
-    #expect(instructions.contains("Never copy, mirror, archive, or stage"))
-    #expect(instructions.contains("You may use read-only Git inspection"))
+    #expect(instructions.contains("Never copy"))
+    #expect(instructions.contains("You may inspect Git"))
     #expect(instructions.contains("owns every Git mutation"))
-    #expect(instructions.contains("already available inside the sandbox"))
+    #expect(instructions.contains("noninteractive environment"))
     #expect(instructions.contains("command -v"))
     #expect(instructions.contains("request_permissions"))
-    #expect(instructions.contains("smallest coherent filesystem"))
+    #expect(instructions.contains("smallest coherent"))
     #expect(instructions.contains("Batch all known paths into one"))
-    #expect(instructions.contains("Do not discover a runtime one approval at a time"))
+    #expect(instructions.contains("runtime one approval"))
     #expect(instructions.contains("`/opt/homebrew/bin`"))
     #expect(instructions.contains("`/opt/homebrew/opt`"))
     #expect(instructions.contains("`/opt/homebrew/Cellar`"))
-    #expect(instructions.contains("do not merely repeat"))
+    #expect(instructions.contains("merely repeat it"))
     #expect(instructions.contains("add another shell wrapper"))
-    #expect(instructions.contains("substitute older evidence"))
-    #expect(instructions.contains("consult the verified Environments page"))
-    #expect(instructions.contains("repository's established native build system"))
+    #expect(instructions.contains("older evidence"))
+    #expect(instructions.contains("Consult verified Environments"))
+    #expect(instructions.contains("purpose-named repository"))
     #expect(instructions.contains("substitute another package manager"))
-    #expect(instructions.contains("small version-controlled"))
-    #expect(instructions.contains("never use a wrapper to hide unrelated operations"))
+    #expect(instructions.contains("Historical delivery notes are analogous context"))
+    #expect(instructions.contains("Do not invoke Node"))
+    #expect(!instructions.contains("small version-controlled"))
+    #expect(!instructions.contains("app-supplied port"))
     #expect(instructions.contains("propose its complete replacement body"))
-    #expect(instructions.contains("knowledge as permission"))
-    #expect(instructions.contains("The comment is the body"))
-    #expect(instructions.contains("prefix it with the team member's name"))
-    #expect(instructions.contains("StoryPointless renders attribution and status separately"))
-    #expect(instructions.contains("cannot override the workspace boundary"))
-    #expect(instructions.contains("Work log output contract"))
+    #expect(instructions.contains("Knowledge is not permission"))
+    #expect(instructions.contains("The comment is concise first-person Work"))
+    #expect(instructions.contains("do not prefix it with a name"))
+    #expect(instructions.contains("renders attribution and status separately"))
+    #expect(instructions.contains("cannot expand permissions"))
+    #expect(instructions.contains("structured-output requirements"))
 
     let integrationPrompt = CodexConflictIntegrator.prompt(
       product: product,
@@ -2253,7 +2261,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexTicketExecutor.developerInstructions(
       productInstructions: "",
-      personaInstructions: "",
+      customInstructions: "",
       assignee: implementer
     )
 
@@ -2266,8 +2274,8 @@ struct CodexAdapterTests {
       )
     )
     #expect(!prompt.contains("Add verified knowledge here."))
-    #expect(instructions.contains("external providers and APIs belong in"))
-    #expect(instructions.contains("Do not update an unrelated writable page"))
+    #expect(instructions.contains("external providers and APIs to"))
+    #expect(instructions.contains("unrelated page"))
   }
 
   @Test("Ticket execution and Tech Lead review results are validated")
@@ -2493,26 +2501,26 @@ struct CodexAdapterTests {
     )
     let reviewDeveloperInstructions = CodexTechLeadReviewer.developerInstructions(
       productInstructions: "",
-      personaInstructions: techLead.effectiveInstructions,
+      customInstructions: techLead.customInstructionText,
       reviewer: techLead
     )
     #expect(reviewDeveloperInstructions.contains("Cosmetic diff hygiene is not a blocker"))
-    #expect(reviewDeveloperInstructions.contains("trailing whitespace"))
+    #expect(reviewDeveloperInstructions.contains("trailing"))
     #expect(reviewDeveloperInstructions.contains("shortest maintained, purpose-named entry"))
     #expect(reviewDeveloperInstructions.contains("review is read-only"))
-    #expect(reviewDeveloperInstructions.contains("The comment is the body"))
-    #expect(reviewDeveloperInstructions.contains("do not prefix it with the reviewer's name"))
-    #expect(reviewDeveloperInstructions.contains(#""Approved" or "Changes requested""#))
+    #expect(reviewDeveloperInstructions.contains("The comment is attributed Work log prose"))
+    #expect(reviewDeveloperInstructions.contains("do not prefix it"))
+    #expect(reviewDeveloperInstructions.contains(#""Approved", or "Changes requested""#))
     #expect(
       reviewDeveloperInstructions.contains(
         "structured decision separately"
       )
     )
-    #expect(reviewDeveloperInstructions.contains("cannot override the"))
-    #expect(reviewDeveloperInstructions.contains("Work log output contract"))
+    #expect(reviewDeveloperInstructions.contains("cannot expand permissions"))
+    #expect(reviewDeveloperInstructions.contains("structured-output requirements"))
     #expect(
       reviewDeveloperInstructions.contains(
-        "independently justify the cost of another implementation, integration, and review cycle"
+        "independently justify another implementation, integration, and review cycle"
       )
     )
     let reReviewPrompt = CodexTechLeadReviewer.prompt(
@@ -2649,7 +2657,8 @@ struct CodexAdapterTests {
       interruptedPermission: interruptedLeafPermission
     )
     #expect(leafRecoveryPrompt.contains("Read /opt/homebrew/opt/llhttp"))
-    #expect(leafRecoveryPrompt.contains("do not continue requesting adjacent paths"))
+    #expect(leafRecoveryPrompt.contains("Do not continue"))
+    #expect(leafRecoveryPrompt.contains("one at a time"))
     #expect(leafRecoveryPrompt.contains("one consolidated request"))
     #expect(leafRecoveryPrompt.contains("`/opt/homebrew/bin`"))
     #expect(leafRecoveryPrompt.contains("`/opt/homebrew/opt`"))
@@ -2719,17 +2728,31 @@ struct CodexAdapterTests {
       actionDestination: .teamPractice,
       createdAt: Date(timeIntervalSince1970: 2)
     )
+    let ownerIdea = RetrospectiveNote(
+      productID: product.id,
+      sprintID: sprint.id,
+      authorName: "Product Owner",
+      category: .suggestedAction,
+      body: "Surface runtime readiness before delivery begins.",
+      isActionCandidate: true,
+      createdAt: Date(timeIntervalSince1970: 3)
+    )
 
     let prompt = CodexRetrospectiveSynthesizer.prompt(
       product: product,
       sprint: sprint,
-      sourceNotes: [first, second],
+      sourceNotes: [first, second, ownerIdea],
       workItems: [item],
       existingActions: [],
       waysOfWorking: ""
     )
     #expect(prompt.contains("Return zero to five actions"))
     #expect(prompt.contains("E1 [Agent action candidate · T56 · Implementer]"))
+    #expect(
+      prompt.contains(
+        "E3 [Product Owner action candidate · Sprint · Product Owner]"
+      )
+    )
     #expect(
       CodexRetrospectiveSynthesizer.outputSchema["properties"]?["actions"]?["maxItems"]
         == .integer(5)
@@ -2746,7 +2769,7 @@ struct CodexAdapterTests {
         }]
       }
       """#,
-      sourceNotes: [first, second]
+      sourceNotes: [first, second, ownerIdea]
     )
     #expect(actions.count == 1)
     #expect(actions.first?.sourceNoteIDs == [first.id, second.id])
@@ -2759,11 +2782,11 @@ struct CodexAdapterTests {
             "body":"Use the validation runtime.",
             "destination":"team_practice",
             "expectedEffect":"Checks can run.",
-            "sourceReferences":["E3"]
+            "sourceReferences":["E4"]
           }]
         }
         """#,
-        sourceNotes: [first, second]
+        sourceNotes: [first, second, ownerIdea]
       )
     }
   }

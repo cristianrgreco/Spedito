@@ -348,6 +348,7 @@ final class AppModel: ObservableObject {
   private let demoLauncher = MacOSDemoLauncher()
   private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
   private let ticketSuggestionRecoveryPolicy = TicketSuggestionRecoveryPolicy()
+  private let ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying
   private var codexClient: CodexAppServerClient?
   private var suggestionTask: Task<Void, Never>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
@@ -399,6 +400,7 @@ final class AppModel: ObservableObject {
   private static let selectedProductDefaultsKey = "selectedProductID"
 
   init() {
+    ticketAttentionSoundPlayer = BundledTicketAttentionSoundPlayer()
     selectedProductID = UserDefaults.standard.string(
       forKey: Self.selectedProductDefaultsKey
     ).flatMap(UUID.init(uuidString:))
@@ -411,9 +413,46 @@ final class AppModel: ObservableObject {
     }
   }
 
-  init(store: SQLiteStore?, selectedProductID: UUID? = nil) {
+  init(
+    store: SQLiteStore?,
+    selectedProductID: UUID? = nil,
+    ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying =
+      BundledTicketAttentionSoundPlayer()
+  ) {
     self.store = store
     self.selectedProductID = selectedProductID
+    self.ticketAttentionSoundPlayer = ticketAttentionSoundPlayer
+  }
+
+  @discardableResult
+  private func updateAgentRun(
+    id: UUID,
+    status: AgentRunStatus,
+    codexThreadID: String? = nil,
+    worktreePath: String? = nil,
+    eventActor: String? = nil,
+    eventDetail: String? = nil
+  ) async throws -> AgentRun {
+    guard let store else {
+      throw PersistenceError.recordNotFound("StoryPointless database")
+    }
+    let previousRun = try await store.fetchAgentRun(id: id)
+    let updatedRun = try await store.updateAgentRun(
+      id: id,
+      status: status,
+      codexThreadID: codexThreadID,
+      worktreePath: worktreePath,
+      eventActor: eventActor,
+      eventDetail: eventDetail
+    )
+    if TicketAttentionSoundPolicy.shouldPlay(
+      previousStatus: previousRun.status,
+      newStatus: updatedRun.status,
+      isShuttingDown: isShuttingDown
+    ) {
+      ticketAttentionSoundPlayer.play()
+    }
+    return updatedRun
   }
 
   var selectedProduct: Product? {
@@ -847,7 +886,7 @@ final class AppModel: ObservableObject {
         workingDirectory: workingDirectory,
         developerInstructions: CodexTicketRefinementGenerator.developerInstructions(
           productInstructions: inheritedAgentInstructions(for: product),
-          personaInstructions: analyst.effectiveInstructions
+          customInstructions: analyst.customInstructionText
         ),
         model: analyst.model
       )
@@ -874,13 +913,25 @@ final class AppModel: ObservableObject {
         currentItem: item,
         validRelatedItems: activeItems
       )
-      _ = try await store.appendComment(
-        workItemID: item.id,
-        authorKind: .agent,
-        authorName: analyst.name,
-        body: reply.ticketCommentBody
-      )
-      activity = try await store.fetchActivity(productID: product.id)
+      if reply.proposal.missingQuestions.isEmpty {
+        _ = try await applyCompletedTicketRefinement(reply.proposal, to: item)
+        _ = try? await store.appendComment(
+          workItemID: item.id,
+          authorKind: .agent,
+          authorName: analyst.name,
+          body: reply.ticketCommentBody
+        )
+      } else {
+        _ = try await store.appendComment(
+          workItemID: item.id,
+          authorKind: .agent,
+          authorName: analyst.name,
+          body: reply.ticketCommentBody
+        )
+      }
+      if let latestActivity = try? await store.fetchActivity(productID: product.id) {
+        activity = latestActivity
+      }
       ticketRefinementResults[item.id] = TicketRefinementSessionResult(
         base: refinementBase,
         reply: reply,
@@ -901,6 +952,60 @@ final class AppModel: ObservableObject {
       )
       throw error
     }
+  }
+
+  @discardableResult
+  func applyCompletedTicketRefinement(
+    _ proposal: TicketRefinementProposal,
+    to item: WorkItem
+  ) async throws -> WorkItem {
+    guard proposal.missingQuestions.isEmpty else {
+      throw TicketRefinementGenerationError.invalidResponse(
+        "The ticket cannot be updated while Product Owner questions remain."
+      )
+    }
+    guard let store else {
+      throw PersistenceError.recordNotFound("StoryPointless database")
+    }
+
+    let activeItems = workItems.filter { $0.state != .cancelled }
+    let activeItemIDs = Set(activeItems.map(\.id))
+    let activeItemsByKey = Dictionary(uniqueKeysWithValues: activeItems.map { ($0.key, $0) })
+    let suggestedDependencyIDs = try Set(
+      proposal.dependencies.map { dependency in
+        guard
+          let relatedItem = activeItemsByKey[dependency.ticketKey],
+          relatedItem.id != item.id
+        else {
+          throw TicketRefinementGenerationError.invalidResponse(
+            "The suggested dependency \(dependency.ticketKey) is not active."
+          )
+        }
+        return relatedItem.id
+      }
+    )
+    let existingDependencyIDs = Set(
+      dependencies
+        .filter {
+          $0.workItemID == item.id
+            && activeItemIDs.contains($0.dependsOnWorkItemID)
+        }
+        .map(\.dependsOnWorkItemID)
+    )
+
+    let updated = try await store.updateWorkItem(
+      id: item.id,
+      title: proposal.title,
+      type: proposal.type,
+      body: proposal.body,
+      acceptanceCriteria: proposal.acceptanceCriteria,
+      priority: proposal.priority,
+      customFields: item.customFields,
+      dependsOnWorkItemIDs: existingDependencyIDs.union(suggestedDependencyIDs),
+      expectedVersion: proposal.baseVersion
+    )
+    await reloadSelectedProduct()
+    return updated
   }
 
   func cancelTicketRefinement() {
@@ -986,7 +1091,7 @@ final class AppModel: ObservableObject {
           workingDirectory: workingDirectory,
           developerInstructions: CodexTicketConversation.developerInstructions(
             productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions: recipient.effectiveInstructions,
+            customInstructions: recipient.customInstructionText,
             recipient: recipient
           ),
           model: recipient.model
@@ -1138,7 +1243,7 @@ final class AppModel: ObservableObject {
           workingDirectory: workingDirectory,
           developerInstructions: CodexEpicConversation.developerInstructions(
             productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions: recipient.effectiveInstructions,
+            customInstructions: recipient.customInstructionText,
             recipient: recipient
           ),
           model: recipient.model
@@ -1458,6 +1563,35 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func captureRetrospectiveActionIdea(
+    sprintID: UUID,
+    body: String
+  ) async -> RetrospectiveNote? {
+    guard let store, let productID = selectedProductID else { return nil }
+    do {
+      let note = try await store.captureRetrospectiveActionIdea(
+        productID: productID,
+        sprintID: sprintID,
+        body: body
+      )
+      await reloadSelectedProduct()
+      return retrospectiveNotes.first { $0.id == note.id } ?? note
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+  }
+
+  func deleteRetrospectiveActionIdea(_ note: RetrospectiveNote) async {
+    guard let store else { return }
+    do {
+      try await store.deleteRetrospectiveActionIdea(noteID: note.id)
+      await reloadSelectedProduct()
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
   func prepareRetrospectiveSynthesisIfNeeded(sprintID: UUID) {
     guard
       let synthesis = retrospectiveSyntheses.first(where: {
@@ -1614,14 +1748,13 @@ final class AppModel: ObservableObject {
     guard
       run.status == .running,
       let client = codexClient,
-      let store,
       let turn = activeExecutionTurns[run.id]
     else { return }
     manuallyStoppedRunIDs.insert(run.id)
     do {
       try await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
       stopLiveActivityMonitoring(runID: run.id)
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: run.id,
         status: .interrupted,
         eventActor: "Product Owner",
@@ -1711,7 +1844,7 @@ final class AppModel: ObservableObject {
         id: candidate.id,
         status: .reviewing
       )
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .running,
         eventActor: "StoryPointless",
@@ -1740,7 +1873,7 @@ final class AppModel: ObservableObject {
         id: candidate.id,
         status: .readyForDemo
       )
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .completed,
         eventActor: "StoryPointless",
@@ -1765,7 +1898,7 @@ final class AppModel: ObservableObject {
         id: recoverableCandidate.id,
         status: .failed
       )
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "StoryPointless",
@@ -2355,7 +2488,7 @@ final class AppModel: ObservableObject {
           workingDirectory: workingDirectory,
           developerInstructions: CodexSprintPlanningConversation.developerInstructions(
             productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions: recipient.effectiveInstructions,
+            customInstructions: recipient.customInstructionText,
             recipient: recipient
           ),
           model: recipient.model
@@ -2461,7 +2594,10 @@ final class AppModel: ObservableObject {
     let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
     let threadID = try await client.startReadOnlyThread(
       workingDirectory: workingDirectory,
-      developerInstructions: CodexSprintGoalGenerator.developerInstructions,
+      developerInstructions: CodexSprintGoalGenerator.developerInstructions(
+        productInstructions: inheritedAgentInstructions(for: product),
+        customInstructions: analyst.customInstructionText
+      ),
       model: analyst.model
     )
     let turnID = try await client.startStructuredTurn(
@@ -2783,9 +2919,7 @@ final class AppModel: ObservableObject {
           workingDirectory: workingDirectory,
           developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
             productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions:
-              analyst?.effectiveInstructions
-              ?? AgentPersonaDefaults.instructions(for: .businessAnalyst)
+            customInstructions: analyst?.customInstructionText ?? ""
           ),
           model: analyst?.model
         )
@@ -2975,7 +3109,7 @@ final class AppModel: ObservableObject {
       workingDirectory: workingDirectory,
       developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
         productInstructions: inheritedAgentInstructions(for: product),
-        personaInstructions: analyst.effectiveInstructions
+        customInstructions: analyst.customInstructionText
       ),
       model: analyst.model
     )
@@ -3201,9 +3335,7 @@ final class AppModel: ObservableObject {
   ) async throws -> String {
     let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
       productInstructions: inheritedAgentInstructions(for: product),
-      personaInstructions:
-        analyst?.effectiveInstructions
-        ?? AgentPersonaDefaults.instructions(for: .businessAnalyst)
+      customInstructions: analyst?.customInstructionText ?? ""
     )
     let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
     var preferredThreadID = epicPlanningThreadID
@@ -3396,9 +3528,7 @@ final class AppModel: ObservableObject {
           workingDirectory: workingDirectory,
           developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
             productInstructions: inheritedAgentInstructions(for: product),
-            personaInstructions:
-              analyst?.effectiveInstructions
-              ?? AgentPersonaDefaults.instructions(for: .businessAnalyst)
+            customInstructions: analyst?.customInstructionText ?? ""
           ),
           model: analyst?.model
         )
@@ -4116,7 +4246,7 @@ final class AppModel: ObservableObject {
       let canResume = isImplementer || canResumeConflict || canResumeReview
       let recoveredStatus: AgentRunStatus = canResume ? .awaitingOwner : .interrupted
       if run.status != recoveredStatus {
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: run.id,
           status: recoveredStatus,
           eventActor: "StoryPointless",
@@ -4207,7 +4337,7 @@ final class AppModel: ObservableObject {
             reason: "The candidate contained no inspectable delivery artefact"
           )
         }
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
           eventActor: "StoryPointless",
@@ -4245,7 +4375,7 @@ final class AppModel: ObservableObject {
               for: product,
               availableKnowledge: context.knowledgePages
             ),
-            personaInstructions: assignee.effectiveInstructions,
+            customInstructions: assignee.customInstructionText,
             assignee: assignee
           ),
           model: assignee.model,
@@ -4285,7 +4415,7 @@ final class AppModel: ObservableObject {
         }
         if let candidate = runCandidates.max(by: { $0.version < $1.version }),
           candidate.status == .resolvingConflict {
-          _ = try? await store.updateAgentRun(
+          _ = try? await updateAgentRun(
             id: run.id,
             status: .queued,
             eventActor: "StoryPointless",
@@ -4301,7 +4431,7 @@ final class AppModel: ObservableObject {
             reviewerProfileIDs: reviewerProfileIDs
           )?.id == run.id
         {
-          _ = try? await store.updateAgentRun(
+          _ = try? await updateAgentRun(
             id: run.id,
             status: .queued,
             eventActor: "StoryPointless",
@@ -4309,7 +4439,7 @@ final class AppModel: ObservableObject {
           )
           continue
         }
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: run.id,
           status: .interrupted,
           eventActor: "StoryPointless",
@@ -4338,7 +4468,7 @@ final class AppModel: ObservableObject {
           break
         }
       }
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: run.id,
         status: .queued,
         eventActor: "StoryPointless",
@@ -4436,13 +4566,13 @@ final class AppModel: ObservableObject {
           reviewerProfileIDs: reviewerProfileIDs
         ) {
           if expiredPermissionRunIDs.contains(reviewRun.id) {
-            _ = try? await store.updateAgentRun(
+            _ = try? await updateAgentRun(
               id: reviewRun.id,
               status: .awaitingOwner,
               worktreePath: reviewWorkspace.url.path
             )
           } else if reviewRun.status != .completed {
-            _ = try? await store.updateAgentRun(
+            _ = try? await updateAgentRun(
               id: reviewRun.id,
               status: .queued,
               worktreePath: reviewWorkspace.url.path,
@@ -4508,7 +4638,7 @@ final class AppModel: ObservableObject {
           "requested changes without identifying a concrete blocking finding"
         )
       if reviewContractFailed {
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: run.id,
           status: .completed,
           eventActor: "StoryPointless",
@@ -4539,7 +4669,7 @@ final class AppModel: ObservableObject {
       }
       guard latestSystemFailure.body.localizedCaseInsensitiveContains("thread not found")
       else { continue }
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: run.id,
         status: .queued,
         eventActor: "StoryPointless",
@@ -4560,12 +4690,12 @@ final class AppModel: ObservableObject {
         }
         if let latest = candidateRuns.max(by: { $0.createdAt < $1.createdAt }) {
           if expiredPermissionRunIDs.contains(latest.id) {
-            _ = try? await store.updateAgentRun(
+            _ = try? await updateAgentRun(
               id: latest.id,
               status: .awaitingOwner
             )
           } else if latest.status == .interrupted || latest.status == .failed {
-            _ = try? await store.updateAgentRun(
+            _ = try? await updateAgentRun(
               id: latest.id,
               status: .queued,
               eventActor: "StoryPointless",
@@ -4616,7 +4746,7 @@ final class AppModel: ObservableObject {
       runs: context.runs,
       reviewerProfileIDs: reviewerProfileIDs
     ), reviewRun.status != .completed {
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: reviewRun.id,
         status: .interrupted,
         eventActor: "StoryPointless",
@@ -4970,7 +5100,7 @@ final class AppModel: ObservableObject {
           availableKnowledge: knowledgePages,
           includesMandatoryKnowledge: false
         ),
-        personaInstructions: assignee.effectiveInstructions,
+        customInstructions: assignee.customInstructionText,
         assignee: assignee
       )
       let existingThreadID = run.codexThreadID
@@ -5017,7 +5147,7 @@ final class AppModel: ObservableObject {
           )
         )
       }
-      run = try await store.updateAgentRun(
+      run = try await updateAgentRun(
         id: run.id,
         status: .running,
         codexThreadID: threadID,
@@ -5125,7 +5255,7 @@ final class AppModel: ObservableObject {
             isDirectory: true
           )
         )
-        run = try await store.updateAgentRun(
+        run = try await updateAgentRun(
           id: run.id,
           status: .running,
           codexThreadID: activeThreadID,
@@ -5228,7 +5358,7 @@ final class AppModel: ObservableObject {
         eventDetail = error.localizedDescription
         workLogBody = "The agent run stopped unexpectedly: \(error.localizedDescription)"
       }
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: run.id,
         status: status,
         eventActor: "StoryPointless",
@@ -5416,7 +5546,7 @@ final class AppModel: ObservableObject {
 
     switch result.status {
     case .awaitingOwner:
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: run.id,
         status: .awaitingOwner,
         eventActor: assignee.name,
@@ -5496,7 +5626,7 @@ final class AppModel: ObservableObject {
             reason: "Candidate v\(candidate.version) queued for Tech Lead review"
           )
         }
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: run.id,
           status: .completed,
           eventActor: assignee.name,
@@ -5504,7 +5634,7 @@ final class AppModel: ObservableObject {
         )
         await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: run.id,
           status: .awaitingOwner,
           eventActor: "StoryPointless",
@@ -5580,7 +5710,7 @@ final class AppModel: ObservableObject {
           for: product,
           availableKnowledge: context.knowledgePages
         ),
-        personaInstructions: techLead.effectiveInstructions,
+        customInstructions: techLead.customInstructionText,
         reviewer: techLead
       )
       var resumedReviewThreadID: String?
@@ -5675,7 +5805,7 @@ final class AppModel: ObservableObject {
         }
       }
 
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: reviewRun.id,
         status: .running,
         codexThreadID: threadID,
@@ -5704,7 +5834,7 @@ final class AppModel: ObservableObject {
           allowsApprovals: true
         )
         turnPrompt = fullReviewPrompt
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: reviewRun.id,
           status: .running,
           codexThreadID: threadID,
@@ -5802,7 +5932,7 @@ final class AppModel: ObservableObject {
       stopLiveActivityMonitoring(runID: reviewRun.id)
       activeExecutionTurns.removeValue(forKey: reviewRun.id)
       if Task.isCancelled {
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: reviewRun.id,
           status: .interrupted,
           eventActor: "StoryPointless",
@@ -5812,7 +5942,7 @@ final class AppModel: ObservableObject {
         return
       }
 
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: reviewRun.id,
         status: .failed,
         eventActor: "StoryPointless",
@@ -5843,7 +5973,7 @@ final class AppModel: ObservableObject {
           reason: "Review continuation stopped; preserving work for retry"
         )
       }
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "StoryPointless",
@@ -5950,7 +6080,7 @@ final class AppModel: ObservableObject {
         id: candidate.id,
         status: .failed
       )
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "StoryPointless",
@@ -6012,7 +6142,7 @@ final class AppModel: ObservableObject {
       id: candidateID,
       status: .readyForDemo
     )
-    _ = try await store.updateAgentRun(
+    _ = try await updateAgentRun(
       id: implementationRun.id,
       status: .completed,
       eventActor: reviewerName,
@@ -6076,7 +6206,7 @@ final class AppModel: ObservableObject {
           reason: "Implementation and reported checks completed"
         )
       }
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .completed,
         eventActor: implementer.name,
@@ -6140,13 +6270,13 @@ final class AppModel: ObservableObject {
             for: product,
             availableKnowledge: context.knowledgePages
           ),
-          personaInstructions: techLead.effectiveInstructions,
+          customInstructions: techLead.customInstructionText,
           reviewer: techLead
         ),
         model: techLead.model,
         allowsApprovals: true
       )
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: reviewRun.id,
         status: .running,
         codexThreadID: threadID,
@@ -6256,7 +6386,7 @@ final class AppModel: ObservableObject {
         if let activeReviewRunID {
           stopLiveActivityMonitoring(runID: activeReviewRunID)
           activeExecutionTurns.removeValue(forKey: activeReviewRunID)
-          _ = try? await store.updateAgentRun(
+          _ = try? await updateAgentRun(
             id: activeReviewRunID,
             status: .interrupted,
             eventActor: "StoryPointless",
@@ -6272,7 +6402,7 @@ final class AppModel: ObservableObject {
       if let activeReviewRunID {
         stopLiveActivityMonitoring(runID: activeReviewRunID)
         activeExecutionTurns.removeValue(forKey: activeReviewRunID)
-        _ = try? await store.updateAgentRun(
+        _ = try? await updateAgentRun(
           id: activeReviewRunID,
           status: Task.isCancelled ? .interrupted : .failed,
           eventActor: "StoryPointless",
@@ -6309,7 +6439,7 @@ final class AppModel: ObservableObject {
           reason: "Review stopped; preserving work for retry"
         )
       }
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "StoryPointless",
@@ -6368,7 +6498,7 @@ final class AppModel: ObservableObject {
       )
     }
     let reviewWasAlreadyCompleted = reviewRun.status == .completed
-    _ = try await store.updateAgentRun(id: reviewRun.id, status: .completed)
+    _ = try await updateAgentRun(id: reviewRun.id, status: .completed)
     if !reviewWasAlreadyCompleted {
       try await store.saveRetrospectiveNotes(
         makeRetrospectiveNotes(
@@ -6400,7 +6530,7 @@ final class AppModel: ObservableObject {
           id: candidate.id,
           status: .queuedForIntegration
         )
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .completed,
           eventActor: techLead.name,
@@ -6458,7 +6588,7 @@ final class AppModel: ObservableObject {
         let remainingFindings = review.findings.prefix(3)
           .map { "- \($0)" }
           .joined(separator: "\n")
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .awaitingOwner,
           eventActor: techLead.name,
@@ -6480,7 +6610,7 @@ final class AppModel: ObservableObject {
         await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .running,
         eventActor: implementer.name,
@@ -6497,7 +6627,7 @@ final class AppModel: ObservableObject {
           for: product,
           availableKnowledge: context.knowledgePages
         ),
-        personaInstructions: implementer.effectiveInstructions,
+        customInstructions: implementer.customInstructionText,
         assignee: implementer
       )
       let revisionPrompt = CodexTicketExecutor.revisionPrompt(
@@ -6548,7 +6678,7 @@ final class AppModel: ObservableObject {
           )
         )
       }
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .running,
         codexThreadID: revisionThreadID,
@@ -6574,7 +6704,7 @@ final class AppModel: ObservableObject {
             isDirectory: true
           )
         )
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .running,
           codexThreadID: revisionThreadID,
@@ -6735,7 +6865,7 @@ final class AppModel: ObservableObject {
       let conflictedFiles = try await gitWorkspaceManager.unmergedFiles(
         at: URL(fileURLWithPath: worktreePath, isDirectory: true)
       )
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: resolutionRun.id,
         status: .running,
         eventActor: "Integrator",
@@ -6831,7 +6961,7 @@ final class AppModel: ObservableObject {
           readOnlyGitDirectory: productGitDirectory
         )
       }
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: resolutionRun.id,
         status: .running,
         codexThreadID: threadID,
@@ -6865,7 +6995,7 @@ final class AppModel: ObservableObject {
           model: techLead.model,
           readOnlyGitDirectory: productGitDirectory
         )
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: resolutionRun.id,
           status: .running,
           codexThreadID: threadID,
@@ -6923,7 +7053,7 @@ final class AppModel: ObservableObject {
 
       switch result.status {
       case .awaitingOwner:
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: resolutionRun.id,
           status: .awaitingOwner,
           eventActor: "Integrator",
@@ -6996,7 +7126,7 @@ final class AppModel: ObservableObject {
       integrationWorkspaceURL: workspace,
       candidateHeadSHA: candidate.headSHA
     )
-    _ = try await store.updateAgentRun(
+    _ = try await updateAgentRun(
       id: resolutionRun.id,
       status: .completed,
       eventActor: "Integrator",
@@ -7028,7 +7158,7 @@ final class AppModel: ObservableObject {
   ) async {
     guard let store else { return }
     if let resolutionRunID {
-      _ = try? await store.updateAgentRun(
+      _ = try? await updateAgentRun(
         id: resolutionRunID,
         status: Task.isCancelled ? .interrupted : .awaitingOwner,
         eventActor: "Integrator",
@@ -7087,7 +7217,7 @@ final class AppModel: ObservableObject {
         ),
         reviewRun.status == .interrupted
       {
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: reviewRun.id,
           status: .queued,
           eventActor: "Product Owner",
@@ -7107,7 +7237,7 @@ final class AppModel: ObservableObject {
             && $0.status == .awaitingOwner
         }
         if let resolutionRun = resolutionRuns.max(by: { $0.createdAt < $1.createdAt }) {
-          _ = try await store.updateAgentRun(
+          _ = try await updateAgentRun(
             id: resolutionRun.id,
             status: .queued,
             eventActor: "Product Owner",
@@ -7127,7 +7257,7 @@ final class AppModel: ObservableObject {
       else { return }
 
       if implementationRun.status == .awaitingOwner {
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
           eventActor: "Product Owner",
@@ -7137,7 +7267,7 @@ final class AppModel: ObservableObject {
         (implementationRun.status == .failed || implementationRun.status == .interrupted),
         item.state == .running
       {
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
           eventActor: "Product Owner",
@@ -7179,7 +7309,7 @@ final class AppModel: ObservableObject {
           actor: "Product Owner",
           reason: "Demo feedback: \(body.prefix(160))"
         )
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
           eventActor: "Product Owner",
@@ -7644,7 +7774,7 @@ final class AppModel: ObservableObject {
             for: product,
             availableKnowledge: productKnowledge
           ),
-          personaInstructions: analyst.effectiveInstructions
+          customInstructions: analyst.customInstructionText
         ),
         model: analyst.model
       )
@@ -8217,7 +8347,7 @@ final class AppModel: ObservableObject {
           } else {
             "Denied the requested capability; the agent will adapt"
           }
-        _ = try await store.updateAgentRun(
+        _ = try await updateAgentRun(
           id: request.agentRunID,
           status: resumesAfterDecision ? .queued : .running,
           eventActor: "Product Owner",
@@ -8364,7 +8494,7 @@ final class AppModel: ObservableObject {
       liveApprovalRequests[saved.id] = request
       liveApprovalRequestProductIDs[saved.id] = run.productID
       replacePermissionRequest(saved)
-      _ = try await store.updateAgentRun(
+      _ = try await updateAgentRun(
         id: run.id,
         status: .awaitingOwner,
         eventActor: "StoryPointless",

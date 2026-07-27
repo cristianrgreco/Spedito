@@ -45,7 +45,10 @@ the ordinary team composer. Question cards remain where they were asked in the
 conversation timeline, so later chat follows them chronologically. Ticket and Epic
 details use the same adaptive sheet and conversation proportions. Their initial
 Business Analyst refinement starts automatically rather than presenting a redundant
-header action. Epic details also reuses the same recipient picker, composer,
+header action. Once consequential questions are answered, both flows apply the
+Business Analyst's completed refinement as one versioned update; Ticket refinement
+also preserves existing blockers while adding newly recommended prerequisites.
+Epic details also reuses the same recipient picker, composer,
 empty state, and replying status for durable read-only questions to any selected team
 member; ordinary Epic chat remains separate from governed refinement answers. A ticket
 team member can reply normally or propose a business-readable ticket change. A
@@ -62,8 +65,11 @@ knowledge changes, follow-up recommendations, and demo submissions are shown in
 chronological order in the ticket Work log with attribution.
 An agent that needs a Product Owner choice enters a durable attention state; its
 structured options are selectable in the Work log, with a free-form response still
-available, and the submitted owner response queues the same thread to resume. Delivery
-and Tech Lead runs use App Server approval requests rather than treating every sandbox
+available, and the submitted owner response queues the same thread to resume.
+When a ticket newly enters **Needs your input**, StoryPointless plays a brief
+notification chime. Refreshing or reopening an already-waiting ticket does not
+repeat the sound.
+Delivery and Tech Lead runs use App Server approval requests rather than treating every sandbox
 boundary as a failure. The ticket leads with the plain-language reason for a request and
 keeps the exact command or capability available in a technical-details disclosure, with
 **Allow once**, **Always allow for this product**, and **Deny** actions where applicable.
@@ -169,12 +175,14 @@ that uncaptured implementation work could not be recovered before preparing a fr
 isolated workspace. Backlog and refinement are separate from the simplified
 active sprint board, whose owner-facing stages are In Progress, In Review, Ready for
 Demo, and Done.
-Each team profile has a role-specific default prompt and sensible model/effort
-policy. The sidebar exposes live account-supported model and effort selectors,
-while Team Settings provides shared product guidance without making safety or
-workflow policy editable. It exposes model, reasoning effort, and an always-editable appended
-prompt for every built-in or custom team member; resetting instructions to the role
-default does not require a separate customise mode. Pending ticket suggestions
+Each team profile has internal role guidance and a sensible model/effort policy.
+The sidebar exposes live account-supported model and effort selectors, while
+Team settings provides shared product guidance without making safety or workflow
+policy editable. It exposes model, reasoning effort, and an optional custom-instructions
+overlay for every built-in or custom team member. The overlay starts empty and is
+appended after StoryPointless's lifecycle and role guidance, so owners can adjust how
+a member approaches authorised work without having to maintain the built-in prompt.
+Pending ticket suggestions
 must be accepted or rejected before another gap analysis can begin. Later runs
 receive the accepted backlog and the previous rejected proposals to avoid
 quietly resurfacing reviewed work. Once every proposal is reviewed, the
@@ -311,10 +319,14 @@ be retried after interruption or explicitly skipped when Codex is unavailable.
 The Retrospectives view presents attributed, ticket-linked evidence for **Went
 well** and **Could improve**, plus the consolidated review queue, opening on the
 latest completed sprint when one exists. Its sprint picker labels retrospectives
-as **Needs conclusion**, **Concluded**, or **In progress**. An active sprint is
-a read-only preview: evidence remains visible, but final actions and decisions
-wait until the sprint is complete. After a sprint completes, final action
-preparation resolves, and before its retrospective is concluded,
+as **Needs conclusion**, **Concluded**, or **In progress**. During an active
+sprint, the Product Owner can append attributed action ideas while they are
+fresh and delete their own ideas before completion. Those entries remain source
+evidence: the Business Analyst considers the ideas that remain with the team’s
+observations after the sprint ends, while final actions and decisions still wait
+until completion.
+After a sprint completes, final action preparation resolves, and before its
+retrospective is concluded,
 the Product Owner can add their own attributed proposal for **Ways of working** or a
 **Backlog ticket** alongside the agents’ suggestions. Accepting a ways-of-working
 proposal updates inherited team guidance; accepting a ticket creates it in the

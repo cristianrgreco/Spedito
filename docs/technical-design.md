@@ -93,9 +93,11 @@ Initial tables cover:
   work-item dependency edges;
 - sprints, sprint assignments, forecast slots, concurrency policy, internal
   safety limits, and frozen ticket snapshots;
-- immutable retrospective notes and action candidates, one durable synthesis
-  state per completed sprint, frozen synthesis-source links, consolidated final
-  actions, and their many-to-many evidence links;
+- immutable retrospective notes and action candidates from team runs, Product
+  Owner action ideas that remain owner-deletable only while their sprint is
+  active, one durable synthesis state per completed sprint, frozen
+  synthesis-source links, consolidated final actions, and their many-to-many
+  evidence links;
 - decision records and knowledge claims; and
 - schema migrations.
 
@@ -287,6 +289,19 @@ remain separate from ordinary messages and are the only inputs that advance
 their governed refinement turn. Delivery and independent Tech Lead review use
 `approvalPolicy: on-request`.
 
+Developer instructions are composed from focused lifecycle guidance rather than
+one universal delivery prompt. Conversation, planning, authorised research,
+product-changing delivery, recovery, and independent review each receive only
+their relevant operating contract. Research delivery explicitly treats historical
+delivery notes as analogous context rather than executable instructions and uses
+text-native documentation checks where sufficient; implementation-only runtime,
+service, and interactive-demo guidance is reserved for product-changing delivery.
+The app then appends internal role guidance, shared Product Owner guidance, and
+the selected member's optional custom instructions in that order. The custom
+field starts empty and remains an owner-controlled overlay, so the Product Owner
+can redirect an agent's approach without making safety and lifecycle rules UI
+configuration.
+
 Delivery selects the named `storypointless-delivery` profile: Codex's minimal
 platform/runtime reads, one writable ticket worktree, exact database and
 credential exclusions, and no network. The profile deliberately does not deny
@@ -378,6 +393,13 @@ The Product Owner can still Allow or Deny the durable interrupted request. That
 decision queues the preserved run, and a matching request from its resumed
 Conversation receives the recorded answer automatically. Saved product grants
 remain durable.
+
+Every application-owned AgentRun update passes through one coordination boundary.
+After the durable write succeeds, a transition from any other status to
+`awaiting_owner` plays the bundled ticket-attention sound once. Rewriting or
+reloading an already-waiting status stays silent, background-product transitions
+use the same path, and shutdown suppresses new playback. Audio failure never
+changes the durable attention state.
 
 The same adapter owns buffered and streaming `command/exec`, output deltas, and
 termination for candidate demos. The durable run stores the thread identifier
@@ -577,12 +599,14 @@ permission matching without converting knowledge into a grant.
    Environments is backfilled and updateable through the same proposal path, and
    Work log context records distinguish always-included from ticket-relevant
    knowledge. Decision capture and richer sourced knowledge-change diffs remain.
-10. **Partial:** durable agent observations, reviewable agent and Product Owner
+10. **Partial:** durable agent observations, in-progress attributed Product
+   Owner action ideas with active-sprint deletion, reviewable Product Owner
    retrospective proposals, Ways of working promotion, and backlog-ticket
-   creation with automatic refinement entry are implemented. Per-run free-text
-   action candidates remain immutable evidence; sprint completion creates one
-   durable read-only Business Analyst synthesis that links zero to five
-   consolidated final actions to their frozen source notes. Interrupted
+   creation with automatic refinement entry are implemented. Per-run candidates
+   remain immutable; Product Owner ideas become immutable when the sprint
+   completes. Sprint completion creates one durable read-only Business Analyst
+   synthesis that links zero to five consolidated final actions to their frozen
+   source notes. Interrupted
    synthesis is requeued, invalid output fails safely for retry, and the Product
    Owner can explicitly continue without AI suggestions. Structured metric
    evidence snapshots, retrospective experiments, and normalized before/after

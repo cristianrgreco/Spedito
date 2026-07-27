@@ -66,6 +66,52 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.codexThreadID == "review-thread")
   }
 
+  @Test("A queued pre-integration review is recovered after restart")
+  func queuedPreIntegrationReviewIsRecoverable() {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let techLeadID = UUID()
+    let reviewStartedAt = Date()
+    let reviewPath = "/private/tmp/t8-pre-integration-review"
+    let candidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: UUID(),
+      version: 1,
+      branchName: "ticket/T8",
+      baseSHA: "base",
+      headSHA: "head",
+      worktreePath: "/private/tmp/t8",
+      integrationWorktreePath: reviewPath,
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    let queuedReviewRun = AgentRun(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: techLeadID,
+      status: .queued,
+      worktreePath: reviewPath,
+      createdAt: reviewStartedAt.addingTimeInterval(1)
+    )
+
+    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
+      for: candidate,
+      runs: [queuedReviewRun],
+      reviewerProfileIDs: [techLeadID]
+    )
+
+    #expect(recovered?.id == queuedReviewRun.id)
+  }
+
   @Test("A completed review run remains recoverable for an interrupted post-review handoff")
   func completedReviewRunIsRecoverable() {
     let productID = UUID()

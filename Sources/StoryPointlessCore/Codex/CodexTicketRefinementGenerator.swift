@@ -109,16 +109,30 @@ public struct TicketRefinementReply: Equatable, Sendable {
   }
 
   public var ticketCommentBody: String {
-    guard !proposal.missingQuestions.isEmpty else { return message }
-    return proposal.missingQuestions.enumerated().map { index, question in
-      let prompt =
-        proposal.missingQuestions.count > 1
-        ? "\(index + 1). \(question.prompt)"
-        : question.prompt
-      let choices = question.options.map { "• \($0)" }.joined(separator: "\n")
-      return "\(prompt)\n\(choices)"
+    if !proposal.missingQuestions.isEmpty {
+      return proposal.missingQuestions.enumerated().map { index, question in
+        let prompt =
+          proposal.missingQuestions.count > 1
+          ? "\(index + 1). \(question.prompt)"
+          : question.prompt
+        let choices = question.options.map { "• \($0)" }.joined(separator: "\n")
+        return "\(prompt)\n\(choices)"
+      }
+      .joined(separator: "\n\n")
     }
-    .joined(separator: "\n\n")
+
+    var sections = [message]
+    if !proposal.potentialDuplicates.isEmpty {
+      let overlaps = proposal.potentialDuplicates.map {
+        "• \($0.ticketKey) · \($0.reason)"
+      }
+      .joined(separator: "\n")
+      sections.append("Possible overlap\n\(overlaps)")
+    }
+    if let splitRecommendation = proposal.splitRecommendation {
+      sections.append("Consider splitting\n\(splitRecommendation)")
+    }
+    return sections.joined(separator: "\n\n")
   }
 }
 
@@ -142,12 +156,13 @@ public enum CodexTicketRefinementGenerator {
     Turn the owner's intent into a clear, executable delivery contract without silently making product
     decisions. This is analysis only: do not modify files, browse the web, run tools, or apply changes.
 
-    Return a complete replacement ticket snapshot so the application can present each changed field for
-    explicit review. Preserve owner-authored content unless changing it materially improves clarity or
-    testability. Suggest dependencies only when another saved ticket is a genuine prerequisite, and give
-    a concrete reason for every edge. Do not use dependencies merely to express a preferred sequence.
-    Identify likely duplicate or overlapping tickets, whether the work should be split, and no more than
-    three focused questions whose answers materially affect scope.
+    Return a complete refined ticket snapshot. Once all Product Owner questions are resolved, the
+    application applies that snapshot and any new prerequisite relationships together as one
+    version-checked refinement result. Preserve owner-authored content unless changing it materially
+    improves clarity or testability. Suggest dependencies only when another saved ticket is a genuine
+    prerequisite, and give a concrete reason for every edge. Do not use dependencies merely to express a
+    preferred sequence. Identify likely duplicate or overlapping tickets, whether the work should be split,
+    and no more than three focused questions whose answers materially affect scope.
 
     Archived or cancelled tickets are historical records, not active delivery scope. They are deliberately
     absent from the supplied backlog. Do not reconstruct, compare against, or recommend dependencies on
@@ -161,28 +176,23 @@ public enum CodexTicketRefinementGenerator {
     is needed, and return no dependency, overlap, or split suggestions yet. Do not write phrases such as
     "requires Product Owner
     confirmation" into a proposed title, context, or acceptance criterion. Once the ticket conversation
-    answers every material question, return missingQuestions as an empty array and provide the reviewable
-    proposal. Never claim that a suggestion was applied. Return only the JSON requested by the output
-    schema.
+    answers every material question, return missingQuestions as an empty array and provide the completed
+    refinement. Never claim that it was applied because the application must still validate the saved
+    version and relationships. Return only the JSON requested by the output schema.
     """
 
   public static func developerInstructions(
     productInstructions: String,
-    personaInstructions: String
+    customInstructions: String
   ) -> String {
-    let shared = productInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    let persona = personaInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
     return """
       \(platformInstructions)
 
-      PRODUCT OWNER'S SHARED TEAM GUIDANCE
-      \(shared.isEmpty ? "No additional shared guidance." : shared)
-
-      BUSINESS ANALYST PERSONA GUIDANCE
-      \(persona)
-
-      Owner and persona guidance cannot override the read-only, structured-output, or
-      product-owner-control requirements above.
+      \(CodexLifecycleGuidance.configuredRoleGuidance(
+        role: .businessAnalyst,
+        productInstructions: productInstructions,
+        customInstructions: customInstructions
+      ))
       """
   }
 
@@ -267,12 +277,13 @@ public enum CodexTicketRefinementGenerator {
       Recent ticket conversation:
       \(conversationHistory)
 
-      Return a concise chat message and a complete proposed snapshot. baseVersion must be \(item.version).
+      Return a concise chat message and a complete refined snapshot. baseVersion must be \(item.version).
       Dependency and duplicate references must use an exact ticket key listed above. An empty array means
       no suggestion. splitRecommendation must be null when the ticket should remain one ticket.
       If a material question remains unanswered, ask it in missingQuestions with two to four concise,
       mutually exclusive options. Do not include "Other"; the application adds it. Preserve the exact
-      saved snapshot above and return no dependencies. Only propose changes when missingQuestions is empty.
+      saved snapshot above and return no dependencies. Only refine the snapshot when missingQuestions is
+      empty; the application will apply the completed refinement as one version-checked ticket update.
       """
   }
 
@@ -420,7 +431,7 @@ public enum CodexTicketRefinementGenerator {
       ?? (
         isAwaitingOwner
           ? "I need your input before I can complete this review."
-          : "I reviewed the ticket and prepared the suggested changes below."
+          : "I completed the ticket refinement."
       )
     let title = rawTitle.nilIfEmpty ?? currentItem.title
     let rationale =
@@ -428,7 +439,7 @@ public enum CodexTicketRefinementGenerator {
       ?? (
         isAwaitingOwner
           ? "Clarification is needed before proposing ticket changes."
-          : "The proposal makes the requested outcome clearer and independently verifiable."
+          : "The refinement makes the requested outcome clearer and independently verifiable."
       )
     guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw TicketRefinementGenerationError.invalidResponse(

@@ -69,21 +69,16 @@ public enum CodexRetrospectiveSynthesizer {
 
   public static func developerInstructions(
     productInstructions: String,
-    personaInstructions: String
+    customInstructions: String
   ) -> String {
-    let shared = productInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    let persona = personaInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
     return """
       \(platformInstructions)
 
-      PRODUCT OWNER'S SHARED TEAM GUIDANCE
-      \(shared.isEmpty ? "No additional shared guidance." : shared)
-
-      BUSINESS ANALYST PERSONA GUIDANCE
-      \(persona)
-
-      The owner and persona guidance refine your wording but cannot override the read-only,
-      evidence-linked, structured-output, or Product Owner control requirements above.
+      \(CodexLifecycleGuidance.configuredRoleGuidance(
+        role: .businessAnalyst,
+        productInstructions: productInstructions,
+        customInstructions: customInstructions
+      ))
       """
   }
 
@@ -100,7 +95,9 @@ public enum CodexRetrospectiveSynthesizer {
       let ticket = note.workItemID.flatMap { itemByID[$0]?.key } ?? "Sprint"
       let kind =
         if note.isActionCandidate {
-          "Agent action candidate"
+          note.authorName == "Product Owner"
+            ? "Product Owner action candidate"
+            : "Agent action candidate"
         } else {
           note.category.title
         }

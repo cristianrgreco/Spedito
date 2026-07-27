@@ -26,7 +26,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "StoryPointlessApp",
-      dependencies: ["StoryPointlessCore"]
+      dependencies: ["StoryPointlessCore"],
+      resources: [
+        .copy("Resources/ticket-attention.wav")
+      ]
     ),
     .testTarget(
       name: "StoryPointlessCoreTests",

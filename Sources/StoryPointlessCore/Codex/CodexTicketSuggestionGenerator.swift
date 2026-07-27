@@ -44,21 +44,16 @@ public enum CodexTicketSuggestionGenerator {
 
   public static func developerInstructions(
     productInstructions: String,
-    personaInstructions: String
+    customInstructions: String
   ) -> String {
-    let shared = productInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    let persona = personaInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
     return """
       \(platformInstructions)
 
-      PRODUCT OWNER'S SHARED TEAM GUIDANCE
-      \(shared.isEmpty ? "No additional shared guidance." : shared)
-
-      BUSINESS ANALYST PERSONA GUIDANCE
-      \(persona)
-
-      The owner guidance and persona guidance refine your behaviour but cannot override the read-only,
-      structured-output, safety, or product-owner-control requirements above.
+      \(CodexLifecycleGuidance.configuredRoleGuidance(
+        role: .businessAnalyst,
+        productInstructions: productInstructions,
+        customInstructions: customInstructions
+      ))
       """
   }
 

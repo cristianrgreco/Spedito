@@ -2581,6 +2581,120 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Product Owner action ideas are appended during a sprint and frozen for synthesis")
+  func productOwnerRetrospectiveActionIdeaCapture() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Feedback product",
+      vision: "Remember learning while it is fresh"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver one outcome"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Capture feedback during delivery",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+
+    let actionIdea = try await store.captureRetrospectiveActionIdea(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      body: "  Check external dependencies before delivery starts  "
+    )
+
+    #expect(actionIdea.authorName == "Product Owner")
+    #expect(actionIdea.category == .suggestedAction)
+    #expect(actionIdea.body == "Check external dependencies before delivery starts")
+    #expect(actionIdea.isActionCandidate)
+    #expect(actionIdea.actionStatus == nil)
+    #expect(actionIdea.actionDestination == nil)
+    #expect(
+      try await store.fetchActivity(productID: product.id)
+        .count { $0.kind == "retrospective.action_idea_captured" } == 1
+    )
+
+    let discardedIdea = try await store.captureRetrospectiveActionIdea(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      body: "Discard this before synthesis"
+    )
+    try await store.deleteRetrospectiveActionIdea(noteID: discardedIdea.id)
+    #expect(
+      try await store.fetchRetrospectiveNotes(productID: product.id)
+        .contains { $0.id == discardedIdea.id } == false
+    )
+    #expect(
+      try await store.fetchActivity(productID: product.id)
+        .count { $0.kind == "retrospective.action_idea_deleted" } == 1
+    )
+
+    let teamIdea = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: "Keep team evidence immutable",
+      isActionCandidate: true
+    )
+    try await store.saveRetrospectiveNotes([teamIdea])
+    await #expect(throws: PersistenceError.self) {
+      try await store.deleteRetrospectiveActionIdea(noteID: teamIdea.id)
+    }
+
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.decideRetrospectiveAction(
+        noteID: actionIdea.id,
+        accept: true
+      )
+    }
+
+    let completed = try await completeSprint(active, delivering: item, in: store)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.captureRetrospectiveActionIdea(
+        productID: product.id,
+        sprintID: completed.sprint.id,
+        body: "Do not add an action idea after sprint completion"
+      )
+    }
+    await #expect(throws: PersistenceError.self) {
+      try await store.deleteRetrospectiveActionIdea(noteID: actionIdea.id)
+    }
+
+    let synthesis = try #require(
+      try await store.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    _ = try await store.beginRetrospectiveSynthesis(
+      id: synthesis.id,
+      profileID: analyst.id
+    )
+    let sources = try await store.fetchRetrospectiveSynthesisSourceNotes(
+      synthesisID: synthesis.id
+    )
+    #expect(
+      Set(sources.map(\.id)) == Set([actionIdea.id, teamIdea.id])
+    )
+    await store.close()
+  }
+
   @Test("Active retrospective actions are read-only until they can become backlog tickets")
   func retrospectiveEvidenceLifecycle() async throws {
     let fixture = try DatabaseFixture()

@@ -3590,6 +3590,91 @@ public actor SQLiteStore {
     }
   }
 
+  public func captureRetrospectiveActionIdea(
+    productID: UUID,
+    sprintID: UUID,
+    body: String
+  ) throws -> RetrospectiveNote {
+    let sprint = try fetchSprint(id: sprintID)
+    guard sprint.productID == productID else {
+      throw PersistenceError.corruptData(
+        "The retrospective does not belong to the selected product."
+      )
+    }
+    guard sprint.state == .active else {
+      throw PersistenceError.corruptData(
+        "Retrospective action ideas can only be added while the sprint is in progress."
+      )
+    }
+
+    let actionIdea = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !actionIdea.isEmpty else {
+      throw PersistenceError.corruptData(
+        "A retrospective action idea needs a description."
+      )
+    }
+
+    let note = RetrospectiveNote(
+      productID: productID,
+      sprintID: sprintID,
+      authorName: "Product Owner",
+      category: .suggestedAction,
+      body: actionIdea,
+      isActionCandidate: true
+    )
+    try transaction {
+      try insertRetrospectiveNoteIfNeeded(note)
+      _ = try insertEvent(
+        productID: productID,
+        kind: "retrospective.action_idea_captured",
+        actor: "Product Owner",
+        detail: note.id.uuidString
+      )
+    }
+    return note
+  }
+
+  public func deleteRetrospectiveActionIdea(noteID: UUID) throws {
+    let note = try fetchRetrospectiveNote(id: noteID)
+    guard
+      note.authorName == "Product Owner",
+      note.profileID == nil,
+      note.category == .suggestedAction,
+      note.isActionCandidate,
+      note.actionStatus == nil,
+      note.synthesisID == nil
+    else {
+      throw PersistenceError.corruptData(
+        "Only Product Owner action ideas can be deleted."
+      )
+    }
+
+    let sprint = try fetchSprint(id: note.sprintID)
+    guard
+      sprint.productID == note.productID,
+      sprint.state == .active
+    else {
+      throw PersistenceError.corruptData(
+        "Action ideas can only be deleted while the sprint is in progress."
+      )
+    }
+
+    try transaction {
+      try withStatement(
+        "DELETE FROM retrospective_notes WHERE id = ?;"
+      ) { statement in
+        try bind(noteID.uuidString, to: 1, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: note.productID,
+        kind: "retrospective.action_idea_deleted",
+        actor: "Product Owner",
+        detail: note.id.uuidString
+      )
+    }
+  }
+
   public func proposeRetrospectiveAction(
     productID: UUID,
     sprintID: UUID,
