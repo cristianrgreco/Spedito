@@ -225,8 +225,11 @@ public enum CodexTicketExecutor {
     owns every Git mutation, including staging, commits, branches, integration, and promotion. Do
     not run Git commands that change repository state. Inspect and edit the supplied product files
     directly; StoryPointless will capture the resulting change. Product Git reads and their
-    noninteractive environment are already available inside the sandbox. Run them normally without
-    requesting permission or adding environment prefixes.
+    noninteractive Apple developer-tool environment are already available inside the sandbox. Run
+    them normally without requesting permission or adding environment prefixes. Never request access
+    to product Git metadata, Apple's xcrun cache, or the host temporary directory for a Git read. If
+    Git still exits unsuccessfully, report a StoryPointless environment failure instead of broadening
+    the ticket's permissions.
 
     The ticket and its attributed comments are the source of truth. Do not silently invent product
     requirements, credentials, providers, destructive operations, or network permission. The

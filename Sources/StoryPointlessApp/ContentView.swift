@@ -13549,6 +13549,15 @@ private struct IntrinsicWrappingLayout: Layout {
   }
 }
 
+enum SprintGoalSuggestionPolicy {
+  static let defaultPlaceholder = "Next valuable increment"
+
+  static func shouldGenerate(existingGoal: String) -> Bool {
+    let goal = existingGoal.trimmingCharacters(in: .whitespacesAndNewlines)
+    return goal.isEmpty || goal == defaultPlaceholder
+  }
+}
+
 private struct SprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
@@ -13556,6 +13565,8 @@ private struct SprintPlanningView: View {
   @State private var goal = ""
   @State private var didPrepare = false
   @State private var isSaving = false
+  @State private var goalSuggestionError: String?
+  @State private var needsAutomaticGoalSuggestion = false
   @State private var selectedAssigneeIDs: [UUID: UUID] = [:]
 
   private var sprintNumber: Int {
@@ -13658,8 +13669,19 @@ private struct SprintPlanningView: View {
 
   private var canSave: Bool {
     !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !model.isGeneratingSprintGoal
       && !lines.isEmpty
       && lines.allSatisfy { $0.owner != nil && !$0.item.acceptanceCriteria.isEmpty }
+  }
+
+  private var goalBinding: Binding<String> {
+    Binding(
+      get: { goal },
+      set: { newGoal in
+        goal = newGoal
+        needsAutomaticGoalSuggestion = false
+      }
+    )
   }
 
   var body: some View {
@@ -13686,9 +13708,37 @@ private struct SprintPlanningView: View {
         VStack(alignment: .leading, spacing: 7) {
           Text("Sprint goal")
             .font(.caption.weight(.semibold))
-          TextField("What valuable outcome should this sprint deliver?", text: $goal)
-            .textFieldStyle(.roundedBorder)
-            .font(.body)
+          HStack(spacing: 8) {
+            TextField("What valuable outcome should this sprint deliver?", text: goalBinding)
+              .textFieldStyle(.roundedBorder)
+              .font(.body)
+              .disabled(model.isGeneratingSprintGoal)
+            Button(action: suggestGoal) {
+              Group {
+                if model.isGeneratingSprintGoal {
+                  ProgressView()
+                    .controlSize(.small)
+                } else {
+                  Image(systemName: "wand.and.stars")
+                }
+              }
+              .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+            .disabled(!model.canGenerateSprintGoal)
+            .accessibilityLabel(
+              model.isGeneratingSprintGoal
+                ? "Generating sprint goal with AI"
+                : "Generate sprint goal with AI"
+            )
+            .help("Generate a sprint goal from the ticket titles")
+          }
+          if let goalSuggestionError {
+            Label(goalSuggestionError, systemImage: "exclamationmark.triangle")
+              .font(.caption)
+              .foregroundStyle(.orange)
+          }
         }
 
         HStack(spacing: 10) {
@@ -13823,10 +13873,26 @@ private struct SprintPlanningView: View {
     }
     .padding(26)
     .frame(minWidth: 1_000, idealWidth: 1_160, minHeight: 680, idealHeight: 780)
-    .onAppear(perform: prepare)
+    .onAppear {
+      prepare()
+      generateGoalAutomaticallyIfNeeded()
+    }
+    .onChange(of: model.canGenerateSprintGoal) { _, canGenerate in
+      if canGenerate {
+        generateGoalAutomaticallyIfNeeded()
+      }
+    }
+    .onDisappear {
+      if model.isGeneratingSprintGoal {
+        model.cancelSprintGoalGeneration()
+      }
+    }
   }
 
   private var saveBlockerText: String {
+    if model.isGeneratingSprintGoal {
+      return "Wait for AI to finish the sprint goal."
+    }
     if goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return "Add a sprint goal."
     }
@@ -13839,7 +13905,12 @@ private struct SprintPlanningView: View {
   private func prepare() {
     guard !didPrepare else { return }
     didPrepare = true
-    goal = model.candidateSprintPlan?.sprint.goal ?? "Next valuable increment"
+    goal =
+      model.candidateSprintPlan?.sprint.goal
+      ?? SprintGoalSuggestionPolicy.defaultPlaceholder
+    needsAutomaticGoalSuggestion = SprintGoalSuggestionPolicy.shouldGenerate(
+      existingGoal: goal
+    )
     selectedAssigneeIDs = scopedItems.reduce(into: [:]) { result, item in
       let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
       if let ownerID = plannedOwnerID ?? item.ownerProfileID {
@@ -13873,6 +13944,24 @@ private struct SprintPlanningView: View {
       isPresented = false
       onSaved(sprintID)
     }
+  }
+
+  private func suggestGoal() {
+    guard model.canGenerateSprintGoal else { return }
+    needsAutomaticGoalSuggestion = false
+    goalSuggestionError = nil
+    Task {
+      do {
+        goal = try await model.generateSprintGoal()
+      } catch {
+        goalSuggestionError = error.localizedDescription
+      }
+    }
+  }
+
+  private func generateGoalAutomaticallyIfNeeded() {
+    guard needsAutomaticGoalSuggestion else { return }
+    suggestGoal()
   }
 
   private func resolvedOwner(for item: WorkItem) -> AgentProfile? {

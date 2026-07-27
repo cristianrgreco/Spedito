@@ -66,9 +66,11 @@ public enum CodexConflictIntegrator {
     candidate. The focused Tech Lead review owns semantic validation of the resolved merge.
     Do not stage, commit, merge, checkout, reset, rebase, change branches, or otherwise mutate Git
     state. StoryPointless owns those operations, mechanical validation, and the final merge commit.
-    Product Git reads are already available inside the sandbox, with their noninteractive
-    environment configured. Run them normally without requesting permission or adding environment
-    prefixes.
+    Product Git reads are already available inside the sandbox, with their noninteractive Apple
+    developer-tool environment configured. Run them normally without requesting permission or adding
+    environment prefixes. Never request access to product Git metadata, Apple's xcrun cache, or the
+    host temporary directory for a Git read. If Git still exits unsuccessfully, report a
+    StoryPointless environment failure instead of broadening the integration workspace's permissions.
 
     If the competing changes represent a material product decision, incompatible public behavior,
     unavailable secret, destructive choice, or ambiguity that cannot be resolved from the ticket

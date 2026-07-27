@@ -303,12 +303,17 @@ central `.git` directory. The assigned worktree remains read/write, but Git
 metadata is not writable. Delivery turns inherit the thread-scoped profile;
 they do not reselect the process-wide delivery profile at `turn/start`, because
 that would discard the product-specific Git rule. The StoryPointless-owned App
-Server process supplies
-`GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_GLOBAL=/dev/null`, and `GIT_PAGER=cat`, so
-read-only status, diff, history, and conflict inspection is noninteractive and
-does not attempt optional index refreshes. Agents may inspect Git but cannot
-stage, commit, create or change branches, integrate, or promote; the host-side
-Git workspace manager owns those mutations and validates candidate ancestry.
+Server process supplies `GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_PAGER=cat`, and the active developer directory reported by `xcode-select`.
+It also places that directory's Git-only `usr/libexec/git-core` directory first
+on the managed `PATH`, avoiding changes to unrelated tool resolution. Read-only
+status, diff, history, and conflict inspection is therefore noninteractive, does
+not attempt optional index refreshes, and bypasses `/usr/bin/git`'s `xcrun` shim
+without writing Apple's resolver cache in the host temporary directory. Agents
+must not request Git metadata, `xcrun` cache, or host-temporary-directory access
+for a Git read. They may inspect Git but cannot stage, commit, create or change
+branches, integrate, or promote; the host-side Git workspace manager owns those
+mutations and validates candidate ancestry.
 Git's object store is product-wide, so this explicitly chooses the product as
 the read boundary while retaining ticket-scoped writes and denying every other
 product.

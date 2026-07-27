@@ -101,9 +101,13 @@ diff, history, and conflict inspection do not need Product Owner approval. Their
 turns inherit that product-scoped thread profile so the exact Git grant is not
 replaced by the generic delivery profile when work begins or resumes. Their
 App Server process disables optional Git locks, ignores the user's global Git
-configuration, and uses a noninteractive pager. The assigned worktree remains
-writable, while StoryPointless alone owns Git mutations such as staging, commits,
-branches, integration, and promotion.
+configuration, uses a noninteractive pager, and places the Git-only executable
+directory from the Mac's active Apple developer directory first on the managed
+path. Plain `git` commands therefore bypass `/usr/bin/git`'s `xcrun` shim without
+changing how unrelated tools resolve. They do not need write access to an `xcrun`
+cache or the host temporary directory, and agents must not request either for Git
+inspection. The assigned worktree remains writable, while StoryPointless alone
+owns Git mutations such as staging, commits, branches, integration, and promotion.
 Completed implementation becomes a
 versioned candidate with a host-created commit and exact head SHA.
 StoryPointless gives each immutable candidate to a separate read-only Tech Lead
@@ -209,10 +213,13 @@ Backlog rows show the persisted draft delivery assignment inline, or explicitly
 show Unassigned. Moving a ticket into Next sprint changes scope only and never
 silently chooses a team member. Every ticket in Next sprint is already in scope;
 the owner returns unwanted work to Backlog rather than excluding it again inside
-Sprint Planning. Sprint Planning keeps edits local until the owner saves, with
-**Save draft & close** available mid-review and **Discard changes** retaining the
-last saved plan. Ordinary Tech Lead review is an execution-stage system run rather
-than a second per-ticket planning picker.
+Sprint Planning. Opening an uncustomized plan automatically proposes an editable
+sprint goal from the scoped ticket titles. A small purple AI action can regenerate
+it, while a previously saved owner-written goal remains untouched; the result
+stays a draft until the owner saves the plan. Sprint Planning keeps edits local
+until the owner saves, with **Save draft & close** available mid-review and
+**Discard changes** retaining the last saved plan. Ordinary Tech Lead review is
+an execution-stage system run rather than a second per-ticket planning picker.
 Epics are optional backlog groups rather than executable ticket types. The Backlog
 derives **Created**, **Planned**, **In progress**, and **Complete** from accepted
 ticket delivery, while closed epics collapse into a remembered inline summary that

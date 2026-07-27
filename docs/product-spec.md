@@ -815,7 +815,12 @@ ticket by ticket through a focused planning room:
 
 After the last ticket, the owner reviews the sprint goal, dependency order,
 system-generated forecast range, remaining shared usage, concurrency policy,
-and acceptance load. The owner does not guess token counts or set
+and acceptance load. When an uncustomized sprint plan opens, AI automatically
+proposes one concise outcome from the titles of the tickets in the sprint. The
+goal remains directly editable, and a small AI action beside it can generate
+another suggestion. A previously saved owner-written goal is never replaced
+automatically. The proposal is not saved or treated as approved until the owner
+reviews the text and saves the plan. The owner does not guess token counts or set
 per-ticket token budgets. The planner proposes a sprint that:
 
 - maximizes user value within the cost and risk envelope;

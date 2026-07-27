@@ -305,6 +305,7 @@ final class AppModel: ObservableObject {
   @Published private(set) var isLoading = true
   @Published private(set) var isDecidingSuggestions = false
   @Published private(set) var isPlanningMessageRunning = false
+  @Published private(set) var isGeneratingSprintGoal = false
   @Published private(set) var isTicketConversationMessageRunning = false
   @Published private(set) var ticketConversationWorkItemID: UUID?
   @Published private(set) var ticketConversationRecipientID: UUID?
@@ -353,6 +354,7 @@ final class AppModel: ObservableObject {
   private var ticketConversationThreadIDs: [PlanningConversationKey: String] = [:]
   private var epicConversationThreadIDs: [PlanningConversationKey: String] = [:]
   private var activePlanningTurn: (threadID: String, turnID: String)?
+  private var activeSprintGoalTurn: (threadID: String, turnID: String)?
   private var activeTicketConversationTurn: (threadID: String, turnID: String)?
   private var activeEpicConversationTurn: (threadID: String, turnID: String)?
   private var activeTicketRefinementTurn: (threadID: String, turnID: String)?
@@ -422,6 +424,7 @@ final class AppModel: ObservableObject {
     guard case .connected = codexConnectionState else { return false }
     guard suggestionBatch?.session.status != .generating else { return false }
     guard !isPlanningMessageRunning else { return false }
+    guard !isGeneratingSprintGoal else { return false }
     guard !isTicketConversationMessageRunning else { return false }
     guard !isEpicConversationMessageRunning else { return false }
     guard refiningWorkItemID == nil else { return false }
@@ -438,9 +441,23 @@ final class AppModel: ObservableObject {
     guard case .connected = codexConnectionState else { return false }
     guard suggestionBatch?.session.status != .generating else { return false }
     guard !isPlanningMessageRunning else { return false }
+    guard !isGeneratingSprintGoal else { return false }
     guard !isTicketConversationMessageRunning else { return false }
     guard !isEpicConversationMessageRunning else { return false }
     return refiningWorkItemID == nil
+  }
+
+  var canGenerateSprintGoal: Bool {
+    guard case .connected = codexConnectionState else { return false }
+    guard candidateSprintPlan?.items.isEmpty == false else { return false }
+    guard suggestionBatch?.session.status != .generating else { return false }
+    guard !isPlanningMessageRunning else { return false }
+    guard !isGeneratingSprintGoal else { return false }
+    guard !isTicketConversationMessageRunning else { return false }
+    guard !isEpicConversationMessageRunning else { return false }
+    guard refiningWorkItemID == nil else { return false }
+    guard epicPlanningConversation?.isRunning != true else { return false }
+    return epicPlanningConversation?.isGeneratingPlan != true
   }
 
   var pendingSuggestionCount: Int {
@@ -2394,6 +2411,84 @@ final class AppModel: ObservableObject {
       try? await client.interruptTurn(
         threadID: activePlanningTurn.threadID,
         turnID: activePlanningTurn.turnID
+      )
+    }
+  }
+
+  func generateSprintGoal() async throws -> String {
+    guard
+      !isGeneratingSprintGoal,
+      suggestionBatch?.session.status != .generating,
+      !isPlanningMessageRunning,
+      !isTicketConversationMessageRunning,
+      !isEpicConversationMessageRunning,
+      refiningWorkItemID == nil,
+      epicPlanningConversation?.isRunning != true,
+      epicPlanningConversation?.isGeneratingPlan != true
+    else {
+      throw SprintGoalGenerationError.anotherCodexTaskIsRunning
+    }
+    guard
+      let client = codexClient,
+      let product = selectedProduct,
+      let analyst = profiles.first(where: { $0.role == .businessAnalyst })
+    else {
+      throw CodexClientError.notConnected
+    }
+    guard let plan = candidateSprintPlan else {
+      throw SprintGoalGenerationError.noTickets
+    }
+    let scopedIDs = Set(plan.items.map(\.workItemID))
+    let titles = workItems
+      .filter { scopedIDs.contains($0.id) }
+      .sorted {
+        if $0.rank == $1.rank { return $0.key < $1.key }
+        return $0.rank < $1.rank
+      }
+      .map(\.title)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    guard !titles.isEmpty else {
+      throw SprintGoalGenerationError.noTickets
+    }
+
+    isGeneratingSprintGoal = true
+    defer {
+      isGeneratingSprintGoal = false
+      activeSprintGoalTurn = nil
+    }
+
+    let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
+    let threadID = try await client.startReadOnlyThread(
+      workingDirectory: workingDirectory,
+      developerInstructions: CodexSprintGoalGenerator.developerInstructions,
+      model: analyst.model
+    )
+    let turnID = try await client.startStructuredTurn(
+      threadID: threadID,
+      prompt: CodexSprintGoalGenerator.prompt(
+        productName: product.name,
+        sprintNumber: plan.sprint.number,
+        ticketTitles: titles
+      ),
+      effort: analyst.reasoningEffort,
+      outputSchema: CodexSprintGoalGenerator.outputSchema
+    )
+    activeSprintGoalTurn = (threadID: threadID, turnID: turnID)
+    let response = try await client.waitForFinalAgentMessage(
+      threadID: threadID,
+      turnID: turnID,
+      timeout: .seconds(180)
+    )
+    return try CodexSprintGoalGenerator.decode(response)
+  }
+
+  func cancelSprintGoalGeneration() {
+    guard let client = codexClient, let activeSprintGoalTurn else { return }
+    Task {
+      try? await client.interruptTurn(
+        threadID: activeSprintGoalTurn.threadID,
+        turnID: activeSprintGoalTurn.turnID
       )
     }
   }

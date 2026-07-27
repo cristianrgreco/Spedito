@@ -409,6 +409,28 @@ struct CodexAdapterTests {
     #expect(!arguments.contains(demoWorkspace.path))
   }
 
+  @Test("Delivery selects Apple developer tools without broadening Git access")
+  func managedGitEnvironment() {
+    let environment = CodexPermissionProfiles.agentProcessEnvironment(
+      developerDirectory: "/Applications/Xcode.app/Contents/Developer",
+      inheritedPath: "/usr/bin:/bin"
+    )
+
+    #expect(environment["DEVELOPER_DIR"] == "/Applications/Xcode.app/Contents/Developer")
+    #expect(
+      environment["PATH"]
+        == "/Applications/Xcode.app/Contents/Developer/usr/libexec/git-core:/usr/bin:/bin"
+    )
+    #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
+    #expect(environment["GIT_OPTIONAL_LOCKS"] == "0")
+    #expect(environment["GIT_PAGER"] == "cat")
+    #expect(
+      CodexPermissionProfiles.agentProcessEnvironment(
+        developerDirectory: nil
+      )["DEVELOPER_DIR"] == nil
+    )
+  }
+
   @Test("Delivery can use its nested ticket root without reading a sibling")
   func deliveryFilesystemBoundary() async throws {
     let codexURL = URL(
@@ -560,15 +582,16 @@ struct CodexAdapterTests {
       test "$GIT_OPTIONAL_LOCKS" = 0 || exit 2
       test "$GIT_CONFIG_GLOBAL" = /dev/null || exit 3
       test "$GIT_PAGER" = cat || exit 4
-      /usr/bin/git status --short >/dev/null || exit 5
-      /usr/bin/git log --oneline -1 >/dev/null || exit 6
-      test "$(/usr/bin/git show HEAD:product.txt)" = accepted || exit 7
-      printf changed >> product.txt || exit 8
-      /usr/bin/git diff -- product.txt | /usr/bin/grep -q changed || exit 9
-      /usr/bin/git add product.txt >/dev/null 2>&1 && exit 10
-      /usr/bin/git diff --cached --quiet || exit 11
+      test -n "$DEVELOPER_DIR" || exit 5
+      git status --short >/dev/null || exit 6
+      git log --oneline -1 >/dev/null || exit 7
+      test "$(git show HEAD:product.txt)" = accepted || exit 8
+      printf changed >> product.txt || exit 9
+      git diff -- product.txt | /usr/bin/grep -q changed || exit 10
+      git add product.txt >/dev/null 2>&1 && exit 11
+      git diff --cached --quiet || exit 12
       cat "\(otherProductGit.appendingPathComponent("private-object").path)" \
-        >/dev/null 2>&1 && exit 12
+        >/dev/null 2>&1 && exit 13
       exit 0
       """,
     ]
@@ -583,11 +606,14 @@ struct CodexAdapterTests {
     try process.run()
     let data = output.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
+    let outputText = String(decoding: data, as: UTF8.self)
 
     #expect(
       process.terminationStatus == 0,
-      Comment(rawValue: String(decoding: data, as: UTF8.self))
+      Comment(rawValue: outputText)
     )
+    #expect(!outputText.contains("xcrun_db"), Comment(rawValue: outputText))
+    #expect(!outputText.contains("couldn't create cache file"), Comment(rawValue: outputText))
   }
 
   @Test("Candidate-scoped commands materialize the exact standalone workspace root")
@@ -1017,6 +1043,38 @@ struct CodexAdapterTests {
     #expect(models[0].model == "gpt-5.6-sol")
     #expect(models[0].displayName == "Sol")
     #expect(models[0].supportedReasoningEfforts.map(\.id) == ["medium", "high"])
+  }
+
+  @Test("Sprint goal generation uses ticket titles and validates a concise result")
+  func sprintGoalGeneration() throws {
+    let prompt = CodexSprintGoalGenerator.prompt(
+      productName: "Field Notes",
+      sprintNumber: 4,
+      ticketTitles: [
+        "Save a draft note",
+        "Restore the latest draft after relaunch",
+      ]
+    )
+
+    #expect(prompt.contains("Save a draft note"))
+    #expect(prompt.contains("Restore the latest draft after relaunch"))
+    #expect(prompt.contains("Sprint: 4"))
+    #expect(
+      try CodexSprintGoalGenerator.decode(
+        #"{"goal":"  Product Owners can preserve and resume draft notes.  "}"#
+      ) == "Product Owners can preserve and resume draft notes"
+    )
+    #expect(throws: SprintGoalGenerationError.self) {
+      try CodexSprintGoalGenerator.decode(#"{"goal":"   "}"#)
+    }
+    #expect(throws: SprintGoalGenerationError.self) {
+      try CodexSprintGoalGenerator.decode(#"{"goal":42}"#)
+    }
+    #expect(throws: SprintGoalGenerationError.self) {
+      try CodexSprintGoalGenerator.decode(
+        #"{"goal":"This proposed sprint goal is deliberately longer than eighty characters so validation rejects it"}"#
+      )
+    }
   }
 
   @Test("Epic planning decodes durable outcome metadata and ticket relationships")

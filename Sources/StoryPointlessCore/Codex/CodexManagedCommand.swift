@@ -7,11 +7,37 @@ public enum CodexPermissionProfiles {
   public static let requestPermissionsFeature = "request_permissions_tool"
   public static let requestPermissionsFeatureOverride =
     "features.\(requestPermissionsFeature)=true"
-  public static let agentProcessEnvironment = [
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_OPTIONAL_LOCKS": "0",
-    "GIT_PAGER": "cat",
-  ]
+  public static var agentProcessEnvironment: [String: String] {
+    agentProcessEnvironment(
+      developerDirectory: activeDeveloperDirectory(),
+      inheritedPath: ProcessInfo.processInfo.environment["PATH"]
+    )
+  }
+
+  static func agentProcessEnvironment(
+    developerDirectory: String?,
+    inheritedPath: String? = nil
+  ) -> [String: String] {
+    var environment = [
+      "GIT_CONFIG_GLOBAL": "/dev/null",
+      "GIT_OPTIONAL_LOCKS": "0",
+      "GIT_PAGER": "cat",
+    ]
+    if let developerDirectory {
+      environment["DEVELOPER_DIR"] = developerDirectory
+      let developerGitDirectory = URL(
+        fileURLWithPath: developerDirectory,
+        isDirectory: true
+      ).appendingPathComponent("usr/libexec/git-core", isDirectory: true).path
+      let remainingPath = (inheritedPath ?? "")
+        .split(separator: ":")
+        .map(String.init)
+        .filter { $0 != developerGitDirectory }
+      environment["PATH"] = ([developerGitDirectory] + remainingPath)
+        .joined(separator: ":")
+    }
+    return environment
+  }
 
   public static let appServerArguments = [
     "-c",
@@ -150,6 +176,47 @@ public enum CodexPermissionProfiles {
       .replacingOccurrences(of: #"""#, with: #"\""#)
       .replacingOccurrences(of: "\n", with: #"\n"#)
       .replacingOccurrences(of: "\r", with: #"\r"#)
+  }
+
+  private static func activeDeveloperDirectory() -> String? {
+    let xcodeSelect = URL(fileURLWithPath: "/usr/bin/xcode-select")
+    guard FileManager.default.isExecutableFile(atPath: xcodeSelect.path) else {
+      return nil
+    }
+
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = xcodeSelect
+    process.arguments = ["--print-path"]
+    process.standardOutput = output
+    process.standardError = FileHandle.nullDevice
+
+    do {
+      try process.run()
+    } catch {
+      return nil
+    }
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard
+      process.terminationStatus == 0,
+      let selectedPath = String(data: data, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !selectedPath.isEmpty
+    else {
+      return nil
+    }
+    let developerDirectory = URL(
+      fileURLWithPath: selectedPath,
+      isDirectory: true
+    ).standardizedFileURL
+    let gitExecutable = developerDirectory
+      .appendingPathComponent("usr/libexec/git-core", isDirectory: true)
+      .appendingPathComponent("git")
+    guard FileManager.default.isExecutableFile(atPath: gitExecutable.path) else {
+      return nil
+    }
+    return developerDirectory.path
   }
 }
 
