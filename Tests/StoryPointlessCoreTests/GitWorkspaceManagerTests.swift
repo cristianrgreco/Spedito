@@ -80,6 +80,28 @@ struct GitWorkspaceManagerTests {
     #expect(candidateDetail.unifiedDiff.contains("+verification"))
 
     let integrationCandidateID = UUID()
+    let reviewWorkspace = try await manager.prepareCandidateReviewWorkspace(
+      repositoryURL: repository,
+      reviewsRootURL: integrations,
+      candidateID: integrationCandidateID,
+      candidateHeadSHA: candidate.headSHA
+    )
+    #expect(try await manager.currentSHA(at: reviewWorkspace.url) == candidate.headSHA)
+    try Data("unreviewed\n".utf8).write(
+      to: reviewWorkspace.url.appendingPathComponent("unreviewed.txt")
+    )
+    let cleanedReviewWorkspace = try await manager.prepareCandidateReviewWorkspace(
+      repositoryURL: repository,
+      reviewsRootURL: integrations,
+      candidateID: integrationCandidateID,
+      candidateHeadSHA: candidate.headSHA
+    )
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: cleanedReviewWorkspace.url.appendingPathComponent("unreviewed.txt").path
+      )
+    )
+
     let integration = try await manager.integrateCandidate(
       repositoryURL: repository,
       integrationsRootURL: integrations,
@@ -251,8 +273,26 @@ struct GitWorkspaceManagerTests {
       #expect(FileManager.default.fileExists(atPath: conflictWorkspace.path))
     }
 
-    try Data("accepted trunk behavior\nticket behavior\n".utf8).write(
+    await #expect(throws: GitWorkspaceError.self) {
+      try await manager.completeConflictResolution(
+        integrationWorkspaceURL: conflictWorkspace,
+        candidateHeadSHA: candidate.headSHA
+      )
+    }
+    #expect(
+      !(try await manager.conflictResolutionIsReadyToCommit(
+        integrationWorkspaceURL: conflictWorkspace
+      ))
+    )
+
+    try Data("accepted trunk behavior  \nticket behavior\n".utf8).write(
       to: conflictWorkspace.appendingPathComponent("shared.txt")
+    )
+    _ = try runGit(["add", "-A"], at: conflictWorkspace)
+    #expect(
+      try await manager.conflictResolutionIsReadyToCommit(
+        integrationWorkspaceURL: conflictWorkspace
+      )
     )
     let integrated = try await manager.completeConflictResolution(
       integrationWorkspaceURL: conflictWorkspace,
@@ -273,7 +313,150 @@ struct GitWorkspaceManagerTests {
     )
     #expect(
       try String(contentsOf: sharedFile, encoding: .utf8)
-        == "accepted trunk behavior\nticket behavior\n"
+        == "accepted trunk behavior  \nticket behavior\n"
+    )
+    #expect(
+      try await manager.integratedRevisionContainsCurrentTrunk(
+        repositoryURL: repository,
+        integratedSHA: integrated.integratedSHA
+      )
+    )
+
+    try Data("newer accepted behavior\n".utf8).write(to: sharedFile)
+    _ = try await manager.checkpointTrunk(at: repository, message: "Advance accepted trunk")
+    #expect(
+      !(try await manager.integratedRevisionContainsCurrentTrunk(
+        repositoryURL: repository,
+        integratedSHA: integrated.integratedSHA
+      ))
+    )
+  }
+
+  @Test("A reviewed integration becomes the baseline for the next ticket revision")
+  func reviewedIntegrationBecomesRevisionBaseline() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("storypointless-adopt-\(UUID().uuidString)", isDirectory: true)
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let sharedFile = repository.appendingPathComponent("shared.txt")
+    try Data("baseline\n".utf8).write(to: sharedFile)
+
+    let manager = GitWorkspaceManager()
+    _ = try await manager.ensureRepository(at: repository)
+    let workspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T71",
+      runID: UUID(),
+      authorName: "Implementer"
+    )
+    try Data("ticket behavior\n".utf8).write(
+      to: workspace.url.appendingPathComponent("shared.txt")
+    )
+    let firstCandidate = try await manager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: "T71",
+      version: 1,
+      authorName: "Implementer"
+    )
+
+    try Data("accepted trunk behavior\n".utf8).write(to: sharedFile)
+    let acceptedTrunkSHA = try await manager.checkpointTrunk(
+      at: repository,
+      message: "Advance trunk"
+    )
+
+    let conflictWorkspace: URL
+    do {
+      _ = try await manager.integrateCandidate(
+        repositoryURL: repository,
+        integrationsRootURL: integrations,
+        candidateID: UUID(),
+        headSHA: firstCandidate.headSHA
+      )
+      Issue.record("Expected an isolated merge conflict")
+      return
+    } catch GitWorkspaceError.mergeConflict(let worktreePath, _, _) {
+      conflictWorkspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
+    }
+    try Data("accepted trunk behavior\nticket behavior\n".utf8).write(
+      to: conflictWorkspace.appendingPathComponent("shared.txt")
+    )
+    let reviewedIntegration = try await manager.completeConflictResolution(
+      integrationWorkspaceURL: conflictWorkspace,
+      candidateHeadSHA: firstCandidate.headSHA
+    )
+
+    let uncapturedFile = workspace.url.appendingPathComponent("uncaptured.txt")
+    try Data("not ready\n".utf8).write(to: uncapturedFile)
+    await #expect(throws: GitWorkspaceError.self) {
+      try await manager.adoptIntegratedRevision(
+        ticketWorkspaceURL: workspace.url,
+        candidateHeadSHA: firstCandidate.headSHA,
+        integratedSHA: reviewedIntegration.integratedSHA
+      )
+    }
+    try FileManager.default.removeItem(at: uncapturedFile)
+
+    let adoptedSHA = try await manager.adoptIntegratedRevision(
+      ticketWorkspaceURL: workspace.url,
+      candidateHeadSHA: firstCandidate.headSHA,
+      integratedSHA: reviewedIntegration.integratedSHA
+    )
+    #expect(adoptedSHA == reviewedIntegration.integratedSHA)
+    #expect(try await manager.currentSHA(at: workspace.url) == reviewedIntegration.integratedSHA)
+    #expect(
+      try String(
+        contentsOf: workspace.url.appendingPathComponent("shared.txt"),
+        encoding: .utf8
+      ) == "accepted trunk behavior\nticket behavior\n"
+    )
+    #expect(
+      try await manager.adoptIntegratedRevision(
+        ticketWorkspaceURL: workspace.url,
+        candidateHeadSHA: firstCandidate.headSHA,
+        integratedSHA: reviewedIntegration.integratedSHA
+      ) == reviewedIntegration.integratedSHA
+    )
+
+    try Data("accepted trunk behavior\nticket behavior\nreview correction\n".utf8).write(
+      to: workspace.url.appendingPathComponent("shared.txt")
+    )
+    let secondCandidate = try await manager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: "T71",
+      version: 2,
+      authorName: "Implementer"
+    )
+    #expect(secondCandidate.baseSHA == acceptedTrunkSHA)
+    _ = try runGit(
+      ["merge-base", "--is-ancestor", reviewedIntegration.integratedSHA, secondCandidate.headSHA],
+      at: repository
+    )
+
+    await #expect(throws: GitWorkspaceError.self) {
+      try await manager.adoptIntegratedRevision(
+        ticketWorkspaceURL: workspace.url,
+        candidateHeadSHA: firstCandidate.headSHA,
+        integratedSHA: reviewedIntegration.integratedSHA
+      )
+    }
+
+    let secondIntegration = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: secondCandidate.headSHA
+    )
+    #expect(
+      try String(
+        contentsOf: secondIntegration.url.appendingPathComponent("shared.txt"),
+        encoding: .utf8
+      ) == "accepted trunk behavior\nticket behavior\nreview correction\n"
     )
   }
 

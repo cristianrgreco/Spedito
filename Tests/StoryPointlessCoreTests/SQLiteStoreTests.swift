@@ -34,6 +34,75 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Candidate queue migration sends unreviewed integrations to Tech Lead review")
+  func candidateQueueMigrationPreservesReviewGate() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Review queue migration",
+      vision: "Review candidates before serial integration"
+    )
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Preserve the waiting candidate"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Move the legacy queue safely",
+      tokenBudgetLimit: nil,
+      concurrencyLimit: 1,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let run = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first {
+        $0.workItemID == item.id && $0.profileID == implementer.id
+      }
+    )
+    let sprintItem = try #require(active.items.first)
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: 1,
+        branchName: "ticket/T1",
+        baseSHA: "base",
+        headSHA: "head",
+        worktreePath: "/tmp/t1",
+        status: .queuedForIntegration,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      DELETE FROM schema_migrations WHERE version = 53;
+      """
+    )
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    #expect(
+      try await reopened.fetchCandidateRevision(id: candidate.id).status
+        == .queuedForReview
+    )
+    await reopened.close()
+  }
+
   @Test("Product color migration keeps the first accent and distinguishes the rest")
   func productColorMigrationBackfillsExistingProducts() async throws {
     let fixture = try DatabaseFixture()
@@ -2194,6 +2263,40 @@ struct SQLiteStoreTests {
     )
     #expect(verified.verificationStatus == .verified)
     #expect(try await store.fetchKnowledgePageRevisions(pageID: verified.id).count == 2)
+    await store.close()
+  }
+
+  @Test("Knowledge seeding backfills mandatory operational pages for existing products")
+  func knowledgeSeedingBackfillsMandatoryOperationalPages() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Existing knowledge",
+      vision: "Preserve and complete an older knowledge tree"
+    )
+    let existingPage = try await store.createKnowledgePage(
+      productID: product.id,
+      parentID: nil,
+      title: "Existing notes"
+    )
+
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let operations = try #require(pages.first { $0.slug == "operations" })
+    let environments = try #require(pages.first { $0.slug == "environments" })
+    let waysOfWorking = try #require(pages.first { $0.slug == "ways-of-working" })
+
+    #expect(pages.contains { $0.id == existingPage.id })
+    #expect(operations.kind == .section)
+    #expect(environments.parentID == operations.id)
+    #expect(environments.bodyMarkdown.isEmpty)
+    #expect(waysOfWorking.parentID == operations.id)
+
+    let reseeded = try await store.seedKnowledgeBase(productID: product.id)
+    #expect(reseeded.filter { $0.slug == "operations" }.count == 1)
+    #expect(reseeded.filter { $0.slug == "environments" }.count == 1)
+    #expect(reseeded.filter { $0.slug == "ways-of-working" }.count == 1)
     await store.close()
   }
 

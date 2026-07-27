@@ -180,6 +180,26 @@ public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError, Se
   }
 }
 
+public struct TicketRevisionBaseline: Equatable, Sendable {
+  public let candidateHeadSHA: String
+  public let integratedSHA: String
+
+  public init(candidateHeadSHA: String, integratedSHA: String) {
+    self.candidateHeadSHA = candidateHeadSHA
+    self.integratedSHA = integratedSHA
+  }
+
+  fileprivate var promptContext: String {
+    """
+    StoryPointless advanced this ticket workspace from immutable candidate
+    \(candidateHeadSHA) to reviewed integration \(integratedSHA). The current files now include
+    accepted trunk changes and any Integrator resolution. Treat the current workspace as the source
+    of truth, preserve compatible accepted behaviour, and apply the requested correction on top.
+    Do not undo or recreate this Git handoff; StoryPointless owns Git state.
+    """
+  }
+}
+
 public enum TechLeadReviewGenerationError: Error, Equatable, LocalizedError, Sendable {
   case invalidResponse(String)
   case changesRequestedWithoutFinding
@@ -237,14 +257,24 @@ public enum CodexTicketExecutor {
 
     Invoke the underlying executable or check directly through the provided command tool. Do not put
     `/bin/sh -c`, `/bin/bash -lc`, or `/bin/zsh -lc` in the command text; the execution platform may
-    already add its own shell boundary. Prefer the product's shortest established, purpose-named
-    entry point, such as `npm test`, `npm run test:saved-places`, `make test`, or
-    `./scripts/test.sh`, instead of presenting the Product Owner with a long chain of implementation
-    commands. Run unrelated checks separately. When recurring checks form one coherent product
-    workflow and no suitable entry point exists, add a small maintained repository script or package
-    task as normal product tooling, then use it. Do this only when the entry point is genuinely useful
-    to the product: never create a script merely to hide unrelated operations, evade review, or seek
-    broader approval. Keep its purpose clear and its steps inspectable in the repository.
+    already add its own shell boundary. Before building, testing, launching, or preparing a demo,
+    consult the verified Environments page when it is supplied. Use its exact documented commands
+    where applicable. Prefer the repository's established native build system and shortest maintained,
+    purpose-named entry point instead of a long chain of implementation commands. Do not introduce or
+    substitute another package manager, runtime, local server, build system, temporary script, or
+    machine-specific path merely to perform an equivalent operation. Run unrelated checks separately.
+
+    When a recurring workflow has no suitable entry point, add a small version-controlled,
+    non-interactive, workspace-relative task or script as normal product tooling, then use it. A
+    service entry point must remain in the foreground, accept the app-supplied port, and expose a
+    documented readiness check. Create or change an entry point only when it is genuinely useful to
+    the product: never use a wrapper to hide unrelated operations, evade review, or seek broader
+    approval. Keep its purpose clear and its steps inspectable in the repository. If this authorised
+    implementation verifies that the Environments guidance is absent or materially stale, use
+    knowledgePageProposals to propose its complete replacement body. Record the verified commands,
+    working-directory expectations, prerequisites, readiness behaviour, required capabilities, and
+    known limitations. Do not record an unverified workaround as canonical guidance, and do not treat
+    knowledge as permission.
 
     Text from an earlier permission request is audit display only, not reusable command text: never
     paste that display into a new command. If a command already failed after the Product Owner allowed
@@ -337,12 +367,13 @@ public enum CodexTicketExecutor {
     Integrations, high-level system boundaries in Architecture, internal storage and state contracts
     in Components & data, user-visible behaviour in Features or Users & journeys, and current
     caveats in Known limitations. Do not update an unrelated writable page merely because a better
-    populated page is unavailable in this run. Propose at most four changes, only when this ticket
-    establishes reusable product, technical, or operational knowledge. StoryPointless may publish
-    these proposals automatically after Tech Lead review, so never use a proposal to resolve an
-    unstated material Product Owner choice. Return awaiting_owner instead. Ticket-specific delivery
-    history is generated separately and must not be proposed here. Awaiting-owner results must
-    return no proposals.
+    populated page is unavailable in this run. Runtime requirements and verified repository build,
+    test, launch, and demo entry points belong in Environments. Propose at most four changes, only
+    when this ticket establishes reusable product, technical, or operational knowledge.
+    StoryPointless may publish these proposals automatically after Tech Lead review, so never use a
+    proposal to resolve an unstated material Product Owner choice. Return awaiting_owner instead.
+    Ticket-specific delivery history is generated separately and must not be proposed here.
+    Awaiting-owner results must return no proposals.
 
     A Business Analyst completing an explicitly authorised research, discovery, or decision ticket
     may return zero to twelve followUpTicketProposals when the evidence establishes concrete product
@@ -446,14 +477,22 @@ public enum CodexTicketExecutor {
       ? "No ticket comments."
       : relevantTicketComments.suffix(40).map { "- \($0.authorName): \($0.body)" }
         .joined(separator: "\n")
-    let knowledge = knowledgeContext.isEmpty
-      ? "No verified knowledge pages were selected."
-      : knowledgeContext.map { page in
+    func renderedKnowledge(_ pages: [KnowledgePage], emptyMessage: String) -> String {
+      pages.isEmpty
+        ? emptyMessage
+        : pages.map { page in
         """
         ### \(page.title) [verified, page ID: \(page.id.uuidString)]
         \(page.bodyMarkdown)
         """
       }.joined(separator: "\n\n")
+    }
+    let mandatoryKnowledge = knowledgeContext.filter(
+      KnowledgeContextSelector.isMandatory
+    )
+    let relevantKnowledge = knowledgeContext.filter {
+      !KnowledgeContextSelector.isMandatory($0)
+    }
     let referencePageIDs = Set(knowledgeContext.map(\.id))
     let directory = knowledgeDirectory.isEmpty
       ? "No canonical knowledge destinations were supplied."
@@ -517,7 +556,11 @@ public enum CodexTicketExecutor {
       \(history)
 
       Verified knowledge context:
-      \(knowledge)
+      Always included:
+      \(renderedKnowledge(mandatoryKnowledge, emptyMessage: "No populated mandatory pages were available."))
+
+      Relevant to this ticket:
+      \(renderedKnowledge(relevantKnowledge, emptyMessage: "No additional verified pages were selected."))
 
       Canonical knowledge directory:
       \(directory)
@@ -537,7 +580,8 @@ public enum CodexTicketExecutor {
     item: WorkItem,
     reviewer: AgentProfile,
     feedback: String,
-    recentComments: [TicketComment]
+    recentComments: [TicketComment],
+    adoptedBaseline: TicketRevisionBaseline? = nil
   ) -> String {
     let history = recentComments
       .filter { !$0.body.hasPrefix("Permission requested:") }
@@ -553,6 +597,9 @@ public enum CodexTicketExecutor {
       Recent Work log comments:
       \(history)
 
+      Workspace baseline:
+      \(adoptedBaseline?.promptContext ?? "The ticket workspace remains on the immutable candidate reviewed above.")
+
       Address the review findings in the existing workspace, rerun relevant checks, update the
       documentation and delivery notes, then return the structured execution result.
       """
@@ -562,7 +609,8 @@ public enum CodexTicketExecutor {
     item: WorkItem,
     interruptedPermission: AgentPermissionRequest?,
     recentComments: [TicketComment] = [],
-    conversationIsAvailable: Bool = true
+    conversationIsAvailable: Bool = true,
+    adoptedBaseline: TicketRevisionBaseline? = nil
   ) -> String {
     let conversationContext =
       if conversationIsAvailable {
@@ -644,6 +692,9 @@ public enum CodexTicketExecutor {
       Do not restart the ticket, discard partial changes, redo completed work, or repeat checks
       merely because a new turn started. Inspect the current diff and rerun a check only when needed
       to finish or validate the remaining work.
+
+      Workspace baseline:
+      \(adoptedBaseline?.promptContext ?? "StoryPointless has not changed the ticket workspace baseline for this continuation.")
 
       \(permissionContext)
 
@@ -1365,21 +1416,30 @@ public enum CodexTechLeadReviewer {
     rather than attempting a second implementation. The purpose of review is to catch material
     omissions and risks, not to replace the assigned specialist with a stronger model.
 
-    When a focused check is necessary, prefer the product's shortest existing, purpose-named entry
-    point, such as `npm test`, `make test`, or `./scripts/test.sh`, instead of a long chain of shell
-    commands. Run unrelated checks separately. This review is read-only, so do not create or modify
-    scripts as part of review and never add an explicit shell launcher around a command.
+    When a focused check is necessary, consult the verified Environments page when it is supplied
+    and use its exact documented command where applicable. Otherwise prefer the repository's
+    established native build system and shortest maintained, purpose-named entry point instead of a
+    long chain of shell commands. Do not substitute another package manager, runtime, local server,
+    or build system merely to perform an equivalent check. Run unrelated checks separately. This
+    review is read-only, so do not create or modify scripts as part of review and never add an
+    explicit shell launcher around a command.
+
+    When the implementation proposes an Environments update, verify that its commands exist in the
+    candidate, use maintained inspectable entry points, and agree with the reported checks. Confirm
+    that its working directory, prerequisites, readiness behaviour, capabilities, and limitations
+    are accurate. A materially false operational instruction is a blocker; minor wording omissions
+    are not. Do not author a competing knowledge change from this read-only review.
 
     Confirm that the typed demo recipe opens the most representative owner-facing result from the
-    exact integrated workspace, not merely a truthful supporting file. Inspect its executable,
+    exact immutable workspace under review, not merely a truthful supporting file. Inspect its executable,
     arguments, working directory, readiness path, and presentation path. Request changes when the
-    recipe points outside the workspace, invokes a shell or unrelated tool, needs an undeclared
-    external dependency, opens a non-loopback web address, would demonstrate something other than
-    the reviewed candidate, or selects a document or captured result when a more representative
-    interactive result exists. In particular, a UX delivery must open its available prototype or
-    product surface rather than a Markdown contract that describes it. For a non-interactive
-    outcome, approve an artifact or captured command result when it gives the Product Owner
-    meaningful acceptance evidence.
+    recipe points outside the workspace, invokes a shell or unrelated tool, ignores an applicable
+    verified Environments entry point, needs an undeclared external dependency, opens a
+    non-loopback web address, would demonstrate something other than the reviewed candidate, or
+    selects a document or captured result when a more representative interactive result exists.
+    In particular, a UX delivery must open its available prototype or product surface rather than
+    a Markdown contract that describes it. For a non-interactive outcome, approve an artifact or
+    captured command result when it gives the Product Owner meaningful acceptance evidence.
 
     If requesting changes, return at most three small, actionable blocking findings. A finding must
     independently justify the cost of another implementation, integration, and review cycle. Do not
@@ -1454,7 +1514,16 @@ public enum CodexTechLeadReviewer {
       Immutable revision under review:
       - Candidate range: \(baseSHA)..\(candidateHeadSHA)
       - Integrated revision: \(integratedSHA)
-      Inspect that exact range and the current detached integration workspace.
+      This is a focused re-review after conflict resolution changed the merge result. Inspect that
+      exact range and the current detached integration workspace.
+      """
+    } else if let baseSHA, let candidateHeadSHA {
+      """
+      Immutable revision under review:
+      - Candidate range: \(baseSHA)..\(candidateHeadSHA)
+      - Candidate revision: \(candidateHeadSHA)
+      Inspect that exact range and the current detached candidate workspace. A clean integration
+      will not require another review; conflict resolution that changes the merge result will.
       """
     } else {
       "No immutable revision metadata was supplied."
@@ -1552,7 +1621,7 @@ public enum CodexTechLeadReviewer {
       Recent ticket Work log:
       \(history.isEmpty ? "No earlier Work log context." : history)
 
-      Inspect the exact integrated workspace and return the bounded review described above. Treat a
+      Inspect the exact immutable workspace and return the bounded review described above. Treat a
       materially inaccurate canonical knowledge proposal as a blocker; minor incompleteness can be
       noted without preventing demonstration.
       """
@@ -1560,7 +1629,8 @@ public enum CodexTechLeadReviewer {
 
   public static func recoveryPrompt(
     item: WorkItem,
-    integratedSHA: String,
+    reviewedSHA: String,
+    isIntegratedRevision: Bool,
     interruptedPermission: AgentPermissionRequest?
   ) -> String {
     let permissionContext: String
@@ -1622,7 +1692,7 @@ public enum CodexTechLeadReviewer {
       Continue the existing Tech Lead review for \(item.key) — \(item.title).
 
       StoryPointless restarted while the previous turn was incomplete. The candidate has not
-      changed, and the detached workspace is still pinned to integrated revision \(integratedSHA).
+      changed, and the detached workspace is still pinned to \(isIntegratedRevision ? "integrated" : "candidate") revision \(reviewedSHA).
       Use the review work and evidence already present in this Conversation. Do not restart a full
       review, widen the ticket scope, repeat checks that already completed, or redo implementation.
 

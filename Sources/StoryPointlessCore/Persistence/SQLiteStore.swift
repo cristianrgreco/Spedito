@@ -4405,33 +4405,63 @@ public actor SQLiteStore {
   public func seedKnowledgeBase(productID: UUID) throws -> [KnowledgePage] {
     let existing = try fetchKnowledgePages(productID: productID)
     if !existing.isEmpty {
-      if
-        !existing.contains(where: { $0.slug == "ways-of-working" }),
-        let operations = existing.first(where: { $0.slug == "operations" })
-      {
-        let sortOrder = existing
-          .filter { $0.parentID == operations.id }
-          .map(\.sortOrder)
-          .max()
-          .map { $0 + 1 } ?? 0
-        let page = KnowledgePage(
-          productID: productID,
-          parentID: operations.id,
-          title: "Ways of working",
-          slug: "ways-of-working",
-          bodyMarkdown:
+      var pages = existing
+      try transaction {
+        let operations: KnowledgePage
+        if let existingOperations = pages.first(where: { $0.slug == "operations" }) {
+          operations = existingOperations
+        } else {
+          let page = KnowledgePage(
+            productID: productID,
+            title: "Operations",
+            slug: "operations",
+            kind: .section,
+            sortOrder: (pages.filter { $0.parentID == nil }.map(\.sortOrder).max() ?? -1) + 1
+          )
+          try insertKnowledgePage(
+            page,
+            authorName: "StoryPointless",
+            changeSummary: "Backfilled canonical Operations section"
+          )
+          pages.append(page)
+          operations = page
+        }
+
+        let missingChildren: [(title: String, slug: String, body: String, summary: String)] = [
+          (
+            "Environments",
+            "environments",
+            "",
+            "Backfilled mandatory Environments page"
+          ),
+          (
+            "Ways of working",
+            "ways-of-working",
             """
             Shared delivery practices adopted by the Product Owner live here. Every team member receives this page as part of their working context.
 
             ## Adopted practices
             """,
-          sortOrder: sortOrder
-        )
-        try insertKnowledgePage(
-          page,
-          authorName: "StoryPointless",
-          changeSummary: "Created inherited team-practices page"
-        )
+            "Created inherited team-practices page"
+          ),
+        ]
+        for child in missingChildren where !pages.contains(where: { $0.slug == child.slug }) {
+          let page = KnowledgePage(
+            productID: productID,
+            parentID: operations.id,
+            title: child.title,
+            slug: child.slug,
+            bodyMarkdown: child.body,
+            sortOrder:
+              (pages.filter { $0.parentID == operations.id }.map(\.sortOrder).max() ?? -1) + 1
+          )
+          try insertKnowledgePage(
+            page,
+            authorName: "StoryPointless",
+            changeSummary: child.summary
+          )
+          pages.append(page)
+        }
       }
       return try fetchKnowledgePages(productID: productID)
     }
@@ -6835,6 +6865,25 @@ public actor SQLiteStore {
 
         INSERT INTO schema_migrations (version, applied_at)
         VALUES (52, unixepoch());
+
+        COMMIT;
+        """,
+        database: database
+      )
+    }
+
+    if try !migrationApplied(version: 53, database: database) {
+      try execute(
+        """
+        BEGIN IMMEDIATE;
+
+        UPDATE candidate_revisions
+        SET status = 'queued_for_review',
+            updated_at = unixepoch()
+        WHERE status = 'queued_for_integration';
+
+        INSERT INTO schema_migrations (version, applied_at)
+        VALUES (53, unixepoch());
 
         COMMIT;
         """,

@@ -644,6 +644,86 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(fallback.id == techLead.id)
   }
 
+  @Test("Run context separates mandatory knowledge from ticket-relevant knowledge")
+  func runContextSeparatesMandatoryKnowledge() {
+    let productID = UUID()
+    let run = AgentRun(
+      productID: productID,
+      workItemID: UUID(),
+      profileID: UUID()
+    )
+    let environments = KnowledgePage(
+      productID: productID,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: "Use the repository's maintained validation entry point."
+    )
+    let integration = KnowledgePage(
+      productID: productID,
+      title: "Provider integration",
+      slug: "provider-integration",
+      bodyMarkdown: "The provider is optional."
+    )
+    let context = SprintTicketRunContextLogItem(
+      run: run,
+      pages: [integration, environments]
+    )
+
+    #expect(context.mandatoryPages.map(\.id) == [environments.id])
+    #expect(context.relevantPages.map(\.id) == [integration.id])
+  }
+
+  @Test("Review context does not add a repeated Knowledge used entry")
+  func reviewContextIsHidden() {
+    let productID = UUID()
+    let techLead = AgentProfile(
+      productID: productID,
+      name: "Tech Lead",
+      role: .lead
+    )
+
+    #expect(
+      !SprintTicketRunContextVisibility.includes(
+        profile: techLead,
+        isDeliveryRun: false
+      )
+    )
+  }
+
+  @Test("Delivery context remains visible when its assignee can also review")
+  func reviewerDeliveryContextRemainsVisible() {
+    let productID = UUID()
+    let techLead = AgentProfile(
+      productID: productID,
+      name: "Tech Lead",
+      role: .lead
+    )
+
+    #expect(
+      SprintTicketRunContextVisibility.includes(
+        profile: techLead,
+        isDeliveryRun: true
+      )
+    )
+  }
+
+  @Test("Ordinary delivery context remains visible")
+  func ordinaryDeliveryContextRemainsVisible() {
+    let productID = UUID()
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+
+    #expect(
+      SprintTicketRunContextVisibility.includes(
+        profile: implementer,
+        isDeliveryRun: false
+      )
+    )
+  }
+
   private func candidate(
     version: Int,
     createdAt: Date,

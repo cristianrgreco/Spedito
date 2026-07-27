@@ -1448,10 +1448,11 @@ public struct KnowledgePageRevision: Identifiable, Codable, Hashable, Sendable {
 }
 
 public enum CandidateRevisionStatus: String, Codable, CaseIterable, Sendable {
+  case queuedForReview = "queued_for_review"
+  case reviewing
   case queuedForIntegration = "queued_for_integration"
   case integrating
   case resolvingConflict = "resolving_conflict"
-  case reviewing
   case changesRequested = "changes_requested"
   case readyForDemo = "ready_for_demo"
   case accepted
@@ -1493,7 +1494,7 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
     integratedSHA: String? = nil,
     worktreePath: String,
     integrationWorktreePath: String? = nil,
-    status: CandidateRevisionStatus = .queuedForIntegration,
+    status: CandidateRevisionStatus = .queuedForReview,
     commitCount: Int,
     executionResultJSON: String,
     createdAt: Date = Date(),

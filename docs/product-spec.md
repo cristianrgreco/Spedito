@@ -810,7 +810,7 @@ ticket by ticket through a focused planning room:
   unwanted work to the Backlog before planning rather than excluding it a second
   time inside the planner; and
 - the owner explicitly chooses a delivery assignee. Ordinary Lead review is
-  scheduled automatically after integration rather than configured with a
+  scheduled automatically against each immutable candidate rather than configured with a
   redundant reviewer picker during MVP planning.
 
 After the last ticket, the owner reviews the sprint goal, dependency order,
@@ -934,37 +934,54 @@ merge at the end of the sprint:
 
 1. The implementer creates a candidate commit and runs fast deterministic checks
    in its ticket worktree.
-2. A StoryPointless-owned local merge queue orders candidates by dependencies
-   and replays each one onto the latest trunk in a separate integration worktree.
-3. A conflict becomes a visible **Resolving conflict** integration activity. An
+2. Independent Tech Lead reviews run in parallel against detached read-only
+   workspaces pinned to each immutable candidate commit.
+3. Approved candidates enter a StoryPointless-owned local merge queue, which
+   orders them by dependencies and replays each one onto the latest trunk in a
+   separate integration worktree.
+4. A conflict becomes a visible **Resolving conflict** integration activity. An
    internal Integrator may resolve mechanically or semantically unambiguous overlap
    inside that detached worktree. Material product ambiguity pauses with **Needs your
    input**; no agent may silently choose it or push directly to trunk.
-4. Full checks and an independent reviewer run against the resulting integrated
-   candidate commit. The reviewer uses a separate checkout pinned to that commit;
-   reviewer edits cannot silently enter the candidate.
-5. The preview is built from that same commit and the acceptance room displays
+   Because conflict resolution changes the merge result, the Tech Lead then
+   re-reviews that exact integrated revision. A clean merge preserves the earlier
+   candidate review and does not repeat it.
+5. The preview is built from the integrated commit and the acceptance room displays
    its immutable identifier.
 6. Human acceptance authorizes StoryPointless to advance local trunk to that
    exact commit. Agents do not perform this promotion themselves.
 
-Implementation remains parallel while this path is serial. The local MVP allows one
-candidate at a time to occupy integration, conflict resolution, Tech Lead review, or
-Ready for Demo. Other agents continue in their ticket worktrees and their completed
-candidates wait in backlog-rank then completion order. This prevents two demo
-approvals from competing to advance different versions of trunk.
+Implementation and immutable-candidate review remain parallel. The local MVP
+allows one reviewed candidate at a time to occupy integration, conflict resolution,
+or post-conflict re-review. Ready for Demo releases that serial lane, so other
+approved candidates continue integrating in backlog-rank and completion order.
+Multiple demo candidates may therefore be prepared from the accepted trunk current
+at their integration time.
 
 If trunk advances before an integrated candidate is accepted, the queue must
-re-integrate it and repeat affected checks. Materially changed behavior requires
-a refreshed preview and acceptance; the product must not treat approval of an
-older candidate as approval of a different commit. Rejected candidates retain
-their worktrees for revision. Accepted worktrees can be removed after a
-configurable recovery period because their commits and evidence are durable.
+stop its stale preview, re-integrate it, and repeat demo preparation. A clean
+re-integration retains the immutable candidate review; conflict resolution requires
+focused Tech Lead re-review. Materially changed behavior requires a refreshed
+preview and acceptance; the product must not treat approval of an older candidate
+as approval of a different commit. Rejected candidates retain their worktrees for
+revision. Accepted worktrees can be removed after a configurable recovery period
+because their commits and evidence are durable.
+
+Before resuming implementation after a post-conflict review return or Product
+Owner demo feedback, StoryPointless validates that the preserved ticket workspace
+is clean and still points to the immutable candidate, then fast-forwards its ticket
+branch to the exact reviewed integrated revision. This host-owned handoff preserves
+accepted trunk work and the Integrator's resolution as the baseline for the next
+candidate without changing the earlier candidate record. The continuation prompt
+states that the baseline was refreshed so the Implementer treats the current files
+as authoritative. A dirty, divergent, missing, or unverifiable workspace fails
+closed for recovery rather than asking an agent to infer or rewrite Git history.
 
 Implementation completion therefore triggers fast deterministic checks first.
-After integration, an independent review agent receives the contract, exact
-integrated diff, relevant decisions, and evidence—but not the implementer's
-unverified conclusions.
+An independent review agent then receives the contract, exact immutable candidate
+diff, relevant decisions, and evidence—but not the implementer's unverified
+conclusions. Integration consumes only approved candidates. Conflict resolution
+creates a changed integrated revision and therefore requires focused re-review.
 
 Review can request changes, reject the result, or attest that specified gates
 passed. High-risk items require a stronger independent review profile or human
@@ -982,7 +999,9 @@ passing. They block only when they have a concrete consequence for behaviour,
 rendering, valid syntax or structured data, an explicitly required acceptance
 gate, reviewability of a material change, or security. A focused re-review
 reassesses earlier feedback against this threshold rather than preserving its
-blocking classification automatically.
+blocking classification automatically. A ticket may return from review to
+**In Progress** five times. On the fifth return, StoryPointless preserves the
+workspace and findings but pauses automatic revision for Product Owner direction.
 The Lead performs the ordinary review run automatically. A specialist reviewer can
 be introduced later by policy without restoring a required reviewer field to
 every planning row.
@@ -1010,8 +1029,11 @@ the owner, a new
 owner comment addressed to its active assignee wakes that existing run and moves
 the item visibly back to **In Progress** unless the comment is explicitly marked
 as informational. The item normally resumes
-the same implementation thread and isolated workspace, and must pass checks and
-review again before a new preview version reaches acceptance. If context health
+the same implementation thread and isolated workspace. When feedback follows an
+integrated review or demo, StoryPointless first advances that workspace to the
+reviewed integrated result so accepted trunk work and conflict resolution are not
+lost or repeated. The replacement must pass checks and review again before a new
+preview version reaches acceptance. If context health
 is poor after repeated compaction, StoryPointless starts a fresh thread with a
 structured handoff while retaining the same ticket workspace. Previous previews
 and feedback remain available in the item history.
@@ -1131,8 +1153,8 @@ to the historical summary but do not appear as adopted changes.
 | --- | --- | --- | --- |
 | Backlog | Captured and ranked product work | Desired outcome exists | Dragged into Next sprint or cancelled |
 | Next sprint | Proposed sprint scope, possibly still needing detail | Owner selects the ticket while dependency ordering remains valid | Readiness passes and sprint planning is approved, or owner returns it to Backlog |
-| In progress | The assigned delivery member is producing or revising the outcome | Sprint started and prerequisites are complete | A candidate and initial evidence are ready for integration and independent review |
-| In review | The candidate is being integrated, checked, or reviewed by the Tech Lead | Implementation produces a candidate | Review passes, or attributed findings return the ticket to In progress |
+| In progress | The assigned delivery member is producing or revising the outcome | Sprint started and prerequisites are complete | An immutable candidate and initial evidence are ready for independent review |
+| In review | The immutable candidate is being reviewed, waiting to integrate, integrating, or receiving focused post-conflict re-review | Implementation produces a candidate | Review and integration pass, or attributed findings return the ticket to In progress |
 | Ready for demo | The owner can evaluate the actual reviewed result | Integration, required checks, and Tech Lead review pass | Owner gives feedback or approves |
 | Done | Approved work is finalized and integrated into its defined delivery target | Human approval and finalization checks pass | Later regression or superseding change |
 | Cancelled | Work intentionally stopped | Owner or policy decision | New work item if reconsidered |
@@ -1454,7 +1476,7 @@ simply accumulate prose.
 - Architecture and service boundaries.
 - Versioned decisions and rejected alternatives.
 - Operational runbooks and release/rollback procedures.
-- Repository conventions and test commands.
+- Repository-native build, test, launch, demo, and readiness entry points.
 - Known limitations, incidents, and failure patterns.
 - Verified domain facts and external constraints.
 - Delivery policies and definitions of ready/done.
@@ -1501,16 +1523,34 @@ may receive complete proposed updates; sections may receive focused child-page
 proposals. These permissions are persisted with the run and do not make empty
 pages or directory descriptions part of the verified context.
 
+Every product has a canonical **Environments** page under Operations. Verified,
+non-empty Environments guidance is mandatory context alongside Overview, Product
+principles, Glossary, and Ways of working. It records the repository's established
+native build system and maintained build, test, launch, and demo entry points,
+working-directory expectations, runtime prerequisites, readiness behaviour,
+required capabilities, and known limitations. An Implementer that verifies this
+guidance is absent or materially stale may propose a complete page replacement
+through the ordinary candidate-bound knowledge workflow. The Tech Lead receives
+the page read-only and verifies the proposal with the exact candidate before
+automatic publication, unless stricter Product Owner knowledge approval is enabled.
+Knowledge does not itself grant a runtime or permission.
+
 ### 14.5 Context packs
 
-Before a run starts, StoryPointless builds a small, inspectable context pack
-from the contract, relevant decisions, code map, prior failures, policies, and
-related work. The agent and owner can see why each item was included.
+Before a delivery run starts, StoryPointless builds a small, inspectable context
+pack from the contract, relevant decisions, code map, prior failures, policies,
+and related work. The agent and owner can see why each item was included.
+Review runs still receive their required read-only context, but do not add
+repeated **Knowledge used** cards to the ticket Work log.
 
 Page selection prioritises direct provenance, canonical subject and title
 relevance, and prerequisite handoffs. Full-body term overlap is capped so a long
 general page cannot become the default context and update destination merely by
 accumulating vocabulary.
+
+The inspectable **Knowledge used** record separates **Always included** mandatory
+pages from pages **Relevant to this ticket**. Empty mandatory pages are shown only
+as update destinations and are not described as supplied facts.
 
 Context-pack quality becomes a first-class metric: relevance, token cost,
 missing-context escalations, stale-claim rate, and reuse success.
@@ -1944,17 +1984,20 @@ workspace itself is missing, uncaptured changes are not recoverable;
 StoryPointless explains that fallback in the Work log before preparing a fresh
 isolated workspace.
 
-An interrupted Tech Lead review remains bound to its exact integrated revision.
-StoryPointless preserves the review run, Conversation, integrated SHA, and
-detached workspace. After relaunch it verifies or reconstructs that exact
+An interrupted Tech Lead review remains bound to its exact immutable revision.
+StoryPointless preserves the review run, Conversation, reviewed SHA, and
+detached workspace. The revision is normally the ticket candidate, or the
+integrated SHA for focused review after conflict resolution. After relaunch it
+verifies or reconstructs that exact
 checkout, recovers a completed structured review result when available, and
 otherwise explicitly resumes and continues the same Conversation. A live
 permission request that expired with the old process keeps the review paused
 until the Product Owner decides, and that decision or an existing matching
 scoped grant applies to the continuing run. Relaunch alone never causes
-integration or full review to repeat. A new integration and review are required
-only when the exact recorded revision is missing, changed, or cannot be verified,
-and that fallback is explained in the ticket Work log. **Ready for Demo**
+review to repeat. An immutable candidate review is reconstructed directly; a new
+integration and focused re-review are required only when an exact post-conflict
+revision is missing, changed, or cannot be verified, and that fallback is
+explained in the ticket Work log. **Ready for Demo**
 candidates keep their reviewed revision across relaunch; only the owned demo
 process stops.
 
@@ -2039,9 +2082,10 @@ the platform—it is not a permanent product-category restriction in the UI.
    pinned, app-managed agent engine.
 10. The board streams normalized milestones, usage, questions, and artifacts.
 11. Fast local deterministic checks run in the ticket worktree.
-12. The local merge queue produces an exact integrated candidate against the
-    latest local trunk.
-13. Full checks and a separate reviewer thread inspect that candidate.
+12. Full checks and separate reviewer threads inspect immutable ticket
+    candidates in parallel.
+13. The local merge queue integrates approved candidates against the latest
+    local trunk; conflict-resolved results receive focused re-review.
 14. The owner opens a local preview link for the same commit, comments with
     changes if needed, sees
     the item return to active work, and then accepts a later preview revision.
@@ -2469,7 +2513,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-110 | Realtime board projection | Trusted events update state without agent prose directly mutating authority |
 | SP-111 | Sprint activity projection | Thirty parallelized tickets produce thirty visible board runs with assignments, active/waiting/blocked/reviewing state, context health, and an explanation of scheduler constraints |
 | SP-112 | Graceful suspension and recovery | Normal quit requests a checkpoint then interrupts; restart preserves work and can reconcile and resume unexpectedly interrupted runs |
-| SP-113 | Local merge queue | Candidates integrate continuously against latest trunk in a separate worktree; conflicts are visible and only the exact checked, reviewed, and accepted commit advances trunk |
+| SP-113 | Local merge queue | Independently reviewed candidates integrate continuously against latest trunk in a separate worktree; conflicts are visible, resolved integrations receive focused re-review, and only the exact checked, reviewed, and accepted commit advances trunk |
 
 ### MVP outcome loop
 
@@ -2478,9 +2522,9 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-200 | Proposed starter backlog | **Autosuggest Tickets** starts one recoverable BA suggestion session; truthful temporary placeholders become rationale-backed ticket proposals with acceptance criteria, forecasts, and dependency edges, and the owner can accept, edit, discuss, or reject each without rejected work becoming scope |
 | SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through accept/rejectable diffs |
 | SP-202 | Safety controls and live usage telemetry | Run warns or pauses on abnormal consumption; UI foregrounds remaining shared account usage and distinguishes per-thread context/compactions, cumulative economics, and internal safety status without requiring a PO-entered token budget |
-| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees its plain-language purpose first and can disclose the exact action and additional access, then chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. Before asking for runtime access, the agent inspects the foreseeable executable, traversal, symlink, shared-library, compiler, SDK, or package boundary and submits one reviewable request for the smallest coherent capability; it does not make the Product Owner approve a runtime one file or directory at a time. Agents prefer a short, purpose-named project entry point over a shell chain; an Implementer may add one as maintained product tooling only when it represents a coherent reusable workflow, never to conceal unrelated operations or broaden approval. The persisted request shows the decision in place without adding a duplicate Product Owner message to the Work log. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision; an interrupted leaf request is replaced with one consolidated capability request rather than restarting the cascade. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
+| SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees its plain-language purpose first and can disclose the exact action and additional access, then chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. Before asking for runtime access, the agent inspects the foreseeable executable, traversal, symlink, shared-library, compiler, SDK, or package boundary and submits one reviewable request for the smallest coherent capability; it does not make the Product Owner approve a runtime one file or directory at a time. Agents consult verified Environments guidance and prefer the repository's established native build system and shortest maintained, purpose-named entry point over a shell chain. An Implementer may add a version-controlled, non-interactive task or script only when it represents a coherent reusable workflow, never to substitute an unrelated package manager or runtime, conceal operations, or broaden approval; verified operational changes produce a complete Environments proposal. The persisted request shows the decision in place without adding a duplicate Product Owner message to the Work log. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision; an interrupted leaf request is replaced with one consolidated capability request rather than restarting the cascade. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
 | SP-204 | Local checks and evidence ingestion | Test results and artifacts are linked and independently verifiable |
-| SP-205 | Review pass | Lead receives the contract and exact integrated candidate in a separate checkout and records a typed attestation; policy can require an additional specialist reviewer for higher-risk work |
+| SP-205 | Review pass | Lead receives the contract and exact immutable ticket candidate in a separate checkout and records a typed attestation in parallel with other candidate reviews; conflict resolution triggers focused review of the changed integrated revision, and policy can require an additional specialist reviewer for higher-risk work |
 | SP-206 | Preview acceptance loop | Owner opens a local link for the attested commit, comments with traceable feedback, sees the item return to active work, and accepts or rejects a versioned replacement preview |
 | SP-207 | Deployment work-item conversation | A deployment request asks structured questions and blocks before credentials or consequential actions |
 | SP-208 | Proof-of-done bundle | Accepted item exports intent, evidence, economics, decisions, and release record |
@@ -2629,12 +2673,13 @@ not the complete board. It succeeds when one owner can:
 7. see durable milestones, questions, approvals, diff summaries, checks,
    context health, compactions, internal safety status, and available shared
    account limits without setting a token budget;
-8. watch the local merge queue create one exact integrated candidate without
-   either implementer advancing trunk directly;
-9. open its loopback preview link, reject it with a ticket comment, watch the
+8. see independent reviewer results arrive in parallel, then watch the local
+   merge queue create one exact integrated candidate without either implementer
+   advancing trunk directly;
+9. review the ticket delivery note, documentation changes and decision records,
+   then open the loopback preview link, reject it with a ticket comment, and watch the
    affected item return to active work, and receive a replacement candidate;
-10. see an independent reviewer result, review the ticket delivery note,
-    documentation changes and decision records, and accept the replacement;
+10. see the replacement reviewed and integrated, then accept it;
 11. ask why a material implementation choice was made and receive a sourced
     answer linked to the ticket, decision, exact commit, and evidence; and
 12. quit during a subsequent run, then reopen the app and recover or resume the

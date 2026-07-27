@@ -143,6 +143,53 @@ struct EpicPlanningPresentationTests {
     #expect(TicketEpicNavigation.destination(for: ticket, in: [epic]) == nil)
   }
 
+  @Test("Ticket relationship links resolve the related ticket")
+  func relationshipLinksResolveRelatedTicket() throws {
+    let productID = UUID()
+    let source = WorkItem(
+      productID: productID,
+      key: "T1",
+      title: "Source ticket"
+    )
+    let related = WorkItem(
+      productID: productID,
+      key: "T2",
+      title: "Related ticket"
+    )
+
+    let destination = try #require(
+      TicketRelationshipNavigation.destination(
+        for: related.id,
+        source: source,
+        in: [source, related]
+      )
+    )
+
+    #expect(destination.id == related.id)
+  }
+
+  @Test("Ticket relationship links do not cross product boundaries")
+  func relationshipLinksRejectForeignTickets() {
+    let source = WorkItem(
+      productID: UUID(),
+      key: "T1",
+      title: "Source ticket"
+    )
+    let foreign = WorkItem(
+      productID: UUID(),
+      key: "T2",
+      title: "Foreign ticket"
+    )
+
+    #expect(
+      TicketRelationshipNavigation.destination(
+        for: foreign.id,
+        source: source,
+        in: [source, foreign]
+      ) == nil
+    )
+  }
+
   @Test("Closed disclosure defaults to collapsed and persists per product")
   func closedDisclosurePersistsPerProduct() throws {
     let suiteName = "EpicPlanningPresentationTests.\(UUID().uuidString)"
@@ -192,12 +239,31 @@ struct EpicPlanningPresentationTests {
     let backlogHeight = BacklogPlanningSizing.backlogHeight(
       availableHeight: availableHeight,
       epicHeight: epicHeight,
-      sectionDividerHeight: dividerHeight,
-      rowCount: 5
+      sectionDividerHeight: dividerHeight
     )
 
     #expect(epicHeight == 230)
     #expect(backlogHeight == 655)
+    #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
+  }
+
+  @Test("Backlog can shrink below its former minimum when Epics use the space")
+  func backlogShrinksToRemainingHeight() {
+    let availableHeight: CGFloat = 730
+    let dividerHeight: CGFloat = 37
+    let epicHeight = BacklogPlanningSizing.epicHeight(
+      openEpicCount: 1,
+      closedEpicCount: 8,
+      closedEpicsExpanded: true
+    )
+    let backlogHeight = BacklogPlanningSizing.backlogHeight(
+      availableHeight: availableHeight,
+      epicHeight: epicHeight,
+      sectionDividerHeight: dividerHeight
+    )
+
+    #expect(epicHeight == 476)
+    #expect(backlogHeight == 217)
     #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
   }
 

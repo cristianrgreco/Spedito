@@ -294,4 +294,112 @@ struct WorkflowPolicyTests {
 
     #expect(eligible.map(\.id) == runs.map(\.id))
   }
+
+  @Test("Candidate reviews run in parallel and only integrated work occupies the merge queue")
+  func candidateReviewAndIntegrationAdmissionAreIndependent() throws {
+    let productID = UUID()
+    let sprintID = UUID()
+    let first = WorkItem(
+      productID: productID,
+      key: "T62",
+      title: "Revise the first candidate",
+      state: .running,
+      rank: 1
+    )
+    let second = WorkItem(
+      productID: productID,
+      key: "T63",
+      title: "Integrate the approved candidate",
+      state: .verifying,
+      rank: 2
+    )
+    let third = WorkItem(
+      productID: productID,
+      key: "T64",
+      title: "Review another candidate",
+      state: .verifying,
+      rank: 3
+    )
+
+    func candidate(
+      for item: WorkItem,
+      status: CandidateRevisionStatus,
+      integratedSHA: String? = nil
+    ) -> CandidateRevision {
+      CandidateRevision(
+        productID: productID,
+        sprintID: sprintID,
+        sprintItemID: UUID(),
+        workItemID: item.id,
+        implementationRunID: UUID(),
+        version: 1,
+        branchName: "ticket/\(item.key)",
+        baseSHA: "base-\(item.key)",
+        headSHA: "head-\(item.key)",
+        integratedSHA: integratedSHA,
+        worktreePath: "/tmp/\(item.key)",
+        status: status,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    }
+
+    let changesRequested = candidate(for: first, status: .changesRequested)
+    let approvedAndQueued = candidate(for: second, status: .queuedForIntegration)
+    let parallelReview = candidate(for: third, status: .reviewing)
+    let candidates = [changesRequested, approvedAndQueued, parallelReview]
+
+    #expect(
+      !SprintCandidateAdmission.integrationQueueIsOccupied(
+        candidates: candidates,
+        sprintID: sprintID
+      )
+    )
+    #expect(
+      SprintCandidateAdmission.nextIntegrationCandidate(
+        candidates: candidates,
+        sprintID: sprintID,
+        workItems: [first, second, third]
+      )?.id == approvedAndQueued.id
+    )
+
+    let conflictReview = candidate(
+      for: third,
+      status: .reviewing,
+      integratedSHA: "resolved-merge"
+    )
+    #expect(
+      SprintCandidateAdmission.integrationQueueIsOccupied(
+        candidates: candidates + [conflictReview],
+        sprintID: sprintID
+      )
+    )
+
+    let readyForDemo = candidate(for: first, status: .readyForDemo)
+    #expect(
+      !SprintCandidateAdmission.integrationQueueIsOccupied(
+        candidates: candidates + [readyForDemo],
+        sprintID: sprintID
+      )
+    )
+  }
+
+  @Test("Five review returns are allowed before owner direction is required")
+  func reviewCorrectionLimit() {
+    #expect(
+      SprintReviewCorrectionPolicy.maximumChangeRequestsBeforeOwnerPause == 5
+    )
+    #expect(
+      SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(reviewCycle: 0)
+    )
+    #expect(
+      SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(reviewCycle: 3)
+    )
+    #expect(
+      !SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(reviewCycle: 4)
+    )
+    #expect(
+      SprintReviewCorrectionPolicy.changeRequestNumber(reviewCycle: 4) == 5
+    )
+  }
 }

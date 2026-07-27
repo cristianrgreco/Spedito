@@ -17,11 +17,12 @@ public struct KnowledgeContextSelection: Equatable, Sendable {
 }
 
 public enum KnowledgeContextSelector {
-  private static let inheritedSlugs = [
+  public static let mandatorySlugs = [
     "overview",
     "product-principles",
     "glossary",
     "ways-of-working",
+    "environments",
   ]
 
   private static let ignoredTerms = Set([
@@ -45,9 +46,8 @@ public enum KnowledgeContextSelector {
       !KnowledgeMarkdown.normalizedBody($0.bodyMarkdown).isEmpty
     }
     let prerequisiteIDs = Set(prerequisites.map(\.id))
-    let inheritedOrder = Dictionary(
-      uniqueKeysWithValues: inheritedSlugs.enumerated().map { ($0.element, $0.offset) }
-    )
+    let mandatory = mandatoryPages(in: readable)
+    let mandatoryIDs = Set(mandatory.map(\.id))
     let direct = readable
       .filter {
         $0.sourceWorkItemID == item.id
@@ -59,15 +59,6 @@ public enum KnowledgeContextSelector {
         if lhsIsCurrent != rhsIsCurrent { return lhsIsCurrent }
         return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
       }
-    let inherited = readable
-      .filter { inheritedOrder[$0.slug] != nil }
-      .sorted { lhs, rhs in
-        let lhsOrder = inheritedOrder[lhs.slug] ?? Int.max
-        let rhsOrder = inheritedOrder[rhs.slug] ?? Int.max
-        if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
-        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-      }
-
     let queryTerms = terms(
       [
         item.title,
@@ -104,9 +95,9 @@ public enum KnowledgeContextSelector {
         .map { $0.page.id }
     )
 
-    var references: [KnowledgePage] = []
-    var referenceIDs: Set<UUID> = []
-    for page in direct + scored + inherited where references.count < max(0, referenceLimit) {
+    var references = mandatory
+    var referenceIDs = mandatoryIDs
+    for page in direct + scored where references.count < max(mandatory.count, referenceLimit) {
       if referenceIDs.insert(page.id).inserted {
         references.append(page)
       }
@@ -119,6 +110,7 @@ public enum KnowledgeContextSelector {
           return isWithinDeliveryHistory(page, pagesByID: pagesByID) ? nil : page.id
         case .page:
           if page.slug == "ways-of-working" { return nil }
+          if page.slug == "environments" { return page.id }
           let isEmpty = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown).isEmpty
           if isEmpty { return page.id }
           let isDirectHandoff =
@@ -139,6 +131,28 @@ public enum KnowledgeContextSelector {
       directoryPages: directory,
       writablePageIDs: writablePageIDs
     )
+  }
+
+  public static func mandatoryPages(in pages: [KnowledgePage]) -> [KnowledgePage] {
+    let order = Dictionary(
+      uniqueKeysWithValues: mandatorySlugs.enumerated().map { ($0.element, $0.offset) }
+    )
+    return pages
+      .filter {
+        $0.verificationStatus == .verified
+          && order[$0.slug] != nil
+          && !KnowledgeMarkdown.normalizedBody($0.bodyMarkdown).isEmpty
+      }
+      .sorted { lhs, rhs in
+        let lhsOrder = order[lhs.slug] ?? Int.max
+        let rhsOrder = order[rhs.slug] ?? Int.max
+        if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+      }
+  }
+
+  public static func isMandatory(_ page: KnowledgePage) -> Bool {
+    mandatorySlugs.contains(page.slug)
   }
 
   public static func purpose(for slug: String, kind: KnowledgePageKind) -> String {
@@ -166,7 +180,7 @@ public enum KnowledgeContextSelector {
     case "integrations":
       return "External services, providers, APIs, attribution, privacy, and failure contracts."
     case "environments":
-      return "Runtime environments, configuration, and operating requirements."
+      return "Verified build, test, launch, demo, runtime, configuration, and operating requirements."
     case "runbooks":
       return "Repeatable operating, support, diagnosis, and recovery procedures."
     case "release-and-rollback":

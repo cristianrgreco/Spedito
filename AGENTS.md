@@ -73,10 +73,12 @@ active planning, dependency, or suggestion calculations.
   unless their explicit contract says otherwise.
 - Delivery runs use an isolated ticket worktree and `ticket/TN` branch.
 - Parallel implementation happens in separate worktrees.
+- Tech Lead reviews run in parallel against exact immutable ticket candidates.
 - Candidate integration is serialized against current local `trunk`.
-- The Tech Lead reviews the exact integrated revision, not a description of it.
-- Product Owner approval promotes the reviewed revision and completes the
-  ticket.
+- Conflict resolution that changes an integrated result requires focused Tech
+  Lead re-review; clean merges retain the candidate review.
+- Product Owner approval promotes the integrated reviewed candidate and
+  completes the ticket.
 - On interruption, preserve durable run state and the ticket workspace so work
   can be resumed safely.
 

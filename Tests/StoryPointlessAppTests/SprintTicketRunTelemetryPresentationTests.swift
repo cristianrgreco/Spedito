@@ -19,6 +19,7 @@ struct SprintTicketRunTelemetryPresentationTests {
     #expect(presentation.showsFooter)
     #expect(!presentation.showsLiveActivity)
     #expect(presentation.contextPercentage == 18)
+    #expect(presentation.compactionCount == nil)
   }
 
   @Test("A run without telemetry does not create an empty footer")
@@ -30,6 +31,31 @@ struct SprintTicketRunTelemetryPresentationTests {
 
     #expect(!presentation.showsFooter)
     #expect(presentation.contextPercentage == nil)
+    #expect(presentation.compactionCount == nil)
+  }
+
+  @Test("The context donut displays only positive compaction counts")
+  func contextDonutCompactionCount() {
+    let withoutCompactions = SprintTicketRunTelemetryPresentation(
+      run: run(
+        status: .running,
+        contextUsedTokens: 120_000,
+        contextWindowTokens: 258_400
+      ),
+      hasLiveActivity: false
+    )
+    let withCompactions = SprintTicketRunTelemetryPresentation(
+      run: run(
+        status: .running,
+        contextUsedTokens: 120_000,
+        contextWindowTokens: 258_400,
+        compactionCount: 3
+      ),
+      hasLiveActivity: false
+    )
+
+    #expect(withoutCompactions.compactionCount == nil)
+    #expect(withCompactions.compactionCount == 3)
   }
 
   @Test("Live activity is presented only while its run is running")
@@ -101,6 +127,7 @@ struct SprintTicketRunTelemetryPresentationTests {
     status: AgentRunStatus,
     contextUsedTokens: Int? = nil,
     contextWindowTokens: Int? = nil,
+    compactionCount: Int = 0,
     updatedAt: Date = Date()
   ) -> AgentRun {
     AgentRun(
@@ -110,6 +137,7 @@ struct SprintTicketRunTelemetryPresentationTests {
       status: status,
       contextUsedTokens: contextUsedTokens,
       contextWindowTokens: contextWindowTokens,
+      compactionCount: compactionCount,
       createdAt: updatedAt,
       updatedAt: updatedAt
     )

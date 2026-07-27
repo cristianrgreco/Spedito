@@ -87,11 +87,15 @@ forbidden from copying a ticket workspace elsewhere to bypass that decision. The
 also treat a recovered permission request as audit display rather than executable
 command text: retries invoke the underlying executable directly, never paste an already
 wrapped `/bin/zsh -lc` command, and replace an interrupted leaf permission with one
-consolidated runtime request instead of continuing a path-by-path cascade. For routine
-checks, agents prefer short, established product entry points such as `npm test`,
-`make test`, or `./scripts/test.sh`. An Implementer may add a maintained script or
-package task when recurring checks form one coherent workflow, but never merely to
-conceal unrelated commands or broaden an approval. Agents receive
+consolidated runtime request instead of continuing a path-by-path cascade. Before
+routine checks, agents consult verified Environments guidance and use the repository's
+established native build system and shortest maintained, purpose-named entry point.
+An Implementer may add a version-controlled, non-interactive task or script when a
+recurring coherent workflow has no suitable entry point, but never to substitute an
+unrelated package manager or runtime, conceal operations, or broaden an approval.
+Verified changes to build, test, launch, demo, runtime, readiness, capability, or
+limitation guidance are proposed as a complete Environments update for Tech Lead
+review. Agents receive
 read-only access to the active product's central Git metadata, so status,
 diff, history, and conflict inspection do not need Product Owner approval. Their
 turns inherit that product-scoped thread profile so the exact Git grant is not
@@ -102,16 +106,21 @@ writable, while StoryPointless alone owns Git mutations such as staging, commits
 branches, integration, and promotion.
 Completed implementation becomes a
 versioned candidate with a host-created commit and exact head SHA.
-StoryPointless places it in a rank-ordered serial integration queue and merges it
-against current `trunk` in a detached integration worktree. Unambiguous conflicts are
+StoryPointless gives each immutable candidate to a separate read-only Tech Lead
+run, so reviews can proceed in parallel. Approved candidates enter a rank-ordered
+serial integration queue and merge against current `trunk` in a detached integration
+worktree. Unambiguous conflicts are
 handled by an internal Integrator turn in that preserved worktree; material choices
 pause as **Needs your input** without inventing a new board state. The exact integrated
-revision is then inspected by a separate read-only Tech Lead run. Approval moves the
-ticket to **Ready for Demo** only after its typed demo recipe successfully smoke-tests
-the exact integrated revision. Tech Lead findings block only when a material defect
+revision receives a focused Tech Lead re-review only when conflict resolution changed
+the merge result; clean merges retain the immutable candidate review. The ticket moves
+to **Ready for Demo** only after its typed demo recipe successfully smoke-tests the
+integrated revision. Tech Lead findings block only when a material defect
 justifies another implementation and review cycle; whitespace, formatting, and
 optional style-only checks are informational unless they have a concrete product,
-validity, required-gate, reviewability, or security consequence. The ticket acceptance
+validity, required-gate, reviewability, or security consequence. A ticket may return
+from review to In Progress five times before StoryPointless pauses automatic revisions
+for Product Owner direction. The ticket acceptance
 room then provides one **Demo**
 button. StoryPointless prepares a detached preview checkout, starts a sandboxed local
 service through the same pinned Codex App Server runtime and opens its loopback browser URL, launches a reviewed macOS app, opens a
@@ -123,8 +132,11 @@ If the Tech Lead has approved the candidate but demo smoke preparation stops, th
 offers **Retry demo preparation** immediately. The retry reuses the exact reviewed SHA and
 does not require a comment, repeat implementation, or another Tech Lead review.
 Requested changes return it to **In Progress** and resume the original implementation
-thread with the review comment. In Ready for Demo, a comment receives an explanatory
-reply without changing the reviewed candidate. It routes to the assigned Implementer,
+thread with the review comment. After post-conflict review or demo feedback,
+StoryPointless first fast-forwards the clean preserved ticket workspace to the exact
+reviewed integrated revision and tells the Implementer that accepted trunk work and
+the Integrator's resolution are now its baseline. In Ready for Demo, a comment receives
+an explanatory reply without changing the reviewed candidate. It routes to the assigned Implementer,
 falling back to the latest participating team member and then the Tech Lead.
 Owner demo feedback follows the same revision loop,
 while **Approve and complete** promotes the reviewed integrated SHA to local `trunk`,
@@ -145,8 +157,9 @@ An expired permission request remains visibly actionable and keeps its implement
 Tech Lead review, or conflict-resolution run paused after relaunch. Once the Product
 Owner chooses Allow or Deny, StoryPointless explicitly resumes the persisted Conversation
 and applies that decision if the same request is still needed. Tech Lead recovery remains
-bound to the same integrated SHA; StoryPointless reconstructs that exact detached checkout
-when needed and repeats integration or full review only when the recorded revision cannot
+bound to the same immutable candidate SHA, or the integrated SHA for a post-conflict
+re-review; StoryPointless reconstructs that exact detached checkout when needed. It
+repeats integration and focused review only when a recorded post-conflict revision cannot
 be verified. If an In Progress ticket workspace itself is missing, StoryPointless explains
 that uncaptured implementation work could not be recovered before preparing a fresh
 isolated workspace. Backlog and refinement are separate from the simplified
@@ -222,10 +235,12 @@ is isolated in ticket-named Git worktrees, concurrent Codex notifications are ro
 to the correct run, and candidate revisions preserve the agent's full commit range.
 Candidates integrate serially against current local `trunk`; the Integrator resolves
 safe conflicts in the detached merge workspace and the Tech Lead reviews the exact
-resulting SHA. Product Owner approval alone promotes that reviewed revision. One
-candidate reaches Ready for Demo at a time so acceptance remains an explicit trunk
-gate. Release automation, streamed fine-grained progress, and agent-authored quit
-checkpoints remain to be implemented.
+resulting SHA. Product Owner approval alone promotes that reviewed revision. Ready
+for Demo candidates do not occupy the integration lane. When one approval advances
+trunk, any other prepared demo that no longer contains current trunk automatically
+returns to the integration queue; a clean merge retains its candidate review, while
+conflict resolution receives focused re-review. Release automation, streamed
+fine-grained progress, and agent-authored quit checkpoints remain to be implemented.
 Completed agents must now provide concrete Product Owner review instructions and a
 schema-versioned one-click demo recipe. Recipes use executable and argument arrays
 rather than shell command strings, remain inside the reviewed preview checkout, expose
@@ -255,9 +270,15 @@ provenance metadata, and citation-backed **Ask Knowledge** over verified pages o
 Unused canonical pages are stored with genuinely empty bodies so their guidance is
 presentation-only rather than false verified content. Delivery runs receive a bounded
 set of non-empty verified reference pages plus a separate canonical destination
-directory. Empty canonical pages and relevant populated pages may receive complete
-updates, while sections may receive focused child pages; persisted per-run destination
-authorization prevents an agent from using an unrelated page as a catch-all.
+directory. Verified Overview, Product principles, Glossary, Ways of working, and
+Environments pages are always included; the Work log separates them from pages selected
+for the ticket. Empty mandatory pages remain writable destinations rather than false
+context. Implementers may propose a complete Environments replacement when verified
+operational guidance is absent or stale; reviewers receive it read-only and verify the
+proposal with the candidate. Other empty canonical pages and relevant populated pages
+may receive complete updates, while sections may receive focused child pages; persisted
+per-run destination authorization prevents an agent from using an unrelated page as a
+catch-all.
 
 An approved Business Analyst research ticket normally hands its decision to already
 planned dependant tickets through its completion Work log and verified Product

@@ -45,6 +45,7 @@ private struct SprintExecutionContext {
   let dependencies: [WorkItemDependency]
   let profiles: [AgentProfile]
   let runs: [AgentRun]
+  let candidates: [CandidateRevision]
   let permissionRequests: [AgentPermissionRequest]
   let permissionGrants: [AgentPermissionGrant]
   let knowledgePages: [KnowledgePage]
@@ -366,6 +367,9 @@ final class AppModel: ObservableObject {
   ] = [:]
   private var activeImplementationTasks: [UUID: Task<Void, Never>] = [:]
   private var activeImplementationProductIDs: [UUID: UUID] = [:]
+  private var activeReviewTasks: [UUID: Task<Void, Never>] = [:]
+  private var activeReviewProductIDs: [UUID: UUID] = [:]
+  private var activeIntegrationTasks: [UUID: Task<Void, Never>] = [:]
 
   private struct ActiveExecutionTurn: Sendable {
     let productID: UUID
@@ -391,7 +395,6 @@ final class AppModel: ObservableObject {
   private var isShuttingDown = false
 
   private static let selectedProductDefaultsKey = "selectedProductID"
-  private static let maxAutomaticReviewCorrections = 2
 
   init() {
     selectedProductID = UserDefaults.standard.string(
@@ -2052,6 +2055,21 @@ final class AppModel: ObservableObject {
       }
       await stopDemoSession(candidate, removesPreview: true)
       let repositoryURL = try Self.productWorkspaceURL(productID: item.productID)
+      guard
+        try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+          repositoryURL: repositoryURL,
+          integratedSHA: integratedSHA
+        )
+      else {
+        try await requeueStaleReadyCandidate(
+          candidate,
+          reason:
+            "Accepted trunk advanced after this demo revision was prepared."
+        )
+        await reloadSelectedProduct()
+        scheduleSprintExecution(productID: item.productID)
+        return false
+      }
       try await gitWorkspaceManager.promote(
         repositoryURL: repositoryURL,
         integratedSHA: integratedSHA
@@ -2092,6 +2110,10 @@ final class AppModel: ObservableObject {
                 ? "ticket is"
                 : "tickets are")
               + " ready for review in the Backlog.")
+      )
+      try await requeueStaleReadyCandidates(
+        productID: item.productID,
+        excluding: candidate.id
       )
       if let activePlan = sprintPlan,
         activePlan.sprint.state == .active,
@@ -3828,12 +3850,80 @@ final class AppModel: ObservableObject {
         }
       }
 
+      let reviewCandidates = SprintCandidateAdmission.reviewQueue(
+        candidates: context.candidates,
+        sprintID: context.plan.sprint.id,
+        workItems: context.workItems
+      )
+      for candidate in reviewCandidates where activeReviewTasks[candidate.id] == nil {
+        activeReviewProductIDs[candidate.id] = productID
+        activeReviewTasks[candidate.id] = Task { [weak self] in
+          guard let self else { return }
+          defer {
+            activeReviewTasks.removeValue(forKey: candidate.id)
+            activeReviewProductIDs.removeValue(forKey: candidate.id)
+            sprintExecutionWakeContinuations[productID]?.yield()
+          }
+          await executeCandidateReview(candidate, context: context)
+        }
+      }
+      let reviewerProfileIDs = Set(
+        context.profiles.filter { $0.role == .lead }.map(\.id)
+      )
+      let resumableCandidateReviews: [(CandidateRevision, AgentRun)] =
+        context.candidates.compactMap { candidate in
+          guard
+            candidate.sprintID == context.plan.sprint.id,
+            candidate.status == .reviewing,
+            candidate.integratedSHA == nil,
+            let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
+              for: candidate,
+              runs: context.runs,
+              reviewerProfileIDs: reviewerProfileIDs
+            ),
+            reviewRun.status == .queued
+              || reviewRun.status == .running
+              || reviewRun.status == .completed
+          else { return nil }
+          return (candidate, reviewRun)
+        }
+      for (candidate, reviewRun) in resumableCandidateReviews
+      where activeReviewTasks[candidate.id] == nil {
+        activeReviewProductIDs[candidate.id] = productID
+        activeReviewTasks[candidate.id] = Task { [weak self] in
+          guard let self else { return }
+          defer {
+            activeReviewTasks.removeValue(forKey: candidate.id)
+            activeReviewProductIDs.removeValue(forKey: candidate.id)
+            sprintExecutionWakeContinuations[productID]?.yield()
+          }
+          await resumeTechLeadReview(
+            candidate: candidate,
+            reviewRun: reviewRun,
+            plan: context.plan
+          )
+        }
+      }
+
       let processedIntegration = await processNextIntegrationCandidate(context: context)
       let hasActiveImplementation = activeImplementationProductIDs.values.contains(productID)
-      if !hasActiveImplementation && eligibleRuns.isEmpty && !processedIntegration {
+      let hasActiveReview = activeReviewProductIDs.values.contains(productID)
+      let hasActiveIntegration = activeIntegrationTasks[productID] != nil
+      if
+        !hasActiveImplementation,
+        !hasActiveReview,
+        !hasActiveIntegration,
+        eligibleRuns.isEmpty,
+        reviewCandidates.isEmpty,
+        resumableCandidateReviews.isEmpty,
+        !processedIntegration
+      {
         return
       }
-      if hasActiveImplementation && !processedIntegration {
+      if
+        (hasActiveImplementation || hasActiveReview || hasActiveIntegration)
+          && !processedIntegration
+      {
         guard await wakeIterator.next() != nil else { return }
       }
     }
@@ -3853,10 +3943,7 @@ final class AppModel: ObservableObject {
       if productProfiles.isEmpty {
         productProfiles = try await store.seedDefaultProfiles(productID: productID)
       }
-      var productKnowledge = try await store.fetchKnowledgePages(productID: productID)
-      if productKnowledge.isEmpty {
-        productKnowledge = try await store.seedKnowledgeBase(productID: productID)
-      }
+      let productKnowledge = try await store.seedKnowledgeBase(productID: productID)
       return SprintExecutionContext(
         product: product,
         plan: plan,
@@ -3864,6 +3951,7 @@ final class AppModel: ObservableObject {
         dependencies: try await store.fetchWorkItemDependencies(productID: productID),
         profiles: productProfiles,
         runs: try await store.fetchAgentRuns(productID: productID),
+        candidates: try await store.fetchCandidateRevisions(productID: productID),
         permissionRequests: try await store.fetchAgentPermissionRequests(
           productID: productID
         ),
@@ -4058,7 +4146,10 @@ final class AppModel: ObservableObject {
           threadID: threadID,
           workingDirectory: workspace,
           developerInstructions: CodexTicketExecutor.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
+            productInstructions: inheritedAgentInstructions(
+              for: product,
+              availableKnowledge: context.knowledgePages
+            ),
             personaInstructions: assignee.effectiveInstructions,
             assignee: assignee
           ),
@@ -4173,25 +4264,18 @@ final class AppModel: ObservableObject {
       )
       if let item = workItems.first(where: { $0.id == candidate.workItemID }) {
         switch item.state {
-        case .verifying:
-          _ = try? await store.transitionWorkItem(
-            id: item.id,
-            to: .running,
-            actor: "StoryPointless",
-            reason: "Interrupted review queued to restart"
-          )
-          _ = try? await store.transitionWorkItem(
-            id: item.id,
-            to: .integrating,
-            actor: "StoryPointless",
-            reason: "Candidate restored to the integration queue"
-          )
         case .running:
           _ = try? await store.transitionWorkItem(
             id: item.id,
             to: .integrating,
             actor: "StoryPointless",
             reason: "Candidate restored to the integration queue"
+          )
+          _ = try? await store.transitionWorkItem(
+            id: item.id,
+            to: .verifying,
+            actor: "StoryPointless",
+            reason: "The reviewed candidate is waiting to integrate"
           )
         default:
           break
@@ -4201,31 +4285,36 @@ final class AppModel: ObservableObject {
 
     for candidate in storedCandidates where candidate.status == .reviewing {
       guard
-        let integratedSHA = candidate.integratedSHA,
         let item = workItems.first(where: { $0.id == candidate.workItemID })
       else {
-        await restoreCandidateToIntegrationQueue(
-          candidate,
-          context: context,
-          reason: "The interrupted review had no recoverable integrated revision"
-        )
         continue
       }
 
       do {
-        let integration = try await gitWorkspaceManager.prepareIntegratedWorkspace(
-          repositoryURL: Self.productWorkspaceURL(productID: productID),
-          integrationsRootURL: Self.integrationWorktreesRootURL(productID: productID),
-          candidateID: candidate.id,
-          candidateHeadSHA: candidate.headSHA,
-          integratedSHA: integratedSHA
-        )
-        if candidate.integrationWorktreePath != integration.url.path {
+        let repositoryURL = try Self.productWorkspaceURL(productID: productID)
+        let reviewWorkspace: GitIntegrationSnapshot
+        if let integratedSHA = candidate.integratedSHA {
+          reviewWorkspace = try await gitWorkspaceManager.prepareIntegratedWorkspace(
+            repositoryURL: repositoryURL,
+            integrationsRootURL: Self.integrationWorktreesRootURL(productID: productID),
+            candidateID: candidate.id,
+            candidateHeadSHA: candidate.headSHA,
+            integratedSHA: integratedSHA
+          )
+        } else {
+          reviewWorkspace = try await gitWorkspaceManager.prepareCandidateReviewWorkspace(
+            repositoryURL: repositoryURL,
+            reviewsRootURL: Self.integrationWorktreesRootURL(productID: productID),
+            candidateID: candidate.id,
+            candidateHeadSHA: candidate.headSHA
+          )
+        }
+        if candidate.integrationWorktreePath != reviewWorkspace.url.path {
           _ = try await store.updateCandidateRevision(
             id: candidate.id,
             status: .reviewing,
-            integratedSHA: integration.integratedSHA,
-            integrationWorktreePath: integration.url.path
+            integratedSHA: candidate.integratedSHA,
+            integrationWorktreePath: reviewWorkspace.url.path
           )
         }
 
@@ -4234,7 +4323,7 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .integrating,
             actor: "StoryPointless",
-            reason: "Recovered the exact integrated candidate"
+            reason: "Recovered the immutable review candidate"
           )
         }
         if item.state == .running || item.state == .integrating {
@@ -4255,13 +4344,13 @@ final class AppModel: ObservableObject {
             _ = try? await store.updateAgentRun(
               id: reviewRun.id,
               status: .awaitingOwner,
-              worktreePath: integration.url.path
+              worktreePath: reviewWorkspace.url.path
             )
           } else if reviewRun.status != .completed {
             _ = try? await store.updateAgentRun(
               id: reviewRun.id,
               status: .queued,
-              worktreePath: integration.url.path,
+              worktreePath: reviewWorkspace.url.path,
               eventActor: "StoryPointless",
               eventDetail: "Tech Lead review queued to continue against the same revision"
             )
@@ -4275,16 +4364,23 @@ final class AppModel: ObservableObject {
               workItemID: candidate.workItemID,
               profileID: techLead.id,
               status: .queued,
-              worktreePath: integration.url.path
+              worktreePath: reviewWorkspace.url.path
             )
           )
         }
       } catch {
-        await restoreCandidateToIntegrationQueue(
-          candidate,
-          context: context,
-          reason: "The exact integrated revision could not be restored: \(error.localizedDescription)"
-        )
+        if candidate.integratedSHA != nil {
+          await restoreCandidateToIntegrationQueue(
+            candidate,
+            context: context,
+            reason: "The exact integrated revision could not be restored: \(error.localizedDescription)"
+          )
+        } else {
+          _ = try? await store.updateCandidateRevision(
+            id: candidate.id,
+            status: .queuedForReview
+          )
+        }
       }
     }
 
@@ -4325,7 +4421,7 @@ final class AppModel: ObservableObject {
         )
         _ = try? await store.updateCandidateRevision(
           id: failedCandidate.id,
-          status: .queuedForIntegration
+          status: .queuedForReview
         )
         if
           let item = workItems.first(where: { $0.id == run.workItemID }),
@@ -4480,10 +4576,11 @@ final class AppModel: ObservableObject {
     let profiles = context.profiles
     let runs = context.runs
     let workItems = context.workItems
+    let productID = plan.sprint.productID
+    guard activeIntegrationTasks[productID] == nil else { return false }
     do {
-      let candidates = try await store.fetchCandidateRevisions(
-        productID: plan.sprint.productID
-      )
+      try await requeueStaleReadyCandidates(productID: productID)
+      let candidates = try await store.fetchCandidateRevisions(productID: productID)
       let techLeadID = profiles.first(where: { $0.role == .lead })?.id
       let reviewerProfileIDs = Set(
         profiles
@@ -4492,7 +4589,9 @@ final class AppModel: ObservableObject {
       )
       let reviewingCandidates = candidates
         .filter {
-          $0.sprintID == plan.sprint.id && $0.status == .reviewing
+          $0.sprintID == plan.sprint.id
+            && $0.status == .reviewing
+            && $0.integratedSHA != nil
         }
         .sorted { $0.createdAt < $1.createdAt }
       if let reviewingCandidate = reviewingCandidates.first,
@@ -4505,11 +4604,18 @@ final class AppModel: ObservableObject {
           || reviewRun.status == .running
           || reviewRun.status == .completed
       {
-        await resumeTechLeadReview(
-          candidate: reviewingCandidate,
-          reviewRun: reviewRun,
-          plan: plan
-        )
+        activeIntegrationTasks[productID] = Task { [weak self] in
+          guard let self else { return }
+          defer {
+            activeIntegrationTasks.removeValue(forKey: productID)
+            sprintExecutionWakeContinuations[productID]?.yield()
+          }
+          await resumeTechLeadReview(
+            candidate: reviewingCandidate,
+            reviewRun: reviewRun,
+            plan: plan
+          )
+        }
         return true
       }
       let resolvingCandidates = candidates.filter {
@@ -4521,66 +4627,162 @@ final class AppModel: ObservableObject {
         let resolutionRuns = runs
           .filter {
             $0.workItemID == resolvingCandidate.workItemID
-              && $0.status == .queued
               && $0.profileID == techLeadID
+              && $0.worktreePath == resolvingCandidate.integrationWorktreePath
           }
-        if let resolutionRun = resolutionRuns.max(by: { $0.createdAt < $1.createdAt }) {
-          await resumeIntegrationConflictResolution(
-            candidate: resolvingCandidate,
-            resolutionRun: resolutionRun,
-            plan: plan
+        if
+          let resolutionRun = resolutionRuns.max(by: { $0.createdAt < $1.createdAt }),
+          let worktreePath = resolvingCandidate.integrationWorktreePath,
+          try await gitWorkspaceManager.conflictResolutionIsReadyToCommit(
+            integrationWorkspaceURL: URL(
+              fileURLWithPath: worktreePath,
+              isDirectory: true
+            )
           )
+        {
+          activeIntegrationTasks[productID] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+              activeIntegrationTasks.removeValue(forKey: productID)
+              sprintExecutionWakeContinuations[productID]?.yield()
+            }
+            await completePreservedIntegrationConflict(
+              candidate: resolvingCandidate,
+              resolutionRun: resolutionRun,
+              plan: plan
+            )
+          }
+          return true
+        }
+        if
+          let resolutionRun = resolutionRuns
+            .filter({ $0.status == .queued })
+            .max(by: { $0.createdAt < $1.createdAt })
+        {
+          activeIntegrationTasks[productID] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+              activeIntegrationTasks.removeValue(forKey: productID)
+              sprintExecutionWakeContinuations[productID]?.yield()
+            }
+            await resumeIntegrationConflictResolution(
+              candidate: resolvingCandidate,
+              resolutionRun: resolutionRun,
+              plan: plan
+            )
+          }
           return true
         }
       }
-      let integrationIsOccupied = candidates.contains { candidate in
-        guard candidate.sprintID == plan.sprint.id else { return false }
-        switch candidate.status {
-        case .integrating, .resolvingConflict, .reviewing, .readyForDemo:
-          return true
-        case .queuedForIntegration, .changesRequested, .accepted, .superseded, .failed:
-          return false
-        }
-      }
+      let integrationIsOccupied = SprintCandidateAdmission.integrationQueueIsOccupied(
+        candidates: candidates,
+        sprintID: plan.sprint.id
+      )
       guard !integrationIsOccupied else { return false }
 
-      let rankByWorkItemID = Dictionary(
-        uniqueKeysWithValues: workItems.map { ($0.id, $0.rank) }
-      )
-      let queued = candidates
-        .filter {
-          $0.sprintID == plan.sprint.id && $0.status == .queuedForIntegration
-        }
-        .sorted { lhs, rhs in
-          let leftRank = rankByWorkItemID[lhs.workItemID] ?? Int.max
-          let rightRank = rankByWorkItemID[rhs.workItemID] ?? Int.max
-          if leftRank == rightRank {
-            return lhs.createdAt < rhs.createdAt
-          }
-          return leftRank < rightRank
-        }
-      guard let candidate = queued.first else { return false }
-      let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-      let implementationRun = try await store.fetchAgentRun(
-        id: candidate.implementationRunID
-      )
+      guard
+        let candidate = SprintCandidateAdmission.nextIntegrationCandidate(
+          candidates: candidates,
+          sprintID: plan.sprint.id,
+          workItems: workItems
+        )
+      else { return false }
       _ = try await store.updateCandidateRevision(
         id: candidate.id,
         status: .integrating
       )
       await reloadSelectedProductIfCurrent(productID: context.product.id)
-      await reviewCompletedImplementation(
-        implementation,
-        candidate: candidate,
-        implementationRun: implementationRun,
-        reviewCycle: max(0, candidate.version - 1),
-        plan: plan
-      )
+      activeIntegrationTasks[productID] = Task { [weak self] in
+        guard let self else { return }
+        defer {
+          activeIntegrationTasks.removeValue(forKey: productID)
+          sprintExecutionWakeContinuations[productID]?.yield()
+        }
+        await integrateReviewedCandidate(candidate, plan: plan)
+      }
       return true
     } catch {
       presentExecutionError(error, productID: context.product.id)
       return false
     }
+  }
+
+  private func requeueStaleReadyCandidates(
+    productID: UUID,
+    excluding excludedCandidateID: UUID? = nil
+  ) async throws {
+    guard let store else { return }
+    let repositoryURL = try Self.productWorkspaceURL(productID: productID)
+    let candidates = try await store.fetchCandidateRevisions(productID: productID)
+    for candidate in candidates
+    where
+      candidate.id != excludedCandidateID
+        && candidate.status == .readyForDemo
+    {
+      guard
+        let integratedSHA = candidate.integratedSHA,
+        !(try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+          repositoryURL: repositoryURL,
+          integratedSHA: integratedSHA
+        ))
+      else { continue }
+      try await requeueStaleReadyCandidate(
+        candidate,
+        reason:
+          "Accepted trunk advanced after this demo revision was prepared."
+      )
+    }
+  }
+
+  private func requeueStaleReadyCandidate(
+    _ candidate: CandidateRevision,
+    reason: String
+  ) async throws {
+    guard let store else { return }
+    await stopDemoSession(candidate, removesPreview: true)
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .queuedForIntegration
+    )
+    if
+      let item = try await store.fetchWorkItems(productID: candidate.productID)
+        .first(where: { $0.id == candidate.workItemID })
+    {
+      if item.state == .acceptance {
+        _ = try await store.transitionWorkItem(
+          id: item.id,
+          to: .running,
+          actor: "StoryPointless",
+          reason: "The accepted trunk changed after demo preparation"
+        )
+        _ = try await store.transitionWorkItem(
+          id: item.id,
+          to: .integrating,
+          actor: "StoryPointless",
+          reason: "The reviewed candidate is queued to integrate again"
+        )
+        _ = try await store.transitionWorkItem(
+          id: item.id,
+          to: .verifying,
+          actor: "StoryPointless",
+          reason: "The reviewed candidate is waiting to integrate"
+        )
+      } else if item.state == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: item.id,
+          to: .verifying,
+          actor: "StoryPointless",
+          reason: "The reviewed candidate is waiting to integrate"
+        )
+      }
+    }
+    _ = try await store.appendComment(
+      workItemID: candidate.workItemID,
+      authorKind: .system,
+      authorName: "StoryPointless",
+      body:
+        "\(reason)\n\nCandidate v\(candidate.version) kept its Tech Lead approval and returned to the integration queue. A clean merge will only repeat demo preparation; a conflict will receive focused Tech Lead re-review."
+    )
   }
 
   private func executeImplementationRun(
@@ -4638,6 +4840,25 @@ final class AppModel: ObservableObject {
         at: workspace,
         authorName: assignee.name
       )
+      let currentCandidates = try await store.fetchCandidateRevisions(
+        productID: product.id
+      )
+      let latestCandidate = currentCandidates
+        .filter { $0.workItemID == item.id }
+        .max(by: { $0.version < $1.version })
+      let adoptedBaseline: TicketRevisionBaseline? =
+        if
+          let latestCandidate,
+          let integratedSHA = latestCandidate.integratedSHA,
+          (try? await gitWorkspaceManager.currentSHA(at: workspace)) == integratedSHA
+        {
+          TicketRevisionBaseline(
+            candidateHeadSHA: latestCandidate.headSHA,
+            integratedSHA: integratedSHA
+          )
+        } else {
+          nil
+        }
 
       if item.state == .queued {
         _ = try await store.transitionWorkItem(
@@ -4649,7 +4870,11 @@ final class AppModel: ObservableObject {
       }
 
       let developerInstructions = CodexTicketExecutor.developerInstructions(
-        productInstructions: inheritedAgentInstructions(for: product),
+        productInstructions: inheritedAgentInstructions(
+          for: product,
+          availableKnowledge: knowledgePages,
+          includesMandatoryKnowledge: false
+        ),
         personaInstructions: assignee.effectiveInstructions,
         assignee: assignee
       )
@@ -4733,19 +4958,14 @@ final class AppModel: ObservableObject {
         prerequisites: prerequisites
       )
       let knowledgeContext = knowledgeSelection.referencePages
-      try await store.setAgentRunKnowledgeContext(
+      try await recordKnowledgeContext(
         runID: run.id,
-        pageIDs: knowledgeContext.map(\.id)
+        productID: product.id,
+        pages: knowledgeContext
       )
       try await store.setAgentRunKnowledgeDestinations(
         runID: run.id,
         pageIDs: Array(knowledgeSelection.writablePageIDs)
-      )
-      agentRunKnowledgeContext.removeAll { $0.runID == run.id }
-      agentRunKnowledgeContext.append(
-        contentsOf: knowledgeContext.map {
-          AgentRunKnowledgePage(runID: run.id, pageID: $0.id)
-        }
       )
       agentRunKnowledgeDestinations.removeAll { $0.runID == run.id }
       agentRunKnowledgeDestinations.append(
@@ -4760,13 +4980,15 @@ final class AppModel: ObservableObject {
       let continuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
-        recentComments: comments
+        recentComments: comments,
+        adoptedBaseline: adoptedBaseline
       )
       let replacementContinuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
         recentComments: [],
-        conversationIsAvailable: false
+        conversationIsAvailable: false,
+        adoptedBaseline: adoptedBaseline
       )
       let executionPrompt = CodexTicketExecutor.prompt(
         product: product,
@@ -5176,14 +5398,14 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .integrating,
             actor: assignee.name,
-            reason: "Candidate v\(candidate.version) queued for integration"
+            reason: "Candidate v\(candidate.version) queued for Tech Lead review"
           )
         }
         _ = try await store.updateAgentRun(
           id: run.id,
           status: .completed,
           eventActor: assignee.name,
-          eventDetail: "Candidate v\(candidate.version) queued for integration"
+          eventDetail: "Candidate v\(candidate.version) queued for Tech Lead review"
         )
         await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
@@ -5221,8 +5443,7 @@ final class AppModel: ObservableObject {
       let implementer = context.profiles.first(
         where: { $0.id == implementationRun.profileID }
       ),
-      let techLead = context.profiles.first(where: { $0.id == reviewRun.profileID }),
-      let integratedSHA = candidate.integratedSHA
+      let techLead = context.profiles.first(where: { $0.id == reviewRun.profileID })
     else {
       return
     }
@@ -5231,16 +5452,39 @@ final class AppModel: ObservableObject {
 
     let reviewCycle = max(0, candidate.version - 1)
     do {
-      let integration = try await gitWorkspaceManager.prepareIntegratedWorkspace(
-        repositoryURL: Self.productWorkspaceURL(productID: product.id),
-        integrationsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
-        candidateID: candidate.id,
-        candidateHeadSHA: candidate.headSHA,
-        integratedSHA: integratedSHA
+      try await recordKnowledgeContext(
+        runID: reviewRun.id,
+        productID: product.id,
+        pages: KnowledgeContextSelector.mandatoryPages(in: context.knowledgePages)
       )
+      let repositoryURL = try Self.productWorkspaceURL(productID: product.id)
+      let integration: GitIntegrationSnapshot?
+      let reviewWorkspace: GitIntegrationSnapshot
+      if let integratedSHA = candidate.integratedSHA {
+        let prepared = try await gitWorkspaceManager.prepareIntegratedWorkspace(
+          repositoryURL: repositoryURL,
+          integrationsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
+          candidateID: candidate.id,
+          candidateHeadSHA: candidate.headSHA,
+          integratedSHA: integratedSHA
+        )
+        integration = prepared
+        reviewWorkspace = prepared
+      } else {
+        integration = nil
+        reviewWorkspace = try await gitWorkspaceManager.prepareCandidateReviewWorkspace(
+          repositoryURL: repositoryURL,
+          reviewsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
+          candidateID: candidate.id,
+          candidateHeadSHA: candidate.headSHA
+        )
+      }
       let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
       let developerInstructions = CodexTechLeadReviewer.developerInstructions(
-        productInstructions: inheritedAgentInstructions(for: product),
+        productInstructions: inheritedAgentInstructions(
+          for: product,
+          availableKnowledge: context.knowledgePages
+        ),
         personaInstructions: techLead.effectiveInstructions,
         reviewer: techLead
       )
@@ -5250,7 +5494,7 @@ final class AppModel: ObservableObject {
         do {
           let resumedThreadID = try await client.resumeReadOnlyThread(
             threadID: existingThreadID,
-            workingDirectory: integration.url,
+            workingDirectory: reviewWorkspace.url,
             developerInstructions: developerInstructions,
             model: techLead.model,
             allowsApprovals: true
@@ -5271,6 +5515,7 @@ final class AppModel: ObservableObject {
               reviewRun: reviewRun,
               reviewCycle: reviewCycle,
               plan: plan,
+              reviewWorkspace: reviewWorkspace,
               integration: integration
             )
             return
@@ -5300,7 +5545,7 @@ final class AppModel: ObservableObject {
         recentComments: reviewComments,
         baseSHA: candidate.baseSHA,
         candidateHeadSHA: candidate.headSHA,
-        integratedSHA: integration.integratedSHA
+        integratedSHA: integration?.integratedSHA
       )
       let interruptedPermission = sprintWorkRecoveryPolicy.latestPermissionContinuation(
         for: reviewRun.id,
@@ -5313,12 +5558,13 @@ final class AppModel: ObservableObject {
         threadID = resumedReviewThreadID
         turnPrompt = CodexTechLeadReviewer.recoveryPrompt(
           item: item,
-          integratedSHA: integration.integratedSHA,
+          reviewedSHA: reviewWorkspace.integratedSHA,
+          isIntegratedRevision: integration != nil,
           interruptedPermission: interruptedPermission
         )
       } else {
         threadID = try await client.startReadOnlyThread(
-          workingDirectory: integration.url,
+          workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
           allowsApprovals: true
@@ -5329,7 +5575,7 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "StoryPointless",
-            body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same integrated revision; implementation and integration were not repeated."
+            body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
           )
         }
       }
@@ -5338,11 +5584,11 @@ final class AppModel: ObservableObject {
         id: reviewRun.id,
         status: .running,
         codexThreadID: threadID,
-        worktreePath: integration.url.path,
+        worktreePath: reviewWorkspace.url.path,
         eventActor: "StoryPointless",
         eventDetail: replacedUnavailableThread
           ? "Replaced an unavailable review Conversation"
-          : "Continuing Tech Lead review against the same integrated revision"
+          : "Continuing Tech Lead review against the same immutable revision"
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
 
@@ -5353,11 +5599,11 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [integration.url]
+          runtimeWorkspaceRoots: [reviewWorkspace.url]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         threadID = try await client.startReadOnlyThread(
-          workingDirectory: integration.url,
+          workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
           allowsApprovals: true
@@ -5367,7 +5613,7 @@ final class AppModel: ObservableObject {
           id: reviewRun.id,
           status: .running,
           codexThreadID: threadID,
-          worktreePath: integration.url.path,
+          worktreePath: reviewWorkspace.url.path,
           eventActor: "StoryPointless",
           eventDetail: "Replaced an unavailable review Conversation"
         )
@@ -5375,14 +5621,14 @@ final class AppModel: ObservableObject {
           workItemID: item.id,
           authorKind: .system,
           authorName: "StoryPointless",
-          body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same integrated revision; implementation and integration were not repeated."
+          body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
         )
         turnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [integration.url]
+          runtimeWorkspaceRoots: [reviewWorkspace.url]
         )
       }
 
@@ -5421,7 +5667,7 @@ final class AppModel: ObservableObject {
           """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [integration.url]
+          runtimeWorkspaceRoots: [reviewWorkspace.url]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
           productID: product.id,
@@ -5454,6 +5700,7 @@ final class AppModel: ObservableObject {
         reviewRun: reviewRun,
         reviewCycle: reviewCycle,
         plan: plan,
+        reviewWorkspace: reviewWorkspace,
         integration: integration
       )
     } catch {
@@ -5518,6 +5765,187 @@ final class AppModel: ObservableObject {
     }
   }
 
+  private func executeCandidateReview(
+    _ candidate: CandidateRevision,
+    context: SprintExecutionContext
+  ) async {
+    guard let store else { return }
+    do {
+      let implementation = try CodexTicketExecutor.decode(
+        candidate.executionResultJSON
+      )
+      let implementationRun = try await store.fetchAgentRun(
+        id: candidate.implementationRunID
+      )
+      await reviewCompletedImplementation(
+        implementation,
+        candidate: candidate,
+        implementationRun: implementationRun,
+        reviewCycle: max(0, candidate.version - 1),
+        plan: context.plan
+      )
+    } catch {
+      presentExecutionError(error, productID: context.product.id)
+    }
+  }
+
+  private func integrateReviewedCandidate(
+    _ candidate: CandidateRevision,
+    plan: SprintPlan
+  ) async {
+    guard
+      let store,
+      let context = await sprintExecutionContext(productID: plan.sprint.productID),
+      let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
+      let implementationRun = try? await store.fetchAgentRun(
+        id: candidate.implementationRunID
+      )
+    else { return }
+    let product = context.product
+    do {
+      let repositoryURL = try Self.productWorkspaceURL(productID: product.id)
+      let integration: GitIntegrationSnapshot
+      do {
+        integration = try await gitWorkspaceManager.integrateCandidate(
+          repositoryURL: repositoryURL,
+          integrationsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
+          candidateID: candidate.id,
+          headSHA: candidate.headSHA,
+          commitMessage: "Integrate \(item.key): \(item.title)"
+        )
+      } catch GitWorkspaceError.mergeConflict(
+        let worktreePath,
+        let conflictedFiles,
+        _
+      ) {
+        await beginIntegrationConflictResolution(
+          candidate: candidate,
+          implementationRun: implementationRun,
+          reviewCycle: max(0, candidate.version - 1),
+          plan: plan,
+          worktreePath: worktreePath,
+          conflictedFiles: conflictedFiles
+        )
+        return
+      }
+
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: .integrating,
+        integratedSHA: integration.integratedSHA,
+        integrationWorktreePath: integration.url.path
+      )
+      let implementation = try CodexTicketExecutor.decode(
+        candidate.executionResultJSON
+      )
+      try await finalizeReviewedIntegration(
+        candidateID: candidate.id,
+        implementation: implementation,
+        implementationRun: implementationRun,
+        workItem: item,
+        reviewerName: context.profiles.first(where: { $0.role == .lead })?.name
+          ?? "Tech Lead"
+      )
+    } catch {
+      if Task.isCancelled {
+        await reloadSelectedProductIfCurrent(productID: product.id)
+        return
+      }
+      _ = try? await store.updateCandidateRevision(
+        id: candidate.id,
+        status: .failed
+      )
+      _ = try? await store.updateAgentRun(
+        id: implementationRun.id,
+        status: .awaitingOwner,
+        eventActor: "StoryPointless",
+        eventDetail: "Reviewed candidate integration could not complete"
+      )
+      if
+        let currentState = try? await store.fetchWorkItems(productID: product.id)
+          .first(where: { $0.id == item.id })?.state,
+        currentState == .integrating || currentState == .verifying
+      {
+        _ = try? await store.transitionWorkItem(
+          id: item.id,
+          to: .running,
+          actor: "StoryPointless",
+          reason: "Integration stopped; preserving the reviewed candidate"
+        )
+      }
+      _ = try? await store.appendComment(
+        workItemID: item.id,
+        authorKind: .system,
+        authorName: "StoryPointless",
+        body: "The reviewed candidate could not be integrated or prepared for demo: \(error.localizedDescription)\n\nThe reviewed revision and ticket workspace are preserved for retry."
+      )
+      presentExecutionError(error, productID: product.id)
+      await reloadSelectedProductIfCurrent(productID: product.id)
+    }
+  }
+
+  private func finalizeReviewedIntegration(
+    candidateID: UUID,
+    implementation: TicketExecutionResult,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    reviewerName: String
+  ) async throws {
+    guard let store else { return }
+    if !requiresKnowledgeApproval {
+      _ = try await publishReviewedKnowledgePageProposals(
+        candidate: try await store.fetchCandidateRevision(id: candidateID),
+        workItem: workItem,
+        authorName: "StoryPointless"
+      )
+    }
+    let integratedCandidate = try await store.fetchCandidateRevision(id: candidateID)
+    guard
+      let integratedSHA = integratedCandidate.integratedSHA,
+      let demo = implementation.demo
+    else {
+      throw DemoLaunchValidationError.invalid(
+        "the reviewed candidate has no managed demo recipe."
+      )
+    }
+    try await prepareDemoForAcceptance(
+      candidate: integratedCandidate,
+      integratedSHA: integratedSHA,
+      specification: demo
+    )
+    _ = try await store.updateCandidateRevision(
+      id: candidateID,
+      status: .readyForDemo
+    )
+    _ = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      eventActor: reviewerName,
+      eventDetail: "Reviewed candidate integrated and prepared for demo"
+    )
+    if let currentState = try await store.fetchWorkItems(productID: workItem.productID)
+      .first(where: { $0.id == workItem.id })?.state
+    {
+      if currentState == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .verifying,
+          actor: reviewerName,
+          reason: "Recovered the reviewed candidate"
+        )
+      }
+      if currentState == .integrating || currentState == .verifying {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .acceptance,
+          actor: reviewerName,
+          reason: "Reviewed candidate integrated; ready for Product Owner demo"
+        )
+      }
+    }
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+  }
+
   private func reviewCompletedImplementation(
     _ implementation: TicketExecutionResult,
     candidate: CandidateRevision,
@@ -5560,46 +5988,36 @@ final class AppModel: ObservableObject {
         eventDetail: "Implementation complete; waiting for Tech Lead review"
       )
       let repositoryURL = try Self.productWorkspaceURL(productID: product.id)
-      let integration: GitIntegrationSnapshot
+      let reviewWorkspace: GitIntegrationSnapshot
       if let preparedIntegration {
-        integration = preparedIntegration
+        reviewWorkspace = preparedIntegration
+        _ = try await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .reviewing,
+          integratedSHA: preparedIntegration.integratedSHA,
+          integrationWorktreePath: preparedIntegration.url.path
+        )
       } else {
-        do {
-          integration = try await gitWorkspaceManager.integrateCandidate(
-            repositoryURL: repositoryURL,
-            integrationsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
-            candidateID: candidate.id,
-            headSHA: candidate.headSHA,
-            commitMessage: "Integrate \(item.key): \(item.title)"
-          )
-        } catch GitWorkspaceError.mergeConflict(
-          let worktreePath,
-          let conflictedFiles,
-          _
-        ) {
-          await beginIntegrationConflictResolution(
-            candidate: candidate,
-            implementationRun: implementationRun,
-            reviewCycle: reviewCycle,
-            plan: plan,
-            worktreePath: worktreePath,
-            conflictedFiles: conflictedFiles
-          )
-          return
-        }
+        reviewWorkspace = try await gitWorkspaceManager.prepareCandidateReviewWorkspace(
+          repositoryURL: repositoryURL,
+          reviewsRootURL: Self.integrationWorktreesRootURL(productID: product.id),
+          candidateID: candidate.id,
+          candidateHeadSHA: candidate.headSHA
+        )
+        _ = try await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .reviewing,
+          integrationWorktreePath: reviewWorkspace.url.path
+        )
       }
-      _ = try await store.updateCandidateRevision(
-        id: candidate.id,
-        status: .reviewing,
-        integratedSHA: integration.integratedSHA,
-        integrationWorktreePath: integration.url.path
-      )
-      _ = try await store.transitionWorkItem(
-        id: item.id,
-        to: .verifying,
-        actor: techLead.name,
-        reason: "Independent Tech Lead review started"
-      )
+      if currentState == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: item.id,
+          to: .verifying,
+          actor: techLead.name,
+          reason: "Independent Tech Lead review started"
+        )
+      }
 
       let reviewRun = try await store.createAgentRun(
         AgentRun(
@@ -5612,13 +6030,21 @@ final class AppModel: ObservableObject {
         )
       )
       activeReviewRunID = reviewRun.id
+      try await recordKnowledgeContext(
+        runID: reviewRun.id,
+        productID: product.id,
+        pages: KnowledgeContextSelector.mandatoryPages(in: context.knowledgePages)
+      )
       await reloadSelectedProductIfCurrent(productID: product.id)
 
-      let workspace = integration.url
+      let workspace = reviewWorkspace.url
       let threadID = try await client.startReadOnlyThread(
         workingDirectory: workspace,
         developerInstructions: CodexTechLeadReviewer.developerInstructions(
-          productInstructions: inheritedAgentInstructions(for: product),
+          productInstructions: inheritedAgentInstructions(
+            for: product,
+            availableKnowledge: context.knowledgePages
+          ),
           personaInstructions: techLead.effectiveInstructions,
           reviewer: techLead
         ),
@@ -5653,7 +6079,7 @@ final class AppModel: ObservableObject {
           recentComments: reviewComments,
           baseSHA: candidate.baseSHA,
           candidateHeadSHA: candidate.headSHA,
-          integratedSHA: integration.integratedSHA
+          integratedSHA: preparedIntegration?.integratedSHA
         ),
         effort: techLead.reasoningEffort,
         outputSchema: CodexTechLeadReviewer.outputSchema,
@@ -5727,7 +6153,8 @@ final class AppModel: ObservableObject {
         reviewRun: reviewRun,
         reviewCycle: reviewCycle,
         plan: plan,
-        integration: integration
+        reviewWorkspace: reviewWorkspace,
+        integration: preparedIntegration
       )
     } catch {
       if Task.isCancelled {
@@ -5812,7 +6239,8 @@ final class AppModel: ObservableObject {
     reviewRun: AgentRun,
     reviewCycle: Int,
     plan: SprintPlan,
-    integration: GitIntegrationSnapshot
+    reviewWorkspace: GitIntegrationSnapshot,
+    integration: GitIntegrationSnapshot?
   ) async throws {
     guard
       let store,
@@ -5868,54 +6296,41 @@ final class AppModel: ObservableObject {
         candidateRevisionID: candidate.id,
         status: .reviewed
       )
-      if !requiresKnowledgeApproval {
-        _ = try await publishReviewedKnowledgePageProposals(
-          candidate: try await store.fetchCandidateRevision(id: candidate.id),
-          workItem: item,
-          authorName: "StoryPointless"
+      guard integration != nil else {
+        try? await gitWorkspaceManager.removeWorktree(
+          repositoryURL: repositoryURL,
+          worktreeURL: reviewWorkspace.url
         )
-      }
-      let reviewedCandidate = try await store.fetchCandidateRevision(id: candidate.id)
-      guard
-        let integratedSHA = reviewedCandidate.integratedSHA,
-        let demo = implementation.demo
-      else {
-        throw DemoLaunchValidationError.invalid(
-          "the reviewed candidate has no managed demo recipe."
+        _ = try await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .queuedForIntegration
         )
+        _ = try await store.updateAgentRun(
+          id: implementationRun.id,
+          status: .completed,
+          eventActor: techLead.name,
+          eventDetail: "Tech Lead review passed; candidate queued for integration"
+        )
+        await reloadSelectedProductIfCurrent(productID: product.id)
+        return
       }
-      try await prepareDemoForAcceptance(
-        candidate: reviewedCandidate,
-        integratedSHA: integratedSHA,
-        specification: demo
+      try await finalizeReviewedIntegration(
+        candidateID: candidate.id,
+        implementation: implementation,
+        implementationRun: implementationRun,
+        workItem: item,
+        reviewerName: techLead.name
       )
-      _ = try await store.updateCandidateRevision(
-        id: candidate.id,
-        status: .readyForDemo
-      )
-      _ = try await store.updateAgentRun(id: implementationRun.id, status: .completed)
-      if let currentState = try await store.fetchWorkItems(productID: item.productID)
-        .first(where: { $0.id == item.id })?.state
-      {
-        if currentState == .integrating {
-          _ = try await store.transitionWorkItem(
-            id: item.id,
-            to: .verifying,
-            actor: techLead.name,
-            reason: "Recovered the completed Tech Lead review"
-          )
-        }
-        if currentState == .integrating || currentState == .verifying {
-          _ = try await store.transitionWorkItem(
-            id: item.id,
-            to: .acceptance,
-            actor: techLead.name,
-            reason: "Review passed; ready for Product Owner demo"
-          )
-        }
-      }
-      await reloadSelectedProductIfCurrent(productID: product.id)
     case .changesRequested:
+      let adoptedBaseline: TicketRevisionBaseline?
+      if let integration {
+        adoptedBaseline = try await adoptIntegratedBaselineForRevision(
+          candidate: candidate,
+          integratedSHA: integration.integratedSHA
+        )
+      } else {
+        adoptedBaseline = nil
+      }
       _ = try await store.updateCandidateRevision(
         id: candidate.id,
         status: .changesRequested
@@ -5926,7 +6341,7 @@ final class AppModel: ObservableObject {
       )
       try? await gitWorkspaceManager.removeWorktree(
         repositoryURL: repositoryURL,
-        worktreeURL: integration.url
+        worktreeURL: reviewWorkspace.url
       )
       if let currentState = try await store.fetchWorkItems(productID: item.productID)
         .first(where: { $0.id == item.id })?.state,
@@ -5939,7 +6354,12 @@ final class AppModel: ObservableObject {
           reason: "Review changes requested"
         )
       }
-      guard reviewCycle < Self.maxAutomaticReviewCorrections else {
+      let changeRequestNumber = SprintReviewCorrectionPolicy.changeRequestNumber(
+        reviewCycle: reviewCycle
+      )
+      guard SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(
+        reviewCycle: reviewCycle
+      ) else {
         let remainingFindings = review.findings.prefix(3)
           .map { "- \($0)" }
           .joined(separator: "\n")
@@ -5948,14 +6368,14 @@ final class AppModel: ObservableObject {
           status: .awaitingOwner,
           eventActor: techLead.name,
           eventDetail:
-            "\(review.findings.count) material review finding\(review.findings.count == 1 ? "" : "s") remain after two revisions"
+            "\(review.findings.count) material review finding\(review.findings.count == 1 ? "" : "s") remain after \(changeRequestNumber) review returns"
         )
         _ = try await store.appendComment(
           workItemID: item.id,
           authorKind: .agent,
           authorName: techLead.name,
           body: """
-            I paused automatic revisions because these review findings remain:
+            I paused automatic revisions after \(changeRequestNumber) review returns because these findings remain:
 
             \(remainingFindings.isEmpty ? "- The review did not provide a concrete finding." : remainingFindings)
 
@@ -5978,7 +6398,10 @@ final class AppModel: ObservableObject {
         isDirectory: true
       )
       let developerInstructions = CodexTicketExecutor.developerInstructions(
-        productInstructions: inheritedAgentInstructions(for: product),
+        productInstructions: inheritedAgentInstructions(
+          for: product,
+          availableKnowledge: context.knowledgePages
+        ),
         personaInstructions: implementer.effectiveInstructions,
         assignee: implementer
       )
@@ -5986,7 +6409,8 @@ final class AppModel: ObservableObject {
         item: item,
         reviewer: techLead,
         feedback: review.workLogComment,
-        recentComments: comments
+        recentComments: comments,
+        adoptedBaseline: adoptedBaseline
       )
       var revisionThreadID: String
       if let existingThreadID = implementationRun.codexThreadID {
@@ -6115,6 +6539,25 @@ final class AppModel: ObservableObject {
     }
   }
 
+  private func adoptIntegratedBaselineForRevision(
+    candidate: CandidateRevision,
+    integratedSHA: String
+  ) async throws -> TicketRevisionBaseline {
+    let workspace = URL(
+      fileURLWithPath: candidate.worktreePath,
+      isDirectory: true
+    )
+    try await gitWorkspaceManager.adoptIntegratedRevision(
+      ticketWorkspaceURL: workspace,
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integratedSHA
+    )
+    return TicketRevisionBaseline(
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integratedSHA
+    )
+  }
+
   private func beginIntegrationConflictResolution(
     candidate: CandidateRevision,
     implementationRun: AgentRun,
@@ -6150,6 +6593,11 @@ final class AppModel: ObservableObject {
         )
       )
       resolutionRunID = resolutionRun.id
+      try await recordKnowledgeContext(
+        runID: resolutionRun.id,
+        productID: product.id,
+        pages: KnowledgeContextSelector.mandatoryPages(in: context.knowledgePages)
+      )
       _ = try await store.appendComment(
         workItemID: item.id,
         authorKind: .system,
@@ -6239,12 +6687,20 @@ final class AppModel: ObservableObject {
     let product = context.product
 
     do {
+      try await recordKnowledgeContext(
+        runID: resolutionRun.id,
+        productID: product.id,
+        pages: KnowledgeContextSelector.mandatoryPages(in: context.knowledgePages)
+      )
       let workspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
       let productGitDirectory = try Self.productWorkspaceURL(
         productID: product.id
       ).appendingPathComponent(".git", isDirectory: true)
       let developerInstructions = CodexConflictIntegrator.developerInstructions(
-        productInstructions: inheritedAgentInstructions(for: product)
+        productInstructions: inheritedAgentInstructions(
+          for: product,
+          availableKnowledge: context.knowledgePages
+        )
       )
       var replacedUnavailableThread = false
       var threadID: String
@@ -6303,7 +6759,7 @@ final class AppModel: ObservableObject {
         turnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: resolutionPrompt,
-          effort: techLead.reasoningEffort,
+          effort: "medium",
           outputSchema: CodexConflictIntegrator.outputSchema,
           runtimeWorkspaceRoots: [workspace]
         )
@@ -6331,7 +6787,7 @@ final class AppModel: ObservableObject {
         turnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: resolutionPrompt,
-          effort: techLead.reasoningEffort,
+          effort: "medium",
           outputSchema: CodexConflictIntegrator.outputSchema,
           runtimeWorkspaceRoots: [workspace]
         )
@@ -6347,7 +6803,7 @@ final class AppModel: ObservableObject {
         client: client,
         threadID: threadID,
         turnID: turnID,
-        initialText: "Inspecting the integration conflict…"
+        initialText: "Resolving the integration conflict…"
       )
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
@@ -6380,31 +6836,13 @@ final class AppModel: ObservableObject {
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
       case .resolved:
-        let integration = try await gitWorkspaceManager.completeConflictResolution(
-          integrationWorkspaceURL: workspace,
-          candidateHeadSHA: candidate.headSHA
-        )
-        _ = try await store.updateAgentRun(
-          id: resolutionRun.id,
-          status: .completed,
-          eventActor: "Integrator",
-          eventDetail: "Conflict resolution completed"
-        )
-        _ = try await store.updateCandidateRevision(
-          id: candidate.id,
-          status: .integrating,
-          integratedSHA: integration.integratedSHA,
-          integrationWorktreePath: integration.url.path
-        )
-        let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-        await reloadSelectedProductIfCurrent(productID: product.id)
-        await reviewCompletedImplementation(
-          implementation,
+        try await completeResolvedIntegrationConflict(
           candidate: candidate,
+          resolutionRun: resolutionRun,
           implementationRun: implementationRun,
           reviewCycle: reviewCycle,
           plan: plan,
-          preparedIntegration: integration
+          workspace: workspace
         )
       }
     } catch {
@@ -6417,6 +6855,74 @@ final class AppModel: ObservableObject {
         resolutionRunID: resolutionRun.id
       )
     }
+  }
+
+  private func completePreservedIntegrationConflict(
+    candidate: CandidateRevision,
+    resolutionRun: AgentRun,
+    plan: SprintPlan
+  ) async {
+    guard
+      let store,
+      let implementationRun = try? await store.fetchAgentRun(
+        id: candidate.implementationRunID
+      ),
+      let worktreePath = candidate.integrationWorktreePath
+    else { return }
+    do {
+      try await completeResolvedIntegrationConflict(
+        candidate: candidate,
+        resolutionRun: resolutionRun,
+        implementationRun: implementationRun,
+        reviewCycle: max(0, candidate.version - 1),
+        plan: plan,
+        workspace: URL(fileURLWithPath: worktreePath, isDirectory: true)
+      )
+    } catch {
+      await recordIntegrationResolutionFailure(
+        error,
+        candidate: candidate,
+        workItemID: candidate.workItemID,
+        resolutionRunID: resolutionRun.id
+      )
+    }
+  }
+
+  private func completeResolvedIntegrationConflict(
+    candidate: CandidateRevision,
+    resolutionRun: AgentRun,
+    implementationRun: AgentRun,
+    reviewCycle: Int,
+    plan: SprintPlan,
+    workspace: URL
+  ) async throws {
+    guard let store else { return }
+    let integration = try await gitWorkspaceManager.completeConflictResolution(
+      integrationWorkspaceURL: workspace,
+      candidateHeadSHA: candidate.headSHA
+    )
+    _ = try await store.updateAgentRun(
+      id: resolutionRun.id,
+      status: .completed,
+      eventActor: "Integrator",
+      eventDetail: "Conflict resolution completed"
+    )
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .integrating,
+      integratedSHA: integration.integratedSHA,
+      integrationWorktreePath: integration.url.path
+    )
+    let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
+    await reloadSelectedProductIfCurrent(productID: candidate.productID)
+    await reviewCompletedImplementation(
+      implementation,
+      candidate: candidate,
+      implementationRun: implementationRun,
+      reviewCycle: reviewCycle,
+      plan: plan,
+      preparedIntegration: integration
+    )
   }
 
   private func recordIntegrationResolutionFailure(
@@ -6543,11 +7049,20 @@ final class AppModel: ObservableObject {
           eventDetail: "Retry requested; preserved work queued to resume"
         )
       } else if item.state == .acceptance {
-        let readyCandidates = candidateRevisions.filter { candidate in
+        let readyCandidates = currentCandidates.filter { candidate in
           candidate.workItemID == item.id && candidate.status == .readyForDemo
         }
         if let candidate = readyCandidates.max(by: { $0.version < $1.version }) {
           await stopDemoSession(candidate, removesPreview: true)
+          guard let integratedSHA = candidate.integratedSHA else {
+            throw PersistenceError.corruptData(
+              "The reviewed demo candidate has no integrated revision."
+            )
+          }
+          _ = try await adoptIntegratedBaselineForRevision(
+            candidate: candidate,
+            integratedSHA: integratedSHA
+          )
           _ = try await store.updateCandidateRevision(
             id: candidate.id,
             status: .superseded
@@ -6741,6 +7256,18 @@ final class AppModel: ObservableObject {
       guard let task = activeImplementationTasks[runID] else { continue }
       task.cancel()
     }
+    let reviewCandidateIDs = activeReviewProductIDs.compactMap {
+      productID == nil || $0.value == productID ? $0.key : nil
+    }
+    for candidateID in reviewCandidateIDs {
+      activeReviewTasks[candidateID]?.cancel()
+    }
+    let integrationProductIDs = activeIntegrationTasks.keys.filter {
+      productID == nil || $0 == productID
+    }
+    for integrationProductID in integrationProductIDs {
+      activeIntegrationTasks[integrationProductID]?.cancel()
+    }
     if let client = codexClient {
       let turns = activeExecutionTurns.values.filter {
         productID == nil || $0.productID == productID
@@ -6756,7 +7283,12 @@ final class AppModel: ObservableObject {
         }
       }
     }
-    if !executionTasks.isEmpty || !implementationTaskIDs.isEmpty {
+    if
+      !executionTasks.isEmpty
+        || !implementationTaskIDs.isEmpty
+        || !reviewCandidateIDs.isEmpty
+        || !integrationProductIDs.isEmpty
+    {
       for _ in 0..<100 {
         let hasScheduler =
           if let productID {
@@ -6767,7 +7299,14 @@ final class AppModel: ObservableObject {
         let hasImplementation = activeImplementationProductIDs.contains {
           productID == nil || $0.value == productID
         }
-        guard hasScheduler || hasImplementation else { break }
+        let hasReview = activeReviewProductIDs.contains {
+          productID == nil || $0.value == productID
+        }
+        let hasIntegration = activeIntegrationTasks.keys.contains {
+          productID == nil || $0 == productID
+        }
+        guard hasScheduler || hasImplementation || hasReview || hasIntegration
+        else { break }
         try? await Task.sleep(for: .milliseconds(100))
       }
     }
@@ -6779,6 +7318,11 @@ final class AppModel: ObservableObject {
         activeImplementationTasks.removeValue(forKey: runID)
         activeImplementationProductIDs.removeValue(forKey: runID)
       }
+      for candidateID in reviewCandidateIDs {
+        activeReviewTasks.removeValue(forKey: candidateID)
+        activeReviewProductIDs.removeValue(forKey: candidateID)
+      }
+      activeIntegrationTasks.removeValue(forKey: productID)
       activeExecutionTurns = activeExecutionTurns.filter {
         $0.value.productID != productID
       }
@@ -6791,6 +7335,9 @@ final class AppModel: ObservableObject {
       sprintExecutionTaskIDs.removeAll()
       activeImplementationTasks.removeAll()
       activeImplementationProductIDs.removeAll()
+      activeReviewTasks.removeAll()
+      activeReviewProductIDs.removeAll()
+      activeIntegrationTasks.removeAll()
       activeExecutionTurns.removeAll()
     }
     let approvalRequestIDs = liveApprovalRequestProductIDs.compactMap {
@@ -6998,7 +7545,10 @@ final class AppModel: ObservableObject {
       let threadID = try await client.startReadOnlyThread(
         workingDirectory: workspace,
         developerInstructions: CodexRetrospectiveSynthesizer.developerInstructions(
-          productInstructions: product.instructions,
+          productInstructions: inheritedAgentInstructions(
+            for: product,
+            availableKnowledge: productKnowledge
+          ),
           personaInstructions: analyst.effectiveInstructions
         ),
         model: analyst.model
@@ -7106,31 +7656,54 @@ final class AppModel: ObservableObject {
     retrospectiveSyntheses.sort { $0.createdAt < $1.createdAt }
   }
 
-  private func inheritedAgentInstructions(for product: Product) -> String {
+  private func inheritedAgentInstructions(
+    for product: Product,
+    availableKnowledge: [KnowledgePage]? = nil,
+    includesMandatoryKnowledge: Bool = true
+  ) -> String {
     let shared = product.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard
-      let waysOfWorking = knowledgePages.first(where: {
-        $0.productID == product.id
-          && $0.slug == "ways-of-working"
-          && $0.verificationStatus == .verified
-      })
-    else {
-      return shared
+    guard includesMandatoryKnowledge else { return shared }
+    let productKnowledge = (availableKnowledge ?? knowledgePages).filter {
+      $0.productID == product.id
     }
-    let practices = waysOfWorking.bodyMarkdown.trimmingCharacters(
-      in: .whitespacesAndNewlines
-    )
-    guard !practices.isEmpty else { return shared }
+    let mandatory = KnowledgeContextSelector.mandatoryPages(in: productKnowledge)
+    guard !mandatory.isEmpty else { return shared }
+    let context = mandatory.map { page in
+      """
+      ### \(page.title) [verified, page ID: \(page.id.uuidString)]
+      \(page.bodyMarkdown)
+      """
+    }.joined(separator: "\n\n")
     return [
       shared,
       """
-      VERIFIED WAYS OF WORKING
-      These practices were accepted by the Product Owner and apply to this task:
-      \(practices)
+      VERIFIED MANDATORY PRODUCT KNOWLEDGE
+      These pages are always included because they contain durable product and operating guidance:
+
+      \(context)
       """,
     ]
     .filter { !$0.isEmpty }
     .joined(separator: "\n\n")
+  }
+
+  private func recordKnowledgeContext(
+    runID: UUID,
+    productID: UUID,
+    pages: [KnowledgePage]
+  ) async throws {
+    guard let store else { throw CodexClientError.notConnected }
+    try await store.setAgentRunKnowledgeContext(
+      runID: runID,
+      pageIDs: pages.map(\.id)
+    )
+    guard selectedProductID == productID else { return }
+    agentRunKnowledgeContext.removeAll { $0.runID == runID }
+    agentRunKnowledgeContext.append(
+      contentsOf: pages.map {
+        AgentRunKnowledgePage(runID: runID, pageID: $0.id)
+      }
+    )
   }
 
   private func deliveryNoteMarkdown(

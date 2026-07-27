@@ -141,7 +141,8 @@ backend, security, and other specialist profiles are owner-added capabilities,
 not required permanent roles. Implementation and review remain separate runs;
 no profile can attest independently to work it produced. Sprint Planning assigns
 the delivery member only; the scheduler creates the ordinary Lead review run
-after integration, with specialist review added later by policy when warranted.
+against the immutable ticket candidate before integration, with specialist review
+added later by policy when warranted.
 
 The PO starts a **sprint**, not a run. Starting the sprint freezes its approved
 goal, contracts, assignments, and dependency-led execution plan, then authorizes the
@@ -166,33 +167,41 @@ headcount.
 1. Record the current local-trunk commit when admitting a contract.
 2. Create a private branch and worktree for the implementation run.
 3. Produce a candidate commit after fast checks.
-4. Replay candidates in dependency order into an ephemeral integration
+4. Run independent Lead reviews in parallel against detached workspaces pinned
+   to the immutable candidate commits.
+5. Replay approved candidates in dependency order into an ephemeral integration
    worktree based on the latest trunk.
-5. Surface conflicts as explicit Integrator work; resolve only unambiguous overlap
+6. Surface conflicts as explicit Integrator work; resolve only unambiguous overlap
    and pause material choices for the Product Owner.
-6. Pin full checks, a separate Lead review run, documentation review, and
-   preview to the exact integrated candidate; add a specialist reviewer when
-   ticket policy requires one.
-7. Advance trunk only after human acceptance of that exact commit.
+7. Preserve the candidate review after a clean merge. If conflict resolution
+   changes the merge result, pin a focused Lead re-review to that exact integrated
+   revision.
+8. Pin the preview to the integrated candidate and advance trunk only after
+   human acceptance of that exact commit.
 
 The merge path is deterministic first and agentic only when necessary. Git attempts
-the candidate merge before an agent is involved. A clean merge advances directly
-to checks and Tech Lead review. A conflict creates an **Integrator** system run with
-the base, both candidate diffs, affected ticket contracts, dependency context, and
-test evidence. The Integrator may resolve mechanical conflicts but must return
-semantic or product conflicts to the relevant implementation ticket or Product
-Owner. It is not an independent product persona and it cannot approve its own
-resolution. The Tech Lead reviews the final integrated candidate, not an isolated
-branch. The board keeps this understandable as **In Review**, while the card and
-Work log distinguish **Integrating changes**, **Resolving a conflict**, and
-**Tech Lead reviewing**.
+to merge a reviewed candidate without involving an agent. A clean merge advances
+directly to demo preparation. A conflict creates an **Integrator** system run with
+the reported unmerged paths, ticket context, and preserved conflicted worktree. The
+Integrator inspects only the affected files and nearby context, edits the unambiguous
+overlap, and returns without running a second review or test pass. StoryPointless
+performs mechanical Git validation and owns the merge commit. The Integrator must
+return semantic or product conflicts to the relevant implementation ticket or
+Product Owner. It is not an independent product persona and it cannot approve its
+own resolution. The Tech Lead reviews the immutable ticket candidate before it joins
+this serial path, then reviews the final integrated candidate only when conflict
+resolution changed it. The board keeps this understandable as **In Review**, while
+the card and Work log distinguish **Tech Lead reviewing**, **Queued to integrate**,
+**Integrating changes**, and **Resolving a conflict**.
 
 The Tech Lead may return a candidate only for a concrete material defect that
 justifies the full implementation, integration, and review loop. Cosmetic diff
 hygiene and optional style-only checks are non-blocking unless they cause a
 behavioural, rendering, validity, required-gate, reviewability, or security
 failure. Re-review applies the same threshold to previous feedback, so an
-earlier blocker label does not perpetuate a non-material cycle.
+earlier blocker label does not perpetuate a non-material cycle. The fifth review
+return to **In Progress** preserves the workspace and findings but pauses automatic
+revision until the Product Owner provides direction.
 
 Git implementation is behind a protocol. The spike may use a known executable;
 the distributed product must provide its own compatible Git implementation and
@@ -213,6 +222,24 @@ opening its presentation. A candidate enters **Ready for Demo** only after that
 test succeeds. The Product Owner's **Demo** action prepares the same exact
 revision, starts or reuses the managed process, waits for typed readiness, and
 opens the browser, app, artifact, or captured result.
+
+Ready for Demo is not part of the serialized integration lane. Multiple independently
+reviewed candidates may therefore be prepared for Product Owner evaluation. Promotion
+still requires the approved revision to contain current accepted trunk. When another
+approval advances trunk, StoryPointless stops and removes any now-stale preview,
+returns its already reviewed candidate to the integration queue, and prepares a new
+exact demo revision. A clean re-integration retains the immutable candidate review;
+conflict resolution requires focused Tech Lead re-review.
+
+When a post-conflict Tech Lead review or Product Owner demo requests another
+implementation revision, the host adopts the exact reviewed integrated SHA into
+the preserved ticket branch with an idempotent fast-forward before resuming the
+Implementer. It validates a clean ticket worktree, the expected immutable candidate
+HEAD, and candidate ancestry first. The candidate record remains immutable; only the
+mutable implementation branch advances. The continuation identifies the old candidate
+and adopted integrated SHA so the agent preserves accepted trunk behavior and conflict
+resolution rather than rediscovering them. Any dirty or divergent state fails closed
+instead of delegating Git repair to the agent.
 
 If review succeeds but smoke preparation fails, the failed candidate retains its
 integrated SHA and completed-review provenance. The ticket presents **Retry demo
@@ -306,15 +333,20 @@ approval. Recovery prompts label prior permission details as audit display only:
 agent never pastes a displayed command back into the command tool, omits explicit
 `sh -c`, `bash -lc`, and `zsh -lc` launchers, and replaces an interrupted leaf
 permission with one consolidated runtime request instead of continuing a path-by-path
-cascade. It also prefers a short, existing, purpose-named project entry point over a
-shell chain. When recurring checks are one coherent workflow and the product has no
-suitable entry point, an Implementer may add a maintained repository script or package
-task as normal product tooling; it must not conceal unrelated operations or exist only
-to obtain broader approval. Read-only reviewers may use an existing entry point but
-cannot create one. If the permissions tool is unavailable or a safe coherent capability
-cannot be established within the current boundary, the agent fails closed with the
-diagnostic and required access instead of silently substituting older verification
-evidence.
+cascade. It first consults verified Environments guidance, then prefers the repository's
+established native build system and shortest maintained, purpose-named entry point over
+a shell chain. When a recurring coherent workflow has no suitable entry point, an
+Implementer may add a version-controlled, non-interactive, workspace-relative task or
+script as normal product tooling; it must not substitute an unrelated package manager
+or runtime, conceal operations, or exist only to obtain broader approval. A service
+entry point remains in the foreground, accepts the app-supplied port, and exposes typed
+readiness. Verified changes produce a complete Environments proposal describing the
+commands, working directory, prerequisites, readiness, required capabilities, and
+limitations. Read-only reviewers may use an existing entry point and verify the
+proposal but cannot create either. If the permissions tool is unavailable or a
+safe coherent capability cannot be established within the current boundary, the
+agent fails closed with the diagnostic and required access instead of silently
+substituting older verification evidence.
 The permission Work log card presents the agent's plain-language purpose first
 and places the unchanged exact command and additional access in a disclosure.
 Persistence and matching continue to use the exact request, so this presentation
@@ -400,16 +432,17 @@ prepares a fresh isolated ticket workspace.
 
 Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown,
 including one paused at a scoped permission request, retains its review run,
-non-ephemeral Conversation, integration path, and integrated SHA. On restart
+non-ephemeral Conversation, detached path, and reviewed SHA. On restart
 StoryPointless verifies or reconstructs the detached checkout at that exact SHA,
 recovers a valid completed structured result when one exists, or starts a
 continuation turn after explicitly resuming the same Conversation. An expired
 live approval request keeps the review paused until the Product Owner decides;
 saved matching run or product grants apply normally once it resumes. A missing
 Conversation starts a replacement review against the same SHA only after
-`thread/resume` fails. Only a missing, mutated, or unverifiable integrated
-revision returns the candidate to integration and full review, with an explicit
-Work log explanation. A candidate already in **Ready for Demo** keeps its
+`thread/resume` fails. A missing, mutated, or unverifiable candidate checkout
+returns the immutable candidate to review. An unverifiable post-conflict
+integrated revision returns it to integration and focused re-review, with an
+explicit Work log explanation. A candidate already in **Ready for Demo** keeps its
 reviewed revision; only its owned demo process is stopped and restarted.
 Product switching is not an execution suspension boundary. The application owns
 one product-scoped scheduler task per active sprint, and each scheduler reloads
@@ -456,6 +489,22 @@ than treating every readable page as writable. The prompt still shows the full
 canonical directory as routing metadata, without presenting unavailable page
 bodies as verified context.
 
+Overview, Product principles, Glossary, Ways of working, and Environments form
+the central mandatory-page policy. Every product is idempotently backfilled with
+the Operations section and Environments page, but an empty page remains only a
+destination. Non-empty verified mandatory pages are supplied to implementation,
+Tech Lead, Integrator, and other product agent instructions. Delivery context
+records combine these pages with bounded ticket-relevant selection, and the Work
+log presents the two groups separately.
+
+Environments is always an authorised update destination for an implementation
+run so an agent can propose a complete replacement after verifying operational
+guidance is absent or stale. It remains read-only to Tech Lead and Integrator
+runs. Tech Lead approval uses the existing candidate-bound knowledge proposal
+path; automatic publication and the stricter Product Owner approval feature flag
+remain unchanged. Stable repository entry points improve exact saved-product
+permission matching without converting knowledge into a grant.
+
 ## 10. Near-term implementation sequence
 
 1. **Complete:** core domain model, workflow state machine, SQLite schema, and
@@ -498,13 +547,15 @@ bodies as verified context.
    Restart recovery continues interrupted implementation in its existing
    Conversation and workspace with permission-aware recovery context, requeues
    integration, and continues interrupted Tech Lead review in the same
-   Conversation against its verified exact integrated SHA. Implementation and
+   Conversation against its verified immutable candidate SHA or post-conflict
+   integrated SHA. Implementation and
    review both recover a completed structured result before starting another
    turn.
 7. **Partial:** product repository bootstrap, ticket-named private branches and
    worktrees, versioned candidate commit ranges, detached integration worktrees,
    a rank-ordered serial candidate queue, internal Integrator conflict runs,
-   exact-SHA Tech Lead review, and Product Owner promotion to `trunk` are
+   parallel exact-candidate Tech Lead review, focused post-conflict re-review,
+   and Product Owner promotion to `trunk` are
    implemented. Durable multi-process merge-queue leases remain.
 8. Pinned checks, reviewer checkout, loopback preview, release finalization, and
    an agent-authored quit checkpoint. Normal termination already interrupts all
@@ -517,7 +568,10 @@ bodies as verified context.
    normal trunk checkpoint from publishing them early. A runtime feature flag
    restores per-proposal Product Owner approval for testing stricter governance.
    Material unstated owner choices still pause execution rather than entering a
-   proposal. Decision capture and richer sourced knowledge-change diffs remain.
+   proposal. Verified mandatory pages are inherited across agent contexts,
+   Environments is backfilled and updateable through the same proposal path, and
+   Work log context records distinguish always-included from ticket-relevant
+   knowledge. Decision capture and richer sourced knowledge-change diffs remain.
 10. **Partial:** durable agent observations, reviewable agent and Product Owner
    retrospective proposals, Ways of working promotion, and backlog-ticket
    creation with automatic refinement entry are implemented. Per-run free-text

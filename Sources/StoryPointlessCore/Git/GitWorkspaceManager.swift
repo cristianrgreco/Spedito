@@ -480,6 +480,50 @@ public actor GitWorkspaceManager {
     return GitIntegrationSnapshot(url: integrationURL, integratedSHA: integratedSHA)
   }
 
+  public func prepareCandidateReviewWorkspace(
+    repositoryURL: URL,
+    reviewsRootURL: URL,
+    candidateID: UUID,
+    candidateHeadSHA: String
+  ) throws -> GitIntegrationSnapshot {
+    try fileManager.createDirectory(at: reviewsRootURL, withIntermediateDirectories: true)
+    let reviewURL = reviewsRootURL.appendingPathComponent(
+      candidateID.uuidString.lowercased(),
+      isDirectory: true
+    )
+    if fileManager.fileExists(atPath: reviewURL.path) {
+      do {
+        try validateIntegratedWorkspace(
+          reviewURL,
+          candidateHeadSHA: candidateHeadSHA,
+          integratedSHA: candidateHeadSHA
+        )
+        return GitIntegrationSnapshot(
+          url: reviewURL,
+          integratedSHA: candidateHeadSHA
+        )
+      } catch {
+        try removeWorktree(repositoryURL: repositoryURL, worktreeURL: reviewURL)
+      }
+    } else {
+      _ = try? run(["worktree", "prune"], at: repositoryURL)
+    }
+
+    _ = try run(
+      ["worktree", "add", "--detach", reviewURL.path, candidateHeadSHA],
+      at: repositoryURL
+    )
+    try validateIntegratedWorkspace(
+      reviewURL,
+      candidateHeadSHA: candidateHeadSHA,
+      integratedSHA: candidateHeadSHA
+    )
+    return GitIntegrationSnapshot(
+      url: reviewURL,
+      integratedSHA: candidateHeadSHA
+    )
+  }
+
   public func preparePreviewWorkspace(
     repositoryURL: URL,
     previewsRootURL: URL,
@@ -510,6 +554,15 @@ public actor GitWorkspaceManager {
     candidateHeadSHA: String? = nil
   ) throws -> GitIntegrationSnapshot {
     _ = try run(["add", "-A"], at: integrationWorkspaceURL)
+    let stagedCheck = try runAllowingFailure(
+      ["diff", "--cached", "--check"],
+      at: integrationWorkspaceURL
+    )
+    guard !stagedCheck.output.contains("leftover conflict marker") else {
+      throw GitWorkspaceError.invalidRepository(
+        "The resolved integration still contains conflict markers."
+      )
+    }
     let unmerged = try run(
       ["diff", "--name-only", "--diff-filter=U"],
       at: integrationWorkspaceURL
@@ -551,6 +604,110 @@ public actor GitWorkspaceManager {
       url: integrationWorkspaceURL,
       integratedSHA: integratedSHA
     )
+  }
+
+  public func conflictResolutionIsReadyToCommit(
+    integrationWorkspaceURL: URL
+  ) throws -> Bool {
+    let mergeHead = try runAllowingFailure(
+      ["rev-parse", "--quiet", "--verify", "MERGE_HEAD"],
+      at: integrationWorkspaceURL
+    )
+    guard mergeHead.status == 0 else { return false }
+    let unmerged = try run(
+      ["diff", "--name-only", "--diff-filter=U"],
+      at: integrationWorkspaceURL
+    )
+    guard unmerged.isEmpty else { return false }
+    let stagedCheck = try runAllowingFailure(
+      ["diff", "--cached", "--check"],
+      at: integrationWorkspaceURL
+    )
+    return !stagedCheck.output.contains("leftover conflict marker")
+  }
+
+  public func integratedRevisionContainsCurrentTrunk(
+    repositoryURL: URL,
+    integratedSHA: String
+  ) throws -> Bool {
+    let currentTrunk = try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL)
+    let ancestry = try runAllowingFailure(
+      ["merge-base", "--is-ancestor", currentTrunk, integratedSHA],
+      at: repositoryURL
+    )
+    switch ancestry.status {
+    case 0:
+      return true
+    case 1:
+      return false
+    default:
+      throw GitWorkspaceError.commandFailed(
+        arguments: ["merge-base", "--is-ancestor", currentTrunk, integratedSHA],
+        output: ancestry.output
+      )
+    }
+  }
+
+  @discardableResult
+  public func adoptIntegratedRevision(
+    ticketWorkspaceURL: URL,
+    candidateHeadSHA: String,
+    integratedSHA: String
+  ) throws -> String {
+    let branchName = try run(["branch", "--show-current"], at: ticketWorkspaceURL)
+    guard branchName.hasPrefix("ticket/") else {
+      throw GitWorkspaceError.invalidRepository(
+        "Only a ticket branch can adopt a reviewed integration revision."
+      )
+    }
+    let status = try run(["status", "--porcelain"], at: ticketWorkspaceURL)
+    guard status.isEmpty else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket workspace contains uncaptured changes and cannot adopt the reviewed integration."
+      )
+    }
+    let candidateIncluded = try runAllowingFailure(
+      ["merge-base", "--is-ancestor", candidateHeadSHA, integratedSHA],
+      at: ticketWorkspaceURL
+    )
+    switch candidateIncluded.status {
+    case 0:
+      break
+    case 1:
+      throw GitWorkspaceError.invalidRepository(
+        "The reviewed integration no longer contains the immutable ticket candidate."
+      )
+    default:
+      throw GitWorkspaceError.commandFailed(
+        arguments: ["merge-base", "--is-ancestor", candidateHeadSHA, integratedSHA],
+        output: candidateIncluded.output
+      )
+    }
+
+    let currentSHA = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+    if currentSHA == integratedSHA {
+      return currentSHA
+    }
+    guard currentSHA == candidateHeadSHA else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket workspace moved away from both the immutable candidate and its reviewed integration."
+      )
+    }
+
+    _ = try run(["merge", "--ff-only", integratedSHA], at: ticketWorkspaceURL)
+    let adoptedSHA = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+    guard adoptedSHA == integratedSHA else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket workspace did not advance to the reviewed integration."
+      )
+    }
+    let adoptedStatus = try run(["status", "--porcelain"], at: ticketWorkspaceURL)
+    guard adoptedStatus.isEmpty else {
+      throw GitWorkspaceError.invalidRepository(
+        "Advancing the ticket workspace left uncaptured changes."
+      )
+    }
+    return adoptedSHA
   }
 
   public func promote(

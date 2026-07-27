@@ -138,4 +138,39 @@ struct KnowledgeContextSelectorTests {
         .contains("External services")
     )
   }
+
+  @Test("Verified Environments guidance is mandatory and remains updateable by implementation")
+  func environmentsIsMandatoryOperationalContext() throws {
+    let productID = UUID()
+    let environments = KnowledgePage(
+      productID: productID,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: """
+        Run the repository's maintained validation task from its root.
+        """
+    )
+    let unrelated = KnowledgePage(
+      productID: productID,
+      title: "Users & journeys",
+      slug: "users-and-journeys",
+      bodyMarkdown: "Product Owners review completed outcomes."
+    )
+    let item = WorkItem(
+      productID: productID,
+      key: "T4",
+      title: "Adjust ticket row spacing"
+    )
+
+    let selection = KnowledgeContextSelector.select(
+      pages: [unrelated, environments],
+      item: item,
+      prerequisites: []
+    )
+
+    #expect(selection.referencePages.map(\.id) == [environments.id])
+    #expect(selection.writablePageIDs.contains(environments.id))
+    #expect(KnowledgeContextSelector.isMandatory(environments))
+    #expect(!KnowledgeContextSelector.isMandatory(unrelated))
+  }
 }

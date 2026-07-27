@@ -2064,16 +2064,24 @@ enum TicketEpicNavigation {
   }
 }
 
+enum TicketRelationshipNavigation {
+  static func destination(
+    for relationshipID: UUID,
+    source: WorkItem,
+    in workItems: [WorkItem]
+  ) -> WorkItem? {
+    workItems.first {
+      $0.id == relationshipID && $0.productID == source.productID
+    }
+  }
+}
+
 struct BacklogPlanningSizing {
   static let tableRowHeight: CGFloat = 40
   static let tableRowDividerHeight: CGFloat = 1
   static let emptyEpicHeight: CGFloat = 166
   static let epicChromeHeight: CGFloat = 66
   static let epicRowHeight = tableRowHeight + tableRowDividerHeight
-  static let minimumBacklogHeight: CGFloat = 260
-  static let maximumPreferredBacklogContentHeight: CGFloat = 420
-  static let backlogChromeHeight: CGFloat = 132
-  static let backlogRowHeight = tableRowHeight + tableRowDividerHeight
 
   static func epicHeight(
     openEpicCount: Int,
@@ -2092,19 +2100,9 @@ struct BacklogPlanningSizing {
   static func backlogHeight(
     availableHeight: CGFloat,
     epicHeight: CGFloat,
-    sectionDividerHeight: CGFloat,
-    rowCount: Int
+    sectionDividerHeight: CGFloat
   ) -> CGFloat {
-    let remainingHeight = availableHeight - epicHeight - sectionDividerHeight
-    let preferredContentHeight = min(
-      CGFloat(rowCount) * backlogRowHeight + backlogChromeHeight,
-      maximumPreferredBacklogContentHeight
-    )
-
-    return max(
-      minimumBacklogHeight,
-      max(remainingHeight, preferredContentHeight)
-    )
+    max(0, availableHeight - epicHeight - sectionDividerHeight)
   }
 }
 
@@ -2246,15 +2244,10 @@ private struct BacklogView: View {
           closedEpicCount: epicSections.closedEpics.count,
           closedEpicsExpanded: closedEpicsExpanded
         )
-        let suggestionCount = visibleSuggestionBatch?.suggestions
-          .filter { $0.status == .proposed }
-          .count ?? 0
-        let backlogRowCount = backlogItems.count + suggestionCount
         let backlogHeight = BacklogPlanningSizing.backlogHeight(
           availableHeight: availableHeight,
           epicHeight: epicHeight,
-          sectionDividerHeight: sectionDividerHeight,
-          rowCount: backlogRowCount
+          sectionDividerHeight: sectionDividerHeight
         )
 
         HStack(alignment: .top, spacing: 0) {
@@ -5025,11 +5018,12 @@ private struct TicketSuggestionDetailView: View {
                 tint: suggestion.priority.tint
               ),
             ],
-            epic: epic,
-            acceptanceCriteria: suggestion.acceptanceCriteria,
-            emptyAcceptanceCriteriaText: "No acceptance criteria proposed",
-            relationships: relationships
-          )
+              epic: epic,
+              acceptanceCriteria: suggestion.acceptanceCriteria,
+              emptyAcceptanceCriteriaText: "No acceptance criteria proposed",
+              relationships: relationships,
+              onOpenRelationship: nil
+            )
 
           SprintTicketSectionCard(title: "Why this work") {
             Text(suggestion.rationale)
@@ -8698,6 +8692,7 @@ private struct SprintBoardColumn: View {
 
 struct SprintTicketRunTelemetryPresentation {
   let contextFraction: Double?
+  let compactionCount: Int?
   let showsLiveActivity: Bool
 
   var contextPercentage: Int? {
@@ -8717,6 +8712,11 @@ struct SprintTicketRunTelemetryPresentation {
       contextFraction = min(1, max(0, Double(used) / Double(window)))
     } else {
       contextFraction = nil
+    }
+    if let compactions = run?.compactionCount, compactions > 0 {
+      compactionCount = compactions
+    } else {
+      compactionCount = nil
     }
     showsLiveActivity = run?.status == .running && hasLiveActivity
   }
@@ -8837,7 +8837,10 @@ private struct SprintTicketRunSummary<Status: View>: View {
           }
 
           if let contextFraction = telemetry.contextFraction {
-            contextOccupancyIndicator(fraction: contextFraction)
+            contextOccupancyIndicator(
+              fraction: contextFraction,
+              compactionCount: telemetry.compactionCount
+            )
           }
         }
         .padding(.top, WorkItemCardLayout.edgePadding)
@@ -8870,24 +8873,40 @@ private struct SprintTicketRunSummary<Status: View>: View {
     .layoutPriority(1)
   }
 
-  private func contextOccupancyIndicator(fraction: Double) -> some View {
+  private func contextOccupancyIndicator(
+    fraction: Double,
+    compactionCount: Int?
+  ) -> some View {
     let percentage = Int((fraction * 100).rounded())
+    let compactionDescription = compactionCount.map {
+      ", \($0) compaction\($0 == 1 ? "" : "s")"
+    } ?? ""
 
     return ZStack {
       Circle()
-        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 3)
+        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 2.5)
       Circle()
         .trim(from: 0, to: fraction)
         .stroke(
           AIActivityVisualStyle.tint,
-          style: StrokeStyle(lineWidth: 3, lineCap: .round)
+          style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
         )
         .rotationEffect(.degrees(-90))
     }
     .frame(width: 12, height: 12)
+    .overlay {
+      if let compactionCount {
+        Text(compactionCount.formatted())
+          .font(.system(size: 6, weight: .bold, design: .rounded))
+          .foregroundStyle(AIActivityVisualStyle.tint)
+          .lineLimit(1)
+          .minimumScaleFactor(0.5)
+          .frame(width: 8)
+      }
+    }
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("Agent context")
-    .accessibilityValue("\(percentage) percent used")
+    .accessibilityValue("\(percentage) percent used\(compactionDescription)")
     .onHover { hovering in
       showsContextDetails = hovering
     }
@@ -9107,6 +9126,12 @@ private struct SprintTicketStatusBadge: View {
     }
     if let candidateStatus {
       switch candidateStatus {
+      case .queuedForReview:
+        return SprintCardActivity(
+          title: "Queued for review",
+          symbol: "checkmark.shield",
+          tint: .indigo
+        )
       case .queuedForIntegration:
         return SprintCardActivity(
           title: "Queued to integrate",
@@ -9959,6 +9984,7 @@ private struct SprintTicketDetailView: View {
   @State private var ownerAnswerSelection: TicketOwnerAnswerSelection?
   @State private var customOwnerAnswerDraft = ""
   @State private var commentComposerFocusResetRequest = 0
+  @State private var selectedRelationshipTicket: WorkItem?
 
   private var currentItem: WorkItem {
     model.workItems.first { $0.id == item.id } ?? item
@@ -10032,9 +10058,20 @@ private struct SprintTicketDetailView: View {
       grouping: model.agentRunKnowledgeContext,
       by: \.runID
     )
+    let implementationRunIDs = Set(ticketCandidates.map(\.implementationRunID))
     return model.runs
       .filter { $0.workItemID == item.id }
       .compactMap { run in
+        let profile = model.profiles.first { $0.id == run.profileID }
+        let isActiveDeliveryRun =
+          currentItem.state == .running
+          && currentSprintItem?.implementerProfileID == run.profileID
+        guard SprintTicketRunContextVisibility.includes(
+          profile: profile,
+          isDeliveryRun: implementationRunIDs.contains(run.id) || isActiveDeliveryRun
+        ) else {
+          return nil
+        }
         let pageIDs = Set((pageIDsByRun[run.id] ?? []).map(\.pageID))
         guard !pageIDs.isEmpty else { return nil }
         let pages = model.knowledgePages
@@ -10419,7 +10456,7 @@ private struct SprintTicketDetailView: View {
       showsBottomSeparator: showsBottomSeparator
     ) {
       workLogPanel(tint: .indigo) {
-        SprintTicketSectionCard(title: "Context used") {
+        SprintTicketSectionCard(title: "Knowledge used") {
           VStack(alignment: .leading, spacing: 10) {
             Label(
               "\(context.pages.count) knowledge page\(context.pages.count == 1 ? "" : "s")",
@@ -10428,12 +10465,33 @@ private struct SprintTicketDetailView: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
 
-            IntrinsicWrappingLayout(spacing: 6) {
-              ForEach(context.pages) { page in
-                contextPageRow(page)
+            if !context.mandatoryPages.isEmpty {
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Always included")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                IntrinsicWrappingLayout(spacing: 6) {
+                  ForEach(context.mandatoryPages) { page in
+                    contextPageRow(page)
+                  }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
               }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !context.relevantPages.isEmpty {
+              VStack(alignment: .leading, spacing: 6) {
+                Text("Relevant to this ticket")
+                  .font(.caption2.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                IntrinsicWrappingLayout(spacing: 6) {
+                  ForEach(context.relevantPages) { page in
+                    contextPageRow(page)
+                  }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+              }
+            }
           }
         }
       }
@@ -11053,8 +11111,10 @@ private struct SprintTicketDetailView: View {
       "These recommendations were published to the Backlog for individual review."
     case .readyForDemo:
       "Approving this research outcome will publish these as reviewable Backlog proposals. Nothing enters the Backlog until you accept each proposal."
-    case .queuedForIntegration, .integrating, .resolvingConflict, .reviewing:
+    case .queuedForReview, .reviewing:
       "These recommendations are part of this candidate and remain subject to Tech Lead review."
+    case .queuedForIntegration, .integrating, .resolvingConflict:
+      "The Tech Lead approved these recommendations. They are waiting to join the integrated demo candidate."
     case .changesRequested, .superseded, .failed:
       "These recommendations belonged to an earlier candidate and were not published."
     }
@@ -11255,7 +11315,8 @@ private struct SprintTicketDetailView: View {
               ),
               acceptanceCriteria: currentItem.acceptanceCriteria,
               emptyAcceptanceCriteriaText: "No acceptance criteria",
-              relationships: overviewRelationships
+              relationships: overviewRelationships,
+              onOpenRelationship: openRelationship
             )
 
             Divider()
@@ -11383,6 +11444,9 @@ private struct SprintTicketDetailView: View {
       ownerAnswerSelection = nil
       customOwnerAnswerDraft = ""
     }
+    .sheet(item: $selectedRelationshipTicket) { relatedItem in
+      SprintTicketDetailView(item: relatedItem)
+    }
     .task {
       while !Task.isCancelled {
         let isFirstLoad = !hasLoadedWorkLog
@@ -11409,6 +11473,14 @@ private struct SprintTicketDetailView: View {
         try? await Task.sleep(for: .seconds(1))
       }
     }
+  }
+
+  private func openRelationship(_ relationshipID: UUID) {
+    selectedRelationshipTicket = TicketRelationshipNavigation.destination(
+      for: relationshipID,
+      source: currentItem,
+      in: model.workItems
+    )
   }
 
   private var commentComposer: some View {
@@ -12237,17 +12309,20 @@ private struct TicketDetailRelationshipItem: Identifiable {
   let id: String
   let key: String
   let title: String
+  let workItemID: UUID?
 
-  init(id: String, key: String, title: String) {
+  init(id: String, key: String, title: String, workItemID: UUID? = nil) {
     self.id = id
     self.key = key
     self.title = title
+    self.workItemID = workItemID
   }
 
   init(workItem: WorkItem) {
     id = "ticket-\(workItem.id.uuidString)"
     key = workItem.key
     title = workItem.title
+    workItemID = workItem.id
   }
 }
 
@@ -12267,6 +12342,7 @@ private struct TicketDetailOverview: View {
   let acceptanceCriteria: [String]
   let emptyAcceptanceCriteriaText: String
   let relationships: [TicketDetailRelationshipGroup]
+  let onOpenRelationship: ((UUID) -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
@@ -12311,7 +12387,10 @@ private struct TicketDetailOverview: View {
       )
 
       if !relationships.isEmpty {
-        TicketDetailRelationshipsSection(groups: relationships)
+        TicketDetailRelationshipsSection(
+          groups: relationships,
+          onOpenRelationship: onOpenRelationship
+        )
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -12346,12 +12425,16 @@ private struct TicketDetailAcceptanceCriteriaSection: View {
 
 private struct TicketDetailRelationshipsSection: View {
   let groups: [TicketDetailRelationshipGroup]
+  let onOpenRelationship: ((UUID) -> Void)?
 
   var body: some View {
     SprintTicketSectionCard(title: "Relationships") {
       VStack(alignment: .leading, spacing: 14) {
         ForEach(groups) { group in
-          TicketDetailRelationshipRow(group: group)
+          TicketDetailRelationshipRow(
+            group: group,
+            onOpenRelationship: onOpenRelationship
+          )
         }
       }
     }
@@ -12360,6 +12443,7 @@ private struct TicketDetailRelationshipsSection: View {
 
 private struct TicketDetailRelationshipRow: View {
   let group: TicketDetailRelationshipGroup
+  let onOpenRelationship: ((UUID) -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -12368,28 +12452,94 @@ private struct TicketDetailRelationshipRow: View {
         .foregroundStyle(.secondary)
       VStack(alignment: .leading, spacing: 10) {
         ForEach(group.items) { item in
-          HStack(alignment: .top, spacing: 9) {
-            Text("•")
-              .foregroundStyle(.secondary)
-              .frame(width: 16, alignment: .center)
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-              Text(item.key)
-                .font(.callout.monospaced().weight(.semibold))
-                .foregroundStyle(.secondary)
-              Text("·")
-                .foregroundStyle(.tertiary)
-              Text(item.title)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+          TicketDetailRelationshipItemRow(
+            item: item,
+            onOpen: item.workItemID.flatMap { workItemID in
+              onOpenRelationship.map { open in
+                { open(workItemID) }
+              }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          )
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+private struct TicketDetailRelationshipItemRow: View {
+  let item: TicketDetailRelationshipItem
+  let onOpen: (() -> Void)?
+  @State private var isHovering = false
+
+  var body: some View {
+    Group {
+      if let onOpen {
+        Button(action: onOpen) {
+          rowContent(showsOpenAffordance: true)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+          isHovering
+            ? Color.accentColor.opacity(0.075)
+            : Color(nsColor: .windowBackgroundColor).opacity(0.7),
+          in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay {
+          RoundedRectangle(cornerRadius: 8)
+            .stroke(
+              isHovering
+                ? Color.accentColor.opacity(0.4)
+                : Color(nsColor: .separatorColor).opacity(0.65),
+              lineWidth: 1
+            )
+        }
+        .onHover { hovering in
+          withAnimation(.easeOut(duration: 0.12)) {
+            isHovering = hovering
+          }
+        }
+        .help("Open \(item.key) · \(item.title)")
+      } else {
+        rowContent(showsOpenAffordance: false)
+          .textSelection(.enabled)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func rowContent(showsOpenAffordance: Bool) -> some View {
+    HStack(alignment: .center, spacing: 9) {
+      HStack(alignment: .top, spacing: 9) {
+        Text("•")
+          .foregroundStyle(.secondary)
+          .frame(width: 16, alignment: .center)
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+          Text(item.key)
+            .font(.callout.monospaced().weight(.semibold))
+            .foregroundStyle(
+              showsOpenAffordance && isHovering ? Color.accentColor : Color.secondary
+            )
+          Text("·")
+            .foregroundStyle(.tertiary)
+          Text(item.title)
+            .foregroundStyle(
+              showsOpenAffordance && isHovering ? Color.accentColor : Color.primary
+            )
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if showsOpenAffordance {
+        Image(systemName: "arrow.right")
+          .font(.caption2)
+          .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
+      }
+    }
   }
 }
 
@@ -12399,6 +12549,21 @@ struct SprintTicketRunContextLogItem: Identifiable {
 
   var id: UUID { run.id }
   var createdAt: Date { run.createdAt }
+  var mandatoryPages: [KnowledgePage] {
+    pages.filter(KnowledgeContextSelector.isMandatory)
+  }
+  var relevantPages: [KnowledgePage] {
+    pages.filter { !KnowledgeContextSelector.isMandatory($0) }
+  }
+}
+
+enum SprintTicketRunContextVisibility {
+  static func includes(
+    profile: AgentProfile?,
+    isDeliveryRun: Bool
+  ) -> Bool {
+    isDeliveryRun || profile?.role.canReview != true
+  }
 }
 
 struct SprintTicketKnowledgeLogItem: Identifiable {
@@ -15260,6 +15425,7 @@ private struct TicketBlockerEditor: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selectedIDs: Set<UUID>
   let excludingWorkItemID: UUID?
+  let onOpen: (UUID) -> Void
 
   private var selectedItems: [WorkItem] {
     model.workItems.filter { selectedIDs.contains($0.id) }
@@ -15314,15 +15480,24 @@ private struct TicketBlockerEditor: View {
               Text("•")
                 .foregroundStyle(.secondary)
                 .frame(width: 16, alignment: .center)
-              HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(item.key)
-                  .font(.callout.monospaced().weight(.semibold))
-                  .foregroundStyle(.secondary)
-                Text("·")
-                  .foregroundStyle(.tertiary)
-                Text(item.title)
-                  .fixedSize(horizontal: false, vertical: true)
+              Button {
+                onOpen(item.id)
+              } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                  Text(item.key)
+                    .font(.callout.monospaced().weight(.semibold))
+                  Text("·")
+                    .foregroundStyle(.tertiary)
+                  Text(item.title)
+                    .fixedSize(horizontal: false, vertical: true)
+                  Image(systemName: "arrow.right")
+                    .font(.caption2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
               }
+              .buttonStyle(.plain)
+              .foregroundStyle(Color.accentColor)
+              .help("Open \(item.key) · \(item.title)")
               Spacer()
               Button {
                 selectedIDs.remove(item.id)
@@ -15396,6 +15571,7 @@ private struct TicketDetailView: View {
   @State private var dismissedDependencyKeys: Set<String> = []
   @State private var conversationRefreshToken = 0
   @State private var refinementPanelTitle = "Business Analyst review"
+  @State private var selectedRelationshipTicket: WorkItem?
 
   init(
     item: WorkItem,
@@ -15730,6 +15906,16 @@ private struct TicketDetailView: View {
     .onChange(of: model.ticketConversationWorkItemID) { previousID, currentID in
       guard previousID == itemID || currentID == itemID else { return }
       conversationRefreshToken += 1
+    }
+    .sheet(item: $selectedRelationshipTicket) { relatedItem in
+      TicketDetailView(
+        item: relatedItem,
+        dependsOnWorkItemIDs: Set(
+          model.dependencies
+            .filter { $0.workItemID == relatedItem.id }
+            .map(\.dependsOnWorkItemID)
+        )
+      )
     }
   }
 
@@ -16104,7 +16290,8 @@ private struct TicketDetailView: View {
 
         TicketBlockerEditor(
           selectedIDs: $blockerIDs,
-          excludingWorkItemID: itemID
+          excludingWorkItemID: itemID,
+          onOpen: openRelationship
         )
 
         let blockedItems = model.dependencies
@@ -16120,11 +16307,21 @@ private struct TicketDetailView: View {
               title: "Blocks",
               symbol: "link",
               items: blockedItems.map(TicketDetailRelationshipItem.init(workItem:))
-            )
+            ),
+            onOpenRelationship: openRelationship
           )
         }
       }
     }
+  }
+
+  private func openRelationship(_ relationshipID: UUID) {
+    guard let item else { return }
+    selectedRelationshipTicket = TicketRelationshipNavigation.destination(
+      for: relationshipID,
+      source: item,
+      in: model.workItems
+    )
   }
 
   private var customFieldSection: some View {
@@ -17779,9 +17976,9 @@ private struct EpicDetailView: View {
               title: "Goal and customer value",
               prompt: "What outcome should this epic create?",
               text: $goal,
-              minHeight: 110
+              minHeight: 110,
+              isReadOnly: isReadOnly
             )
-            .disabled(isReadOnly)
             EpicDetailItemsEditor(
               title: "Success criteria",
               guidance: "Each item should describe one measurable product outcome.",
@@ -18169,6 +18366,8 @@ private struct EpicTicketsSection: View {
   let isGeneratingSuggestions: Bool
   let onOpen: (WorkItem) -> Void
   let onOpenSuggestion: (TicketSuggestion) -> Void
+  @State private var hoveredTicketID: UUID?
+  @State private var hoveredSuggestionID: UUID?
 
   private var deliveredCount: Int {
     tickets.filter { $0.state == .released }.count
@@ -18327,14 +18526,15 @@ private struct EpicTicketsSection: View {
   }
 
   private func proposedTicketRow(_ suggestion: TicketSuggestion) -> some View {
-    HStack(spacing: 0) {
+    let isHovering = hoveredSuggestionID == suggestion.id
+    return HStack(spacing: 0) {
       HStack(spacing: 8) {
         Image(systemName: suggestion.type.symbolName)
           .foregroundStyle(suggestion.type.tint)
           .frame(width: 16)
         Text(suggestion.title)
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.primary)
+          .foregroundStyle(isHovering ? Color.purple : Color.primary)
           .lineLimit(2)
           .layoutPriority(1)
       }
@@ -18356,23 +18556,33 @@ private struct EpicTicketsSection: View {
         .frame(width: ownerColumnWidth, alignment: .leading)
     }
     .frame(minHeight: tableRowHeight)
-    .background(ProposedTicketVisualStyle.surface)
+    .background(
+      isHovering
+        ? ProposedTicketVisualStyle.emphasizedSurface
+        : ProposedTicketVisualStyle.surface
+    )
     .contentShape(Rectangle())
     .onTapGesture {
       onOpenSuggestion(suggestion)
+    }
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        hoveredSuggestionID = hovering ? suggestion.id : nil
+      }
     }
     .help("Open suggested ticket details")
   }
 
   private func ticketRow(_ ticket: WorkItem) -> some View {
-    HStack(spacing: 0) {
+    let isHovering = hoveredTicketID == ticket.id
+    return HStack(spacing: 0) {
       HStack(spacing: 8) {
         Image(systemName: ticket.type.symbolName)
           .foregroundStyle(ticket.type.tint)
           .frame(width: 16)
         Text(ticket.title)
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(.primary)
+          .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
           .lineLimit(2)
           .layoutPriority(1)
       }
@@ -18392,10 +18602,19 @@ private struct EpicTicketsSection: View {
         .frame(width: ownerColumnWidth, alignment: .leading)
     }
     .frame(minHeight: tableRowHeight)
+    .background(
+      isHovering ? Color.accentColor.opacity(0.055) : Color.clear
+    )
     .contentShape(Rectangle())
     .onTapGesture {
       onOpen(ticket)
     }
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        hoveredTicketID = hovering ? ticket.id : nil
+      }
+    }
+    .help("Open \(ticket.key) · \(ticket.title)")
   }
 
   private func owner(for ticket: WorkItem) -> AgentProfile? {
@@ -18988,6 +19207,7 @@ private struct EditableTextArea: View {
   let statusText: String?
   let minHeight: CGFloat
   let focusOnAppear: Bool
+  let isReadOnly: Bool
   @FocusState private var isFocused: Bool
 
   init(
@@ -18996,7 +19216,8 @@ private struct EditableTextArea: View {
     text: Binding<String>,
     statusText: String? = nil,
     minHeight: CGFloat,
-    focusOnAppear: Bool = false
+    focusOnAppear: Bool = false,
+    isReadOnly: Bool = false
   ) {
     self.title = title
     self.prompt = prompt
@@ -19004,6 +19225,7 @@ private struct EditableTextArea: View {
     self.statusText = statusText
     self.minHeight = minHeight
     self.focusOnAppear = focusOnAppear
+    self.isReadOnly = isReadOnly
   }
 
   var body: some View {
@@ -19033,11 +19255,16 @@ private struct EditableTextArea: View {
           .focused($isFocused)
       }
       .frame(minHeight: minHeight)
-      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      .background(
+        Color(nsColor: .textBackgroundColor),
+        in: RoundedRectangle(cornerRadius: 8)
+      )
       .overlay {
         RoundedRectangle(cornerRadius: 8)
           .stroke(.separator.opacity(0.7), lineWidth: 1)
       }
+      .disabled(isReadOnly)
+      .allowsHitTesting(!isReadOnly)
     }
     .onAppear {
       guard focusOnAppear else { return }

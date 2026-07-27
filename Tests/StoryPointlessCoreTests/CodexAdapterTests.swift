@@ -2111,10 +2111,13 @@ struct CodexAdapterTests {
     #expect(instructions.contains("do not merely repeat"))
     #expect(instructions.contains("add another shell wrapper"))
     #expect(instructions.contains("substitute older evidence"))
-    #expect(instructions.contains("Prefer the product's shortest established"))
-    #expect(instructions.contains("`npm test`"))
-    #expect(instructions.contains("add a small maintained repository script"))
-    #expect(instructions.contains("never create a script merely to hide unrelated operations"))
+    #expect(instructions.contains("consult the verified Environments page"))
+    #expect(instructions.contains("repository's established native build system"))
+    #expect(instructions.contains("substitute another package manager"))
+    #expect(instructions.contains("small version-controlled"))
+    #expect(instructions.contains("never use a wrapper to hide unrelated operations"))
+    #expect(instructions.contains("propose its complete replacement body"))
+    #expect(instructions.contains("knowledge as permission"))
     #expect(instructions.contains("The comment is the body"))
     #expect(instructions.contains("prefix it with the team member's name"))
     #expect(instructions.contains("StoryPointless renders attribution and status separately"))
@@ -2132,6 +2135,9 @@ struct CodexAdapterTests {
     )
     #expect(!integrationPrompt.contains("Permission requested:"))
     #expect(integrationInstructions.contains("already available inside the sandbox"))
+    #expect(integrationInstructions.contains("reported unmerged paths"))
+    #expect(integrationInstructions.contains("do not run builds, tests, linters"))
+    #expect(integrationInstructions.contains("focused Tech Lead review owns semantic validation"))
   }
 
   @Test("Ticket execution separates verified context from canonical knowledge destinations")
@@ -2434,8 +2440,8 @@ struct CodexAdapterTests {
     )
     #expect(reviewDeveloperInstructions.contains("Cosmetic diff hygiene is not a blocker"))
     #expect(reviewDeveloperInstructions.contains("trailing whitespace"))
-    #expect(reviewDeveloperInstructions.contains("shortest existing, purpose-named entry"))
-    #expect(reviewDeveloperInstructions.contains("This review is read-only"))
+    #expect(reviewDeveloperInstructions.contains("shortest maintained, purpose-named entry"))
+    #expect(reviewDeveloperInstructions.contains("review is read-only"))
     #expect(reviewDeveloperInstructions.contains("The comment is the body"))
     #expect(reviewDeveloperInstructions.contains("do not prefix it with the reviewer's name"))
     #expect(reviewDeveloperInstructions.contains(#""Approved" or "Changes requested""#))
@@ -2474,6 +2480,17 @@ struct CodexAdapterTests {
     #expect(reReviewPrompt.contains("earlier classification is not binding"))
     #expect(reReviewPrompt.contains("If no material finding remains, approve"))
     #expect(reReviewPrompt.contains("Integrate the approved provider"))
+    let candidateReviewPrompt = CodexTechLeadReviewer.prompt(
+      product: product,
+      item: researchTicket,
+      implementation: researchCompleted,
+      assignee: analyst,
+      baseSHA: "candidate-base",
+      candidateHeadSHA: "candidate-head"
+    )
+    #expect(candidateReviewPrompt.contains("Candidate revision: candidate-head"))
+    #expect(candidateReviewPrompt.contains("A clean integration"))
+    #expect(candidateReviewPrompt.contains("will not require another review"))
 
     let interruptedPermission = AgentPermissionRequest(
       productID: product.id,
@@ -2491,7 +2508,8 @@ struct CodexAdapterTests {
     )
     let recoveryPrompt = CodexTechLeadReviewer.recoveryPrompt(
       item: researchTicket,
-      integratedSHA: "integrated-review-sha",
+      reviewedSHA: "integrated-review-sha",
+      isIntegratedRevision: true,
       interruptedPermission: interruptedPermission
     )
     #expect(recoveryPrompt.contains("Continue the existing Tech Lead review"))
@@ -2530,6 +2548,29 @@ struct CodexAdapterTests {
     #expect(implementationRecoveryPrompt.contains("use `request_permissions`"))
     #expect(implementationRecoveryPrompt.contains("one batched"))
     #expect(implementationRecoveryPrompt.contains("`/opt/homebrew/Cellar`"))
+
+    let adoptedBaseline = TicketRevisionBaseline(
+      candidateHeadSHA: "candidate-before-conflict",
+      integratedSHA: "reviewed-conflict-resolution"
+    )
+    let baselineRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: researchTicket,
+      interruptedPermission: nil,
+      adoptedBaseline: adoptedBaseline
+    )
+    #expect(baselineRecoveryPrompt.contains("candidate-before-conflict"))
+    #expect(baselineRecoveryPrompt.contains("reviewed-conflict-resolution"))
+    #expect(baselineRecoveryPrompt.contains("accepted trunk changes"))
+    #expect(baselineRecoveryPrompt.contains("Do not undo or recreate this Git handoff"))
+    let baselineRevisionPrompt = CodexTicketExecutor.revisionPrompt(
+      item: researchTicket,
+      reviewer: analyst,
+      feedback: "Preserve the accepted provider behavior while correcting attribution.",
+      recentComments: [],
+      adoptedBaseline: adoptedBaseline
+    )
+    #expect(baselineRevisionPrompt.contains("reviewed-conflict-resolution"))
+    #expect(baselineRevisionPrompt.contains("Treat the current workspace as the source"))
 
     let interruptedLeafPermission = AgentPermissionRequest(
       productID: product.id,
