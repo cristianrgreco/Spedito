@@ -133,6 +133,60 @@ public enum KnowledgeContextSelector {
     )
   }
 
+  public static func selectForEpic(
+    pages: [KnowledgePage],
+    epic: Epic,
+    referenceLimit: Int = 8
+  ) -> [KnowledgePage] {
+    let verified = pages.filter {
+      $0.verificationStatus == .verified
+        && $0.kind != .deliveryNote
+        && !KnowledgeMarkdown.normalizedBody($0.bodyMarkdown).isEmpty
+    }
+    let mandatory = mandatoryPages(in: verified)
+    let queryTerms = terms(
+      [
+        epic.title,
+        epic.goal,
+        epic.successCriteria.joined(separator: " "),
+        epic.constraints,
+      ].joined(separator: " ")
+    )
+    let pagesByID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
+    let relevant = verified
+      .compactMap { page -> (page: KnowledgePage, score: Int)? in
+        let titleMatches = queryTerms.intersection(terms(page.title)).count
+        let ancestorMatches = queryTerms.intersection(
+          terms(ancestorTitles(for: page, pagesByID: pagesByID).joined(separator: " "))
+        ).count
+        let purposeMatches = queryTerms.intersection(
+          terms(purpose(for: page.slug, kind: page.kind))
+        ).count
+        let bodyMatches = min(queryTerms.intersection(terms(page.bodyMarkdown)).count, 4)
+        let score =
+          (titleMatches * 6)
+          + (ancestorMatches * 3)
+          + (purposeMatches * 5)
+          + bodyMatches
+        return score > 0 ? (page, score) : nil
+      }
+      .sorted { lhs, rhs in
+        if lhs.score != rhs.score { return lhs.score > rhs.score }
+        return lhs.page.title.localizedCaseInsensitiveCompare(rhs.page.title)
+          == .orderedAscending
+      }
+      .map(\.page)
+
+    var references = mandatory
+    var referenceIDs = Set(mandatory.map(\.id))
+    for page in relevant where references.count < max(mandatory.count, referenceLimit) {
+      if referenceIDs.insert(page.id).inserted {
+        references.append(page)
+      }
+    }
+    return references
+  }
+
   public static func mandatoryPages(in pages: [KnowledgePage]) -> [KnowledgePage] {
     let order = Dictionary(
       uniqueKeysWithValues: mandatorySlugs.enumerated().map { ($0.element, $0.offset) }

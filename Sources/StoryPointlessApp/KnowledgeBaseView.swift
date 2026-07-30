@@ -646,6 +646,12 @@ private struct KnowledgeMarkdownDocument: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       }
       .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    case .table(let table):
+      MarkdownTableView(
+        table: table,
+        font: .body,
+        inlineMarkdown: inlineMarkdown
+      )
     case .divider:
       Divider()
     }

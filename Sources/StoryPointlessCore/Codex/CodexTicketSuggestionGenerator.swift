@@ -34,25 +34,29 @@ public enum CodexTicketSuggestionGenerator {
     separate ticket. Do not bury source selection inside design or implementation. Only assign selection
     to an implementer when the Product Owner explicitly chose implementation-time selection without a
     separate recommendation.
-    Before proposing executable product work, inspect verified Environments knowledge and repository-owned
-    manifests, scripts, CI, and documentation. Decide whether the current environment can build, test,
-    prototype, demo, and locally run the planned outcome. Do not infer readiness from a runtime merely
-    being installed somewhere on the Product Owner's Mac, scan the host for package managers, or silently
-    pre-authorise machine paths. If the environment is insufficient, make a concrete Implementer-owned
-    foundation task establish the approved toolchain, stable repository entry points, isolated temporary
-    and cache locations, required capabilities, a managed demo with readiness evidence, and a verified
-    Environments update. Create a separate Business Analyst research ticket before it only when the Product
-    Owner authorised evidence gathering for a material stack, hosting, licensing, cost, maintenance, or
-    deployment choice. Work that needs the missing environment must depend on the establishment task;
-    research, product decisions, and neutral design artefacts that genuinely do not need it may proceed in
-    parallel. Do not make an ordinary feature ticket rediscover or establish its environment incidentally.
+    Before proposing executable product work, use the accepted ticket contracts and verified Product
+    knowledge supplied in the planning prompt, especially Environments. Decide whether that evidence says
+    the current environment can build, test, prototype, demo, and locally run the planned outcome. Planning
+    is not source-code investigation: do not inspect repository files, manifests, scripts, CI,
+    documentation, or Git history. Do not infer readiness from a runtime merely being installed somewhere
+    on the Product Owner's Mac, scan the host for package managers, or silently pre-authorise machine paths.
+    If the supplied evidence is insufficient, make a concrete Implementer-owned foundation task establish
+    the approved toolchain, stable repository entry points, isolated temporary and cache locations,
+    required capabilities, a managed demo with readiness evidence, and a verified Environments update.
+    Create a separate Business Analyst research ticket before it only when the Product Owner authorised
+    evidence gathering for a material stack, hosting, licensing, cost, maintenance, or deployment choice.
+    Work that needs the missing environment must depend on the establishment task; research, product
+    decisions, and neutral design artefacts that genuinely do not need it may proceed in parallel. Do not
+    make an ordinary feature ticket rediscover or establish its environment incidentally.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
     Temporary proposal references belong only in the reference field. Never repeat one at the start
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
-    Do not modify files, browse the web, or make product decisions on the owner's behalf. You may use
-    read-only local tools to query the live product database and inspect product Git history. Return only
-    the JSON requested by the output schema. Every proposal must explain why it belongs in the backlog.
+    Do not modify files, browse the web, inspect repository source or Git history, or make product
+    decisions on the owner's behalf. The supplied planning evidence is the primary context. You may query
+    the live product database views read-only only when a mutable ticket or Product knowledge detail must
+    be refreshed. Return only the JSON requested by the output schema. Every proposal must explain why it
+    belongs in the backlog.
     """
 
   public static func developerInstructions(
@@ -73,17 +77,15 @@ public enum CodexTicketSuggestionGenerator {
   public static func prompt(
     product: Product,
     existingItems: [WorkItem],
-    rejectedSuggestions: [TicketSuggestion] = []
+    rejectedSuggestions: [TicketSuggestion] = [],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
     let activeExistingItems = existingItems.filter { $0.state != .cancelled }
-    let existingScope: String
-    if activeExistingItems.isEmpty {
-      existingScope = "There are no existing backlog tickets."
-    } else {
-      existingScope = activeExistingItems
-        .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
-        .joined(separator: "\n")
-    }
+    let evidence = planningEvidence(
+      existingItems: activeExistingItems,
+      verifiedKnowledge: verifiedKnowledge,
+      includesEpicIDs: false
+    )
 
     let rejectedScope: String
     if rejectedSuggestions.isEmpty {
@@ -101,8 +103,8 @@ public enum CodexTicketSuggestionGenerator {
       Product vision:
       \(product.vision)
 
-      Existing scope (do not duplicate it):
-      \(existingScope)
+      Supplied planning evidence:
+      \(evidence)
 
       Rejected proposals from the previous analysis (do not repeat them unless changed product context
       now makes them necessary, and explicitly explain what changed):
@@ -136,17 +138,15 @@ public enum CodexTicketSuggestionGenerator {
     product: Product,
     epic: Epic,
     existingItems: [WorkItem],
-    rejectedSuggestions: [TicketSuggestion] = []
+    rejectedSuggestions: [TicketSuggestion] = [],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
     let activeExistingItems = existingItems.filter { $0.state != .cancelled }
-    let existingScope = activeExistingItems.isEmpty
-      ? "There are no existing active tickets."
-      : activeExistingItems
-        .map { item in
-          let epicContext = item.epicID.map { " · epic \($0.uuidString)" } ?? " · no epic"
-          return "- \(item.key) [\(item.type.title)\(epicContext)]: \(item.title)"
-        }
-        .joined(separator: "\n")
+    let evidence = planningEvidence(
+      existingItems: activeExistingItems,
+      verifiedKnowledge: verifiedKnowledge,
+      includesEpicIDs: true
+    )
     let rejectedScope = rejectedSuggestions.isEmpty
       ? "There are no rejected proposals from an earlier plan for this epic."
       : rejectedSuggestions
@@ -165,8 +165,8 @@ public enum CodexTicketSuggestionGenerator {
       Outcome supplied by the Product Owner:
       \(epic.goal)
 
-      Existing active work:
-      \(existingScope)
+      Supplied planning evidence:
+      \(evidence)
 
       Previously rejected proposals for this epic:
       \(rejectedScope)
@@ -193,7 +193,8 @@ public enum CodexTicketSuggestionGenerator {
       approved output without guessing its conclusion. Never stop at a research ticket when the agreed
       outcome includes user-visible behaviour. Otherwise create tickets that deliver the agreed outcome.
 
-      Assess delivery-environment readiness from verified Environments knowledge and repository evidence.
+      Assess delivery-environment readiness only from the supplied accepted ticket contracts and verified
+      Environments knowledge. Do not inspect repository source or Git history during planning.
       In epic.environmentAssessment return:
       - sufficient when the existing verified environment covers the planned executable work;
       - foundation_required when an accepted existing ticket or one proposed Implementer task must establish
@@ -222,6 +223,81 @@ public enum CodexTicketSuggestionGenerator {
       dependsOn entry must reference either another ticket in this response or an exact active ticket key
       shown above.
       """
+  }
+
+  static func planningEvidence(
+    existingItems: [WorkItem],
+    verifiedKnowledge: [KnowledgePage],
+    includesEpicIDs: Bool = true
+  ) -> String {
+    let active = existingItems.filter { $0.state != .cancelled }
+    let ticketIndex = active.isEmpty
+      ? "There are no existing active tickets."
+      : active.map { item in
+        let epicContext =
+          includesEpicIDs
+          ? item.epicID.map { " · epic \($0.uuidString)" } ?? " · no epic"
+          : ""
+        return "- \(item.key) [\(item.type.title) · \(item.state.title)\(epicContext)]: \(item.title)"
+      }
+      .joined(separator: "\n")
+
+    var detailCharacters = 0
+    let detailLimit = 18_000
+    var ticketDetails: [String] = []
+    for item in active {
+      let body = bounded(item.body, limit: 1_000)
+      let criteria = bounded(
+        item.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n"),
+        limit: 1_500
+      )
+      guard !body.isEmpty || !criteria.isEmpty else { continue }
+      let detail = """
+        \(item.key) — \(item.title)
+        Contract:
+        \(body.isEmpty ? "No additional body." : body)
+        Acceptance criteria:
+        \(criteria.isEmpty ? "No acceptance criteria recorded." : criteria)
+        """
+      guard detailCharacters + detail.count <= detailLimit else { break }
+      ticketDetails.append(detail)
+      detailCharacters += detail.count
+    }
+
+    let verified = verifiedKnowledge.filter {
+      $0.verificationStatus == .verified
+        && $0.kind != .deliveryNote
+        && !KnowledgeMarkdown.normalizedBody($0.bodyMarkdown).isEmpty
+    }
+    var knowledgeCharacters = 0
+    let knowledgeLimit = 18_000
+    var knowledgeDetails: [String] = []
+    for page in verified {
+      let detail = """
+        \(page.title) [\(page.slug)]
+        \(bounded(page.bodyMarkdown, limit: 4_000))
+        """
+      guard knowledgeCharacters + detail.count <= knowledgeLimit else { break }
+      knowledgeDetails.append(detail)
+      knowledgeCharacters += detail.count
+    }
+
+    return """
+      Active ticket index:
+      \(ticketIndex)
+
+      Accepted ticket contracts:
+      \(ticketDetails.isEmpty ? "No additional ticket contract details are recorded." : ticketDetails.joined(separator: "\n\n"))
+
+      Relevant verified Product knowledge:
+      \(knowledgeDetails.isEmpty ? "No verified Product knowledge was supplied." : knowledgeDetails.joined(separator: "\n\n"))
+      """
+  }
+
+  private static func bounded(_ value: String, limit: Int) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count > limit else { return trimmed }
+    return String(trimmed.prefix(limit)) + "\n[Context truncated by StoryPointless]"
   }
 
   public static func repairPrompt(

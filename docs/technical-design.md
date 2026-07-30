@@ -78,6 +78,9 @@ Each product owns one authoritative database at
 `<product workspace>/.storypointless/product.sqlite`. SQLite contains normalized
 current state and an append-only audit/activity log for that product. There is
 no continuously maintained projection or second copy of product truth.
+The product workspace's root `.gitignore` contains `/.storypointless/` before
+the repository's first snapshot, so the live database and its WAL/shared-memory
+files never become candidate or accepted Git content.
 Initial tables cover:
 
 - products with an indexed active/archive lifecycle state and a durable
@@ -137,8 +140,10 @@ the Codex credential store.
 Ticket edits use optimistic version checks. Agent change proposals retain the
 complete ticket snapshot and version supplied to their turn; applying a proposal
 fails closed when either the saved ticket or the owner's in-memory draft has moved.
-Codex turn waits are bounded and issue `turn/interrupt` on timeout so a missing
-final notification cannot strand the owner-facing UI indefinitely.
+Codex turn waits use a 60-second inactivity window and issue `turn/interrupt`
+when it expires so a silent turn cannot strand the owner-facing UI indefinitely.
+Each matching notification for the exact thread and turn restarts the window;
+time spent waiting on a supported approval does not consume it.
 
 Full event sourcing is deliberately avoided. Current relational state is
 authoritative; events explain how it changed and support recovery and audit.
@@ -264,11 +269,19 @@ and adopted integrated SHA so the agent preserves accepted trunk behavior and co
 resolution rather than rediscovering them. Any dirty or divergent state fails closed
 instead of delegating Git repair to the agent.
 
-If review succeeds but smoke preparation fails, the failed candidate retains its
-integrated SHA and completed-review provenance. The ticket presents **Retry demo
-preparation** without requiring a new owner comment. That action reruns only the
+If review succeeds but smoke preparation reports a candidate-controlled failure,
+including an invalid recipe, failed or timed-out preparation command, service exit,
+readiness timeout, or missing presentation, StoryPointless records the actionable
+error, adopts the integrated SHA into the preserved ticket workspace, marks the
+candidate as requiring changes, and queues the Implementer automatically. The
+correction creates a new immutable candidate and receives Tech Lead review again.
+After repeated correction cycles the existing review-return limit pauses for
+Product Owner direction. A host/runtime interruption such as an unavailable App
+Server or failure to allocate a loopback port instead preserves the failed
+candidate's integrated SHA and completed-review provenance and presents **Retry
+demo preparation** without a new owner comment. That retry reruns only the
 candidate-bound smoke preparation and, on success, advances the existing reviewed
-candidate to **Ready for Demo**; it does not resume implementation or repeat review.
+candidate to **Ready for Demo**.
 The acceptance Work log routes **Comment** through the existing read-only
 ticket-conversation path, preferring the assigned Implementer, then the latest
 participating team member, then the Tech Lead. The answer does not supersede the
@@ -334,13 +347,19 @@ suggestions can become reviewable scope. The assessment itself is not a second
 persisted delivery model: accepted tickets, their contracts, and their durable
 dependency edges remain the execution source of truth.
 
-Business Analyst planning and refinement threads use their existing read-only
-product boundary to query verified Environments knowledge and inspect
-repository-owned manifests, scripts, CI, documentation, and Git history. They
-do not scan unrelated host installations or pre-authorise runtime paths.
+Starter-backlog and Epic-planning threads receive bounded accepted-ticket
+contracts and relevant verified Product knowledge in their prompt. They are
+explicitly prohibited from inspecting repository files or Git history and use
+the live database only to refresh mutable context. Other Business Analyst
+refinement threads retain their read-only product boundary. None scan unrelated
+host installations or pre-authorise runtime paths.
 Ticket refinement can attach an existing foundation dependency; when no
 sufficient foundation ticket exists, it returns a separate foundation split
-recommendation rather than silently expanding the feature contract.
+recommendation rather than silently expanding the feature contract. Its
+structured result also recommends the future delivery role. Once refinement is
+complete, the application uses the same ticket-owner routing policy as accepted
+Epic proposals to fill an unassigned ticket and its saved draft-sprint item,
+while preserving any existing Product Owner assignment.
 
 Developer instructions are composed from focused lifecycle guidance rather than
 one universal delivery prompt. Conversation, planning, authorised research,
@@ -594,15 +613,15 @@ Only reviewed knowledge is exposed as current truth. Basic “why/how” queries
 are part of the first vertical slice and must return citations or an explicit
 unknown.
 
-Agent instructions provide the exact active product database path and document
-stable read-only views for tickets, dependencies, Work logs, Epics, sprints,
-verified knowledge, decisions, provenance, retrospectives, and team members.
-They also identify the product repository as the source for current files and
-Git history. The assigned contract, direct prerequisite handoffs, and the
-current conversation remain explicit anchors; broader evidence is discovered
-live with read-only SQL and Git instead of being duplicated into every prompt.
-Agents re-query before consequential conclusions so a long-running conversation
-does not mistake an old read for current state.
+Agent instructions provide the exact active product database path and exact
+column schemas for stable read-only views covering tickets, dependencies, Work
+logs, Epics, sprints, verified knowledge, decisions, provenance, retrospectives,
+and team members. This includes the durable ticket key as `item_key`. Planning
+prompts contain a bounded snapshot of active ticket contracts and selected
+verified knowledge, while other agent workflows can discover broader evidence
+live with read-only SQL and Git. Agents re-query mutable facts before
+consequential conclusions so a long-running conversation does not mistake an
+old read for current state.
 
 Canonical page templates store an empty body until verified knowledge exists;
 empty-state instructions remain a presentation concern. Delivery context
@@ -631,8 +650,10 @@ Environments is always an authorised update destination for an implementation
 run so an agent can propose a complete replacement after verifying operational
 guidance is absent or stale. It remains read-only to Tech Lead and Integrator
 runs. Tech Lead approval uses the existing candidate-bound knowledge proposal
-path; automatic publication and the stricter Product Owner approval feature flag
-remain unchanged. Stable repository entry points improve exact saved-product
+path. Reviewed Markdown is materialized only in the integrated candidate;
+ticket acceptance publishes it into canonical Product knowledge. The stricter
+Product Owner approval feature flag still adds an explicit per-proposal decision
+before ticket acceptance. Stable repository entry points improve exact saved-product
 permission matching without converting knowledge into a grant.
 
 An environment-foundation ticket uses that same reviewed knowledge path. Its

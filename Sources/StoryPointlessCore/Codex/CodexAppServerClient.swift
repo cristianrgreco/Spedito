@@ -73,7 +73,7 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
     case .turnFailed(let message): "The Codex turn failed: \(message)"
     case .turnEndedWithoutOutput: "The Codex turn finished without a proposal."
     case .turnTimedOut(let seconds):
-      "The Codex turn did not finish within \(seconds) seconds."
+      "The Codex turn had no activity for \(seconds) seconds."
     case .unsupportedPlatform(let platform):
       "This StoryPointless build cannot use a Codex runtime for \(platform)."
     }
@@ -391,11 +391,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
   public func waitForFinalAgentMessage(
     threadID: String,
     turnID: String,
-    timeout: Duration = .seconds(75),
+    timeout: Duration = .seconds(60),
     reconciliationInterval: Duration = .seconds(2)
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let messages = subscribeToInboundMessages(replayRecent: true)
+    let activity = CodexTurnActivity()
     let timeoutSeconds = max(1, Int(timeout.components.seconds))
     // The durable turn timestamp can precede the turn/start response by several
     // seconds while the App Server persists the turn. Keep a narrow allowance so
@@ -410,16 +411,19 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
             try Task.checkCancellation()
             guard case .notification(let notification) = message else { continue }
             guard notification.params["threadId"]?.stringValue == threadID else { continue }
+            let notificationTurnID =
+              notification.params["turnId"]?.stringValue
+              ?? notification.params["turn"]?["id"]?.stringValue
+            guard notificationTurnID == turnID else { continue }
+            await activity.record()
 
             if notification.method == "item/agentMessage/delta",
-              notification.params["turnId"]?.stringValue == turnID,
               let delta = notification.params["delta"]?.stringValue
             {
               streamedAgentMessage += delta
             }
 
             if notification.method == "item/completed",
-              notification.params["turnId"]?.stringValue == turnID,
               notification.params["item"]?["type"]?.stringValue == "agentMessage",
               notification.params["item"]?["phase"]?.stringValue == "final_answer",
               let text = notification.params["item"]?["text"]?.stringValue
@@ -431,9 +435,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               completedAgentMessage = text
             }
 
-            if notification.method == "turn/completed",
-              notification.params["turn"]?["id"]?.stringValue == turnID
-            {
+            if notification.method == "turn/completed" {
               let status = notification.params["turn"]?["status"]?.stringValue
               if status == "failed" {
                 let message =
@@ -487,10 +489,18 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
           throw CancellationError()
         }
         group.addTask { [self] in
-          var remaining = Self.seconds(in: timeout)
+          let inactivityWindow = Self.seconds(in: timeout)
+          var remaining = inactivityWindow
+          var activityRevision = await activity.revision()
           while remaining > 0 {
             let slice = min(remaining, 0.25)
             try await Task.sleep(for: .milliseconds(Int64(max(1, slice * 1_000))))
+            let currentRevision = await activity.revision()
+            if currentRevision != activityRevision {
+              activityRevision = currentRevision
+              remaining = inactivityWindow
+              continue
+            }
             if !(await isAwaitingApproval(threadID: threadID, turnID: turnID)) {
               remaining -= slice
             }
@@ -1071,5 +1081,17 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       $0["phase"] == nil
     }
     return (finalAnswer ?? legacyFinalAnswer)?["text"]?.stringValue
+  }
+}
+
+private actor CodexTurnActivity {
+  private var currentRevision: UInt64 = 0
+
+  func record() {
+    currentRevision &+= 1
+  }
+
+  func revision() -> UInt64 {
+    currentRevision
   }
 }

@@ -173,4 +173,49 @@ struct KnowledgeContextSelectorTests {
     #expect(KnowledgeContextSelector.isMandatory(environments))
     #expect(!KnowledgeContextSelector.isMandatory(unrelated))
   }
+
+  @Test("Epic planning receives mandatory and relevant verified knowledge only")
+  func epicPlanningKnowledgeIsBoundedAndRelevant() {
+    let productID = UUID()
+    let environments = KnowledgePage(
+      productID: productID,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: "The browser application has a maintained local demo."
+    )
+    let integrations = KnowledgePage(
+      productID: productID,
+      title: "Integrations",
+      slug: "integrations",
+      bodyMarkdown: "External weather providers require privacy and attribution review."
+    )
+    let limitations = KnowledgePage(
+      productID: productID,
+      title: "Known limitations",
+      slug: "known-limitations",
+      bodyMarkdown: "Exported reports do not support custom fonts."
+    )
+    let staleIntegrations = KnowledgePage(
+      productID: productID,
+      title: "Weather provider notes",
+      slug: "weather-provider-notes",
+      bodyMarkdown: "An old weather provider comparison.",
+      verificationStatus: .stale
+    )
+    let epic = Epic(
+      productID: productID,
+      title: "Weather provider",
+      goal: "Show forecasts from an external weather service with suitable privacy."
+    )
+
+    let pages = KnowledgeContextSelector.selectForEpic(
+      pages: [limitations, staleIntegrations, integrations, environments],
+      epic: epic
+    )
+
+    #expect(pages.map(\.id).contains(environments.id))
+    #expect(pages.map(\.id).contains(integrations.id))
+    #expect(!pages.map(\.id).contains(limitations.id))
+    #expect(!pages.map(\.id).contains(staleIntegrations.id))
+  }
 }

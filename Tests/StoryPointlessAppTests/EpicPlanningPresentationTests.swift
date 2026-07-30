@@ -317,4 +317,81 @@ struct EpicPlanningPresentationTests {
 
     #expect(anchorID == analystQuestion.id)
   }
+
+  @Test("A failed Epic plan retries generation without restarting clarification")
+  func failedEpicPlanRetriesGeneration() {
+    let question = TicketRefinementQuestion(
+      prompt: "Which forecast should the Epic deliver?",
+      options: ["Hourly", "Daily"]
+    )
+    let answer = EpicPlanningAnsweredQuestion(
+      question: question,
+      selectedOption: "Hourly",
+      answer: "Hourly"
+    )
+    let conversation = EpicPlanningConversationState(
+      epicID: UUID(),
+      messages: [
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "",
+          answeredQuestions: [answer]
+        ),
+        EpicPlanningConversationMessage(
+          author: .businessAnalyst,
+          body: "The outcome is ready to plan."
+        ),
+      ],
+      questions: [],
+      hasStartedPlanning: true,
+      isRunning: false,
+      isGeneratingPlan: false,
+      isComplete: false,
+      errorMessage: "The plan timed out."
+    )
+
+    #expect(
+      EpicPlanningPolicy.retryAction(
+        for: conversation,
+        hasFailedPlan: true
+      ) == .retryFailedPlan
+    )
+  }
+
+  @Test("A failed clarification retries its last durable answers")
+  func failedEpicClarificationRetriesAnswers() {
+    let question = TicketRefinementQuestion(
+      prompt: "Which forecast should the Epic deliver?",
+      options: ["Hourly", "Daily"]
+    )
+    let answer = EpicPlanningAnsweredQuestion(
+      question: question,
+      selectedOption: "Hourly",
+      answer: "Hourly"
+    )
+    let conversation = EpicPlanningConversationState(
+      epicID: UUID(),
+      messages: [
+        EpicPlanningConversationMessage(
+          author: .owner,
+          body: "",
+          answeredQuestions: [answer]
+        )
+      ],
+      questions: [],
+      hasStartedPlanning: true,
+      isRunning: false,
+      isGeneratingPlan: false,
+      isComplete: false,
+      errorMessage: "The clarification timed out."
+    )
+
+    #expect(
+      EpicPlanningPolicy.retryAction(
+        for: conversation,
+        hasFailedPlan: false
+      ) == .retryClarification([answer])
+    )
+  }
+
 }

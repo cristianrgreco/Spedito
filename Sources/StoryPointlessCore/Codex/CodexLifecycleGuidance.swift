@@ -191,8 +191,10 @@ enum CodexLifecycleGuidance {
     service or bounded command-output scenario. Use executable and argument arrays, never a shell,
     pipeline, redirection, or compound command. StoryPointless supplies {{PORT}} and the configured
     port environment variable. Browser readiness and presentation paths begin with "/" and contain
-    no host. Demo preparation must be fully managed so the Demo button runs it on the Product
-    Owner's behalf.
+    no host. StoryPointless smoke-tests the recipe from a clean detached checkout containing only
+    version-controlled candidate files: ignored dependencies, build output, caches, and state left
+    by earlier implementation checks will not exist. Demo preparation must recreate everything the
+    launch needs and be fully managed so the Demo button runs it on the Product Owner's behalf.
     """
 
   private static let knowledgeDelivery = """
@@ -299,7 +301,9 @@ enum CodexLifecycleGuidance {
     begin from the managed demo or an in-app knowledge change, state expected results, and never
     require a terminal, repository browser, code editor, developer tool, or manual setup that
     StoryPointless should manage. Managed preparationCommands and launchCommand are expected for
-    interactive demos, and different states may be covered within the one primary demo.
+    interactive demos, and different states may be covered within the one primary demo. Review the
+    recipe as a clean-checkout contract: it must not depend on ignored build output, dependencies,
+    caches, or state produced by the Implementer's earlier checks.
 
     STRUCTURED REVIEW RESULT
 

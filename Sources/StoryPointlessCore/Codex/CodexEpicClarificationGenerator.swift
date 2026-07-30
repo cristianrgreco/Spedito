@@ -65,9 +65,13 @@ public enum CodexEpicClarificationGenerator {
   public static func initialPrompt(
     product: Product,
     epic: Epic,
-    existingItems: [WorkItem]
+    existingItems: [WorkItem],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
-    let scope = activeScope(existingItems)
+    let evidence = CodexTicketSuggestionGenerator.planningEvidence(
+      existingItems: existingItems,
+      verifiedKnowledge: verifiedKnowledge
+    )
     return """
       Before proposing an epic or any delivery tickets, have a short requirements conversation with the
       Product Owner. Ask only material questions whose answers can change scope, success criteria, user
@@ -90,14 +94,17 @@ public enum CodexEpicClarificationGenerator {
       Recommend the research option when no choice is already approved and a responsible recommendation
       needs external evidence. Do not offer a vague option such as “let the team choose.”
 
-      Before deciding the outcome is ready to plan, inspect verified Environments knowledge and
-      repository-owned manifests, scripts, CI, and documentation. Decide whether the existing product
-      environment can build, test, prototype, demo, and locally run the likely delivery work. Do not scan
-      the Product Owner's Mac for installed package managers or treat an incidental executable as an
-      approved product environment. If the environment is absent or insufficient and executable work is
-      likely, ask at most one business-friendly question about an existing technology or hosting
-      constraint versus having the team recommend the simplest suitable option. Do not ask a
-      non-technical owner to choose Node, Python, package-manager paths, caches, or sandbox permissions
+      Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified Product
+      knowledge supplied below, especially verified Environments knowledge. Planning is not source
+      investigation. Do not inspect repository files, manifests, scripts, CI, documentation, or Git
+      history. Decide from the
+      supplied evidence whether the existing product environment can build, test, prototype, demo, and
+      locally run the likely delivery work. Do not scan the Product Owner's Mac for installed package
+      managers or treat an incidental executable as an approved product environment. If the environment
+      evidence is absent or insufficient and executable work is likely, ask at most one business-friendly
+      question about an existing technology or hosting constraint versus having the team recommend the
+      simplest suitable option. Do not ask a non-technical owner to choose Node, Python, package-manager
+      paths, caches, or sandbox permissions
       unless they already expressed a relevant technical preference. Every choice must itself be a
       complete answer; never offer a placeholder such as “I’ll provide,” “we’ll decide later,” or “tell
       the team separately.” The interface allows exactly one selection per question, so choices must be
@@ -108,13 +115,13 @@ public enum CodexEpicClarificationGenerator {
       field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
       choices.
 
-      Resolve a standard foundation recommendation in this conversation when current product and
-      repository evidence is enough. If a responsible recommendation genuinely needs current external
-      evidence, offer a separate Business Analyst research outcome; choosing it authorises that research.
-      Make the consequence explicit in the choices: a standard recommendation uses the product and
-      repository evidence already available and creates no research ticket, while time-boxed research
-      creates a separate Business Analyst ticket that compares current options before the environment is
-      established.
+      Resolve a standard foundation recommendation in this conversation when the supplied tickets and
+      verified Product knowledge are enough. If a responsible recommendation genuinely needs current
+      external evidence, offer a separate Business Analyst research outcome; choosing it authorises that
+      research.
+      Make the consequence explicit in the choices: a standard recommendation uses the supplied verified
+      product evidence and creates no research ticket, while time-boxed research creates a separate
+      Business Analyst ticket that compares current options before the environment is established.
       The eventual plan must keep stack recommendation separate from the Implementer task that establishes
       and verifies the environment. Considering the intended deployment destination early does not
       authorise production credentials, accounts, signing identities, or a deployment.
@@ -126,8 +133,8 @@ public enum CodexEpicClarificationGenerator {
       Outcome captured from the Product Owner:
       \(epic.goal)
 
-      Existing active work (do not duplicate it):
-      \(scope)
+      Supplied planning evidence:
+      \(evidence)
 
       This is the first clarification turn. Ask one to three concise questions with two to four mutually
       exclusive, business-friendly choices each. Put your recommended choice first and suffix it with
@@ -157,14 +164,15 @@ public enum CodexEpicClarificationGenerator {
       to define a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and
       briefly confirm any authorised research that the plan will include.
 
-      Also re-check verified Environments knowledge and repository evidence. If likely executable work is
-      not covered, resolve any material technology or hosting preference in business terms before setting
+      Also re-check the accepted ticket contracts and verified Environments knowledge already supplied in
+      this conversation. Do not inspect repository files or Git history. If likely executable work is not
+      covered, resolve any material technology or hosting preference in business terms before setting
       readyToPlan to true. Recommend the simplest suitable option when the owner has no preference. Do not
       ask them to interpret runtime paths or permission details. Every choice must be a complete answer,
       never a promise to provide information later. Because the owner can select only one option per
       question, every option must restate the complete resulting scope rather than add to a previous option;
       never use incremental labels such as “as well,” “too,” or “also.” Direct an unlisted constraint
-      through the interface's Other text field. Distinguish using current product and repository evidence
+      through the interface's Other text field. Distinguish using the supplied verified product evidence
       without a research ticket from authorising a time-boxed Business Analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
       authorise separate environment research only when the Product Owner agreed that current external
@@ -176,9 +184,13 @@ public enum CodexEpicClarificationGenerator {
     product: Product,
     epic: Epic,
     existingItems: [WorkItem],
-    messages: [EpicPlanningConversationMessage]
+    messages: [EpicPlanningConversationMessage],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
-    let scope = activeScope(existingItems)
+    let evidence = CodexTicketSuggestionGenerator.planningEvidence(
+      existingItems: existingItems,
+      verifiedKnowledge: verifiedKnowledge
+    )
     let transcript = durableTranscript(messages)
     return """
       The previous Codex thread for this epic is no longer available. Continue the requirements
@@ -193,8 +205,8 @@ public enum CodexEpicClarificationGenerator {
       Outcome captured from the Product Owner:
       \(epic.goal)
 
-      Existing active work (do not duplicate it):
-      \(scope)
+      Supplied planning evidence:
+      \(evidence)
 
       Durable conversation:
       \(transcript)
@@ -213,8 +225,9 @@ public enum CodexEpicClarificationGenerator {
       sufficiently clear to define a coherent epic and delivery backlog, return no questions, set
       readyToPlan to true, and briefly confirm any authorised research that the plan will include.
 
-      Re-check verified Environments knowledge and repository evidence before declaring readiness. When
-      likely executable work lacks a sufficient environment, recover or ask the one material owner-facing
+      Re-check the supplied accepted ticket contracts and verified Environments knowledge before declaring
+      readiness. Do not inspect repository files or Git history. When likely executable work lacks a
+      sufficient environment, recover or ask the one material owner-facing
       question about an existing technology or hosting constraint versus a team recommendation. Never ask
       for package-manager paths, cache access, or other machine plumbing. Every choice must be a complete
       answer, never “I’ll provide” or another promise of a later answer. The owner can select exactly one
@@ -231,13 +244,15 @@ public enum CodexEpicClarificationGenerator {
     product: Product,
     epic: Epic,
     existingItems: [WorkItem],
-    rejectedSuggestions: [TicketSuggestion]
+    rejectedSuggestions: [TicketSuggestion],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
     CodexTicketSuggestionGenerator.epicPrompt(
       product: product,
       epic: epic,
       existingItems: existingItems,
-      rejectedSuggestions: rejectedSuggestions
+      rejectedSuggestions: rejectedSuggestions,
+      verifiedKnowledge: verifiedKnowledge
     )
       + """
 
@@ -273,7 +288,8 @@ public enum CodexEpicClarificationGenerator {
     epic: Epic,
     existingItems: [WorkItem],
     rejectedSuggestions: [TicketSuggestion],
-    messages: [EpicPlanningConversationMessage]
+    messages: [EpicPlanningConversationMessage],
+    verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
     """
       The previous Codex thread stopped while preparing the final epic plan. Reconstruct the plan from
@@ -287,7 +303,8 @@ public enum CodexEpicClarificationGenerator {
         product: product,
         epic: epic,
         existingItems: existingItems,
-        rejectedSuggestions: rejectedSuggestions
+        rejectedSuggestions: rejectedSuggestions,
+        verifiedKnowledge: verifiedKnowledge
       ))
       """
   }
@@ -343,14 +360,6 @@ public enum CodexEpicClarificationGenerator {
       questions: questions,
       readyToPlan: generated.readyToPlan
     )
-  }
-
-  private static func activeScope(_ items: [WorkItem]) -> String {
-    let active = items.filter { $0.state != .cancelled }
-    guard !active.isEmpty else { return "There is no existing active work." }
-    return active
-      .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
-      .joined(separator: "\n")
   }
 
   private static func durableTranscript(

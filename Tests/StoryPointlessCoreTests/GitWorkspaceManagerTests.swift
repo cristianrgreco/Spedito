@@ -5,6 +5,55 @@ import Testing
 
 @Suite("Git workspace manager", .serialized)
 struct GitWorkspaceManagerTests {
+  @Test("Product bootstrap ignores local control data before the first snapshot")
+  func productBootstrapIgnoresControlData() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "storypointless-git-ignore-\(UUID().uuidString)",
+        isDirectory: true
+      )
+    let controlDirectory = root.appendingPathComponent(
+      ".storypointless",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(
+      at: controlDirectory,
+      withIntermediateDirectories: true
+    )
+    try Data("product\n".utf8).write(
+      to: root.appendingPathComponent("README.md")
+    )
+    try Data("/.run/\n".utf8).write(
+      to: root.appendingPathComponent(".gitignore")
+    )
+    let databaseURL = controlDirectory.appendingPathComponent("product.sqlite")
+    try Data("initial control state".utf8).write(to: databaseURL)
+
+    let manager = GitWorkspaceManager()
+    let initialSHA = try await manager.ensureRepository(
+      at: root,
+      rootIgnoreEntries: ["/.storypointless/"]
+    )
+
+    #expect(
+      try String(
+        contentsOf: root.appendingPathComponent(".gitignore"),
+        encoding: .utf8
+      ) == "/.run/\n/.storypointless/\n"
+    )
+    #expect(
+      try runGit(["ls-files"], at: root).split(separator: "\n").map(String.init)
+        == [".gitignore", "README.md"]
+    )
+
+    try Data("updated control state".utf8).write(to: databaseURL)
+    let checkpointSHA = try await manager.checkpointTrunk(at: root)
+    #expect(checkpointSHA == initialSHA)
+    #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+  }
+
   @Test("Ticket branches preserve multiple commits and promote one exact integrated revision")
   func candidateLifecycle() async throws {
     let root = FileManager.default.temporaryDirectory

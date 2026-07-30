@@ -14656,6 +14656,12 @@ private struct TicketMarkdownDocument: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       }
       .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7))
+    case .table(let table):
+      MarkdownTableView(
+        table: table,
+        font: baseFont,
+        inlineMarkdown: inlineMarkdown
+      )
     case .divider:
       Divider()
     }

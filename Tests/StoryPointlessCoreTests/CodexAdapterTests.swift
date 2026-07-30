@@ -932,7 +932,7 @@ struct CodexAdapterTests {
     #expect(deniedResponse.result["decision"]?.stringValue == "decline")
   }
 
-  @Test("A hung turn times out and is interrupted")
+  @Test("An inactive turn times out and is interrupted")
   func hungTurnIsInterrupted() async throws {
     let transport = HangingTurnTransport()
     let client = CodexAppServerClient(transport: transport)
@@ -952,6 +952,37 @@ struct CodexAdapterTests {
     )
     #expect(requests.last?.params["threadId"]?.stringValue == "thread-hung")
     #expect(requests.last?.params["turnId"]?.stringValue == "turn-hung")
+  }
+
+  @Test("Matching turn activity restarts the inactivity timeout")
+  func turnActivityRestartsTimeout() async throws {
+    let transport = ConcurrentTurnTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    async let result = client.waitForFinalAgentMessage(
+      threadID: "thread-active",
+      turnID: "turn-active",
+      timeout: .milliseconds(150)
+    )
+
+    try await Task.sleep(for: .milliseconds(80))
+    await transport.comment(
+      threadID: "thread-active",
+      turnID: "turn-active",
+      text: "Inspecting supplied ticket context."
+    )
+    try await Task.sleep(for: .milliseconds(80))
+    await transport.complete(
+      threadID: "thread-active",
+      turnID: "turn-active",
+      text: #"{"message":"Completed after more than the original timeout."}"#
+    )
+
+    #expect(
+      try await result
+        == #"{"message":"Completed after more than the original timeout."}"#
+    )
   }
 
   @Test("A missed completion notification is recovered from durable thread state")
@@ -1758,6 +1789,62 @@ struct CodexAdapterTests {
     #expect(prompt.contains("conditional implementation ticket"))
   }
 
+  @Test("Epic planning uses supplied ticket contracts and verified Product knowledge")
+  func epicPlanningUsesSuppliedEvidence() {
+    let product = Product(name: "Weather", vision: "Show useful forecasts")
+    let epic = Epic(
+      productID: product.id,
+      title: "Saved places",
+      goal: "Let customers return to forecasts they care about"
+    )
+    let item = WorkItem(
+      productID: product.id,
+      key: "T7",
+      title: "Persist customer preferences",
+      type: .task,
+      body: "Store customer preferences locally in the browser.",
+      acceptanceCriteria: ["Preferences remain after a normal browser relaunch"]
+    )
+    let environments = KnowledgePage(
+      productID: product.id,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: "The browser application has a maintained local demo command."
+    )
+    let stale = KnowledgePage(
+      productID: product.id,
+      title: "Old storage notes",
+      slug: "old-storage-notes",
+      bodyMarkdown: "Use a retired server database.",
+      verificationStatus: .stale
+    )
+
+    let prompt = CodexEpicClarificationGenerator.initialPrompt(
+      product: product,
+      epic: epic,
+      existingItems: [item],
+      verifiedKnowledge: [environments, stale]
+    )
+
+    #expect(prompt.contains("T7 — Persist customer preferences"))
+    #expect(prompt.contains("Store customer preferences locally in the browser."))
+    #expect(prompt.contains("Preferences remain after a normal browser relaunch"))
+    #expect(prompt.contains("The browser application has a maintained local demo command."))
+    #expect(!prompt.contains("Use a retired server database."))
+    #expect(prompt.contains("Do not inspect repository files"))
+  }
+
+  @Test("Live product schema guidance uses exact stable view columns")
+  func liveProductSchemaGuidance() {
+    let schemas = CodexLiveProductContext.stableViewSchemas
+
+    #expect(schemas.contains("agent_tickets("))
+    #expect(schemas.contains("item_key"))
+    #expect(schemas.contains("acceptance_criteria_json"))
+    #expect(schemas.contains("agent_verified_knowledge("))
+    #expect(!schemas.contains("ticket_key"))
+  }
+
   @Test("Repeated backlog analysis receives the previous rejected proposals")
   func rejectedSuggestionContext() {
     let product = Product(name: "Weather", vision: "Show a forecast for a location")
@@ -1956,6 +2043,7 @@ struct CodexAdapterTests {
           "body": "Let a customer resolve a location before requesting current conditions.",
           "acceptanceCriteria": ["A valid location displays current conditions"],
           "priority": "normal",
+          "role": "ux_designer",
           "rationale": "The revised contract makes the visible outcome explicit.",
           "dependencies": [
             {"ticketKey": "T-1", "reason": "The provider establishes the data contract."}
@@ -1986,6 +2074,7 @@ struct CodexAdapterTests {
     #expect(!prompt.contains("Archived dark mode experiment"))
     #expect(prompt.contains("Customers should confirm ambiguous locations."))
     #expect(reply.proposal.baseVersion == 1)
+    #expect(reply.proposal.suggestedRole == .uxDesigner)
     #expect(reply.proposal.dependencies.map(\.ticketKey) == ["T-1"])
     #expect(reply.proposal.missingQuestions.isEmpty)
     #expect(reply.ticketCommentBody == reply.message)
@@ -2001,6 +2090,7 @@ struct CodexAdapterTests {
           "body": "Requires Product Owner confirmation.",
           "acceptanceCriteria": ["A premature criterion"],
           "priority": "urgent",
+          "role": "implementer",
           "rationale": "Wait for the owner.",
           "dependencies": [
             {"ticketKey": "T-1", "reason": "A premature dependency."}
@@ -2043,6 +2133,7 @@ struct CodexAdapterTests {
           "body": "A premature changed context.",
           "acceptanceCriteria": ["A premature criterion"],
           "priority": "urgent",
+          "role": "implementer",
           "rationale": "",
           "dependencies": [
             {"ticketKey": "T-9", "reason": ""}
@@ -2084,6 +2175,7 @@ struct CodexAdapterTests {
           "body": "Let a customer search for weather.",
           "acceptanceCriteria": ["A search returns a visible result"],
           "priority": "normal",
+          "role": "implementer",
           "rationale": "",
           "dependencies": [],
           "potentialDuplicates": [],
@@ -2111,6 +2203,7 @@ struct CodexAdapterTests {
             "body": "",
             "acceptanceCriteria": [],
             "priority": "normal",
+            "role": "implementer",
             "rationale": "Invalid edge.",
             "dependencies": [
               {"ticketKey": "T-9", "reason": "Archived work."}
@@ -2573,6 +2666,8 @@ struct CodexAdapterTests {
     #expect(!prompt.contains("Add verified knowledge here."))
     #expect(instructions.contains("external providers and APIs to"))
     #expect(instructions.contains("unrelated page"))
+    #expect(instructions.contains("clean detached checkout"))
+    #expect(instructions.contains("ignored dependencies, build output, caches"))
   }
 
   @Test("Ticket execution and Tech Lead review results are validated")

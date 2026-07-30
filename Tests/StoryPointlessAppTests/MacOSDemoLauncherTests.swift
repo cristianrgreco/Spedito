@@ -122,6 +122,49 @@ struct MacOSDemoLauncherTests {
     }
   }
 
+  @Test("Candidate-controlled demo failures return for correction")
+  func candidateFailureDisposition() {
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.commandFailed("Build failed")
+      ) == .correctCandidate
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.serviceStopped("No build found")
+      ) == .correctCandidate
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.readinessTimedOut("No response")
+      ) == .correctCandidate
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLaunchValidationError.invalid("Missing launch command")
+      ) == .correctCandidate
+    )
+  }
+
+  @Test("Host demo failures preserve the reviewed candidate for retry")
+  func hostFailureDisposition() {
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.appServerUnavailable
+      ) == .retryPreparation
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.couldNotAllocatePort
+      ) == .retryPreparation
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
+        for: CocoaError(.fileReadUnknown)
+      ) == .retryPreparation
+    )
+  }
+
   private func makeWorkspace() throws -> URL {
     let workspace = FileManager.default.temporaryDirectory
       .appendingPathComponent("storypointless-demo-launch-\(UUID())", isDirectory: true)

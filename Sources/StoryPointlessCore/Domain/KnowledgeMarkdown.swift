@@ -1,6 +1,28 @@
 import Foundation
 
 public enum KnowledgeMarkdown {
+  public enum TableAlignment: Equatable, Sendable {
+    case leading
+    case center
+    case trailing
+  }
+
+  public struct Table: Equatable, Sendable {
+    public let header: [String]
+    public let alignments: [TableAlignment]
+    public let rows: [[String]]
+
+    public init(
+      header: [String],
+      alignments: [TableAlignment],
+      rows: [[String]]
+    ) {
+      self.header = header
+      self.alignments = alignments
+      self.rows = rows
+    }
+  }
+
   public enum Block: Equatable, Sendable {
     case heading(level: Int, text: String)
     case paragraph([String])
@@ -8,6 +30,7 @@ public enum KnowledgeMarkdown {
     case orderedList([String])
     case quote([String])
     case code(String)
+    case table(Table)
     case divider
   }
 
@@ -74,6 +97,12 @@ public enum KnowledgeMarkdown {
         }
         if index < lines.count { index += 1 }
         result.append(.code(codeLines.joined(separator: "\n")))
+        continue
+      }
+
+      if let table = table(in: lines, startingAt: index) {
+        result.append(.table(table.value))
+        index = table.nextIndex
         continue
       }
 
@@ -154,6 +183,100 @@ public enum KnowledgeMarkdown {
       || orderedItem(from: line) != nil
       || line.hasPrefix(">")
       || isDivider(line)
+  }
+
+  private static func table(
+    in lines: [String],
+    startingAt index: Int
+  ) -> (value: Table, nextIndex: Int)? {
+    guard index + 1 < lines.count else { return nil }
+    guard let header = tableCells(from: lines[index]) else { return nil }
+    guard
+      let delimiterCells = tableCells(from: lines[index + 1]),
+      delimiterCells.count == header.count
+    else {
+      return nil
+    }
+
+    let alignments = delimiterCells.compactMap(tableAlignment(from:))
+    guard alignments.count == header.count else { return nil }
+
+    var rows: [[String]] = []
+    var nextIndex = index + 2
+    while nextIndex < lines.count {
+      let candidate = lines[nextIndex]
+      guard !candidate.trimmingCharacters(in: .whitespaces).isEmpty else { break }
+      guard var cells = tableCells(from: candidate) else { break }
+      if cells.count < header.count {
+        cells.append(contentsOf: repeatElement("", count: header.count - cells.count))
+      } else if cells.count > header.count {
+        cells = Array(cells.prefix(header.count))
+      }
+      rows.append(cells)
+      nextIndex += 1
+    }
+
+    return (
+      Table(header: header, alignments: alignments, rows: rows),
+      nextIndex
+    )
+  }
+
+  private static func tableCells(from line: String) -> [String]? {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    var cells = [""]
+    var foundDelimiter = false
+    var isEscaped = false
+    var isInCodeSpan = false
+
+    for character in trimmed {
+      if isEscaped {
+        cells[cells.count - 1].append(character)
+        isEscaped = false
+        continue
+      }
+      if character == "\\" {
+        cells[cells.count - 1].append(character)
+        isEscaped = true
+        continue
+      }
+      if character == "`" {
+        cells[cells.count - 1].append(character)
+        isInCodeSpan.toggle()
+        continue
+      }
+      if character == "|", !isInCodeSpan {
+        foundDelimiter = true
+        cells.append("")
+      } else {
+        cells[cells.count - 1].append(character)
+      }
+    }
+
+    guard foundDelimiter else { return nil }
+    if cells.first?.isEmpty == true {
+      cells.removeFirst()
+    }
+    if cells.last?.isEmpty == true {
+      cells.removeLast()
+    }
+    return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+  }
+
+  private static func tableAlignment(from cell: String) -> TableAlignment? {
+    let hasLeadingColon = cell.hasPrefix(":")
+    let hasTrailingColon = cell.hasSuffix(":")
+    let delimiter = cell.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+    guard delimiter.count >= 3, delimiter.allSatisfy({ $0 == "-" }) else {
+      return nil
+    }
+    if hasLeadingColon && hasTrailingColon {
+      return .center
+    }
+    if hasTrailingColon {
+      return .trailing
+    }
+    return .leading
   }
 
   private static func heading(from line: String) -> (level: Int, text: String)? {

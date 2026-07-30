@@ -416,7 +416,7 @@ public enum CodexTicketExecutor {
           pages: knowledgeDirectory
         )
         let purpose = KnowledgeContextSelector.purpose(for: page.slug, kind: page.kind)
-        return "- \(path) [\(page.kind.rawValue), page ID: \(page.id.uuidString)] — \(access). \(purpose)"
+        return "- Path: \(path); page title: \(page.title) [\(page.kind.rawValue), page ID: \(page.id.uuidString)] — \(access). \(purpose)"
       }.joined(separator: "\n")
     let existingScope = existingItems
       .filter { $0.id != item.id && $0.state != .cancelled }
@@ -683,7 +683,12 @@ public enum CodexTicketExecutor {
               ]),
               "targetPageID": nullableStringSchema,
               "parentPageID": nullableStringSchema,
-              "title": .object(["type": .string("string")]),
+              "title": .object([
+                "type": .string("string"),
+                "description": .string(
+                  "For an update, copy the target page's existing leaf title exactly; never use its breadcrumb path. For a creation, use only the new child page's leaf title."
+                ),
+              ]),
               "proposedBodyMarkdown": .object(["type": .string("string")]),
               "rationale": .object(["type": .string("string")]),
             ]),
@@ -864,6 +869,32 @@ public enum CodexTicketExecutor {
         "Only an assigned Business Analyst may propose follow-up tickets from authorised "
           + "research, discovery, or decision work."
       )
+    }
+  }
+
+  public static func validateKnowledgePageProposals(
+    in result: TicketExecutionResult,
+    canonicalPages: [KnowledgePage]
+  ) throws {
+    let pagesByID = Dictionary(
+      uniqueKeysWithValues: canonicalPages.map { ($0.id, $0) }
+    )
+    for proposal in result.knowledgePageProposals
+    where proposal.operation == .update {
+      guard
+        let targetPageID = proposal.targetPageID,
+        let targetPage = pagesByID[targetPageID]
+      else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "A canonical-page update referenced a page that does not exist."
+        )
+      }
+      guard proposal.title == targetPage.title else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "A canonical-page update must keep the existing page title “\(targetPage.title)”. "
+            + "Use that leaf title exactly, not its breadcrumb path."
+        )
+      }
     }
   }
 

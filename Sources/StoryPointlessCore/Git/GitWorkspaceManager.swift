@@ -214,8 +214,15 @@ public actor GitWorkspaceManager {
   }
 
   @discardableResult
-  public func ensureRepository(at repositoryURL: URL) throws -> String {
+  public func ensureRepository(
+    at repositoryURL: URL,
+    rootIgnoreEntries: [String] = []
+  ) throws -> String {
     try fileManager.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+    try ensureRootGitIgnore(
+      at: repositoryURL,
+      entries: rootIgnoreEntries
+    )
     let gitDirectory = repositoryURL.appendingPathComponent(".git", isDirectory: true)
     if !fileManager.fileExists(atPath: gitDirectory.path) {
       _ = try run(["init", "-b", "trunk"], at: repositoryURL)
@@ -235,6 +242,33 @@ public actor GitWorkspaceManager {
       }
     }
     return try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL)
+  }
+
+  private func ensureRootGitIgnore(
+    at repositoryURL: URL,
+    entries: [String]
+  ) throws {
+    let normalizedEntries = entries
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty && !$0.contains("\n") && !$0.contains("\r") }
+    guard !normalizedEntries.isEmpty else { return }
+
+    let ignoreURL = repositoryURL.appendingPathComponent(".gitignore")
+    let existing = (try? String(contentsOf: ignoreURL, encoding: .utf8)) ?? ""
+    let existingEntries = Set(
+      existing.split(whereSeparator: \.isNewline).map(String.init)
+    )
+    let missingEntries = normalizedEntries.filter {
+      !existingEntries.contains($0)
+    }
+    guard !missingEntries.isEmpty else { return }
+
+    let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
+    let addition = missingEntries.map { "\($0)\n" }.joined()
+    try Data("\(existing)\(separator)\(addition)".utf8).write(
+      to: ignoreURL,
+      options: .atomic
+    )
   }
 
   @discardableResult

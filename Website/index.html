@@ -21,9 +21,10 @@
         <span>StoryPointless</span>
       </a>
       <nav aria-label="Primary navigation">
-        <a href="#plan">Plan</a>
-        <a href="#parallel">Parallel work</a>
-        <a href="#demo">Demo</a>
+        <a href="#tour">How it works</a>
+        <a href="#plan">Planning</a>
+        <a href="#parallel">Delivery</a>
+        <a href="#context">Knowledge</a>
         <a href="#safety">Safety</a>
       </nav>
       <a
@@ -44,66 +45,239 @@
             that learns every sprint.
           </p>
           <div class="hero-actions">
-            <a class="button" href="#plan"
-              >See how it works <span aria-hidden="true">↓</span></a
+            <a class="button" href="#tour"
+              >Explore the workflow <span aria-hidden="true">↓</span></a
             >
           </div>
         </div>
 
-        <div class="delivery-card" aria-label="StoryPointless product delivery loop">
-          <div class="delivery-card-topbar">
-            <span><i></i> Product delivery</span>
-            <small>Human-owned</small>
-          </div>
-          <div class="delivery-card-body">
-            <div class="delivery-outcome">
+        <div
+          id="tour"
+          class="product-showcase"
+          data-showcase
+          aria-label="StoryPointless product tour"
+        >
+          <div class="showcase-meta">
+            <div
+              class="showcase-copy"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              <small data-showcase-phase>Deliver</small>
               <div>
-                <small>Product outcome</small>
-                <b>Let customers share saved results safely</b>
-              </div>
-              <span>Epic E4</span>
-            </div>
-
-            <div class="delivery-stages">
-              <div><span>1</span><b>Refine</b></div>
-              <i>→</i>
-              <div><span>2</span><b>Plan</b></div>
-              <i>→</i>
-              <div><span>3</span><b>Deliver</b></div>
-              <i>→</i>
-              <div><span>4</span><b>Review</b></div>
-            </div>
-
-            <div class="delivery-parallel">
-              <small>Starts in parallel</small>
-              <div>
-                <span><i class="blue"></i><b>T21</b> Define sharing rules</span>
-                <span><i class="purple"></i><b>T22</b> Design failure states</span>
+                <h2 data-showcase-title>See the whole Sprint</h2>
+                <p data-showcase-caption
+                  >Track what can start, what is moving, what needs review, and
+                  what is ready to demo.</p
+                >
               </div>
             </div>
 
-            <div class="delivery-proof">
-              <div>
-                <span>✓</span>
-                <p><b>Independently reviewed</b><small>Exact candidate</small></p>
-              </div>
-              <button type="button"><span aria-hidden="true">▶</span> Demo</button>
-            </div>
-
-            <div class="delivery-learning">
-              <span>↻</span>
-              <div>
-                <b>The next cycle starts better informed</b>
-                <small>Product knowledge · Reports · Retrospectives</small>
-              </div>
+            <div class="showcase-controls">
+              <span data-showcase-count>01 / 20</span>
+              <button
+                type="button"
+                data-showcase-previous
+                aria-label="Previous screenshot"
+              >
+                <span aria-hidden="true">←</span>
+              </button>
+              <button
+                type="button"
+                data-showcase-next
+                aria-label="Next screenshot"
+              >
+                <span aria-hidden="true">→</span>
+              </button>
             </div>
           </div>
+
+          <div
+            class="showcase-stage"
+            data-showcase-stage
+            tabindex="0"
+            aria-label="Product screenshot carousel"
+          >
+            <button
+              class="showcase-peek showcase-previous"
+              type="button"
+              data-showcase-previous-image
+              aria-label="Previous screenshot"
+            >
+              <img
+                src="./screenshots/25-customize-your-team.webp"
+                alt=""
+                width="3216"
+                height="2100"
+                decoding="async"
+                data-showcase-previous-preview
+              />
+            </button>
+
+            <button
+              class="showcase-current"
+              type="button"
+              data-showcase-open
+              aria-label="Open current screenshot full size"
+            >
+              <img
+                src="./screenshots/0-sprint-board-overview.webp"
+                alt="StoryPointless Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done."
+                width="3216"
+                height="2100"
+                fetchpriority="high"
+                decoding="async"
+                data-showcase-image
+              />
+            </button>
+
+            <button
+              class="showcase-peek showcase-next"
+              type="button"
+              data-showcase-next-image
+              aria-label="Next screenshot"
+            >
+              <img
+                src="./screenshots/1-epic-ai-refinement.webp"
+                alt=""
+                width="3216"
+                height="2100"
+                decoding="async"
+                data-showcase-next-preview
+              />
+            </button>
+          </div>
+        </div>
+
+        <dialog
+          class="showcase-lightbox"
+          data-showcase-lightbox
+          aria-label="Full-size product screenshot"
+        >
+          <button
+            class="showcase-lightbox-nav showcase-lightbox-previous"
+            type="button"
+            data-showcase-lightbox-previous
+            aria-label="Previous screenshot"
+          >
+            <span aria-hidden="true">←</span>
+          </button>
+          <button
+            class="showcase-lightbox-close"
+            type="button"
+            data-showcase-close
+            aria-label="Close full-size screenshot"
+          >
+            <span aria-hidden="true"></span>
+          </button>
+          <img
+            src="./screenshots/0-sprint-board-overview.webp"
+            alt="StoryPointless Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done."
+            width="3216"
+            height="2100"
+            decoding="async"
+            data-showcase-lightbox-image
+          />
+          <button
+            class="showcase-lightbox-nav showcase-lightbox-next"
+            type="button"
+            data-showcase-lightbox-next
+            aria-label="Next screenshot"
+          >
+            <span aria-hidden="true">→</span>
+          </button>
+        </dialog>
+      </section>
+
+      <section class="proof" id="demo">
+        <div class="proof-heading">
+          <span>01</span>
+          <div>
+            <h2>“Can I see it?” should be a button.</h2>
+            <p>
+              One click prepares and launches the reviewed product—no terminal,
+              ports, or setup required.
+            </p>
+          </div>
+        </div>
+
+        <div class="comparison">
+          <article class="side before">
+            <div class="side-label">
+              <span>Prompting</span>
+            </div>
+            <div class="prompt-stack demo-chat">
+              <div class="prompt owner">
+                <b>You</b>
+                <p>Can I see it?</p>
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>Of course. Run <code>npm install && npm run dev</code>.</p>
+              </div>
+              <div class="prompt owner">
+                <b>You</b>
+                <p>Can you run it?</p>
+              </div>
+              <div class="terminal-line">
+                <span>System</span>
+                Port 3000 is already in use.
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>I started it on port 3001 instead.</p>
+              </div>
+              <div class="prompt owner">
+                <b>You</b>
+                <p>Is that the new version?</p>
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>Let me check.</p>
+              </div>
+            </div>
+            <p class="punchline">A seven-message launch button.</p>
+          </article>
+
+          <article class="side after">
+            <div class="side-label">
+              <span>StoryPointless</span>
+            </div>
+            <div class="demo-panel app-mock">
+              <div class="demo-status">
+                <span><i></i> Ready for Demo</span>
+                <code>T18</code>
+              </div>
+              <div class="demo-body">
+                <small>Reviewed product increment</small>
+                <h3>Import an existing product</h3>
+                <p>
+                  Open a repository as a StoryPointless product with its
+                  history and current branch preserved.
+                </p>
+                <ul>
+                  <li><span>✓</span> Acceptance checks passed</li>
+                  <li><span>✓</span> Tech Lead approved</li>
+                  <li><span>✓</span> Integrated against current product</li>
+                  <li><span>✓</span> Demo preparation succeeded</li>
+                </ul>
+                <div class="revision">
+                  <span>Exact reviewed revision</span>
+                  <code>3f8d12a</code>
+                </div>
+                <button type="button"><span aria-hidden="true">▶</span> Demo</button>
+              </div>
+            </div>
+            <p class="punchline good">
+              No terminal. No port archaeology. No ambiguity.
+            </p>
+          </article>
         </div>
       </section>
 
       <section class="proof" id="plan">
         <div class="proof-heading">
-          <span>01</span>
+          <span>02</span>
           <div>
             <h2>Vague is allowed. Ambiguous isn’t.</h2>
             <p>
@@ -117,7 +291,6 @@
           <article class="side before">
             <div class="side-label">
               <span>Prompting</span>
-              <small>Requirements discovery</small>
             </div>
             <div class="prompt-stack plan-chat">
               <div class="prompt owner">
@@ -154,9 +327,8 @@
           <article class="side after">
             <div class="side-label">
               <span>StoryPointless</span>
-              <small>Epic refinement</small>
             </div>
-            <div class="refinement-panel">
+            <div class="refinement-panel app-mock">
               <div class="refinement-topbar">
                 <div>
                   <small>Starting idea</small>
@@ -244,12 +416,12 @@
 
       <section class="proof" id="parallel">
         <div class="proof-heading">
-          <span>02</span>
+          <span>03</span>
           <div>
             <h2>Work in parallel, on purpose.</h2>
             <p>
-              StoryPointless finds the dependency graph before agents start
-              changing the product.
+              Dependencies decide what can start together, what must wait, and
+              when the next wave can begin.
             </p>
           </div>
         </div>
@@ -258,7 +430,6 @@
           <article class="side before">
             <div class="side-label">
               <span>Prompting</span>
-              <small>What usually happens</small>
             </div>
             <div class="prompt-stack">
               <div class="prompt owner">
@@ -281,15 +452,14 @@
                 </div>
               </div>
             </div>
-            <p class="punchline">Parallel, right up until it matters.</p>
+            <p class="punchline">Two agents. One file. Zero coordination.</p>
           </article>
 
           <article class="side after">
             <div class="side-label">
               <span>StoryPointless</span>
-              <small>Dependency-aware delivery</small>
             </div>
-            <div class="sprint-plan">
+            <div class="sprint-plan app-mock">
               <div class="plan-header">
                 <b>Sprint 4</b>
                 <small>2 ready in parallel</small>
@@ -328,102 +498,14 @@
         </div>
       </section>
 
-      <section class="proof" id="demo">
-        <div class="proof-heading">
-          <span>03</span>
-          <div>
-            <h2>“Can I see it?” should be a button.</h2>
-            <p>
-              StoryPointless prepares the exact reviewed result before asking
-              you to try it.
-            </p>
-          </div>
-        </div>
-
-        <div class="comparison">
-          <article class="side before">
-            <div class="side-label">
-              <span>Prompting</span>
-              <small>The traditional launch ritual</small>
-            </div>
-            <div class="prompt-stack demo-chat">
-              <div class="prompt owner">
-                <b>You</b>
-                <p>Can I see it?</p>
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>Of course. Run <code>npm install && npm run dev</code>.</p>
-              </div>
-              <div class="prompt owner">
-                <b>You</b>
-                <p>Can you run it?</p>
-              </div>
-              <div class="terminal-line">
-                <span>System</span>
-                Port 3000 is already in use.
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>I started it on port 3001 instead.</p>
-              </div>
-              <div class="prompt owner">
-                <b>You</b>
-                <p>Is that the new version?</p>
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>Let me check.</p>
-              </div>
-            </div>
-            <p class="punchline">A seven-message launch button.</p>
-          </article>
-
-          <article class="side after">
-            <div class="side-label">
-              <span>StoryPointless</span>
-              <small>Product acceptance</small>
-            </div>
-            <div class="demo-panel">
-              <div class="demo-status">
-                <span><i></i> Ready for Demo</span>
-                <code>T18</code>
-              </div>
-              <div class="demo-body">
-                <small>Reviewed product increment</small>
-                <h3>Import an existing product</h3>
-                <p>
-                  Open a repository as a StoryPointless product with its
-                  history and current branch preserved.
-                </p>
-                <ul>
-                  <li><span>✓</span> Acceptance checks passed</li>
-                  <li><span>✓</span> Tech Lead approved</li>
-                  <li><span>✓</span> Integrated against current product</li>
-                  <li><span>✓</span> Demo preparation succeeded</li>
-                </ul>
-                <div class="revision">
-                  <span>Exact reviewed revision</span>
-                  <code>3f8d12a</code>
-                </div>
-                <button type="button"><span aria-hidden="true">▶</span> Demo</button>
-              </div>
-            </div>
-            <p class="punchline good">
-              No terminal. No port archaeology. No ambiguity.
-            </p>
-          </article>
-        </div>
-      </section>
-
       <section class="proof" id="git">
         <div class="proof-heading">
           <span>04</span>
           <div>
             <h2>“Commit everything” is not a delivery process.</h2>
             <p>
-              You approve the product outcome. StoryPointless handles the Git
-              operations underneath.
+              Every change stays tied to its Ticket, its review, and the
+              product result you approve.
             </p>
           </div>
         </div>
@@ -432,7 +514,6 @@
           <article class="side before">
             <div class="side-label">
               <span>Prompting</span>
-              <small>Release management, apparently</small>
             </div>
             <div class="prompt-stack commit-chat">
               <div class="prompt owner">
@@ -458,16 +539,15 @@
               </div>
             </div>
             <p class="punchline">
-              Everything is committed. Nothing is explained.
+              Committed first. Understood later.
             </p>
           </article>
 
           <article class="side after">
             <div class="side-label">
               <span>StoryPointless</span>
-              <small>One governed path</small>
             </div>
-            <div class="git-flow">
+            <div class="git-flow app-mock">
               <div class="git-step">
                 <span>1</span>
                 <div>
@@ -501,208 +581,8 @@
               </div>
             </div>
             <p class="punchline good">
-              You decide if it is right. StoryPointless decides which Git
-              command comes next.
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section class="proof" id="evidence">
-        <div class="proof-heading">
-          <span>05</span>
-          <div>
-            <h2>“I made significant progress” is not evidence.</h2>
-            <p>
-              StoryPointless records what actually happened: changes, checks,
-              decisions, permissions, review findings, and exact revisions.
-            </p>
-          </div>
-        </div>
-
-        <div class="comparison">
-          <article class="side before">
-            <div class="side-label">
-              <span>Prompting</span>
-              <small>Progress reporting</small>
-            </div>
-            <div class="prompt-stack evidence-chat">
-              <div class="agent-progress">
-                <span>Task complete</span>
-                <b>100%</b>
-                <small>Evidence: immaculate vibes</small>
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>Implementation is complete and all tests pass.</p>
-              </div>
-              <div class="prompt owner">
-                <b>You</b>
-                <p>Which tests?</p>
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>Let me verify that.</p>
-              </div>
-              <div class="verification-spinner">
-                <i aria-hidden="true"></i>
-                Verifying previous verification…
-              </div>
-            </div>
-            <p class="punchline">A confidence level is not a test result.</p>
-          </article>
-
-          <article class="side after">
-            <div class="side-label">
-              <span>StoryPointless</span>
-              <small>Ticket evidence</small>
-            </div>
-            <div class="worklog-panel">
-              <div class="worklog-topbar">
-                <div>
-                  <small>T18</small>
-                  <b>Work log</b>
-                </div>
-                <span>Exact candidate <code>3f8d12a</code></span>
-              </div>
-              <div class="worklog-events">
-                <div class="worklog-event">
-                  <time>10:42</time>
-                  <i class="event-purple">I</i>
-                  <div>
-                    <small>Implementer</small>
-                    <b>Candidate revision created</b>
-                    <span>7 files changed · Delivery note attached</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:44</time>
-                  <i class="event-green">✓</i>
-                  <div>
-                    <small>Checks</small>
-                    <b>42 tests passed</b>
-                    <span>Build succeeded · No warnings</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:51</time>
-                  <i class="event-blue">TL</i>
-                  <div>
-                    <small>Tech Lead</small>
-                    <b>Exact candidate approved</b>
-                    <span>Acceptance criteria and diff reviewed</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:54</time>
-                  <i class="event-green">✓</i>
-                  <div>
-                    <small>Integration</small>
-                    <b>Merged cleanly against current product</b>
-                    <span>Candidate review remains valid</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:56</time>
-                  <i class="event-purple">▶</i>
-                  <div>
-                    <small>Demo</small>
-                    <b>Preparation succeeded</b>
-                    <span>The exact reviewed revision is ready</span>
-                  </div>
-                </div>
-              </div>
-              <div class="worklog-footer">
-                Every claim has an author, a time, and an exact revision.
-              </div>
-            </div>
-            <p class="punchline good">
-              Progress is something the Product Owner can inspect.
-            </p>
-          </article>
-        </div>
-      </section>
-
-      <section class="proof" id="recovery">
-        <div class="proof-heading">
-          <span>06</span>
-          <div>
-            <h2>Your product should survive closing the chat.</h2>
-            <p>
-              Interrupted delivery recovers with its Ticket, Conversation,
-              workspace, decisions, and previous evidence intact.
-            </p>
-          </div>
-        </div>
-
-        <div class="comparison">
-          <article class="side before">
-            <div class="side-label">
-              <span>Prompting</span>
-              <small>The next morning</small>
-            </div>
-            <div class="prompt-stack recovery-chat">
-              <div class="new-session">
-                <span>New session</span>
-                <small>No previous context</small>
-              </div>
-              <div class="prompt owner">
-                <b>You</b>
-                <p>Continue where we left off.</p>
-              </div>
-              <div class="prompt">
-                <b>Agent</b>
-                <p>Certainly. Could you remind me what we were doing?</p>
-              </div>
-            </div>
-            <p class="punchline">A fresh start, whether you wanted one or not.</p>
-          </article>
-
-          <article class="side after">
-            <div class="side-label">
-              <span>StoryPointless</span>
-              <small>Durable recovery</small>
-            </div>
-            <div class="recovery-panel">
-              <div class="recovery-topbar">
-                <span><i></i> Delivery recovered</span>
-                <small>Same Ticket · Same workspace</small>
-              </div>
-              <div class="recovered-ticket">
-                <div>
-                  <small>T23 · In Progress</small>
-                  <h3>Build expiring private links</h3>
-                  <p>Resuming from the last confirmed checkpoint.</p>
-                </div>
-                <span>Recovered</span>
-              </div>
-              <div class="recovered-state">
-                <div><span>✓</span><b>Ticket workspace</b><small>Preserved</small></div>
-                <div><span>✓</span><b>Conversation</b><small>Ready to resume</small></div>
-                <div><span>✓</span><b>Product decisions</b><small>4 linked</small></div>
-                <div><span>✓</span><b>Work log</b><small>Current</small></div>
-              </div>
-              <div class="recovery-timeline">
-                <div>
-                  <time>Yesterday · 17:42</time>
-                  <span>Application closed; run and workspace preserved.</span>
-                </div>
-                <div>
-                  <time>Today · 09:12</time>
-                  <span>Same Conversation and Ticket workspace recovered.</span>
-                </div>
-                <div class="resume-event">
-                  <time>Now</time>
-                  <span>Implementation continuing from the saved checkpoint.</span>
-                </div>
-              </div>
-              <div class="resume-bar">
-                <span>Last activity: link expiry checks</span>
-                <b><i></i> Resuming work</b>
-              </div>
-            </div>
-            <p class="punchline good">
-              It continues the work. It does not pretend to start it again.
+              Your decision is whether the product is right—not whether the
+              branch is clean.
             </p>
           </article>
         </div>
@@ -710,7 +590,7 @@
 
       <section class="proof" id="context">
         <div class="proof-heading">
-          <span>07</span>
+          <span>05</span>
           <div>
             <h2>Your product is bigger than a context window.</h2>
             <p>
@@ -724,7 +604,6 @@
           <article class="side before">
             <div class="side-label">
               <span>Prompting</span>
-              <small>The context strategy</small>
             </div>
             <div class="context-before">
               <div class="window-bar">
@@ -766,9 +645,8 @@
           <article class="side after">
             <div class="side-label">
               <span>StoryPointless</span>
-              <small>Product knowledge</small>
             </div>
-            <div class="context-after">
+            <div class="context-after app-mock">
               <div class="knowledge-topbar">
                 <span>Product memory</span>
                 <small><i></i> 47 verified pages</small>
@@ -858,6 +736,202 @@
         </div>
       </section>
 
+      <section class="proof" id="evidence">
+        <div class="proof-heading">
+          <span>06</span>
+          <div>
+            <h2>“I made significant progress” is not evidence.</h2>
+            <p>
+              StoryPointless records what actually happened: changes, checks,
+              decisions, permissions, review findings, and exact revisions.
+            </p>
+          </div>
+        </div>
+
+        <div class="comparison">
+          <article class="side before">
+            <div class="side-label">
+              <span>Prompting</span>
+            </div>
+            <div class="prompt-stack evidence-chat">
+              <div class="agent-progress">
+                <span>Task complete</span>
+                <b>100%</b>
+                <small>Evidence: immaculate vibes</small>
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>Implementation is complete and all tests pass.</p>
+              </div>
+              <div class="prompt owner">
+                <b>You</b>
+                <p>Which tests?</p>
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>Let me verify that.</p>
+              </div>
+              <div class="verification-spinner">
+                <i aria-hidden="true"></i>
+                Verifying previous verification…
+              </div>
+            </div>
+            <p class="punchline">All tests passed. Running them is next.</p>
+          </article>
+
+          <article class="side after">
+            <div class="side-label">
+              <span>StoryPointless</span>
+            </div>
+            <div class="worklog-panel app-mock">
+              <div class="worklog-topbar">
+                <div>
+                  <small>T18</small>
+                  <b>Work log</b>
+                </div>
+                <span>Exact candidate <code>3f8d12a</code></span>
+              </div>
+              <div class="worklog-events">
+                <div class="worklog-event">
+                  <time>10:42</time>
+                  <i class="event-purple">I</i>
+                  <div>
+                    <small>Implementer</small>
+                    <b>Candidate revision created</b>
+                    <span>7 files changed · Delivery note attached</span>
+                  </div>
+                </div>
+                <div class="worklog-event">
+                  <time>10:44</time>
+                  <i class="event-green">✓</i>
+                  <div>
+                    <small>Checks</small>
+                    <b>42 tests passed</b>
+                    <span>Build succeeded · No warnings</span>
+                  </div>
+                </div>
+                <div class="worklog-event">
+                  <time>10:51</time>
+                  <i class="event-blue">TL</i>
+                  <div>
+                    <small>Tech Lead</small>
+                    <b>Exact candidate approved</b>
+                    <span>Acceptance criteria and diff reviewed</span>
+                  </div>
+                </div>
+                <div class="worklog-event">
+                  <time>10:54</time>
+                  <i class="event-green">✓</i>
+                  <div>
+                    <small>Integration</small>
+                    <b>Merged cleanly against current product</b>
+                    <span>Candidate review remains valid</span>
+                  </div>
+                </div>
+                <div class="worklog-event">
+                  <time>10:56</time>
+                  <i class="event-purple">▶</i>
+                  <div>
+                    <small>Demo</small>
+                    <b>Preparation succeeded</b>
+                    <span>The exact reviewed revision is ready</span>
+                  </div>
+                </div>
+              </div>
+              <div class="worklog-footer">
+                Every claim has an author, a time, and an exact revision.
+              </div>
+            </div>
+            <p class="punchline good">
+              Progress is something the Product Owner can inspect.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="proof" id="recovery">
+        <div class="proof-heading">
+          <span>07</span>
+          <div>
+            <h2>Your product should survive closing the chat.</h2>
+            <p>
+              Interrupted delivery recovers with its Ticket, Conversation,
+              workspace, decisions, and previous evidence intact.
+            </p>
+          </div>
+        </div>
+
+        <div class="comparison">
+          <article class="side before">
+            <div class="side-label">
+              <span>Prompting</span>
+            </div>
+            <div class="prompt-stack recovery-chat">
+              <div class="new-session">
+                <span>New session</span>
+                <small>No previous context</small>
+              </div>
+              <div class="prompt owner">
+                <b>You</b>
+                <p>Continue where we left off.</p>
+              </div>
+              <div class="prompt">
+                <b>Agent</b>
+                <p>Certainly. Could you remind me what we were doing?</p>
+              </div>
+            </div>
+            <p class="punchline">A fresh start, whether you wanted one or not.</p>
+          </article>
+
+          <article class="side after">
+            <div class="side-label">
+              <span>StoryPointless</span>
+            </div>
+            <div class="recovery-panel app-mock">
+              <div class="recovery-topbar">
+                <span><i></i> Delivery recovered</span>
+                <small>Same Ticket · Same workspace</small>
+              </div>
+              <div class="recovered-ticket">
+                <div>
+                  <small>T23 · In Progress</small>
+                  <h3>Build expiring private links</h3>
+                  <p>Resuming from the last confirmed checkpoint.</p>
+                </div>
+                <span>Recovered</span>
+              </div>
+              <div class="recovered-state">
+                <div><span>✓</span><b>Ticket workspace</b><small>Preserved</small></div>
+                <div><span>✓</span><b>Conversation</b><small>Ready to resume</small></div>
+                <div><span>✓</span><b>Product decisions</b><small>4 linked</small></div>
+                <div><span>✓</span><b>Work log</b><small>Current</small></div>
+              </div>
+              <div class="recovery-timeline">
+                <div>
+                  <time>Yesterday · 17:42</time>
+                  <span>Application closed; run and workspace preserved.</span>
+                </div>
+                <div>
+                  <time>Today · 09:12</time>
+                  <span>Same Conversation and Ticket workspace recovered.</span>
+                </div>
+                <div class="resume-event">
+                  <time>Now</time>
+                  <span>Implementation continuing from the saved checkpoint.</span>
+                </div>
+              </div>
+              <div class="resume-bar">
+                <span>Last activity: link expiry checks</span>
+                <b><i></i> Resuming work</b>
+              </div>
+            </div>
+            <p class="punchline good">
+              It continues the work. It does not pretend to start it again.
+            </p>
+          </article>
+        </div>
+      </section>
+
       <section class="proof" id="safety">
         <div class="proof-heading">
           <span>08</span>
@@ -875,7 +949,6 @@
           <article class="side before">
             <div class="side-label">
               <span>Improvised setup</span>
-              <small>The permission strategy</small>
             </div>
             <div class="permission-stack">
               <div class="prompt owner">
@@ -904,9 +977,8 @@
           <article class="side after">
             <div class="side-label">
               <span>StoryPointless</span>
-              <small>Built-in boundaries</small>
             </div>
-            <div class="sandbox-panel">
+            <div class="sandbox-panel app-mock">
               <div class="sandbox-topbar">
                 <span><i></i> Codex macOS sandbox</span>
                 <small>Active</small>
@@ -969,7 +1041,7 @@
       <section class="final-cta">
         <img src="./app-icon.png" alt="" width="68" height="68" />
         <h2>StoryPointless</h2>
-        <p>Your AI product team, from outcome to reviewed demo.</p>
+        <p>AI writes the code. StoryPointless runs the delivery process.</p>
         <a
           class="button button-light"
           href="https://github.com/cristianrgreco/storypointless/releases/latest"
@@ -984,10 +1056,11 @@
         <img src="./app-icon.png" alt="" width="28" height="28" />
         <span>StoryPointless</span>
       </a>
-      <p>No points. Plenty of point.</p>
+      <p>The points were never the point.</p>
       <a href="https://github.com/cristianrgreco/storypointless"
         >GitHub <span aria-hidden="true">↗</span></a
       >
     </footer>
+    <script src="./site.js" defer></script>
   </body>
 </html>

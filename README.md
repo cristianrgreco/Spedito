@@ -15,8 +15,10 @@ being newer. **Autosuggest Tickets** runs one read-only,
 schema-constrained Business Analyst turn and can produce a coherent set of up
 to 24 analysis, UX, and implementation proposals. Roles are recommended future
 owners and may repeat; they are not separate suggestion agents or quotas.
-Starter-backlog and Epic planning now inspect verified **Environments**
-knowledge and repository evidence before treating executable work as ready.
+Starter-backlog and Epic planning now receive bounded accepted-ticket contracts
+and verified Product knowledge, including **Environments**, before treating
+executable work as ready. Planning does not inspect repository source or Git
+history.
 Their structured results classify environment readiness and each ticket's
 relationship to it. If a reusable environment is missing, the plan must include
 one concrete Implementer foundation task and every ticket that needs to build,
@@ -61,14 +63,17 @@ details use the same adaptive sheet and conversation proportions. Their initial
 Business Analyst refinement starts automatically rather than presenting a redundant
 header action. Once consequential questions are answered, both flows apply the
 Business Analyst's completed refinement as one versioned update; Ticket refinement
-also preserves existing blockers while adding newly recommended prerequisites.
+also preserves existing blockers while adding newly recommended prerequisites and
+assigns an unassigned ticket to the recommended delivery team member without
+replacing a Product Owner-selected assignee.
 Epic details also reuses the same recipient picker, composer,
 empty state, and replying status for durable read-only questions to any selected team
 member; ordinary Epic chat remains separate from governed refinement answers. A ticket
 team member can reply normally or propose a business-readable ticket change. A
 proposal can be accepted or rejected, but acceptance is disabled if the owner or another
-process changed the exact ticket snapshot the agent saw. Hung turns are interrupted after
-a bounded wait instead of leaving an endless spinner. Scoped tickets can be reviewed
+process changed the exact ticket snapshot the agent saw. Turns are interrupted after
+60 seconds without matching agent activity instead of leaving an endless spinner;
+commentary and tool progress restart that inactivity window. Scoped tickets can be reviewed
 ticket by ticket and assigned in a persisted sprint plan. **Start Sprint** validates
 readiness, freezes the approved contracts, creates recoverable internal execution
 records, and starts every dependency-free delivery run. Each assigned member works
@@ -162,9 +167,14 @@ review artifact, or captures a bounded scenario result according to that reviewe
 recipe. Repeated web and app demo clicks reuse a healthy process. **Stop demo**,
 Product Owner feedback, approval, product switching, and app shutdown terminate the
 managed App Server command session; approval and feedback also remove the preview checkout.
-If the Tech Lead has approved the candidate but demo smoke preparation stops, the ticket
-offers **Retry demo preparation** immediately. The retry reuses the exact reviewed SHA and
-does not require a comment, repeat implementation, or another Tech Lead review.
+If the Tech Lead has approved the candidate but demo smoke preparation exposes a
+candidate-controlled failure such as a non-zero command exit, missing artefact,
+invalid recipe, or readiness timeout, StoryPointless records the actionable error
+and automatically returns the integrated revision to the Implementer. The
+correction produces a new candidate and receives Tech Lead review again.
+Host/runtime interruptions instead offer **Retry demo preparation** immediately;
+that retry reuses the exact reviewed SHA and does not require a comment, repeat
+implementation, or another Tech Lead review.
 Requested changes return it to **In Progress** and resume the original implementation
 thread with the review comment. After post-conflict review or demo feedback,
 StoryPointless first fast-forwards the clean preserved ticket workspace to the exact
@@ -278,9 +288,12 @@ the product library can show, restore, and reopen them.
 Each product keeps its authoritative database beside its repository at
 `<product workspace>/.storypointless/product.sqlite`. New databases are created
 directly from one declarative final schema; distributed builds do not replay the
-development migration history. The one-time development cutover splits the old
-shared `storypointless.sqlite` into these product stores, preserves identifiers
-and relationships, and leaves the shared source database intact as a backup.
+development migration history. Product bootstrap writes `/.storypointless/` to
+the workspace's root `.gitignore` before the first Git snapshot, keeping the live
+database, WAL, and shared-memory files outside product history. The one-time
+development cutover splits the old shared `storypointless.sqlite` into these
+product stores, preserves identifiers and relationships, and leaves the shared
+source database intact as a backup.
 Product Context keeps the potentially long product description out of the
 sidebar while allowing the owner to review and edit what future agents receive.
 Manual ticket creation also requires the same simple Story/Task/Bug choice.
@@ -340,11 +353,11 @@ keeping exceptional access explicit.
 They also create a proposed per-ticket delivery note; Tech Lead approval verifies it
 before it is used as current knowledge. Agents may propose complete updates or new
 pages for the canonical wiki. The Tech Lead reviews those proposals with the exact
-candidate, after which StoryPointless publishes them automatically and commits the
-Markdown into the integrated revision. Candidate-sourced Markdown is not synchronized
-into the accepted `trunk` workspace until the Product Owner approves that candidate,
-so working-tree checkpoints cannot bypass the normal promotion gate. The ticket keeps
-the full proposal, rationale, status, and page history visible. Set
+candidate, after which StoryPointless stages the reviewed Markdown only in the
+integrated revision. Product Owner acceptance publishes the approved changes to
+canonical Product knowledge and promotes that same revision to `trunk`, so working-tree
+checkpoints cannot bypass the normal promotion gate. The ticket keeps the full
+proposal, rationale, status, and page history visible. Set
 `STORYPOINTLESS_REQUIRE_KNOWLEDGE_APPROVAL=1` when launching the development app to
 restore the stricter per-proposal Product Owner accept/reject gate. Material unstated
 Product Owner decisions must still pause the ticket and cannot be smuggled through a

@@ -2992,9 +2992,18 @@ struct SQLiteStoreTests {
       candidateRevisionID: candidate.id,
       status: .reviewed
     )
-    _ = try await store.decideKnowledgePageProposal(
+    _ = try await store.recordKnowledgePageProposalDecision(
       id: update.id,
       accept: true,
+      authorName: "Me"
+    )
+    let unpublishedOverview = try #require(
+      try await store.fetchKnowledgePages(productID: product.id)
+        .first { $0.id == overview.id }
+    )
+    #expect(unpublishedOverview.bodyMarkdown == overview.bodyMarkdown)
+    _ = try await store.publishKnowledgePageProposal(
+      id: update.id,
       authorName: "Me"
     )
     _ = try await store.decideKnowledgePageProposal(
@@ -3020,6 +3029,7 @@ struct SQLiteStoreTests {
     )
     #expect(updatedOverview.bodyMarkdown.contains("Verified integration details"))
     #expect(!updatedOverview.bodyMarkdown.hasPrefix("# "))
+    #expect(updatedOverview.sourceWorkItemID == item.id)
     #expect(
       try await store.fetchKnowledgePageRevisions(pageID: overview.id).first?
         .changeSummary == update.rationale

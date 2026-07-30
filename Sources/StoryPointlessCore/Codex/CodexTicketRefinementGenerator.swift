@@ -66,6 +66,7 @@ public struct TicketRefinementProposal: Equatable, Sendable {
   public let body: String
   public let acceptanceCriteria: [String]
   public let priority: WorkItemPriority
+  public let suggestedRole: AgentRole?
   public let rationale: String
   public let dependencies: [TicketRefinementDependencyProposal]
   public let potentialDuplicates: [TicketRefinementRelatedWork]
@@ -79,6 +80,7 @@ public struct TicketRefinementProposal: Equatable, Sendable {
     body: String,
     acceptanceCriteria: [String],
     priority: WorkItemPriority,
+    suggestedRole: AgentRole? = nil,
     rationale: String,
     dependencies: [TicketRefinementDependencyProposal],
     potentialDuplicates: [TicketRefinementRelatedWork],
@@ -91,6 +93,7 @@ public struct TicketRefinementProposal: Equatable, Sendable {
     self.body = body
     self.acceptanceCriteria = acceptanceCriteria
     self.priority = priority
+    self.suggestedRole = suggestedRole
     self.rationale = rationale
     self.dependencies = dependencies
     self.potentialDuplicates = potentialDuplicates
@@ -163,7 +166,9 @@ public enum CodexTicketRefinementGenerator {
     improves clarity or testability. Suggest dependencies only when another saved ticket is a genuine
     prerequisite, and give a concrete reason for every edge. Do not use dependencies merely to express a
     preferred sequence. Identify likely duplicate or overlapping tickets, whether the work should be split,
-    and no more than three focused questions whose answers materially affect scope.
+    and no more than three focused questions whose answers materially affect scope. Recommend the future
+    delivery owner as Business Analyst for agreed research, UX Designer for experience or prototype work,
+    or Implementer for approved product changes and other general delivery.
 
     For a ticket that will build, test, prototype, demo, locally run, or prepare a deployable product,
     inspect verified Environments knowledge and repository-owned manifests, scripts, CI, and documentation.
@@ -306,6 +311,8 @@ public enum CodexTicketRefinementGenerator {
       \(conversationHistory)
 
       Return a concise chat message and a complete refined snapshot. baseVersion must be \(item.version).
+      Set role to the recommended future delivery owner. This recommendation fills an unassigned ticket;
+      it does not replace an assignee already chosen by the Product Owner.
       Dependency and duplicate references must use an exact ticket key listed above. An empty array means
       no suggestion. splitRecommendation must be null when the ticket should remain one ticket.
       Before returning, query verified Environments knowledge and inspect repository-owned environment
@@ -355,7 +362,8 @@ public enum CodexTicketRefinementGenerator {
           "additionalProperties": .bool(false),
           "required": .array([
             .string("baseVersion"), .string("title"), .string("type"), .string("body"),
-            .string("acceptanceCriteria"), .string("priority"), .string("rationale"),
+            .string("acceptanceCriteria"), .string("priority"), .string("role"),
+            .string("rationale"),
             .string("dependencies"), .string("potentialDuplicates"),
             .string("splitRecommendation"), .string("missingQuestions"),
           ]),
@@ -375,6 +383,14 @@ public enum CodexTicketRefinementGenerator {
               "type": .string("string"),
               "enum": .array([
                 .string("urgent"), .string("high"), .string("normal"), .string("low"),
+              ]),
+            ]),
+            "role": .object([
+              "type": .string("string"),
+              "enum": .array([
+                .string(AgentRole.businessAnalyst.rawValue),
+                .string(AgentRole.uxDesigner.rawValue),
+                .string(AgentRole.implementer.rawValue),
               ]),
             ]),
             "rationale": .object(["type": .string("string")]),
@@ -426,10 +442,11 @@ public enum CodexTicketRefinementGenerator {
     }
     guard
       let type = WorkItemType(rawValue: proposal.type),
-      let priority = priority(named: proposal.priority)
+      let priority = priority(named: proposal.priority),
+      let suggestedRole = AgentRole(rawValue: proposal.role)
     else {
       throw TicketRefinementGenerationError.invalidResponse(
-        "The proposal contains an unsupported type or priority."
+        "The proposal contains an unsupported type, priority, or delivery role."
       )
     }
 
@@ -531,6 +548,7 @@ public enum CodexTicketRefinementGenerator {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty },
         priority: isAwaitingOwner ? currentItem.priority : priority,
+        suggestedRole: suggestedRole,
         rationale: rationale,
         dependencies: isAwaitingOwner ? [] : proposal.dependencies,
         potentialDuplicates: isAwaitingOwner ? [] : proposal.potentialDuplicates,
@@ -567,6 +585,7 @@ private struct GeneratedTicketRefinementProposal: Decodable {
   let body: String
   let acceptanceCriteria: [String]
   let priority: String
+  let role: String
   let rationale: String
   let dependencies: [TicketRefinementDependencyProposal]
   let potentialDuplicates: [TicketRefinementRelatedWork]

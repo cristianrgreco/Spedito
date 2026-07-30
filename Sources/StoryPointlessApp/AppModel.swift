@@ -62,6 +62,30 @@ struct EpicPlanningConversationState: Equatable {
   var errorMessage: String?
 }
 
+enum EpicPlanningRetryAction: Equatable {
+  case retryFailedPlan
+  case retryClarification([EpicPlanningAnsweredQuestion])
+  case restartClarification
+}
+
+struct EpicPlanningPolicy {
+  static func retryAction(
+    for conversation: EpicPlanningConversationState,
+    hasFailedPlan: Bool
+  ) -> EpicPlanningRetryAction {
+    if hasFailedPlan {
+      return .retryFailedPlan
+    }
+    if
+      let answeredQuestions = conversation.messages.last?.answeredQuestions,
+      !answeredQuestions.isEmpty
+    {
+      return .retryClarification(answeredQuestions)
+    }
+    return .restartClarification
+  }
+}
+
 private struct SprintExecutionContext {
   let product: Product
   let plan: SprintPlan
@@ -748,7 +772,10 @@ final class AppModel: ObservableObject {
       archivedProducts = try await fetchProducts(status: .archived)
       await reloadSelectedProduct()
       let workspace = try Self.productWorkspaceURL(productID: product.id)
-      _ = try await gitWorkspaceManager.ensureRepository(at: workspace)
+      _ = try await gitWorkspaceManager.ensureRepository(
+        at: workspace,
+        rootIgnoreEntries: ["/.storypointless/"]
+      )
       try Self.excludeProductControlDirectoryFromGit(at: workspace)
       return true
     } catch {
@@ -1136,7 +1163,7 @@ final class AppModel: ObservableObject {
         .map(\.dependsOnWorkItemID)
     )
 
-    let updated = try await store.updateWorkItem(
+    var updated = try await store.updateWorkItem(
       id: item.id,
       title: proposal.title,
       type: proposal.type,
@@ -1147,8 +1174,42 @@ final class AppModel: ObservableObject {
       dependsOnWorkItemIDs: existingDependencyIDs.union(suggestedDependencyIDs),
       expectedVersion: proposal.baseVersion
     )
+    let draftPlan = candidateSprintPlan
+    let draftItem = draftPlan?.items.first { $0.workItemID == item.id }
+    if
+      updated.ownerProfileID == nil,
+      draftItem?.implementerProfileID == nil,
+      let owner = TicketOwnerRouter.owner(
+        for: updated,
+        profiles: profiles,
+        suggestedRole: proposal.suggestedRole
+      )
+    {
+      updated = try await store.assignWorkItemOwner(
+        id: updated.id,
+        profileID: owner.id
+      )
+      if let draftPlan, draftItem != nil {
+        _ = try await store.saveDraftSprint(
+          productID: updated.productID,
+          goal: draftPlan.sprint.goal,
+          tokenBudgetLimit: draftPlan.sprint.tokenBudgetLimit,
+          concurrencyLimit: draftPlan.sprint.concurrencyLimit,
+          items: draftPlan.items.map { sprintItem in
+            SprintDraftItemInput(
+              workItemID: sprintItem.workItemID,
+              implementerProfileID: sprintItem.workItemID == updated.id
+                ? owner.id
+                : sprintItem.implementerProfileID,
+              reviewerProfileID: sprintItem.reviewerProfileID,
+              estimatedTokens: sprintItem.estimatedTokens
+            )
+          }
+        )
+      }
+    }
     await reloadSelectedProduct()
-    return updated
+    return workItems.first { $0.id == updated.id } ?? updated
   }
 
   func cancelTicketRefinement() {
@@ -2473,6 +2534,24 @@ final class AppModel: ObservableObject {
       await reloadSelectedProduct()
       return true
     } catch {
+      if
+        DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate,
+        let item = try? await store.fetchWorkItems(
+          productID: recoverableCandidate.productID
+        ).first(where: { $0.id == workItemID })
+      {
+        do {
+          try await returnDemoFailureForCorrection(
+            candidateID: recoverableCandidate.id,
+            implementationRun: implementationRun,
+            workItem: item,
+            error: error
+          )
+          return true
+        } catch {
+          errorMessage = error.localizedDescription
+        }
+      }
       _ = try? await store.updateCandidateRevision(
         id: recoverableCandidate.id,
         status: .failed
@@ -2755,33 +2834,39 @@ final class AppModel: ObservableObject {
         )
       }
       let executionResult = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-      var allProposals = try await store.fetchKnowledgePageProposals(
+      let allProposals = try await store.fetchKnowledgePageProposals(
         productID: item.productID
       )
-      var proposals = allProposals.filter { proposal in
+      let proposals = allProposals.filter { proposal in
         proposal.candidateRevisionID == candidate.id
       }
-      if
-        !requiresKnowledgeApproval,
-        proposals.contains(where: { $0.status == .reviewed })
-      {
-        _ = try await publishReviewedKnowledgePageProposals(
-          candidate: candidate,
-          workItem: current,
-          authorName: "StoryPointless"
-        )
-        allProposals = try await store.fetchKnowledgePageProposals(
-          productID: item.productID
-        )
-        proposals = allProposals.filter { proposal in
-          proposal.candidateRevisionID == candidate.id
+      let publishableProposals: [KnowledgePageProposal]
+      if requiresKnowledgeApproval {
+        guard !proposals.contains(where: {
+          $0.status == .proposed || $0.status == .reviewed
+        }) else {
+          throw PersistenceError.corruptData(
+            "Accept or reject every Product knowledge proposal before completing the ticket."
+          )
+        }
+        publishableProposals = proposals.filter { $0.status == .accepted }
+      } else {
+        guard !proposals.contains(where: { $0.status == .proposed }) else {
+          throw PersistenceError.corruptData(
+            "Tech Lead review must finish every Product knowledge proposal before completing the ticket."
+          )
+        }
+        publishableProposals = proposals.filter {
+          $0.status == .reviewed || $0.status == .accepted
         }
       }
-      guard !proposals.contains(where: { $0.status == .proposed || $0.status == .reviewed }) else {
-        throw PersistenceError.corruptData(
-          "Accept or reject every canonical knowledge proposal before completing the ticket."
-        )
-      }
+      let canonicalPages = try await store.fetchKnowledgePages(
+        productID: item.productID
+      )
+      _ = try KnowledgePageProposalMaterializer.applying(
+        publishableProposals,
+        to: canonicalPages
+      )
       await stopDemoSession(candidate, removesPreview: true)
       let repositoryURL = try Self.productWorkspaceURL(productID: item.productID)
       guard
@@ -2803,6 +2888,21 @@ final class AppModel: ObservableObject {
         repositoryURL: repositoryURL,
         integratedSHA: integratedSHA
       )
+      for proposal in publishableProposals {
+        _ = try await store.publishKnowledgePageProposal(
+          id: proposal.id,
+          authorName: requiresKnowledgeApproval ? "Me" : "StoryPointless"
+        )
+      }
+      if !publishableProposals.isEmpty {
+        _ = try await store.appendComment(
+          workItemID: current.id,
+          authorKind: .system,
+          authorName: "StoryPointless",
+          body:
+            "Published \(publishableProposals.count) approved Product knowledge change\(publishableProposals.count == 1 ? "" : "s") with the accepted candidate."
+        )
+      }
       if !executionResult.followUpTicketProposals.isEmpty {
         _ = try await store.createFollowUpTicketSuggestionSession(
           sourceWorkItemID: current.id,
@@ -2908,32 +3008,30 @@ final class AppModel: ObservableObject {
       let candidate = candidateRevisions.first {
         $0.id == proposal.candidateRevisionID
       }
-      _ = try await store.decideKnowledgePageProposal(
+      _ = try await store.recordKnowledgePageProposalDecision(
         id: proposal.id,
         accept: accept,
         authorName: "Me"
       )
       if
         accept,
-        let candidate,
-        let integrationPath = candidate.integrationWorktreePath
+        let candidate
       {
         do {
-          let pages = try await store.fetchKnowledgePages(productID: proposal.productID)
-          let integrationURL = URL(fileURLWithPath: integrationPath, isDirectory: true)
-          try Self.syncKnowledgeMarkdownFiles(
-            at: integrationURL,
-            pages: pages
+          let currentCandidate = try await store.fetchCandidateRevision(
+            id: candidate.id
           )
-          let ticketKey = workItems.first { $0.id == proposal.workItemID }?.key ?? "Ticket"
-          let integratedSHA = try await gitWorkspaceManager.checkpointWorkspace(
-            at: integrationURL,
-            message: "\(ticketKey): accept canonical knowledge"
-          )
-          _ = try await store.updateCandidateRevision(
-            id: candidate.id,
-            status: candidate.status,
-            integratedSHA: integratedSHA
+          guard let item = workItems.first(where: {
+            $0.id == proposal.workItemID
+          }) else {
+            throw PersistenceError.recordNotFound(
+              "work item \(proposal.workItemID)"
+            )
+          }
+          _ = try await materializeKnowledgePageProposals(
+            candidate: currentCandidate,
+            statuses: [.accepted],
+            commitMessage: "\(item.key): stage approved Product knowledge"
           )
         } catch {
           _ = try? await store.updateCandidateRevision(
@@ -2953,38 +3051,39 @@ final class AppModel: ObservableObject {
   }
 
   @discardableResult
-  private func publishReviewedKnowledgePageProposals(
+  private func materializeKnowledgePageProposals(
     candidate: CandidateRevision,
-    workItem: WorkItem,
-    authorName: String
+    statuses: [KnowledgePageProposalStatus],
+    commitMessage: String
   ) async throws -> Int {
     guard let store else { return 0 }
-    let reviewedProposals = try await store.fetchKnowledgePageProposals(
+    let proposals = try await store.fetchKnowledgePageProposals(
       productID: candidate.productID
     ).filter {
-      $0.candidateRevisionID == candidate.id && $0.status == .reviewed
+      $0.candidateRevisionID == candidate.id && statuses.contains($0.status)
     }
-    guard !reviewedProposals.isEmpty else { return 0 }
+    guard !proposals.isEmpty else { return 0 }
     guard let integrationPath = candidate.integrationWorktreePath else {
       throw PersistenceError.corruptData(
         "Reviewed knowledge changes have no integration workspace."
       )
     }
 
-    for proposal in reviewedProposals {
-      _ = try await store.decideKnowledgePageProposal(
-        id: proposal.id,
-        accept: true,
-        authorName: authorName
-      )
-    }
-
-    let pages = try await store.fetchKnowledgePages(productID: candidate.productID)
+    let canonicalPages = try await store.fetchKnowledgePages(
+      productID: candidate.productID
+    )
+    let candidatePages = try KnowledgePageProposalMaterializer.applying(
+      proposals,
+      to: canonicalPages
+    )
     let integrationURL = URL(fileURLWithPath: integrationPath, isDirectory: true)
-    try Self.syncKnowledgeMarkdownFiles(at: integrationURL, pages: pages)
+    try Self.syncKnowledgeMarkdownFiles(
+      at: integrationURL,
+      pages: candidatePages
+    )
     let integratedSHA = try await gitWorkspaceManager.checkpointWorkspace(
       at: integrationURL,
-      message: "\(workItem.key): publish reviewed knowledge"
+      message: commitMessage
     )
     let currentCandidate = try await store.fetchCandidateRevision(id: candidate.id)
     _ = try await store.updateCandidateRevision(
@@ -2992,13 +3091,7 @@ final class AppModel: ObservableObject {
       status: currentCandidate.status,
       integratedSHA: integratedSHA
     )
-    _ = try await store.appendComment(
-      workItemID: workItem.id,
-      authorKind: .system,
-      authorName: "StoryPointless",
-      body: "Published \(reviewedProposals.count) Tech Lead-reviewed knowledge change\(reviewedProposals.count == 1 ? "" : "s") automatically. The full content and revision history remain available in Knowledge."
-    )
-    return reviewedProposals.count
+    return proposals.count
   }
 
   func sendSprintPlanningMessage(
@@ -3497,7 +3590,10 @@ final class AppModel: ObservableObject {
         let threadID = try await client.startReadOnlyThread(
           workingDirectory: workingDirectory,
           developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
+            productInstructions: inheritedAgentInstructions(
+              for: product,
+              allowsRepositoryInspection: false
+            ),
             customInstructions: analyst?.customInstructionText ?? ""
           ),
           model: analyst?.model
@@ -3509,7 +3605,8 @@ final class AppModel: ObservableObject {
           prompt: CodexEpicClarificationGenerator.initialPrompt(
             product: product,
             epic: epic,
-            existingItems: workItems
+            existingItems: workItems,
+            verifiedKnowledge: epicPlanningKnowledge(for: epic)
           ),
           effort: analyst?.reasoningEffort ?? "medium",
           outputSchema: CodexEpicClarificationGenerator.outputSchema
@@ -3601,7 +3698,8 @@ final class AppModel: ObservableObject {
             product: product,
             epic: epic,
             existingItems: workItems,
-            messages: messages
+            messages: messages,
+            verifiedKnowledge: epicPlanningKnowledge(for: epic)
           ),
           product: product,
           analyst: analyst
@@ -3634,10 +3732,17 @@ final class AppModel: ObservableObject {
       conversation.isGeneratingPlan == false
     else { return }
 
-    if
-      let answeredQuestions = conversation.messages.last?.answeredQuestions,
-      !answeredQuestions.isEmpty
-    {
+    let hasFailedPlan =
+      suggestionBatch?.session.epicID == epic.id
+      && suggestionBatch?.session.status == .failed
+    switch EpicPlanningPolicy.retryAction(
+      for: conversation,
+      hasFailedPlan: hasFailedPlan
+    ) {
+    case .retryFailedPlan:
+      retryCurrentEpicPlan()
+
+    case .retryClarification(let answeredQuestions):
       let answers = answeredQuestions.map {
         "\($0.question.prompt)\nAnswer: \($0.answer)"
       }
@@ -3648,18 +3753,17 @@ final class AppModel: ObservableObject {
         recordsAnswers: false,
         requiresReplacementThread: true
       )
-      return
-    }
 
-    epicPlanningThreadID = nil
-    activeEpicPlanningTurn = nil
-    updateEpicPlanningConversation {
-      $0.messages = $0.messages.filter { $0.kind == .chat }
-      $0.questions = []
-      $0.hasStartedPlanning = false
-      $0.errorMessage = nil
+    case .restartClarification:
+      epicPlanningThreadID = nil
+      activeEpicPlanningTurn = nil
+      updateEpicPlanningConversation {
+        $0.questions = []
+        $0.hasStartedPlanning = false
+        $0.errorMessage = nil
+      }
+      planEpic(epic)
     }
-    planEpic(epic)
   }
 
   private func runEpicClarificationTurn(
@@ -3687,7 +3791,10 @@ final class AppModel: ObservableObject {
     let replacementThreadID = try await client.startReadOnlyThread(
       workingDirectory: workingDirectory,
       developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
-        productInstructions: inheritedAgentInstructions(for: product),
+        productInstructions: inheritedAgentInstructions(
+          for: product,
+          allowsRepositoryInspection: false
+        ),
         customInstructions: analyst.customInstructionText
       ),
       model: analyst.model
@@ -3912,8 +4019,12 @@ final class AppModel: ObservableObject {
     durableMessages: [EpicPlanningConversationMessage],
     analyst: AgentProfile?
   ) async throws -> String {
+    let planningKnowledge = epicPlanningKnowledge(for: epic)
     let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
-      productInstructions: inheritedAgentInstructions(for: product),
+      productInstructions: inheritedAgentInstructions(
+        for: product,
+        allowsRepositoryInspection: false
+      ),
       customInstructions: analyst?.customInstructionText ?? ""
     )
     let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
@@ -3947,7 +4058,8 @@ final class AppModel: ObservableObject {
       product: product,
       epic: epic,
       existingItems: existingItems,
-      rejectedSuggestions: rejectedSuggestions
+      rejectedSuggestions: rejectedSuggestions,
+      verifiedKnowledge: planningKnowledge
     )
     if let preferredThreadID {
       do {
@@ -3981,7 +4093,8 @@ final class AppModel: ObservableObject {
         epic: epic,
         existingItems: existingItems,
         rejectedSuggestions: rejectedSuggestions,
-        messages: durableMessages
+        messages: durableMessages,
+        verifiedKnowledge: planningKnowledge
       ),
       effort: analyst?.reasoningEffort ?? "medium"
     )
@@ -4106,7 +4219,10 @@ final class AppModel: ObservableObject {
         let threadID = try await client.startReadOnlyThread(
           workingDirectory: workingDirectory,
           developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
+            productInstructions: inheritedAgentInstructions(
+              for: product,
+              allowsRepositoryInspection: false
+            ),
             customInstructions: analyst?.customInstructionText ?? ""
           ),
           model: analyst?.model
@@ -4116,7 +4232,8 @@ final class AppModel: ObservableObject {
           prompt: CodexTicketSuggestionGenerator.prompt(
             product: product,
             existingItems: workItems.filter { $0.state != .cancelled },
-            rejectedSuggestions: previouslyRejectedSuggestions
+            rejectedSuggestions: previouslyRejectedSuggestions,
+            verifiedKnowledge: KnowledgeContextSelector.mandatoryPages(in: knowledgePages)
           ),
           effort: analyst?.reasoningEffort ?? "medium",
           outputSchema: CodexTicketSuggestionGenerator.outputSchema
@@ -5888,7 +6005,8 @@ final class AppModel: ObservableObject {
         runID: run.id,
         productID: product.id,
         assignee: assignee,
-        workspaceURL: workspace
+        workspaceURL: workspace,
+        canonicalKnowledgePages: knowledgeSelection.directoryPages
       )
       await processExecutionResult(
         result,
@@ -5965,10 +6083,15 @@ final class AppModel: ObservableObject {
     runID: UUID,
     productID: UUID,
     assignee: AgentProfile,
-    workspaceURL: URL
+    workspaceURL: URL,
+    canonicalKnowledgePages: [KnowledgePage]
   ) async throws -> TicketExecutionResult {
     do {
       let result = try CodexTicketExecutor.decode(response)
+      try CodexTicketExecutor.validateKnowledgePageProposals(
+        in: result,
+        canonicalPages: canonicalKnowledgePages
+      )
       try CodexTicketExecutor.validateFollowUpTicketProposals(
         in: result,
         assignee: assignee
@@ -6010,6 +6133,10 @@ final class AppModel: ObservableObject {
         stopLiveActivityMonitoring(runID: runID)
         activeExecutionTurns.removeValue(forKey: runID)
         let repairedResult = try CodexTicketExecutor.decode(repairedResponse)
+        try CodexTicketExecutor.validateKnowledgePageProposals(
+          in: repairedResult,
+          canonicalPages: canonicalKnowledgePages
+        )
         try CodexTicketExecutor.validateFollowUpTicketProposals(
           in: repairedResult,
           assignee: assignee
@@ -6737,11 +6864,21 @@ final class AppModel: ObservableObject {
   ) async throws {
     guard let store = store(for: workItem.productID) else { return }
     if !requiresKnowledgeApproval {
-      _ = try await publishReviewedKnowledgePageProposals(
-        candidate: try await store.fetchCandidateRevision(id: candidateID),
-        workItem: workItem,
-        authorName: "StoryPointless"
+      let candidate = try await store.fetchCandidateRevision(id: candidateID)
+      let preparedCount = try await materializeKnowledgePageProposals(
+        candidate: candidate,
+        statuses: [.reviewed, .accepted],
+        commitMessage: "\(workItem.key): stage reviewed Product knowledge"
       )
+      if preparedCount > 0 {
+        _ = try await store.appendComment(
+          workItemID: workItem.id,
+          authorKind: .system,
+          authorName: "StoryPointless",
+          body:
+            "Prepared \(preparedCount) Tech Lead-reviewed Product knowledge change\(preparedCount == 1 ? "" : "s") in candidate v\(candidate.version). They will become current Product knowledge when the Product Owner approves this ticket."
+        )
+      }
     }
     let integratedCandidate = try await store.fetchCandidateRevision(id: candidateID)
     guard
@@ -6752,11 +6889,26 @@ final class AppModel: ObservableObject {
         "the reviewed candidate has no managed demo recipe."
       )
     }
-    try await prepareDemoForAcceptance(
-      candidate: integratedCandidate,
-      integratedSHA: integratedSHA,
-      specification: demo
-    )
+    do {
+      try await prepareDemoForAcceptance(
+        candidate: integratedCandidate,
+        integratedSHA: integratedSHA,
+        specification: demo
+      )
+    } catch {
+      guard
+        DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate
+      else {
+        throw error
+      }
+      try await returnDemoFailureForCorrection(
+        candidateID: candidateID,
+        implementationRun: implementationRun,
+        workItem: workItem,
+        error: error
+      )
+      return
+    }
     _ = try await store.updateCandidateRevision(
       id: candidateID,
       status: .readyForDemo
@@ -6788,6 +6940,94 @@ final class AppModel: ObservableObject {
       }
     }
     await reloadSelectedProductIfCurrent(productID: workItem.productID)
+  }
+
+  private func returnDemoFailureForCorrection(
+    candidateID: UUID,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    error: Error
+  ) async throws {
+    guard let store = store(for: workItem.productID) else { return }
+    let candidate = try await store.fetchCandidateRevision(id: candidateID)
+    guard let integratedSHA = candidate.integratedSHA else {
+      throw PersistenceError.corruptData(
+        "The failed demo candidate has no integrated revision to preserve."
+      )
+    }
+
+    let errorDetail = error.localizedDescription
+    await stopDemoSession(candidate, removesPreview: true)
+    _ = try await adoptIntegratedBaselineForRevision(
+      candidate: candidate,
+      integratedSHA: integratedSHA
+    )
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .changesRequested
+    )
+    try await store.markKnowledgePageProposals(
+      candidateRevisionID: candidate.id,
+      status: .superseded
+    )
+    if let integrationPath = candidate.integrationWorktreePath {
+      try? await gitWorkspaceManager.removeWorktree(
+        repositoryURL: Self.productWorkspaceURL(productID: workItem.productID),
+        worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
+      )
+    }
+    if
+      let currentState = try await store.fetchWorkItems(
+        productID: workItem.productID
+      ).first(where: { $0.id == workItem.id })?.state,
+      currentState == .integrating || currentState == .verifying
+    {
+      _ = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: .running,
+        actor: "StoryPointless",
+        reason: "Demo verification failed; correction queued"
+      )
+    }
+
+    let reviewCycle = max(0, candidate.version - 1)
+    let automaticallyRevises = SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(
+      reviewCycle: reviewCycle
+    )
+    _ = try await updateAgentRun(
+      id: implementationRun.id,
+      status: automaticallyRevises ? .queued : .awaitingOwner,
+      eventActor: "StoryPointless",
+      eventDetail: automaticallyRevises
+        ? "Demo verification failed; correction queued for the Implementer"
+        : "Automatic corrections paused after repeated demo verification failures"
+    )
+    _ = try await store.appendComment(
+      workItemID: workItem.id,
+      authorKind: .system,
+      authorName: "StoryPointless",
+      body:
+        automaticallyRevises
+        ? """
+          The reviewed candidate failed its managed demo verification, so I returned it to the Implementer automatically. No Product Owner decision is needed.
+
+          Error:
+          \(errorDetail)
+
+          The reviewed integrated revision is now the ticket workspace baseline. The correction must produce a new candidate and pass Tech Lead review again.
+          """
+        : """
+          The reviewed candidate failed its managed demo verification:
+
+          \(errorDetail)
+
+          I preserved the integrated revision but paused automatic correction after \(SprintReviewCorrectionPolicy.changeRequestNumber(reviewCycle: reviewCycle)) revision attempts. Add Product Owner direction to resume the Implementer.
+          """
+    )
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+    if automaticallyRevises {
+      scheduleSprintExecution(productID: workItem.productID)
+    }
   }
 
   private func reviewCompletedImplementation(
@@ -7381,7 +7621,8 @@ final class AppModel: ObservableObject {
         runID: implementationRun.id,
         productID: product.id,
         assignee: implementer,
-        workspaceURL: revisionWorkspace
+        workspaceURL: revisionWorkspace,
+        canonicalKnowledgePages: context.knowledgePages
       )
       await processExecutionResult(
         revision,
@@ -8539,9 +8780,17 @@ final class AppModel: ObservableObject {
     retrospectiveSyntheses.sort { $0.createdAt < $1.createdAt }
   }
 
+  private func epicPlanningKnowledge(for epic: Epic) -> [KnowledgePage] {
+    KnowledgeContextSelector.selectForEpic(
+      pages: knowledgePages,
+      epic: epic
+    )
+  }
+
   private func inheritedAgentInstructions(
     for product: Product,
-    includesMandatoryKnowledge: Bool = true
+    includesMandatoryKnowledge: Bool = true,
+    allowsRepositoryInspection: Bool = true
   ) -> String {
     let shared = product.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     let databasePath =
@@ -8556,6 +8805,15 @@ final class AppModel: ObservableObject {
       : """
         Query agent_verified_knowledge when the assigned ticket needs durable product context.
         """
+    let repositoryScope =
+      allowsRepositoryInspection
+      ? """
+        Search the product Git history when repository evidence is useful.
+        """
+      : """
+        This is a planning turn. Use the ticket contracts and verified Product knowledge supplied in the
+        prompt. Do not inspect repository files or Git history.
+        """
     return [
       shared,
       """
@@ -8566,7 +8824,10 @@ final class AppModel: ObservableObject {
       You may inspect it read-only with `/usr/bin/sqlite3 -readonly`. Use the stable agent_product,
       agent_team, agent_epics, agent_tickets, agent_ticket_dependencies, agent_work_log,
       agent_sprints, agent_verified_knowledge, agent_decisions, agent_delivery_provenance, and
-      agent_retrospectives views. Search the product Git history when repository evidence is useful.
+      agent_retrospectives views. The exact stable view schemas are:
+      \(CodexLiveProductContext.stableViewSchemas)
+
+      \(repositoryScope)
       The database can change while you work, so re-read a record before relying on mutable state.
       \(knowledgeScope)
       """,

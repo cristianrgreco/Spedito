@@ -547,8 +547,9 @@ discussing after this happens, but stale actions are never auto-applied.
    marketing when the product actually needs them. Profiles use Codex models,
    reasoning effort, role instructions, permission policies, and concurrency
    limits.
-5. The Business Analyst assesses delivery-environment readiness from verified
-   **Environments** knowledge and repository-owned evidence. If the product has
+5. The Business Analyst assesses delivery-environment readiness from bounded
+   accepted-ticket contracts and verified Product knowledge, especially
+   **Environments**. Planning does not inspect repository source or Git history. If the product has
    no sufficient way to build, test, prototype, demo, and locally run its likely
    work, the owner is asked only for a material technology or hosting constraint
    in business terms; the team recommends the simplest suitable option when the
@@ -599,9 +600,12 @@ every ticket that needs an executable environment must depend on it directly or
 transitively. StoryPointless rejects a generated plan that omits or contradicts
 that dependency path.
 
-The assessment uses verified **Environments** guidance plus repository-owned
-manifests, scripts, CI, and documentation; an incidental runtime installed on
-the Product Owner's Mac is not evidence of a supported product environment. A
+The assessment uses bounded accepted-ticket contracts plus relevant verified
+Product knowledge, including **Environments**. StoryPointless supplies this
+evidence in the planning prompt; the Business Analyst does not inspect
+repository source, manifests, scripts, CI, documentation, or Git history during
+planning. An incidental runtime installed on the Product Owner's Mac is not
+evidence of a supported product environment. A
 non-technical owner is not asked to choose Node versus Python, package-manager
 paths, caches, or sandbox permissions by default. Clarification instead asks
 about material outcomes such as portability, hosting, privacy, cost, and
@@ -776,7 +780,10 @@ Governed initial Epic and Ticket refinement share one contract: the Business
 Analyst asks consequential questions first, then the application applies the
 completed metadata or ticket snapshot as one versioned refinement result. A
 Ticket refinement preserves existing blockers and adds any newly recommended
-prerequisites in that same update. For executable work it consults verified
+prerequisites in that same update. It also resolves the recommended delivery
+role to an active team member when the ticket is unassigned, including its saved
+Next sprint plan, while preserving an existing Product Owner assignment. For
+executable work it consults verified
 **Environments** knowledge: an existing foundation is proposed as a dependency,
 while a missing foundation is surfaced as a separate split recommendation
 rather than hidden inside the feature ticket. It fails rather than overwriting
@@ -1023,10 +1030,12 @@ or link to governed work items. The MVP needs messaging, context-bound rooms,
 mentions, proposals, and unread/action state—not calls, presence theatre, emoji
 ecosystems, or a general Slack replacement.
 
-Interactive turns have a visible bounded lifecycle. A hung response is interrupted
-and becomes a retryable authored error; the UI never presents an unbounded spinner as
-progress. Only one response consumes the local Codex event stream at a time in the
-initial implementation.
+Interactive turns have a visible bounded lifecycle. A response is interrupted
+after 60 seconds without activity for its exact Codex turn and becomes a retryable
+authored error; matching commentary, tool progress, and other turn events restart
+the inactivity window. The UI never presents an unbounded spinner as progress. Only
+one response consumes the local Codex event stream at a time in the initial
+implementation.
 
 ### 9.8 Blocking and escalation
 
@@ -1048,8 +1057,9 @@ permanent board column.
 Every code-changing implementation run receives its own Git worktree and branch
 from a recorded local-trunk commit. Thirty implementation runs therefore have
 thirty isolated writable worktrees; no implementer writes directly to the trunk
-or another ticket's workspace. Business-analysis and planning runs can use a
-read-only repository snapshot and do not need writable worktrees.
+or another ticket's workspace. Business-analysis and planning runs do not need
+writable worktrees. Planning receives its bounded product evidence directly and
+does not inspect the read-only repository snapshot.
 
 Integration happens continuously as candidates become ready, not in one risky
 merge at the end of the sprint:
@@ -1069,7 +1079,10 @@ merge at the end of the sprint:
    re-reviews that exact integrated revision. A clean merge preserves the earlier
    candidate review and does not repeat it.
 5. The preview is built from the integrated commit and the acceptance room displays
-   its immutable identifier.
+   its immutable identifier. A candidate-controlled demo failure records its
+   actionable error, returns the integrated revision to the Implementer
+   automatically, and requires a new candidate and review. A host/runtime
+   interruption preserves the reviewed candidate for a preparation-only retry.
 6. Human acceptance authorizes StoryPointless to advance local trunk to that
    exact commit. Agents do not perform this promotion themselves.
 
@@ -1676,9 +1689,11 @@ working-directory expectations, runtime prerequisites, readiness behaviour,
 required capabilities, and known limitations. An Implementer that verifies this
 guidance is absent or materially stale may propose a complete page replacement
 through the ordinary candidate-bound knowledge workflow. The Tech Lead receives
-the page read-only and verifies the proposal with the exact candidate before
-automatic publication, unless stricter Product Owner knowledge approval is enabled.
-Knowledge does not itself grant a runtime or permission.
+the page read-only and verifies the proposal with the exact candidate. The reviewed
+Markdown remains candidate-local until ticket acceptance publishes it; stricter
+Product Owner knowledge approval may additionally require an explicit proposal
+decision before that acceptance. Knowledge does not itself grant a runtime or
+permission.
 
 ### 14.5 Context access
 
@@ -2077,7 +2092,10 @@ structured records such as:
 - decisions, knowledge provenance, product settings, conversation threads, and
   the current declarative schema version.
 
-Source code and worktrees remain in local Git repositories. Large logs,
+Product bootstrap adds `/.storypointless/` to the workspace's root `.gitignore`
+before the first Git snapshot. The database, WAL, shared-memory files, and future
+control-plane data therefore remain outside product Git history. Source code and
+worktrees remain in local Git repositories. Large logs,
 screenshots, videos, and build artifacts remain as files referenced by SQLite.
 Credentials remain in the Codex credential store or macOS Keychain.
 
@@ -2682,7 +2700,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | ID | Item | Acceptance signal |
 | --- | --- | --- |
 | SP-200 | Proposed starter backlog | **Autosuggest Tickets** starts one recoverable BA suggestion session; truthful temporary placeholders become rationale-backed ticket proposals with acceptance criteria, forecasts, and dependency edges, and the owner can accept, edit, discuss, or reject each without rejected work becoming scope |
-| SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, and acceptance criteria through explicit questions; once resolved, initial Epic metadata or the complete Ticket snapshot and new prerequisites are applied as one versioned refinement result, while later chat proposals remain reviewable |
+| SP-201 | Business-analyst-assisted refinement | Owner and BA profile clarify value, priority, scope, examples, acceptance criteria, and the recommended delivery role through explicit questions; once resolved, initial Epic metadata or the complete Ticket snapshot, new prerequisites, and a missing delivery assignee are applied as one versioned refinement result without replacing a Product Owner assignment, while later chat proposals remain reviewable |
 | SP-202 | Safety controls and live usage telemetry | Run warns or pauses on abnormal consumption; UI foregrounds remaining shared account usage and distinguishes per-thread context/compactions, cumulative economics, and internal safety status without requiring a PO-entered token budget |
 | SP-203 | Human decision and permission request | Agent raises a structured, deduplicated decision or scoped permission request in the ticket; the Product Owner sees its plain-language purpose first and can disclose the exact action and additional access, then chooses **Allow once**, **Always allow for this product**, or **Deny**, and the live turn continues without a terminal or global binary whitelist. Before asking for runtime access, the agent inspects the foreseeable executable, traversal, symlink, shared-library, compiler, SDK, or package boundary and submits one reviewable request for the smallest coherent capability; it does not make the Product Owner approve a runtime one file or directory at a time. Agents consult verified Environments guidance and prefer the repository's established native build system and shortest maintained, purpose-named entry point over a shell chain. An Implementer may add a version-controlled, non-interactive task or script only when it represents a coherent reusable workflow, never to substitute an unrelated package manager or runtime, conceal operations, or broaden approval; verified operational changes produce a complete Environments proposal. The persisted request shows the decision in place without adding a duplicate Product Owner message to the Work log. If the app relaunches first, the preserved run remains paused and resumes its Conversation only after that decision; an interrupted leaf request is replaced with one consolidated capability request rather than restarting the cascade. A saved grant is limited to the same command and requested capability, automatically applies to matching future ticket workspaces in that product, remains auditable in each ticket Work log, and can be revoked in Product settings; file-change approvals remain one-time |
 | SP-204 | Local checks and evidence ingestion | Test results and artifacts are linked and independently verifiable |
@@ -2695,7 +2713,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-211 | Basic provenance-backed knowledge query | Owner can ask why or how, receive a current answer linked to decisions, tickets, exact commits and evidence, or receive an explicit unknown when support is insufficient |
 | SP-212 | Context-bound team conversations | Owner can DM profiles or use product, sprint, ticket, and simple group rooms; agent work returns typed, business-readable action proposals and only an explicit accepted diff mutates a ticket or authorizes governed work |
 | SP-213 | Ticket attachments and visual delivery artifacts | Owners and agents can attach versioned files to a ticket without storing large blobs in SQLite; images, PDFs, and other supported artifacts open in an accessible in-app viewer; UX contracts require a reviewable visual artifact such as wireframes, screenshots, or an interactive prototype before reaching Ready for Demo; the board and ticket show the primary artifact and preserve its author, candidate revision, provenance, and history |
-| SP-214 | Managed one-click demo launcher | An agent proposes a typed, candidate-bound demo specification for a loopback browser preview, macOS app, review artifact, or bounded captured result; StoryPointless validates and smoke-tests it against the exact integrated revision before **Ready for Demo**, runs each command through a candidate-scoped connection to the selected App Server with the exact cache-backed preview as the only writable root under a broad-runtime-read, localhost-only permission profile rather than a binary/path allow-list, allocates the loopback port, waits for typed readiness, opens the correct result from one **Demo** button, reports actionable root failures rather than only trailing test summaries, offers **Retry demo preparation** without requiring a comment or repeating implementation/review when only the post-review smoke preparation failed, and stops the owned App Server command session on **Stop demo**, feedback, approval, product switching, shutdown, or connection loss while removing the preview checkout after feedback or approval |
+| SP-214 | Managed one-click demo launcher | An agent proposes a typed, candidate-bound demo specification for a loopback browser preview, macOS app, review artifact, or bounded captured result; StoryPointless validates and smoke-tests it against the exact integrated revision before **Ready for Demo**, runs each command through a candidate-scoped connection to the selected App Server with the exact cache-backed preview as the only writable root under a broad-runtime-read, localhost-only permission profile rather than a binary/path allow-list, allocates the loopback port, waits for typed readiness, opens the correct result from one **Demo** button, reports actionable root failures rather than only trailing test summaries, automatically returns candidate-controlled smoke failures to the Implementer for a new candidate and review, offers **Retry demo preparation** without requiring a comment or repeating implementation/review for host/runtime interruptions, and stops the owned App Server command session on **Stop demo**, feedback, approval, product switching, shutdown, or connection loss while removing the preview checkout after feedback or approval |
 | SP-215 | Product team Chat | **Chat** is available at the top of every product's Team sidebar section while settings and the member roster are nested in a clipped disclosure group with compact, properly inset model and effort controls whose carets sit beside their labels; Chat opens the familiar thread-and-timeline UI with a quiet sidebar background, pale accent selection, comfortable row insets, naturally resizable split panes, and shared owner/agent bubbles that hug short content up to a readable maximum; every message addresses exactly one selected team member for terminology, guidance, product questions, or help, and a top-level message creates an independent retained product thread; a same-member reply resumes that role's Codex thread, while switching members starts a role-specific session with the durable visible thread transcript and current product evidence; a new thread sees at most the latest 100 active-room messages; the agent supplies a four-to-six-word title that aims for five plus a whitespace-aware Markdown response; a bottom status strip streams concise supported Codex activity with Stop, fixed thread timestamps do not tick, failure and archive controls remain visible without a redundant completed-status badge, completed threads can be archived with the standard red destructive treatment and restored without losing messages or Codex context, and no chat response silently changes authoritative product state |
 | SP-216 | Git and Codex degraded-mode resilience | Startup and continuous capability checks distinguish Codex disconnected, incompatible, unauthenticated, or temporarily unreachable states from missing, damaged, or unusable Git support; the product, backlog, sprint history, knowledge, reports, and other unaffected local data remain available; only dependent actions are disabled with a plain-language reason, retry and guided repair paths are offered, interrupted runs and worktrees are reconciled without data loss, and diagnostics expose enough detail for recovery without requiring the owner to use a terminal |
 | SP-217 | Action-required notifications | StoryPointless sends deduplicated macOS notifications only when the Product Owner must act—for example to answer a question, review a demo, resolve an integration failure, recover a stopped run, or decide a retrospective action; clicking a notification opens the exact product and relevant ticket, sprint, or retrospective context; resolving the action clears its notification and in-app badge; category preferences, permission-denied guidance, and quiet handling while the relevant view is already focused prevent progress chatter from becoming notification noise |
@@ -2716,6 +2734,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-306 | Evidence-based retrospective | Suggested experiment is tied to an observed failure and later measured |
 | SP-307 | Historical sprint boards | The Sprint Board can switch between the active sprint and read-only past sprint snapshots, preserving each sprint's final ticket placement, assignments, outcomes, comments, evidence, and retrospective links |
 | SP-308 | Provider-neutral ACP agent runtimes | StoryPointless can discover, configure, and run at least one non-OpenAI Agent Client Protocol (ACP) runtime without provider-specific workflow or UI branching. An ACP adapter maps sessions, prompts, streamed updates, tool calls, cancellation, usage, and authentication into the normalized run lifecycle and negotiates capabilities before admitting work. Implementation and review require the runtime to prove the necessary sandbox, scoped approval, recovery, audit, and workspace-isolation guarantees; a missing guarantee fails closed or limits that runtime to an explicitly safe read-only role. The Product Owner reviews the provider and model, data path, expected cost, authentication method, and known limitations. Distributed or downloaded runtimes are pinned and verified, use provider-compliant authentication, and include required licences, notices, signatures, and software-bill-of-materials entries. |
+| SP-309 | GitHub issue intake | When a product is connected to a GitHub repository, the Product Owner can opt into issue intake and review new eligible issues as source-linked Backlog proposals; GitHub issues identified as defects map to **Bug** tickets and feature requests map to **Story** tickets, while ambiguous issues require an explicit type choice rather than an AI guess. Accepting a proposal creates one durable ticket with the GitHub issue identity, original author, description, labels, and URL; repeated synchronization updates the proposal without creating duplicates and never silently changes an accepted ticket's scope, status, priority, dependencies, or product decisions. Closing, reopening, editing, or relabelling the GitHub issue remains visible as reviewable provenance and does not automatically archive, complete, or rewrite StoryPointless delivery work. Authentication, rate-limit, permission, deleted-issue, and unavailable-network states are recoverable and leave the last valid Backlog state usable. |
 
 ## 27. Decisions to make next
 

@@ -76,4 +76,70 @@ struct KnowledgeMarkdownTests {
         ]
     )
   }
+
+  @Test("Pipe tables retain headers, rows, inline Markdown, and alignment")
+  func parsesPipeTables() {
+    let source = """
+      ## Supported environments
+
+      | Environment | Runtime | Status |
+      | :---------- | :-----: | -----: |
+      | Local | `macOS 14` | **Ready** |
+      | CI | macOS 15 | Pending |
+      """
+
+    #expect(
+      KnowledgeMarkdown.blocks(in: source, removesLeadingTitle: false)
+        == [
+          .heading(level: 2, text: "Supported environments"),
+          .table(
+            KnowledgeMarkdown.Table(
+              header: ["Environment", "Runtime", "Status"],
+              alignments: [.leading, .center, .trailing],
+              rows: [
+                ["Local", "`macOS 14`", "**Ready**"],
+                ["CI", "macOS 15", "Pending"],
+              ]
+            )
+          ),
+        ]
+    )
+  }
+
+  @Test("Table cells can contain escaped and code-span pipes")
+  func preservesCellPipes() {
+    let source = """
+      Name | Value
+      --- | ---
+      Escaped | A \\| B
+      Code | `A | B`
+      """
+
+    #expect(
+      KnowledgeMarkdown.blocks(in: source, removesLeadingTitle: false)
+        == [
+          .table(
+            KnowledgeMarkdown.Table(
+              header: ["Name", "Value"],
+              alignments: [.leading, .leading],
+              rows: [
+                ["Escaped", "A \\| B"],
+                ["Code", "`A | B`"],
+              ]
+            )
+          )
+        ]
+    )
+  }
+
+  @Test("A pipe paragraph without a delimiter row remains a paragraph")
+  func preservesNonTablePipes() {
+    #expect(
+      KnowledgeMarkdown.blocks(
+        in: "Use A | B when either option works.",
+        removesLeadingTitle: false
+      )
+        == [.paragraph(["Use A | B when either option works."])]
+    )
+  }
 }

@@ -35,6 +35,29 @@ enum DemoLauncherError: Error, LocalizedError {
   }
 }
 
+enum DemoPreparationFailureDisposition: Equatable {
+  case correctCandidate
+  case retryPreparation
+}
+
+enum DemoPreparationFailurePolicy {
+  static func disposition(for error: Error) -> DemoPreparationFailureDisposition {
+    if error is DemoLaunchValidationError {
+      return .correctCandidate
+    }
+    guard let launcherError = error as? DemoLauncherError else {
+      return .retryPreparation
+    }
+    return switch launcherError {
+    case .commandFailed, .commandTimedOut, .serviceStopped,
+      .readinessTimedOut, .missingPresentation:
+      .correctCandidate
+    case .appServerUnavailable, .couldNotOpen, .couldNotAllocatePort:
+      .retryPreparation
+    }
+  }
+}
+
 struct DemoLaunchOutcome: Equatable {
   let output: String?
   let allocatedPort: Int?
