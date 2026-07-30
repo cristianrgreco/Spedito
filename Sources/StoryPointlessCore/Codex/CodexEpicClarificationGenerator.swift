@@ -90,6 +90,35 @@ public enum CodexEpicClarificationGenerator {
       Recommend the research option when no choice is already approved and a responsible recommendation
       needs external evidence. Do not offer a vague option such as “let the team choose.”
 
+      Before deciding the outcome is ready to plan, inspect verified Environments knowledge and
+      repository-owned manifests, scripts, CI, and documentation. Decide whether the existing product
+      environment can build, test, prototype, demo, and locally run the likely delivery work. Do not scan
+      the Product Owner's Mac for installed package managers or treat an incidental executable as an
+      approved product environment. If the environment is absent or insufficient and executable work is
+      likely, ask at most one business-friendly question about an existing technology or hosting
+      constraint versus having the team recommend the simplest suitable option. Do not ask a
+      non-technical owner to choose Node, Python, package-manager paths, caches, or sandbox permissions
+      unless they already expressed a relevant technical preference. Every choice must itself be a
+      complete answer; never offer a placeholder such as “I’ll provide,” “we’ll decide later,” or “tell
+      the team separately.” The interface allows exactly one selection per question, so choices must be
+      mutually exclusive, self-contained descriptions of the complete resulting scope. Never make one
+      choice an addition to another with wording such as “add … as well,” “include … too,” or “also.”
+      Restate the full outcome in every option. If the owner may have an unlisted technology or hosting
+      constraint, say in the question that they can choose Other and describe it in the interface's text
+      field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
+      choices.
+
+      Resolve a standard foundation recommendation in this conversation when current product and
+      repository evidence is enough. If a responsible recommendation genuinely needs current external
+      evidence, offer a separate Business Analyst research outcome; choosing it authorises that research.
+      Make the consequence explicit in the choices: a standard recommendation uses the product and
+      repository evidence already available and creates no research ticket, while time-boxed research
+      creates a separate Business Analyst ticket that compares current options before the environment is
+      established.
+      The eventual plan must keep stack recommendation separate from the Implementer task that establishes
+      and verifies the environment. Considering the intended deployment destination early does not
+      authorise production credentials, accounts, signing identities, or a deployment.
+
       Product: \(product.name)
       Product vision:
       \(product.vision)
@@ -126,8 +155,20 @@ public enum CodexEpicClarificationGenerator {
       “let the team choose” is ambiguous: ask whether the Product Owner wants a separate recommendation or
       explicitly delegates implementation-time selection without one. If the outcome is sufficiently clear
       to define a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and
-      briefly confirm any authorised research that the plan will include. Do not propose tickets in this
-      response.
+      briefly confirm any authorised research that the plan will include.
+
+      Also re-check verified Environments knowledge and repository evidence. If likely executable work is
+      not covered, resolve any material technology or hosting preference in business terms before setting
+      readyToPlan to true. Recommend the simplest suitable option when the owner has no preference. Do not
+      ask them to interpret runtime paths or permission details. Every choice must be a complete answer,
+      never a promise to provide information later. Because the owner can select only one option per
+      question, every option must restate the complete resulting scope rather than add to a previous option;
+      never use incremental labels such as “as well,” “too,” or “also.” Direct an unlisted constraint
+      through the interface's Other text field. Distinguish using current product and repository evidence
+      without a research ticket from authorising a time-boxed Business Analyst comparison of current
+      options. Confirm whether the final plan must include an environment-establishment prerequisite, and
+      authorise separate environment research only when the Product Owner agreed that current external
+      evidence is needed. Do not propose tickets in this response.
       """
   }
 
@@ -170,8 +211,19 @@ public enum CodexEpicClarificationGenerator {
       answer such as “let the team choose” is ambiguous: ask whether the Product Owner wants a separate
       recommendation or explicitly delegates implementation-time selection without one. If the outcome is
       sufficiently clear to define a coherent epic and delivery backlog, return no questions, set
-      readyToPlan to true, and briefly confirm any authorised research that the plan will include. Do not
-      propose tickets in this response.
+      readyToPlan to true, and briefly confirm any authorised research that the plan will include.
+
+      Re-check verified Environments knowledge and repository evidence before declaring readiness. When
+      likely executable work lacks a sufficient environment, recover or ask the one material owner-facing
+      question about an existing technology or hosting constraint versus a team recommendation. Never ask
+      for package-manager paths, cache access, or other machine plumbing. Every choice must be a complete
+      answer, never “I’ll provide” or another promise of a later answer. The owner can select exactly one
+      option per question, so every option must describe the complete resulting scope and must not compound
+      another option with “as well,” “too,” “also,” or equivalent wording. Tell the owner to use the
+      interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
+      existing evidence without a research ticket from time-boxed research that creates one. Confirm that
+      the final plan will include an environment-establishment prerequisite, with separate research only
+      when the Product Owner authorised evidence gathering. Do not propose tickets in this response.
       """
   }
 
@@ -202,7 +254,17 @@ public enum CodexEpicClarificationGenerator {
         success criteria include a product change. Do not force that work into a standard sequence of
         research, design, implementation, and verification tickets. Make verification explicit in the
         relevant acceptance criteria, using a separate ticket only when it has an independently valuable
-        outcome. Do not ask more questions in this response.
+        outcome.
+
+        Return the structured environment assessment required by the schema. If executable delivery is not
+        covered by verified Environments guidance, include one concrete Implementer-owned environment
+        establishment task and make every ticket that needs it depend on it directly or transitively.
+        Mark research, product decisions, and neutral design artefacts independent only when they can
+        truthfully proceed without that environment. If a material stack recommendation needed research,
+        include the separately authorised Business Analyst recommendation before the establishment task.
+        The establishment task must verify stable repository entry points, run-private temporary and cache
+        locations, required capabilities, managed demo readiness, limitations, and the complete
+        Environments Product knowledge update. Do not ask more questions in this response.
         """
   }
 

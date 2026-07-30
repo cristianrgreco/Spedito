@@ -198,7 +198,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    allowsApprovals: Bool = false
+    allowsApprovals: Bool = false,
+    readOnlyProductDirectory: URL? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     var params: [String: JSONValue] = [
@@ -208,9 +209,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "ephemeral": .bool(false),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array([
-        .string(workingDirectory.standardizedFileURL.path)
-      ]),
+      "runtimeWorkspaceRoots": .array(
+        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
+          .map { .string($0.standardizedFileURL.path) }
+      ),
       "serviceName": .string("StoryPointless"),
     ]
     if let model, model != "default" {
@@ -228,9 +230,18 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    readOnlyGitDirectory: URL? = nil
+    readOnlyGitDirectory: URL? = nil,
+    readOnlyProductDirectory: URL? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    let productDirectory =
+      readOnlyProductDirectory
+      ?? readOnlyGitDirectory?
+        .deletingLastPathComponent()
+        .appendingPathComponent(
+          ProductStoreRegistry.controlDirectoryName,
+          isDirectory: true
+        )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -245,7 +256,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     if let readOnlyGitDirectory {
       params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
-        readOnlyGitDirectory: readOnlyGitDirectory
+        readOnlyGitDirectory: readOnlyGitDirectory,
+        readOnlyProductDirectory: productDirectory
       )
     }
     if let model, model != "default" {
@@ -264,7 +276,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    allowsApprovals: Bool = false
+    allowsApprovals: Bool = false,
+    readOnlyProductDirectory: URL? = nil
   ) async throws -> String {
     var params: [String: JSONValue] = [
       "approvalPolicy": .string(allowsApprovals ? "on-request" : "never"),
@@ -272,9 +285,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "developerInstructions": .string(developerInstructions),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array([
-        .string(workingDirectory.standardizedFileURL.path)
-      ]),
+      "runtimeWorkspaceRoots": .array(
+        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
+          .map { .string($0.standardizedFileURL.path) }
+      ),
       "threadId": .string(threadID),
     ]
     if let model, model != "default" {
@@ -288,8 +302,17 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    readOnlyGitDirectory: URL? = nil
+    readOnlyGitDirectory: URL? = nil,
+    readOnlyProductDirectory: URL? = nil
   ) async throws -> String {
+    let productDirectory =
+      readOnlyProductDirectory
+      ?? readOnlyGitDirectory?
+        .deletingLastPathComponent()
+        .appendingPathComponent(
+          ProductStoreRegistry.controlDirectoryName,
+          isDirectory: true
+        )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -303,7 +326,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     if let readOnlyGitDirectory {
       params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
-        readOnlyGitDirectory: readOnlyGitDirectory
+        readOnlyGitDirectory: readOnlyGitDirectory,
+        readOnlyProductDirectory: productDirectory
       )
     }
     if let model, model != "default" {
@@ -381,6 +405,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       return try await withThrowingTaskGroup(of: String.self) { group in
         group.addTask {
           var streamedAgentMessage = ""
+          var completedAgentMessage: String?
           for await message in messages {
             try Task.checkCancellation()
             guard case .notification(let notification) = message else { continue }
@@ -399,7 +424,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               notification.params["item"]?["phase"]?.stringValue == "final_answer",
               let text = notification.params["item"]?["text"]?.stringValue
             {
-              return text
+              // A final-answer item can arrive before turn/completed. Starting a
+              // validation-repair turn in that gap can strand the new submission
+              // behind the turn that is still closing, so retain the text until
+              // the matching turn reaches a terminal state.
+              completedAgentMessage = text
             }
 
             if notification.method == "turn/completed",
@@ -415,6 +444,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               let completedItems = notification.params["turn"]?["items"]?.arrayValue ?? []
               if let text = Self.terminalAgentMessage(in: completedItems) {
                 return text
+              }
+              if let completedAgentMessage {
+                return completedAgentMessage
               }
               if
                 !streamedAgentMessage.isEmpty,

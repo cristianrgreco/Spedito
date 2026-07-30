@@ -19,12 +19,14 @@ public enum PersistenceError: Error, Equatable, LocalizedError, Sendable {
 }
 
 public actor SQLiteStore {
+  public nonisolated let url: URL
   private var database: OpaquePointer?
   private let workflowPolicy: WorkflowPolicy
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
 
   public init(url: URL, workflowPolicy: WorkflowPolicy = WorkflowPolicy()) throws {
+    self.url = url
     self.workflowPolicy = workflowPolicy
 
     let directory = url.deletingLastPathComponent()
@@ -56,7 +58,7 @@ public actor SQLiteStore {
     do {
       try Self.execute("PRAGMA foreign_keys = ON;", database: connection)
       try Self.execute("PRAGMA journal_mode = WAL;", database: connection)
-      try Self.migrate(database: connection)
+      try Self.initializeCurrentSchema(database: connection)
     } catch {
       sqlite3_close(connection)
       database = nil
@@ -71,11 +73,17 @@ public actor SQLiteStore {
     }
   }
 
-  public func createProduct(name: String, vision: String) throws -> Product {
+  public func createProduct(
+    name: String,
+    vision: String,
+    color: ProductColor? = nil,
+    id: UUID = UUID()
+  ) throws -> Product {
     let product = Product(
+      id: id,
       name: name,
       vision: vision,
-      color: try nextProductColor()
+      color: try color ?? nextProductColor()
     )
 
     try transaction {
@@ -127,18 +135,7 @@ public actor SQLiteStore {
       return colors
     }
 
-    guard let mostRecentColor = existingColors.last else {
-      return .accent
-    }
-
-    let usedColors = Set(existingColors)
-    let unusedColors = ProductColor.automaticallyAssigned.filter {
-      !usedColors.contains($0)
-    }
-    let availableColors = unusedColors.isEmpty
-      ? ProductColor.automaticallyAssigned.filter { $0 != mostRecentColor }
-      : unusedColors
-    return availableColors.randomElement() ?? .blue
+    return ProductColor.nextAssigned(after: existingColors)
   }
 
   public func fetchProducts(status: ProductStatus = .active) throws -> [Product] {
@@ -1938,6 +1935,230 @@ public actor SQLiteStore {
         )
       }
       return comments
+    }
+  }
+
+  public func createConversationThread(
+    _ thread: ProductConversationThread,
+    initialMessage: ProductConversationMessage
+  ) throws -> ProductConversationThread {
+    guard initialMessage.threadID == thread.id else {
+      throw PersistenceError.corruptData(
+        "The initial Conversation message belongs to another thread."
+      )
+    }
+    let profile = try fetchAgentProfile(id: thread.recipientProfileID)
+    guard profile.productID == thread.productID else {
+      throw PersistenceError.corruptData(
+        "The selected team member belongs to another product."
+      )
+    }
+    _ = try fetchProduct(id: thread.productID)
+
+    try transaction {
+      try withStatement(
+        """
+        INSERT INTO conversation_threads (
+            id, product_id, recipient_profile_id, subject, status,
+            codex_thread_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """
+      ) { statement in
+        try bind(thread.id.uuidString, to: 1, in: statement)
+        try bind(thread.productID.uuidString, to: 2, in: statement)
+        try bind(thread.recipientProfileID.uuidString, to: 3, in: statement)
+        try bind(thread.subject, to: 4, in: statement)
+        try bind(thread.status.rawValue, to: 5, in: statement)
+        try bindOptionalString(thread.codexThreadID, to: 6, in: statement)
+        try bind(thread.createdAt.timeIntervalSince1970, to: 7, in: statement)
+        try bind(thread.updatedAt.timeIntervalSince1970, to: 8, in: statement)
+        try stepDone(statement)
+      }
+      try insertConversationMessage(initialMessage)
+    }
+    return thread
+  }
+
+  public func fetchConversationThreads(
+    productID: UUID
+  ) throws -> [ProductConversationThread] {
+    try withStatement(
+      """
+      SELECT id, product_id, recipient_profile_id, subject, status,
+             codex_thread_id, created_at, updated_at
+      FROM conversation_threads
+      WHERE product_id = ?
+      ORDER BY updated_at DESC, created_at DESC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var threads: [ProductConversationThread] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        threads.append(try decodeConversationThread(statement))
+      }
+      return threads
+    }
+  }
+
+  public func fetchConversationMessages(
+    threadID: UUID
+  ) throws -> [ProductConversationMessage] {
+    try withStatement(
+      """
+      SELECT id, thread_id, author_kind, author_name, body, created_at
+      FROM conversation_messages
+      WHERE thread_id = ?
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      try bind(threadID.uuidString, to: 1, in: statement)
+      var messages: [ProductConversationMessage] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        messages.append(try decodeConversationMessage(statement))
+      }
+      return messages
+    }
+  }
+
+  public func fetchRecentConversationMessages(
+    productID: UUID,
+    limit: Int = 100
+  ) throws -> [ProductConversationMessage] {
+    let boundedLimit = max(1, min(limit, 500))
+    return try withStatement(
+      """
+      SELECT message.id, message.thread_id, message.author_kind,
+             message.author_name, message.body, message.created_at
+      FROM conversation_messages AS message
+      JOIN conversation_threads AS thread ON thread.id = message.thread_id
+      WHERE thread.product_id = ? AND thread.status != ?
+      ORDER BY message.created_at DESC, message.id DESC
+      LIMIT ?;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      try bind(ConversationThreadStatus.archived.rawValue, to: 2, in: statement)
+      try bind(Int64(boundedLimit), to: 3, in: statement)
+      var messages: [ProductConversationMessage] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        messages.append(try decodeConversationMessage(statement))
+      }
+      return Array(messages.reversed())
+    }
+  }
+
+  public func appendConversationMessage(
+    _ message: ProductConversationMessage,
+    threadStatus: ConversationThreadStatus,
+    threadSubject: String? = nil,
+    threadRecipientProfileID: UUID? = nil,
+    resetsCodexThread: Bool = false
+  ) throws -> ProductConversationThread {
+    guard let existingThread = try fetchConversationThread(id: message.threadID) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(message.threadID)")
+    }
+    if let threadRecipientProfileID {
+      let profile = try fetchAgentProfile(id: threadRecipientProfileID)
+      guard profile.productID == existingThread.productID else {
+        throw PersistenceError.corruptData(
+          "The selected team member belongs to another product."
+        )
+      }
+    }
+    try transaction {
+      try insertConversationMessage(message)
+      try withStatement(
+        """
+        UPDATE conversation_threads
+        SET status = ?,
+            subject = COALESCE(?, subject),
+            recipient_profile_id = COALESCE(?, recipient_profile_id),
+            codex_thread_id = CASE WHEN ? = 1 THEN NULL ELSE codex_thread_id END,
+            updated_at = ?
+        WHERE id = ?;
+        """
+      ) { statement in
+        try bind(threadStatus.rawValue, to: 1, in: statement)
+        try bindOptionalString(threadSubject, to: 2, in: statement)
+        try bindOptionalString(
+          threadRecipientProfileID?.uuidString,
+          to: 3,
+          in: statement
+        )
+        try bind(Int64(resetsCodexThread ? 1 : 0), to: 4, in: statement)
+        try bind(message.createdAt.timeIntervalSince1970, to: 5, in: statement)
+        try bind(message.threadID.uuidString, to: 6, in: statement)
+        try stepDone(statement)
+      }
+    }
+    guard let updatedThread = try fetchConversationThread(id: message.threadID) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(message.threadID)")
+    }
+    return updatedThread
+  }
+
+  public func updateConversationThread(
+    id: UUID,
+    status: ConversationThreadStatus,
+    codexThreadID: String? = nil
+  ) throws -> ProductConversationThread {
+    let updatedAt = Date()
+    try withStatement(
+      """
+      UPDATE conversation_threads
+      SET status = ?, codex_thread_id = COALESCE(?, codex_thread_id), updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(status.rawValue, to: 1, in: statement)
+      try bindOptionalString(codexThreadID, to: 2, in: statement)
+      try bind(updatedAt.timeIntervalSince1970, to: 3, in: statement)
+      try bind(id.uuidString, to: 4, in: statement)
+      try stepDone(statement)
+    }
+    guard let thread = try fetchConversationThread(id: id) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(id)")
+    }
+    return thread
+  }
+
+  public func archiveConversationThread(
+    id: UUID
+  ) throws -> ProductConversationThread {
+    guard let thread = try fetchConversationThread(id: id) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(id)")
+    }
+    guard thread.status != .working else {
+      throw PersistenceError.corruptData(
+        "Stop the active response before archiving this thread"
+      )
+    }
+    guard !thread.isArchived else { return thread }
+    return try updateConversationThread(id: id, status: .archived)
+  }
+
+  public func restoreConversationThread(
+    id: UUID
+  ) throws -> ProductConversationThread {
+    guard let thread = try fetchConversationThread(id: id) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(id)")
+    }
+    guard thread.isArchived else { return thread }
+    return try updateConversationThread(id: id, status: .complete)
+  }
+
+  public func interruptWorkingConversationThreads() throws {
+    try withStatement(
+      """
+      UPDATE conversation_threads
+      SET status = ?, updated_at = ?
+      WHERE status = ?;
+      """
+    ) { statement in
+      try bind(ConversationThreadStatus.failed.rawValue, to: 1, in: statement)
+      try bind(Date().timeIntervalSince1970, to: 2, in: statement)
+      try bind(ConversationThreadStatus.working.rawValue, to: 3, in: statement)
+      try stepDone(statement)
     }
   }
 
@@ -4982,2010 +5203,147 @@ public actor SQLiteStore {
     )
   }
 
-  private static func migrate(database: OpaquePointer) throws {
-    try execute(
-      """
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-          version INTEGER PRIMARY KEY,
-          applied_at REAL NOT NULL
-      );
+  public func importAllRows(from legacyDatabaseURL: URL) throws {
+    guard try fetchProducts(status: .active).isEmpty,
+      try fetchProducts(status: .archived).isEmpty
+    else {
+      throw PersistenceError.corruptData(
+        "A legacy product can only be imported into an empty product database."
+      )
+    }
 
-      CREATE TABLE IF NOT EXISTS products (
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          vision TEXT NOT NULL,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
+    let escapedPath = legacyDatabaseURL.path.replacingOccurrences(
+      of: "'",
+      with: "''"
+    )
+    try execute("ATTACH DATABASE '\(escapedPath)' AS legacy;")
+    do {
+      try transaction {
+        let database = try requiredDatabase
+        try execute("PRAGMA defer_foreign_keys = ON;")
+        for table in ProductDatabaseSchema.legacyCopyTableOrder {
+          guard try Self.tableExists(table, schema: "legacy", database: database)
+          else { continue }
+          let destinationColumns = try Self.columnNames(
+            table: table,
+            schema: "main",
+            database: database
+          )
+          let sourceColumns = Set(
+            try Self.columnNames(
+              table: table,
+              schema: "legacy",
+              database: database
+            )
+          )
+          let sharedColumns = destinationColumns.filter(sourceColumns.contains)
+          guard !sharedColumns.isEmpty else { continue }
+          let columns = sharedColumns.map(Self.quotedIdentifier).joined(separator: ", ")
+          try execute(
+            """
+            INSERT INTO main.\(Self.quotedIdentifier(table)) (\(columns))
+            SELECT \(columns)
+            FROM legacy.\(Self.quotedIdentifier(table));
+            """
+          )
+        }
 
-      CREATE TABLE IF NOT EXISTS work_items (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          key_number INTEGER NOT NULL,
-          item_key TEXT NOT NULL,
-          title TEXT NOT NULL,
-          body TEXT NOT NULL,
-          acceptance_criteria_json TEXT NOT NULL,
-          state TEXT NOT NULL,
-          priority INTEGER NOT NULL,
-          version INTEGER NOT NULL,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL,
-          UNIQUE(product_id, key_number),
-          UNIQUE(product_id, item_key)
-      );
+        let failures = try withStatement("PRAGMA foreign_key_check;") { statement in
+          var descriptions: [String] = []
+          while sqlite3_step(statement) == SQLITE_ROW {
+            descriptions.append(
+              "\(try text(statement, column: 0)) row \(sqlite3_column_int64(statement, 1))"
+            )
+          }
+          return descriptions
+        }
+        guard failures.isEmpty else {
+          throw PersistenceError.corruptData(
+            "Imported product relationships are invalid: \(failures.joined(separator: ", "))"
+          )
+        }
+      }
+      try execute("DETACH DATABASE legacy;")
+    } catch {
+      try? execute("DETACH DATABASE legacy;")
+      throw error
+    }
+  }
 
-      CREATE TABLE IF NOT EXISTS ticket_comments (
-          id TEXT PRIMARY KEY,
-          work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-          author_kind TEXT NOT NULL,
-          author_name TEXT NOT NULL,
-          body TEXT NOT NULL,
-          created_at REAL NOT NULL
-      );
+  private var requiredDatabase: OpaquePointer {
+    get throws {
+      guard let database else {
+        throw PersistenceError.sqlite(
+          code: SQLITE_MISUSE,
+          message: "The product database is closed."
+        )
+      }
+      return database
+    }
+  }
 
-      CREATE TABLE IF NOT EXISTS agent_profiles (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          name TEXT NOT NULL,
-          role TEXT NOT NULL,
-          model TEXT NOT NULL,
-          reasoning_effort TEXT NOT NULL,
-          parallelism_limit INTEGER,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS agent_runs (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-          profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
-          status TEXT NOT NULL,
-          codex_thread_id TEXT,
-          worktree_path TEXT,
-          ticket_budget_used REAL NOT NULL DEFAULT 0,
-          context_used_tokens INTEGER,
-          context_window_tokens INTEGER,
-          compaction_count INTEGER NOT NULL DEFAULT 0,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS decision_records (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-          title TEXT NOT NULL,
-          context TEXT NOT NULL,
-          decision TEXT NOT NULL,
-          alternatives_json TEXT NOT NULL,
-          consequences TEXT NOT NULL,
-          applicable_commit TEXT,
-          status TEXT NOT NULL,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS knowledge_claims (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-          statement TEXT NOT NULL,
-          provenance_json TEXT NOT NULL,
-          verification_state TEXT NOT NULL,
-          applicable_commit TEXT,
-          invalidated_at REAL,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS activity_events (
-          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-          id TEXT NOT NULL UNIQUE,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          work_item_id TEXT REFERENCES work_items(id) ON DELETE CASCADE,
-          kind TEXT NOT NULL,
-          actor TEXT NOT NULL,
-          detail TEXT NOT NULL,
-          created_at REAL NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_work_items_product_state
-          ON work_items(product_id, state);
-      CREATE INDEX IF NOT EXISTS idx_comments_work_item
-          ON ticket_comments(work_item_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_activity_product_sequence
-          ON activity_events(product_id, sequence DESC);
-
-      INSERT OR IGNORE INTO schema_migrations (version, applied_at)
-      VALUES (1, unixepoch());
-      """,
+  private static func initializeCurrentSchema(database: OpaquePointer) throws {
+    let hasProductTables = try tableExists(
+      "products",
+      schema: "main",
       database: database
     )
-
-    if try !migrationApplied(version: 2, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE sprints (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            sprint_number INTEGER NOT NULL,
-            goal TEXT NOT NULL,
-            state TEXT NOT NULL,
-            token_budget_limit INTEGER,
-            concurrency_limit INTEGER NOT NULL,
-            plan_version INTEGER NOT NULL,
-            started_at REAL,
-            completed_at REAL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(product_id, sprint_number)
-        );
-
-        CREATE TABLE sprint_items (
-            id TEXT PRIMARY KEY,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE RESTRICT,
-            implementer_profile_id TEXT NOT NULL REFERENCES agent_profiles(id),
-            reviewer_profile_id TEXT REFERENCES agent_profiles(id),
-            estimated_tokens INTEGER NOT NULL,
-            frozen_work_item_version INTEGER,
-            frozen_title TEXT,
-            frozen_body TEXT,
-            frozen_acceptance_criteria_json TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(sprint_id, work_item_id)
-        );
-
-        ALTER TABLE agent_runs ADD COLUMN sprint_id TEXT REFERENCES sprints(id);
-        ALTER TABLE agent_runs ADD COLUMN sprint_item_id TEXT REFERENCES sprint_items(id);
-
-        CREATE UNIQUE INDEX idx_sprints_one_active
-            ON sprints(product_id) WHERE state = 'active';
-        CREATE UNIQUE INDEX idx_sprints_one_draft
-            ON sprints(product_id) WHERE state = 'draft';
-        CREATE INDEX idx_sprint_items_sprint
-            ON sprint_items(sprint_id, created_at);
-        CREATE UNIQUE INDEX idx_agent_runs_sprint_item_profile
-            ON agent_runs(sprint_item_id, profile_id)
-            WHERE sprint_item_id IS NOT NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (2, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
+    if !hasProductTables {
+      try execute(ProductDatabaseSchema.sql, database: database)
+      return
     }
 
-    if try !migrationApplied(version: 3, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE suggestion_sessions (
-          id TEXT PRIMARY KEY,
-          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-          status TEXT NOT NULL,
-          codex_thread_id TEXT,
-          codex_turn_id TEXT,
-          error_message TEXT,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL
-      );
-
-      CREATE TABLE ticket_suggestions (
-          id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES suggestion_sessions(id) ON DELETE CASCADE,
-          reference TEXT NOT NULL,
-          position INTEGER NOT NULL,
-          title TEXT NOT NULL,
-          body TEXT NOT NULL,
-          acceptance_criteria_json TEXT NOT NULL,
-          suggested_role TEXT NOT NULL,
-          priority INTEGER NOT NULL,
-          rationale TEXT NOT NULL,
-          status TEXT NOT NULL,
-          accepted_work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-          created_at REAL NOT NULL,
-          updated_at REAL NOT NULL,
-          UNIQUE(session_id, reference),
-          UNIQUE(session_id, position)
-      );
-
-      CREATE TABLE suggestion_dependencies (
-          suggestion_id TEXT NOT NULL REFERENCES ticket_suggestions(id) ON DELETE CASCADE,
-          depends_on_suggestion_id TEXT NOT NULL REFERENCES ticket_suggestions(id) ON DELETE CASCADE,
-          PRIMARY KEY (suggestion_id, depends_on_suggestion_id),
-          CHECK (suggestion_id <> depends_on_suggestion_id)
-      );
-
-      CREATE TABLE work_item_dependencies (
-          work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-          depends_on_work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-          source TEXT NOT NULL,
-          created_at REAL NOT NULL,
-          PRIMARY KEY (work_item_id, depends_on_work_item_id),
-          CHECK (work_item_id <> depends_on_work_item_id)
-      );
-
-      CREATE UNIQUE INDEX idx_suggestion_sessions_one_generating
-          ON suggestion_sessions(product_id) WHERE status = 'generating';
-      CREATE INDEX idx_suggestion_sessions_product_created
-          ON suggestion_sessions(product_id, created_at DESC);
-      CREATE INDEX idx_ticket_suggestions_session_position
-          ON ticket_suggestions(session_id, position);
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (3, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 4, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      ALTER TABLE products ADD COLUMN instructions TEXT NOT NULL DEFAULT '';
-      ALTER TABLE agent_profiles ADD COLUMN custom_instructions TEXT;
-
-      UPDATE agent_profiles
-      SET model = CASE role
-            WHEN 'business_analyst' THEN 'gpt-5.6-terra'
-            WHEN 'ux_designer' THEN 'gpt-5.6-sol'
-            WHEN 'lead' THEN 'gpt-5.6-sol'
-            WHEN 'implementer' THEN 'gpt-5.6-terra'
-            WHEN 'frontend_engineer' THEN 'gpt-5.6-terra'
-            WHEN 'backend_engineer' THEN 'gpt-5.6-sol'
-            WHEN 'reviewer' THEN 'gpt-5.6-sol'
-            WHEN 'quality_assurance' THEN 'gpt-5.6-sol'
-            WHEN 'knowledge_curator' THEN 'gpt-5.6-terra'
-            ELSE model
-          END,
-          reasoning_effort = CASE role
-            WHEN 'lead' THEN 'high'
-            WHEN 'backend_engineer' THEN 'high'
-            WHEN 'reviewer' THEN 'high'
-            WHEN 'quality_assurance' THEN 'high'
-            ELSE 'medium'
-          END
-      WHERE model = 'default';
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (4, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 5, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      ALTER TABLE agent_profiles ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 1;
-      ALTER TABLE agent_profiles ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;
-
-      CREATE UNIQUE INDEX idx_agent_profiles_active_name
-          ON agent_profiles(product_id, lower(name)) WHERE is_active = 1;
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (5, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 6, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      UPDATE agent_profiles
-      SET is_active = 0, updated_at = unixepoch()
-      WHERE is_builtin = 1
-        AND role IN ('frontend_engineer', 'backend_engineer', 'reviewer')
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_runs
-          WHERE profile_id = agent_profiles.id
-            AND status IN ('queued', 'running', 'awaiting_owner')
-        )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM sprint_items si
-          JOIN sprints s ON s.id = si.sprint_id
-          WHERE (si.implementer_profile_id = agent_profiles.id
-                 OR si.reviewer_profile_id = agent_profiles.id)
-            AND s.state IN ('draft', 'active')
-        );
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (6, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 7, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      ALTER TABLE work_items ADD COLUMN ticket_type TEXT NOT NULL DEFAULT 'story';
-      ALTER TABLE ticket_suggestions ADD COLUMN ticket_type TEXT NOT NULL DEFAULT 'story';
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (7, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 8, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      UPDATE work_items
-      SET ticket_type = 'task'
-      WHERE ticket_type = 'story'
-        AND id IN (
-          SELECT accepted_work_item_id
-          FROM ticket_suggestions
-          WHERE accepted_work_item_id IS NOT NULL
-            AND suggested_role IN ('business_analyst', 'ux_designer')
-        );
-
-      UPDATE ticket_suggestions
-      SET ticket_type = 'task'
-      WHERE ticket_type = 'story'
-        AND suggested_role IN ('business_analyst', 'ux_designer');
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (8, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 9, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-      ALTER TABLE work_items ADD COLUMN rank INTEGER NOT NULL DEFAULT 0;
-      ALTER TABLE work_items ADD COLUMN custom_fields_json TEXT NOT NULL DEFAULT '{}';
-
-      UPDATE work_items SET rank = key_number * 1000 WHERE rank = 0;
-
-      CREATE INDEX idx_work_items_product_rank
-          ON work_items(product_id, rank, key_number);
-
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (9, unixepoch());
-
-        COMMIT;
-      """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 10, database: database) {
-      try execute(
-        """
-        PRAGMA foreign_keys = OFF;
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE sprint_items_v10 (
-            id TEXT PRIMARY KEY,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE RESTRICT,
-            implementer_profile_id TEXT REFERENCES agent_profiles(id),
-            reviewer_profile_id TEXT REFERENCES agent_profiles(id),
-            estimated_tokens INTEGER NOT NULL,
-            frozen_work_item_version INTEGER,
-            frozen_title TEXT,
-            frozen_body TEXT,
-            frozen_acceptance_criteria_json TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(sprint_id, work_item_id)
-        );
-
-        INSERT INTO sprint_items_v10 (
-            id, sprint_id, work_item_id, implementer_profile_id,
-            reviewer_profile_id, estimated_tokens, frozen_work_item_version,
-            frozen_title, frozen_body, frozen_acceptance_criteria_json,
-            created_at, updated_at
-        )
-        SELECT id, sprint_id, work_item_id,
-               CASE WHEN sprint_id IN (
-                 SELECT id FROM sprints WHERE state = 'draft'
-               ) THEN NULL ELSE implementer_profile_id END,
-               CASE WHEN sprint_id IN (
-                 SELECT id FROM sprints WHERE state = 'draft'
-               ) THEN NULL ELSE reviewer_profile_id END,
-               estimated_tokens, frozen_work_item_version,
-               frozen_title, frozen_body, frozen_acceptance_criteria_json,
-               created_at, updated_at
-        FROM sprint_items;
-
-        DROP TABLE sprint_items;
-        ALTER TABLE sprint_items_v10 RENAME TO sprint_items;
-        CREATE INDEX idx_sprint_items_sprint
-            ON sprint_items(sprint_id, created_at);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (10, unixepoch());
-
-        COMMIT;
-        PRAGMA foreign_keys = ON;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 11, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE work_items
-        SET item_key = 'T-' || key_number
-        WHERE item_key = 'SP-' || key_number;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (11, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 12, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE agent_profiles
-        SET name = 'Tech Lead', updated_at = unixepoch()
-        WHERE role = 'lead'
-          AND is_builtin = 1
-          AND name = 'Lead'
-          AND NOT EXISTS (
-            SELECT 1
-            FROM agent_profiles AS existing
-            WHERE existing.product_id = agent_profiles.product_id
-              AND existing.id <> agent_profiles.id
-              AND existing.is_active = 1
-              AND lower(existing.name) = lower('Tech Lead')
-          );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (12, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 13, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE work_items
-        ADD COLUMN owner_profile_id TEXT REFERENCES agent_profiles(id);
-
-        UPDATE work_items
-        SET owner_profile_id = (
-          SELECT si.implementer_profile_id
-          FROM sprint_items AS si
-          JOIN sprints AS s ON s.id = si.sprint_id
-          WHERE si.work_item_id = work_items.id
-            AND si.implementer_profile_id IS NOT NULL
-          ORDER BY s.sprint_number DESC
-          LIMIT 1
-        )
-        WHERE owner_profile_id IS NULL
-          AND EXISTS (
-            SELECT 1
-            FROM sprint_items AS si
-            WHERE si.work_item_id = work_items.id
-              AND si.implementer_profile_id IS NOT NULL
-          );
-
-        UPDATE work_items
-        SET owner_profile_id = (
-          SELECT ap.id
-          FROM ticket_suggestions AS ts
-          JOIN agent_profiles AS ap
-            ON ap.product_id = work_items.product_id
-           AND ap.role = ts.suggested_role
-           AND ap.is_active = 1
-          WHERE ts.accepted_work_item_id = work_items.id
-          ORDER BY ap.is_builtin DESC, ap.created_at ASC
-          LIMIT 1
-        )
-        WHERE owner_profile_id IS NULL
-          AND EXISTS (
-            SELECT 1
-            FROM ticket_suggestions AS ts
-            JOIN agent_profiles AS ap
-              ON ap.product_id = work_items.product_id
-             AND ap.role = ts.suggested_role
-             AND ap.is_active = 1
-            WHERE ts.accepted_work_item_id = work_items.id
-          );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (13, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 14, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE suggestion_existing_dependencies (
-            suggestion_id TEXT NOT NULL REFERENCES ticket_suggestions(id) ON DELETE CASCADE,
-            depends_on_work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE RESTRICT,
-            PRIMARY KEY(suggestion_id, depends_on_work_item_id)
-        );
-
-        CREATE INDEX idx_suggestion_existing_dependencies_item
-            ON suggestion_existing_dependencies(depends_on_work_item_id);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (14, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 15, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        DROP INDEX IF EXISTS idx_agent_runs_sprint_item_profile;
-
-        CREATE INDEX idx_agent_runs_sprint_item_created
-            ON agent_runs(sprint_item_id, created_at)
-            WHERE sprint_item_id IS NOT NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (15, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 16, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE retrospective_notes (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-            profile_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
-            author_name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            body TEXT NOT NULL,
-            action_status TEXT,
-            accepted_work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-
-        CREATE UNIQUE INDEX idx_retrospective_note_evidence
-            ON retrospective_notes(
-              sprint_id, work_item_id, profile_id, category, body
-            );
-        CREATE INDEX idx_retrospective_notes_sprint
-            ON retrospective_notes(sprint_id, category, created_at);
-
-        CREATE TABLE knowledge_pages (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            parent_id TEXT REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            title TEXT NOT NULL,
-            slug TEXT NOT NULL,
-            body_markdown TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            verification_status TEXT NOT NULL,
-            sort_order INTEGER NOT NULL,
-            source_work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-
-        CREATE UNIQUE INDEX idx_knowledge_page_sibling_slug
-            ON knowledge_pages(product_id, IFNULL(parent_id, ''), slug);
-        CREATE INDEX idx_knowledge_pages_product_parent
-            ON knowledge_pages(product_id, parent_id, sort_order);
-
-        CREATE TABLE knowledge_page_revisions (
-            id TEXT PRIMARY KEY,
-            page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            version INTEGER NOT NULL,
-            body_markdown TEXT NOT NULL,
-            author_name TEXT NOT NULL,
-            change_summary TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            UNIQUE(page_id, version)
-        );
-
-        CREATE TABLE knowledge_page_links (
-            source_page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            target_page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            PRIMARY KEY(source_page_id, target_page_id)
-        );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (16, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 17, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE agent_run_knowledge_pages (
-            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-            page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            PRIMARY KEY(run_id, page_id)
-        );
-
-        CREATE INDEX idx_agent_run_knowledge_page
-            ON agent_run_knowledge_pages(page_id, run_id);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (17, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 18, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE candidate_revisions (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            sprint_item_id TEXT NOT NULL REFERENCES sprint_items(id) ON DELETE CASCADE,
-            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-            implementation_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-            version INTEGER NOT NULL,
-            branch_name TEXT NOT NULL,
-            base_sha TEXT NOT NULL,
-            head_sha TEXT NOT NULL,
-            integrated_sha TEXT,
-            worktree_path TEXT NOT NULL,
-            integration_worktree_path TEXT,
-            status TEXT NOT NULL,
-            commit_count INTEGER NOT NULL,
-            execution_result_json TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(work_item_id, version)
-        );
-
-        CREATE INDEX idx_candidate_revisions_sprint_status
-            ON candidate_revisions(sprint_id, status, created_at);
-        CREATE INDEX idx_candidate_revisions_work_item
-            ON candidate_revisions(work_item_id, version DESC);
-
-        CREATE TABLE knowledge_page_proposals (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-            candidate_revision_id TEXT NOT NULL
-              REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-            operation TEXT NOT NULL,
-            target_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
-            parent_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
-            title TEXT NOT NULL,
-            proposed_body_markdown TEXT NOT NULL,
-            rationale TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            CHECK (
-              (operation = 'update' AND target_page_id IS NOT NULL AND parent_page_id IS NULL)
-              OR
-              (operation = 'create' AND target_page_id IS NULL AND parent_page_id IS NOT NULL)
-            )
-        );
-
-        CREATE INDEX idx_knowledge_page_proposals_candidate
-            ON knowledge_page_proposals(candidate_revision_id, status, created_at);
-        CREATE INDEX idx_knowledge_page_proposals_product
-            ON knowledge_page_proposals(product_id, status, created_at);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (18, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 19, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE knowledge_page_proposals
-        ADD COLUMN base_page_title TEXT;
-        ALTER TABLE knowledge_page_proposals
-        ADD COLUMN base_page_body_markdown TEXT;
-        ALTER TABLE knowledge_page_proposals
-        ADD COLUMN base_page_updated_at REAL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (19, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 20, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE knowledge_pages
-        SET body_markdown =
-          CASE
-            WHEN instr(body_markdown, char(10)) = 0 THEN ''
-            ELSE ltrim(
-              substr(body_markdown, instr(body_markdown, char(10)) + 1),
-              char(10) || char(13)
-            )
-          END
-        WHERE body_markdown GLOB '# *';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (20, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 21, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE agent_runs ADD COLUMN turn_started_at REAL;
-        ALTER TABLE agent_runs ADD COLUMN last_activity_at REAL;
-        ALTER TABLE agent_runs ADD COLUMN last_activity_text TEXT;
-        ALTER TABLE agent_runs ADD COLUMN last_activity_kind TEXT;
-
-        UPDATE agent_runs
-        SET last_activity_at = updated_at
-        WHERE status = 'running' AND last_activity_at IS NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (21, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 22, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE work_items
-        SET item_key = 'T' || key_number
-        WHERE item_key = 'T-' || key_number;
-
-        UPDATE knowledge_pages
-        SET title = 'T' || substr(title, 3)
-        WHERE title GLOB 'T-[0-9]*';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (22, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 23, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE agent_runs
-        ADD COLUMN active_duration_seconds REAL NOT NULL DEFAULT 0;
-
-        UPDATE agent_runs
-        SET active_duration_seconds = MAX(
-              0,
-              COALESCE(last_activity_at, updated_at) - turn_started_at
-            )
-        WHERE status != 'running' AND turn_started_at IS NOT NULL;
-
-        UPDATE agent_runs
-        SET turn_started_at = NULL
-        WHERE status != 'running';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (23, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 24, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE sprints
-        ADD COLUMN retrospective_concluded_at REAL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (24, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 25, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE retrospective_notes
-        ADD COLUMN action_destination TEXT;
-
-        UPDATE retrospective_notes
-        SET action_destination = 'team_practice'
-        WHERE category = 'suggested_action'
-          AND action_destination IS NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (25, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 26, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE epics (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            title TEXT NOT NULL,
-            goal TEXT NOT NULL,
-            success_criteria_json TEXT NOT NULL,
-            constraints TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-
-        ALTER TABLE work_items
-        ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL;
-
-        ALTER TABLE suggestion_sessions
-        ADD COLUMN epic_id TEXT REFERENCES epics(id) ON DELETE SET NULL;
-
-        CREATE INDEX idx_epics_product_status
-            ON epics(product_id, status, created_at);
-        CREATE INDEX idx_work_items_epic
-            ON work_items(epic_id, rank);
-        CREATE INDEX idx_suggestion_sessions_epic
-            ON suggestion_sessions(epic_id, created_at DESC);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (26, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 27, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE epics
-        ADD COLUMN rank INTEGER NOT NULL DEFAULT 0;
-
-        UPDATE epics
-        SET rank = rowid * 1000
-        WHERE rank = 0;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (27, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 28, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE work_items
-        SET epic_id = NULL,
-            version = version + 1,
-            updated_at = unixepoch()
-        WHERE state NOT IN ('released', 'cancelled')
-          AND epic_id IN (
-            SELECT id
-            FROM epics
-            WHERE status = 'archived'
-          );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (28, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 29, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE epic_planning_conversations (
-            epic_id TEXT PRIMARY KEY REFERENCES epics(id) ON DELETE CASCADE,
-            snapshot_json TEXT NOT NULL,
-            updated_at REAL NOT NULL
-        );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (29, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 30, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE epics
-        SET status = 'active',
-            updated_at = unixepoch()
-        WHERE status = 'draft';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (30, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 31, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE ticket_suggestions
-        SET reference = '__proposal__' || id;
-
-        UPDATE ticket_suggestions
-        SET reference = 'S' || CAST(position + 1 AS TEXT);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (31, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 32, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE suggestion_sessions
-        ADD COLUMN source_work_item_id TEXT REFERENCES work_items(id) ON DELETE SET NULL;
-
-        CREATE UNIQUE INDEX idx_suggestion_sessions_source_work_item
-            ON suggestion_sessions(source_work_item_id)
-            WHERE source_work_item_id IS NOT NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (32, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 33, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE ticket_suggestions
-        SET status = 'rejected',
-            accepted_work_item_id = NULL,
-            updated_at = unixepoch()
-        WHERE status = 'proposed'
-          AND session_id IN (
-            SELECT sessions.id
-            FROM suggestion_sessions AS sessions
-            JOIN epics ON epics.id = sessions.epic_id
-            WHERE epics.status = 'archived'
-          );
-
-        UPDATE suggestion_sessions
-        SET status = 'cancelled',
-            error_message = NULL,
-            updated_at = unixepoch()
-        WHERE status != 'cancelled'
-          AND epic_id IN (
-            SELECT id FROM epics WHERE status = 'archived'
-          );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (33, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 34, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE ticket_comments
-        ADD COLUMN owner_question_json TEXT;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (34, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 35, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE ticket_comments
-        ADD COLUMN answered_questions_json TEXT;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (35, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 36, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE demo_sessions (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            candidate_revision_id TEXT NOT NULL
-              REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-            status TEXT NOT NULL,
-            preview_worktree_path TEXT,
-            allocated_port INTEGER,
-            output TEXT,
-            error_message TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(candidate_revision_id)
-        );
-
-        CREATE INDEX idx_demo_sessions_product_status
-            ON demo_sessions(product_id, status, updated_at);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (36, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 37, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE agent_permission_requests (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            work_item_id TEXT NOT NULL REFERENCES work_items(id) ON DELETE CASCADE,
-            agent_run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-            thread_id TEXT NOT NULL,
-            turn_id TEXT NOT NULL,
-            server_request_id TEXT NOT NULL,
-            method TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            title TEXT NOT NULL,
-            detail TEXT NOT NULL,
-            reason TEXT,
-            signature TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
-
-        CREATE INDEX idx_agent_permission_requests_product_status
-            ON agent_permission_requests(product_id, status, updated_at);
-
-        CREATE INDEX idx_agent_permission_requests_run_signature
-            ON agent_permission_requests(agent_run_id, signature, status);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (37, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 38, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE agent_permission_requests
-            ADD COLUMN product_grant_signature TEXT;
-
-        CREATE TABLE agent_permission_grants (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            source_request_id TEXT
-              REFERENCES agent_permission_requests(id) ON DELETE SET NULL,
-            method TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            title TEXT NOT NULL,
-            detail TEXT NOT NULL,
-            signature TEXT NOT NULL,
-            created_at REAL NOT NULL,
-            revoked_at REAL
-        );
-
-        CREATE UNIQUE INDEX idx_agent_permission_grants_active_signature
-            ON agent_permission_grants(product_id, signature)
-            WHERE revoked_at IS NULL;
-
-        CREATE INDEX idx_agent_permission_grants_product_created
-            ON agent_permission_grants(product_id, created_at);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (38, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    // Migration 39 was used by an earlier development build and remains reserved.
-    if try !migrationApplied(version: 40, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TABLE IF NOT EXISTS agent_run_knowledge_destinations (
-            run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
-            page_id TEXT NOT NULL REFERENCES knowledge_pages(id) ON DELETE CASCADE,
-            PRIMARY KEY(run_id, page_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_agent_run_knowledge_destination
-            ON agent_run_knowledge_destinations(page_id, run_id);
-
-        INSERT INTO knowledge_page_revisions (
-            id, page_id, version, body_markdown, author_name, change_summary, created_at
-        )
-        SELECT
-            lower(hex(randomblob(4))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(6))),
-            page.id,
-            2,
-            '',
-            'StoryPointless',
-            'Removed the initial placeholder body',
-            unixepoch()
-        FROM knowledge_pages AS page
-        WHERE page.body_markdown = 'Add verified knowledge here.'
-          AND page.kind = 'page'
-          AND page.source_work_item_id IS NULL
-          AND (
-            SELECT COUNT(*)
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-          ) = 1
-          AND EXISTS (
-            SELECT 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.version = 1
-              AND revision.body_markdown = 'Add verified knowledge here.'
-              AND revision.author_name = 'StoryPointless'
-              AND revision.change_summary = 'Created page'
-          );
-
-        UPDATE knowledge_pages
-        SET body_markdown = '',
-            updated_at = unixepoch()
-        WHERE id IN (
-          SELECT page_id
-          FROM knowledge_page_revisions
-          WHERE change_summary = 'Removed the initial placeholder body'
-            AND body_markdown = ''
-        )
-          AND body_markdown = 'Add verified knowledge here.';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (40, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 43, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        INSERT INTO knowledge_page_revisions (
-            id, page_id, version, body_markdown, author_name, change_summary, created_at
-        )
-        SELECT
-            lower(hex(randomblob(4))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(2))) || '-' ||
-              lower(hex(randomblob(6))),
-            page.id,
-            2,
-            '',
-            'StoryPointless',
-            'Removed the legacy initial placeholder body',
-            unixepoch()
-        FROM knowledge_pages AS page
-        WHERE page.body_markdown = 'Add verified knowledge here.'
-          AND page.kind = 'page'
-          AND page.source_work_item_id IS NULL
-          AND (
-            SELECT COUNT(*)
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-          ) = 1
-          AND EXISTS (
-            SELECT 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.version = 1
-              AND (
-                revision.body_markdown = 'Add verified knowledge here.'
-                OR revision.body_markdown =
-                  '# ' || page.title || char(10) || char(10) ||
-                    'Add verified knowledge here.'
-              )
-              AND revision.author_name = 'StoryPointless'
-              AND revision.change_summary = 'Created page'
-          );
-
-        UPDATE knowledge_pages
-        SET body_markdown = '',
-            updated_at = unixepoch()
-        WHERE id IN (
-          SELECT page_id
-          FROM knowledge_page_revisions
-          WHERE change_summary = 'Removed the legacy initial placeholder body'
-            AND body_markdown = ''
-        )
-          AND body_markdown = 'Add verified knowledge here.';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (43, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 42, database: database) {
-      if try columnExists("status", in: "products", database: database) {
-        try execute(
-          """
-          BEGIN IMMEDIATE;
-
-          CREATE INDEX IF NOT EXISTS idx_products_status_created
-              ON products(status, created_at);
-
-          INSERT INTO schema_migrations (version, applied_at)
-          VALUES (42, unixepoch());
-
-          COMMIT;
-          """,
-          database: database
-        )
-      } else {
-        try execute(
-          """
-          BEGIN IMMEDIATE;
-
-          ALTER TABLE products
-              ADD COLUMN status TEXT NOT NULL DEFAULT 'active'
-              CHECK (status IN ('active', 'archived'));
-
-          CREATE INDEX idx_products_status_created
-              ON products(status, created_at);
-
-          INSERT INTO schema_migrations (version, applied_at)
-          VALUES (42, unixepoch());
-
-          COMMIT;
-          """,
-          database: database
+    let version = try integerPragma("user_version", database: database)
+    guard version == ProductDatabaseSchema.version else {
+      if try tableExists("schema_migrations", schema: "main", database: database) {
+        throw PersistenceError.corruptData(
+          "This is a legacy shared StoryPointless database. Open it through the product importer."
         )
       }
-    }
-
-    if try !migrationApplied(version: 44, database: database) {
-      if try !columnExists("color", in: "products", database: database) {
-        try execute(
-          """
-          ALTER TABLE products
-              ADD COLUMN color TEXT NOT NULL DEFAULT 'accent'
-              CHECK (
-                color IN ('accent', 'blue', 'teal', 'green', 'orange', 'pink', 'indigo')
-              );
-          """,
-          database: database
-        )
-      }
-
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        WITH ranked_products AS (
-          SELECT
-            id,
-            ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS position
-          FROM products
-        )
-        UPDATE products
-        SET color = CASE (
-          SELECT (position - 2) % 6
-          FROM ranked_products
-          WHERE ranked_products.id = products.id
-        )
-          WHEN 0 THEN 'blue'
-          WHEN 1 THEN 'teal'
-          WHEN 2 THEN 'green'
-          WHEN 3 THEN 'orange'
-          WHEN 4 THEN 'pink'
-          ELSE 'indigo'
-        END
-        WHERE color = 'accent'
-          AND id IN (
-            SELECT id
-            FROM ranked_products
-            WHERE position > 1
-          );
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (44, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 45, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        ALTER TABLE retrospective_notes
-        ADD COLUMN is_action_candidate INTEGER NOT NULL DEFAULT 0;
-
-        ALTER TABLE retrospective_notes
-        ADD COLUMN expected_effect TEXT;
-
-        ALTER TABLE retrospective_notes
-        ADD COLUMN synthesis_id TEXT REFERENCES retrospective_syntheses(id) ON DELETE SET NULL;
-
-        CREATE TABLE retrospective_syntheses (
-            id TEXT PRIMARY KEY,
-            product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            sprint_id TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
-            profile_id TEXT REFERENCES agent_profiles(id) ON DELETE SET NULL,
-            status TEXT NOT NULL,
-            codex_thread_id TEXT,
-            codex_turn_id TEXT,
-            error_message TEXT,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE(sprint_id)
-        );
-
-        CREATE TABLE retrospective_synthesis_sources (
-            synthesis_id TEXT NOT NULL
-                REFERENCES retrospective_syntheses(id) ON DELETE CASCADE,
-            source_note_id TEXT NOT NULL
-                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
-            PRIMARY KEY(synthesis_id, source_note_id)
-        );
-
-        CREATE TABLE retrospective_action_sources (
-            action_note_id TEXT NOT NULL
-                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
-            source_note_id TEXT NOT NULL
-                REFERENCES retrospective_notes(id) ON DELETE CASCADE,
-            PRIMARY KEY(action_note_id, source_note_id)
-        );
-
-        UPDATE retrospective_notes
-        SET is_action_candidate = 1,
-            action_status = NULL
-        WHERE category = 'suggested_action'
-          AND profile_id IS NOT NULL
-          AND action_status = 'proposed'
-          AND sprint_id IN (
-            SELECT id
-            FROM sprints
-            WHERE retrospective_concluded_at IS NULL
-          );
-
-        INSERT INTO retrospective_syntheses (
-            id, product_id, sprint_id, profile_id, status,
-            codex_thread_id, codex_turn_id, error_message, created_at, updated_at
-        )
-        SELECT
-            upper(hex(randomblob(4))) || '-' ||
-              upper(hex(randomblob(2))) || '-' ||
-              upper(hex(randomblob(2))) || '-' ||
-              upper(hex(randomblob(2))) || '-' ||
-              upper(hex(randomblob(6))),
-            product_id,
-            id,
-            NULL,
-            'pending',
-            NULL,
-            NULL,
-            NULL,
-            COALESCE(completed_at, updated_at),
-            unixepoch()
-        FROM sprints
-        WHERE state = 'completed'
-          AND retrospective_concluded_at IS NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (45, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 46, database: database) {
-      try execute(
-        """
-        PRAGMA foreign_keys = OFF;
-        BEGIN IMMEDIATE;
-
-        UPDATE retrospective_synthesis_sources
-        SET synthesis_id = upper(synthesis_id);
-
-        UPDATE retrospective_notes
-        SET synthesis_id = upper(synthesis_id)
-        WHERE synthesis_id IS NOT NULL;
-
-        UPDATE retrospective_syntheses
-        SET id = upper(id);
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (46, unixepoch());
-
-        COMMIT;
-        PRAGMA foreign_keys = ON;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 47, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        CREATE TEMP TABLE misdirected_delivery_note_pages AS
-        SELECT
-          page.id AS corrupted_page_id,
-          delivery.id AS delivery_page_id,
-          (
-            SELECT revision.body_markdown
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary <> 'Updated delivery note'
-            ORDER BY revision.version DESC
-            LIMIT 1
-          ) AS restored_page_body,
-          (
-            SELECT revision.body_markdown
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary = 'Updated delivery note'
-            ORDER BY revision.version DESC
-            LIMIT 1
-          ) AS recovered_delivery_body,
-          (
-            SELECT revision.version
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary = 'Updated delivery note'
-            ORDER BY revision.version DESC
-            LIMIT 1
-          ) AS recovered_delivery_version,
-          (
-            SELECT revision.created_at
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary = 'Updated delivery note'
-            ORDER BY revision.version DESC
-            LIMIT 1
-          ) AS recovered_delivery_created_at
-        FROM knowledge_pages AS page
-        JOIN knowledge_pages AS delivery
-          ON delivery.product_id = page.product_id
-         AND delivery.source_work_item_id = page.source_work_item_id
-         AND delivery.kind = 'delivery_note'
-        WHERE page.kind <> 'delivery_note'
-          AND page.source_work_item_id IS NOT NULL
-          AND EXISTS (
-            SELECT 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary = 'Updated delivery note'
-          )
-          AND EXISTS (
-            SELECT 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = page.id
-              AND revision.change_summary <> 'Updated delivery note'
-          );
-
-        UPDATE knowledge_pages
-        SET body_markdown = (
-              SELECT repair.recovered_delivery_body
-              FROM misdirected_delivery_note_pages AS repair
-              WHERE repair.delivery_page_id = knowledge_pages.id
-              ORDER BY
-                repair.recovered_delivery_created_at DESC,
-                repair.recovered_delivery_version DESC
-              LIMIT 1
-            ),
-            verification_status = 'proposed',
-            updated_at = unixepoch()
-        WHERE id IN (
-          SELECT delivery_page_id
-          FROM misdirected_delivery_note_pages
-        );
-
-        INSERT INTO knowledge_page_revisions (
-          id, page_id, version, body_markdown, author_name, change_summary, created_at
-        )
-        SELECT
-          lower(hex(randomblob(4))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(6))),
-          repair.delivery_page_id,
-          (
-            SELECT COALESCE(MAX(revision.version), 0) + 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = repair.delivery_page_id
-          ),
-          repair.recovered_delivery_body,
-          'StoryPointless',
-          'Recovered misdirected delivery note',
-          unixepoch()
-        FROM misdirected_delivery_note_pages AS repair
-        WHERE repair.corrupted_page_id = (
-          SELECT preferred.corrupted_page_id
-          FROM misdirected_delivery_note_pages AS preferred
-          WHERE preferred.delivery_page_id = repair.delivery_page_id
-          ORDER BY
-            preferred.recovered_delivery_created_at DESC,
-            preferred.recovered_delivery_version DESC
-          LIMIT 1
-        );
-
-        UPDATE knowledge_pages
-        SET body_markdown = (
-              SELECT repair.restored_page_body
-              FROM misdirected_delivery_note_pages AS repair
-              WHERE repair.corrupted_page_id = knowledge_pages.id
-            ),
-            verification_status = 'verified',
-            updated_at = unixepoch()
-        WHERE id IN (
-          SELECT corrupted_page_id
-          FROM misdirected_delivery_note_pages
-        );
-
-        INSERT INTO knowledge_page_revisions (
-          id, page_id, version, body_markdown, author_name, change_summary, created_at
-        )
-        SELECT
-          lower(hex(randomblob(4))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(2))) || '-' ||
-            lower(hex(randomblob(6))),
-          repair.corrupted_page_id,
-          (
-            SELECT COALESCE(MAX(revision.version), 0) + 1
-            FROM knowledge_page_revisions AS revision
-            WHERE revision.page_id = repair.corrupted_page_id
-          ),
-          repair.restored_page_body,
-          'StoryPointless',
-          'Restored after misdirected delivery note update',
-          unixepoch()
-        FROM misdirected_delivery_note_pages AS repair;
-
-        DROP TABLE misdirected_delivery_note_pages;
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_delivery_note_source
-        ON knowledge_pages(product_id, source_work_item_id)
-        WHERE kind = 'delivery_note' AND source_work_item_id IS NOT NULL;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (47, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 48, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE epics SET status = 'open' WHERE status = 'active';
-        UPDATE epics SET status = 'closed' WHERE status = 'complete';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (48, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 49, database: database) {
-      if try columnExists("color", in: "epics", database: database) {
-        try execute(
-          """
-          BEGIN IMMEDIATE;
-
-          WITH ordered_epics AS (
-            SELECT
-              id,
-              ROW_NUMBER() OVER (
-                PARTITION BY product_id
-                ORDER BY created_at ASC, id ASC
-              ) AS position
-            FROM epics
-          )
-          UPDATE epics
-          SET color = CASE (
-            SELECT (position - 1) % 6
-            FROM ordered_epics
-            WHERE ordered_epics.id = epics.id
-          )
-            WHEN 0 THEN 'blue'
-            WHEN 1 THEN 'teal'
-            WHEN 2 THEN 'green'
-            WHEN 3 THEN 'orange'
-            WHEN 4 THEN 'pink'
-            ELSE 'indigo'
-          END;
-
-          INSERT INTO schema_migrations (version, applied_at)
-          VALUES (49, unixepoch());
-
-          COMMIT;
-          """,
-          database: database
-        )
-      } else {
-        try execute(
-          """
-          BEGIN IMMEDIATE;
-
-          ALTER TABLE epics
-          ADD COLUMN color TEXT NOT NULL DEFAULT 'blue';
-
-          WITH ordered_epics AS (
-            SELECT
-              id,
-              ROW_NUMBER() OVER (
-                PARTITION BY product_id
-                ORDER BY created_at ASC, id ASC
-              ) AS position
-            FROM epics
-          )
-          UPDATE epics
-          SET color = CASE (
-            SELECT (position - 1) % 6
-            FROM ordered_epics
-            WHERE ordered_epics.id = epics.id
-          )
-            WHEN 0 THEN 'blue'
-            WHEN 1 THEN 'teal'
-            WHEN 2 THEN 'green'
-            WHEN 3 THEN 'orange'
-            WHEN 4 THEN 'pink'
-            ELSE 'indigo'
-          END;
-
-          INSERT INTO schema_migrations (version, applied_at)
-          VALUES (49, unixepoch());
-
-          COMMIT;
-          """,
-          database: database
-        )
-      }
-    }
-
-    if try !migrationApplied(version: 50, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        WITH ordered_epics AS (
-          SELECT
-            id,
-            ROW_NUMBER() OVER (
-              PARTITION BY product_id
-              ORDER BY created_at ASC, id ASC
-            ) AS position
-          FROM epics
-        )
-        UPDATE epics
-        SET color = CASE (
-          SELECT (position - 1) % 6
-          FROM ordered_epics
-          WHERE ordered_epics.id = epics.id
-        )
-          WHEN 0 THEN 'blue'
-          WHEN 1 THEN 'teal'
-          WHEN 2 THEN 'green'
-          WHEN 3 THEN 'orange'
-          WHEN 4 THEN 'pink'
-          ELSE 'indigo'
-        END;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (50, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 51, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        WITH ordered_epics AS (
-          SELECT
-            id,
-            ROW_NUMBER() OVER (
-              PARTITION BY product_id, status
-              ORDER BY created_at ASC, id ASC
-            ) AS position
-          FROM epics
-        )
-        UPDATE epics
-        SET color = CASE (
-          SELECT (position - 1) % 6
-          FROM ordered_epics
-          WHERE ordered_epics.id = epics.id
-        )
-          WHEN 0 THEN 'blue'
-          WHEN 1 THEN 'teal'
-          WHEN 2 THEN 'green'
-          WHEN 3 THEN 'orange'
-          WHEN 4 THEN 'pink'
-          ELSE 'indigo'
-        END;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (51, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 52, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        WITH ordered_epics AS (
-          SELECT
-            id,
-            ROW_NUMBER() OVER (
-              PARTITION BY product_id, status
-              ORDER BY created_at ASC, id ASC
-            ) AS position
-          FROM epics
-        )
-        UPDATE epics
-        SET color = CASE (
-          SELECT (position - 1) % 6
-          FROM ordered_epics
-          WHERE ordered_epics.id = epics.id
-        )
-          WHEN 0 THEN 'blue'
-          WHEN 1 THEN 'green'
-          WHEN 2 THEN 'indigo'
-          WHEN 3 THEN 'orange'
-          WHEN 4 THEN 'teal'
-          ELSE 'pink'
-        END;
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (52, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
-      )
-    }
-
-    if try !migrationApplied(version: 53, database: database) {
-      try execute(
-        """
-        BEGIN IMMEDIATE;
-
-        UPDATE candidate_revisions
-        SET status = 'queued_for_review',
-            updated_at = unixepoch()
-        WHERE status = 'queued_for_integration';
-
-        INSERT INTO schema_migrations (version, applied_at)
-        VALUES (53, unixepoch());
-
-        COMMIT;
-        """,
-        database: database
+      throw PersistenceError.corruptData(
+        "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
       )
     }
   }
 
-  private static func columnExists(
-    _ column: String,
-    in table: String,
+  private static func integerPragma(
+    _ name: String,
+    database: OpaquePointer
+  ) throws -> Int32 {
+    var statement: OpaquePointer?
+    let result = sqlite3_prepare_v2(
+      database,
+      "PRAGMA \(name);",
+      -1,
+      &statement,
+      nil
+    )
+    guard result == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: result,
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+      throw PersistenceError.sqlite(
+        code: sqlite3_errcode(database),
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    return sqlite3_column_int(statement, 0)
+  }
+
+  private static func tableExists(
+    _ table: String,
+    schema: String,
     database: OpaquePointer
   ) throws -> Bool {
     var statement: OpaquePointer?
     let result = sqlite3_prepare_v2(
       database,
-      "PRAGMA table_info(\(table));",
+      "SELECT 1 FROM \(quotedIdentifier(schema)).sqlite_schema "
+        + "WHERE type = 'table' AND name = ? LIMIT 1;",
       -1,
       &statement,
       nil
@@ -6997,38 +5355,131 @@ public actor SQLiteStore {
       )
     }
     defer { sqlite3_finalize(statement) }
-    while sqlite3_step(statement) == SQLITE_ROW {
-      guard let name = sqlite3_column_text(statement, 1) else { continue }
-      if String(cString: name) == column {
-        return true
-      }
-    }
-    return false
-  }
-
-  private static func migrationApplied(version: Int, database: OpaquePointer) throws -> Bool {
-    var statement: OpaquePointer?
-    let result = sqlite3_prepare_v2(
-      database,
-      "SELECT 1 FROM schema_migrations WHERE version = ? LIMIT 1;",
-      -1,
-      &statement,
-      nil
-    )
-    guard result == SQLITE_OK, let statement else {
-      throw PersistenceError.sqlite(
-        code: result,
-        message: String(cString: sqlite3_errmsg(database))
-      )
-    }
-    defer { sqlite3_finalize(statement) }
-    guard sqlite3_bind_int64(statement, 1, Int64(version)) == SQLITE_OK else {
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    guard sqlite3_bind_text(statement, 1, table, -1, transient) == SQLITE_OK else {
       throw PersistenceError.sqlite(
         code: sqlite3_errcode(database),
         message: String(cString: sqlite3_errmsg(database))
       )
     }
     return sqlite3_step(statement) == SQLITE_ROW
+  }
+
+  private static func columnNames(
+    table: String,
+    schema: String,
+    database: OpaquePointer
+  ) throws -> [String] {
+    var statement: OpaquePointer?
+    let result = sqlite3_prepare_v2(
+      database,
+      "PRAGMA \(quotedIdentifier(schema)).table_info(\(quotedIdentifier(table)));",
+      -1,
+      &statement,
+      nil
+    )
+    guard result == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: result,
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    var columns: [String] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      guard let value = sqlite3_column_text(statement, 1) else { continue }
+      columns.append(String(cString: value))
+    }
+    return columns
+  }
+
+  private static func quotedIdentifier(_ value: String) -> String {
+    "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+  }
+
+  private func insertConversationMessage(
+    _ message: ProductConversationMessage
+  ) throws {
+    try withStatement(
+      """
+      INSERT INTO conversation_messages (
+          id, thread_id, author_kind, author_name, body, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(message.id.uuidString, to: 1, in: statement)
+      try bind(message.threadID.uuidString, to: 2, in: statement)
+      try bind(message.authorKind.rawValue, to: 3, in: statement)
+      try bind(message.authorName, to: 4, in: statement)
+      try bind(message.body, to: 5, in: statement)
+      try bind(message.createdAt.timeIntervalSince1970, to: 6, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func fetchConversationThread(
+    id: UUID
+  ) throws -> ProductConversationThread? {
+    try withStatement(
+      """
+      SELECT id, product_id, recipient_profile_id, subject, status,
+             codex_thread_id, created_at, updated_at
+      FROM conversation_threads
+      WHERE id = ?
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeConversationThread(statement)
+    }
+  }
+
+  private func decodeConversationThread(
+    _ statement: OpaquePointer
+  ) throws -> ProductConversationThread {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let recipientProfileID = UUID(uuidString: try text(statement, column: 2)),
+      let status = ConversationThreadStatus(
+        rawValue: try text(statement, column: 4)
+      )
+    else {
+      throw PersistenceError.corruptData("Invalid Conversation thread")
+    }
+    return ProductConversationThread(
+      id: id,
+      productID: productID,
+      recipientProfileID: recipientProfileID,
+      subject: try text(statement, column: 3),
+      status: status,
+      codexThreadID: try optionalText(statement, column: 5),
+      createdAt: date(statement, column: 6),
+      updatedAt: date(statement, column: 7)
+    )
+  }
+
+  private func decodeConversationMessage(
+    _ statement: OpaquePointer
+  ) throws -> ProductConversationMessage {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let threadID = UUID(uuidString: try text(statement, column: 1)),
+      let authorKind = CommentAuthorKind(
+        rawValue: try text(statement, column: 2)
+      )
+    else {
+      throw PersistenceError.corruptData("Invalid Conversation message")
+    }
+    return ProductConversationMessage(
+      id: id,
+      threadID: threadID,
+      authorKind: authorKind,
+      authorName: try text(statement, column: 3),
+      body: try text(statement, column: 4),
+      createdAt: date(statement, column: 5)
+    )
   }
 
   private func insertAgentProfile(_ profile: AgentProfile) throws {

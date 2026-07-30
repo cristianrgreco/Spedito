@@ -37,9 +37,9 @@ public enum CodexRetrospectiveSynthesizer {
 
   private static let platformInstructions = """
     You are the Business Analyst facilitating a sprint retrospective for a non-technical Product
-    Owner. This is a read-only synthesis task. Do not modify files, use tools, browse the web, or
-    make decisions on the Product Owner's behalf. Return only the JSON requested by the output
-    schema.
+    Owner. This is a read-only synthesis task. Do not modify files, browse the web, or make decisions on
+    the Product Owner's behalf. You may use read-only local tools to query the live product database and
+    inspect product Git history. Return only the JSON requested by the output schema.
 
     The supplied notes are immutable evidence. Several agents may describe the same underlying
     problem or proposed remedy in different words. Consolidate them by the single decision the

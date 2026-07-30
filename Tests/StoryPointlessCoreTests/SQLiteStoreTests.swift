@@ -6,23 +6,29 @@ import Testing
 
 @Suite("SQLite store", .serialized)
 struct SQLiteStoreTests {
-  @Test("Products receive distinct colors that survive restart")
+  @Test("Products follow the palette order and survive restart")
   func productColorsAreAssignedAndPersisted() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let first = try await store.createProduct(name: "First", vision: "Start familiar")
-    let second = try await store.createProduct(name: "Second", vision: "Stand apart")
-    let third = try await store.createProduct(name: "Third", vision: "Stay recognizable")
+    var products: [Product] = []
+    for index in 1...8 {
+      products.append(
+        try await store.createProduct(
+          name: "Product \(index)",
+          vision: "Stay recognizable"
+        )
+      )
+    }
 
-    #expect(first.color == .accent)
-    #expect(second.color != .accent)
-    #expect(third.color != .accent)
-    #expect(second.color != third.color)
+    #expect(
+      products.map(\.color)
+        == [.accent, .green, .indigo, .orange, .teal, .pink, .blue, .green]
+    )
 
     let assignedColors = Dictionary(
-      uniqueKeysWithValues: [first, second, third].map { ($0.id, $0.color) }
+      uniqueKeysWithValues: products.map { ($0.id, $0.color) }
     )
     await store.close()
 
@@ -31,101 +37,6 @@ struct SQLiteStoreTests {
       uniqueKeysWithValues: try await reopened.fetchProducts().map { ($0.id, $0.color) }
     )
     #expect(recoveredColors == assignedColors)
-    await reopened.close()
-  }
-
-  @Test("Candidate queue migration sends unreviewed integrations to Tech Lead review")
-  func candidateQueueMigrationPreservesReviewGate() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Review queue migration",
-      vision: "Review candidates before serial integration"
-    )
-    let profiles = try await store.seedDefaultProfiles(productID: product.id)
-    let implementer = try #require(profiles.first { $0.role == .implementer })
-    let item = try await readyItem(
-      in: store,
-      productID: product.id,
-      title: "Preserve the waiting candidate"
-    )
-    let draft = try await store.saveDraftSprint(
-      productID: product.id,
-      goal: "Move the legacy queue safely",
-      tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
-      items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
-      ]
-    )
-    let active = try await store.startSprint(id: draft.sprint.id)
-    let run = try #require(
-      try await store.fetchAgentRuns(productID: product.id).first {
-        $0.workItemID == item.id && $0.profileID == implementer.id
-      }
-    )
-    let sprintItem = try #require(active.items.first)
-    let candidate = try await store.createCandidateRevision(
-      CandidateRevision(
-        productID: product.id,
-        sprintID: active.sprint.id,
-        sprintItemID: sprintItem.id,
-        workItemID: item.id,
-        implementationRunID: run.id,
-        version: 1,
-        branchName: "ticket/T1",
-        baseSHA: "base",
-        headSHA: "head",
-        worktreePath: "/tmp/t1",
-        status: .queuedForIntegration,
-        commitCount: 1,
-        executionResultJSON: "{}"
-      )
-    )
-    await store.close()
-
-    try fixture.execute(
-      """
-      DELETE FROM schema_migrations WHERE version = 53;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    #expect(
-      try await reopened.fetchCandidateRevision(id: candidate.id).status
-        == .queuedForReview
-    )
-    await reopened.close()
-  }
-
-  @Test("Product color migration keeps the first accent and distinguishes the rest")
-  func productColorMigrationBackfillsExistingProducts() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let first = try await store.createProduct(name: "First", vision: "Start familiar")
-    _ = try await store.createProduct(name: "Second", vision: "Stand apart")
-    _ = try await store.createProduct(name: "Third", vision: "Stay recognizable")
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE products SET color = 'accent';
-      DELETE FROM schema_migrations WHERE version = 44;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let products = try await reopened.fetchProducts()
-    #expect(products.first { $0.id == first.id }?.color == .accent)
-    #expect(products.filter { $0.color == .accent }.count == 1)
-    #expect(Set(products.map(\.color)).count == products.count)
     await reopened.close()
   }
 
@@ -158,108 +69,6 @@ struct SQLiteStoreTests {
         try await reopened.fetchEpics(productID: product.id).map { ($0.id, $0.color) }
     )
     #expect(recoveredColors == assignedColors)
-    await reopened.close()
-  }
-
-  @Test("Epic color migration backfills existing Epics")
-  func epicColorMigrationBackfillsExistingEpics() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Epic color migration",
-      vision: "Preserve existing outcomes"
-    )
-    let first = try await store.createEpic(
-      productID: product.id,
-      outcome: "Keep the first outcome"
-    )
-    let second = try await store.createEpic(
-      productID: product.id,
-      outcome: "Keep the second outcome"
-    )
-    await store.close()
-
-    try fixture.execute(
-      """
-      ALTER TABLE epics DROP COLUMN color;
-      DELETE FROM schema_migrations WHERE version = 49;
-      DELETE FROM schema_migrations WHERE version = 50;
-      DELETE FROM schema_migrations WHERE version = 51;
-      DELETE FROM schema_migrations WHERE version = 52;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let migrated = try await reopened.fetchEpics(productID: product.id)
-    #expect(Set(migrated.map(\.id)) == [first.id, second.id])
-    #expect(migrated.map(\.color) == [.blue, .green])
-    await reopened.close()
-  }
-
-  @Test("Epic color migration resequences existing assignments")
-  func epicColorMigrationResequencesExistingAssignments() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Epic color resequencing",
-      vision: "Keep the palette predictable"
-    )
-    _ = try await store.createEpic(productID: product.id, outcome: "First outcome")
-    _ = try await store.createEpic(productID: product.id, outcome: "Second outcome")
-    _ = try await store.createEpic(productID: product.id, outcome: "Third outcome")
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE epics SET color = 'pink' WHERE product_id = '\(product.id.uuidString)';
-      DELETE FROM schema_migrations WHERE version = 50;
-      DELETE FROM schema_migrations WHERE version = 51;
-      DELETE FROM schema_migrations WHERE version = 52;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let migrated = try await reopened.fetchEpics(productID: product.id)
-    #expect(migrated.map(\.color) == [.blue, .green, .indigo])
-    await reopened.close()
-  }
-
-  @Test("Epic lifecycle migration preserves open and owner-confirmed outcomes")
-  func epicLifecycleMigrationMapsLegacyStatuses() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Epic migration",
-      vision: "Preserve existing planning history"
-    )
-    let openEpic = try await store.createEpic(
-      productID: product.id,
-      outcome: "Continue an open outcome"
-    )
-    let closedEpic = try await store.createEpic(
-      productID: product.id,
-      outcome: "Preserve a confirmed outcome"
-    )
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE epics SET status = 'active' WHERE id = '\(openEpic.id.uuidString)';
-      UPDATE epics SET status = 'complete' WHERE id = '\(closedEpic.id.uuidString)';
-      DELETE FROM schema_migrations WHERE version = 48;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let epics = try await reopened.fetchEpics(productID: product.id)
-    #expect(epics.first { $0.id == openEpic.id }?.status == .open)
-    #expect(epics.first { $0.id == closedEpic.id }?.status == .closed)
     await reopened.close()
   }
 
@@ -311,7 +120,11 @@ struct SQLiteStoreTests {
 
     let ownerQuestion = TicketOwnerQuestion(
       prompt: "Which empty state should the ticket deliver?",
-      options: ["A concise explanation", "A retry action"]
+      options: ["A concise explanation", "A retry action"],
+      decisionArtifact: TicketDecisionArtifact(
+        title: "Empty-state comparison",
+        path: "docs/empty-state-comparison.md"
+      )
     )
     _ = try await store.appendComment(
       workItemID: item.id,
@@ -1691,56 +1504,6 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Migration rejects stale proposals belonging to archived epics")
-  func migrationRepairsArchivedEpicProposals() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Archived proposal repair",
-      vision: "Remove stale proposed tickets"
-    )
-    let epic = try await store.createEpic(
-      productID: product.id,
-      outcome: "Already archived outcome"
-    )
-    let session = try await store.beginTicketSuggestionSession(
-      productID: product.id,
-      epicID: epic.id
-    )
-    _ = try await store.completeTicketSuggestionSession(
-      sessionID: session.id,
-      drafts: [
-        TicketSuggestionDraft(
-          reference: "S1",
-          title: "Stale proposal",
-          body: "This proposal predates the archival cascade fix.",
-          acceptanceCriteria: ["It leaves the active Backlog"],
-          suggestedRole: .implementer,
-          priority: .normal,
-          rationale: "Repair historical data"
-        )
-      ]
-    )
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE epics SET status = 'archived' WHERE id = '\(epic.id.uuidString)';
-      DELETE FROM schema_migrations WHERE version = 33;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let repaired = try #require(
-      try await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
-    )
-    #expect(repaired.session.status == .cancelled)
-    #expect(repaired.suggestions.map(\.status) == [.rejected])
-    await reopened.close()
-  }
-
   @Test("Archiving an epic refuses to cancel tickets in active delivery")
   func archivingEpicRejectsActiveDeliveryTickets() async throws {
     let fixture = try DatabaseFixture()
@@ -2377,210 +2140,6 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Migration repairs delivery notes written into canonical ticket knowledge")
-  func migrationRepairsMisdirectedDeliveryNoteUpdates() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Knowledge repair",
-      vision: "Recover both forms of ticket knowledge"
-    )
-    let pages = try await store.seedKnowledgeBase(productID: product.id)
-    let technical = try #require(
-      pages.first { $0.parentID == nil && $0.slug == "technical" }
-    )
-    let item = try await store.createWorkItem(
-      productID: product.id,
-      title: "Repair the forecast handoff"
-    )
-    let sprint = try await store.saveDraftSprint(
-      productID: product.id,
-      goal: "Preserve durable knowledge",
-      tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
-      items: [SprintDraftItemInput(workItemID: item.id)]
-    ).sprint
-    let delivery = try await store.upsertDeliveryNote(
-      productID: product.id,
-      sprint: sprint,
-      item: item,
-      bodyMarkdown: "Original delivery note.",
-      authorName: "Implementer"
-    )
-    try await store.verifyDeliveryNote(workItemID: item.id, authorName: "Tech Lead")
-    let canonical = try await store.createKnowledgePage(
-      productID: product.id,
-      parentID: technical.id,
-      title: "Forecast guidance"
-    )
-    _ = try await store.updateKnowledgePage(
-      id: canonical.id,
-      title: canonical.title,
-      bodyMarkdown: "Canonical guidance contract.",
-      authorName: "Product Owner",
-      changeSummary: "Recorded the reusable contract"
-    )
-    await store.close()
-
-    let firstBadRevisionID = UUID()
-    let latestBadRevisionID = UUID()
-    try fixture.execute(
-      """
-      UPDATE knowledge_pages
-      SET source_work_item_id = '\(item.id.uuidString)',
-          body_markdown = 'Latest revised delivery note.',
-          verification_status = 'proposed'
-      WHERE id = '\(canonical.id.uuidString)';
-
-      INSERT INTO knowledge_page_revisions (
-          id, page_id, version, body_markdown, author_name, change_summary, created_at
-      ) VALUES (
-          '\(firstBadRevisionID.uuidString)',
-          '\(canonical.id.uuidString)',
-          (SELECT MAX(version) + 1
-           FROM knowledge_page_revisions
-           WHERE page_id = '\(canonical.id.uuidString)'),
-          'Earlier revised delivery note.',
-          'Implementer',
-          'Updated delivery note',
-          100
-      );
-
-      INSERT INTO knowledge_page_revisions (
-          id, page_id, version, body_markdown, author_name, change_summary, created_at
-      ) VALUES (
-          '\(latestBadRevisionID.uuidString)',
-          '\(canonical.id.uuidString)',
-          (SELECT MAX(version) + 1
-           FROM knowledge_page_revisions
-           WHERE page_id = '\(canonical.id.uuidString)'),
-          'Latest revised delivery note.',
-          'Implementer',
-          'Updated delivery note',
-          101
-      );
-
-      DELETE FROM schema_migrations WHERE version = 47;
-      """
-    )
-
-    let repairedStore = try SQLiteStore(url: fixture.databaseURL)
-    let repairedPages = try await repairedStore.fetchKnowledgePages(productID: product.id)
-    let repairedDelivery = try #require(repairedPages.first { $0.id == delivery.id })
-    let repairedCanonical = try #require(repairedPages.first { $0.id == canonical.id })
-    #expect(repairedDelivery.bodyMarkdown == "Latest revised delivery note.")
-    #expect(repairedDelivery.verificationStatus == .proposed)
-    #expect(repairedCanonical.bodyMarkdown == "Canonical guidance contract.")
-    #expect(repairedCanonical.verificationStatus == .verified)
-
-    let deliveryRevisions = try await repairedStore.fetchKnowledgePageRevisions(
-      pageID: delivery.id
-    )
-    let canonicalRevisions = try await repairedStore.fetchKnowledgePageRevisions(
-      pageID: canonical.id
-    )
-    #expect(deliveryRevisions.first?.changeSummary == "Recovered misdirected delivery note")
-    #expect(
-      canonicalRevisions.first?.changeSummary
-        == "Restored after misdirected delivery note update"
-    )
-    await repairedStore.close()
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    #expect(
-      try await reopened.fetchKnowledgePageRevisions(pageID: delivery.id).count
-        == deliveryRevisions.count
-    )
-    #expect(
-      try await reopened.fetchKnowledgePageRevisions(pageID: canonical.id).count
-        == canonicalRevisions.count
-    )
-    await reopened.close()
-  }
-
-  @Test("Migration removes only untouched initial knowledge placeholders")
-  func migrationRemovesInitialKnowledgePlaceholders() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Knowledge migration",
-      vision: "Show genuine empty states"
-    )
-    let pages = try await store.seedKnowledgeBase(productID: product.id)
-    let overview = try #require(pages.first { $0.slug == "overview" })
-    let architecture = try #require(pages.first { $0.slug == "architecture" })
-    let glossary = try #require(pages.first { $0.slug == "glossary" })
-    _ = try await store.updateKnowledgePage(
-      id: glossary.id,
-      title: glossary.title,
-      bodyMarkdown: "Add verified knowledge here.",
-      authorName: "Me",
-      changeSummary: "Kept an intentional sentence"
-    )
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE knowledge_pages
-      SET body_markdown = 'Add verified knowledge here.',
-          updated_at = created_at
-      WHERE id = '\(overview.id.uuidString)';
-
-      UPDATE knowledge_page_revisions
-      SET body_markdown = 'Add verified knowledge here.',
-          author_name = 'StoryPointless',
-          change_summary = 'Created page'
-      WHERE page_id = '\(overview.id.uuidString)'
-        AND version = 1;
-
-      UPDATE knowledge_pages
-      SET body_markdown = 'Add verified knowledge here.',
-          updated_at = created_at
-      WHERE id = '\(architecture.id.uuidString)';
-
-      UPDATE knowledge_page_revisions
-      SET body_markdown = '# Architecture' || char(10) || char(10) ||
-            'Add verified knowledge here.',
-          author_name = 'StoryPointless',
-          change_summary = 'Created page'
-      WHERE page_id = '\(architecture.id.uuidString)'
-        AND version = 1;
-
-      DELETE FROM schema_migrations WHERE version = 40;
-      DELETE FROM schema_migrations WHERE version = 43;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let migratedPages = try await reopened.fetchKnowledgePages(productID: product.id)
-    let migratedOverview = try #require(migratedPages.first { $0.id == overview.id })
-    let migratedArchitecture = try #require(
-      migratedPages.first { $0.id == architecture.id }
-    )
-    let preservedGlossary = try #require(migratedPages.first { $0.id == glossary.id })
-    #expect(migratedOverview.bodyMarkdown.isEmpty)
-    #expect(migratedArchitecture.bodyMarkdown.isEmpty)
-    #expect(preservedGlossary.bodyMarkdown == "Add verified knowledge here.")
-    let revisions = try await reopened.fetchKnowledgePageRevisions(pageID: overview.id)
-    let architectureRevisions = try await reopened.fetchKnowledgePageRevisions(
-      pageID: architecture.id
-    )
-    #expect(revisions.count == 2)
-    #expect(revisions.first?.bodyMarkdown.isEmpty == true)
-    #expect(revisions.first?.changeSummary == "Removed the initial placeholder body")
-    #expect(architectureRevisions.count == 2)
-    #expect(architectureRevisions.first?.bodyMarkdown.isEmpty == true)
-    #expect(
-      architectureRevisions.first?.changeSummary
-        == "Removed the legacy initial placeholder body"
-    )
-    await reopened.close()
-  }
-
   @Test("Product Owner action ideas are appended during a sprint and frozen for synthesis")
   func productOwnerRetrospectiveActionIdeaCapture() async throws {
     let fixture = try DatabaseFixture()
@@ -3116,76 +2675,6 @@ struct SQLiteStoreTests {
     let concluded = try await store.concludeRetrospective(id: completed.sprint.id)
     #expect(concluded.sprint.retrospectiveConcludedAt != nil)
     await store.close()
-  }
-
-  @Test("Migration normalizes synthesis IDs created with lowercase UUID text")
-  func retrospectiveSynthesisIDMigration() async throws {
-    let fixture = try DatabaseFixture()
-    defer { fixture.remove() }
-
-    let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(
-      name: "Migration product",
-      vision: "Keep retrospective preparation recoverable"
-    )
-    let profiles = try await store.seedDefaultProfiles(productID: product.id)
-    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
-    let implementer = try #require(profiles.first { $0.role == .implementer })
-    let item = try await readyItem(
-      in: store,
-      productID: product.id,
-      title: "Deliver before migration"
-    )
-    let draft = try await store.saveDraftSprint(
-      productID: product.id,
-      goal: "Preserve retrospective preparation",
-      tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
-      items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
-      ]
-    )
-    let active = try await store.startSprint(id: draft.sprint.id)
-    let candidate = RetrospectiveNote(
-      productID: product.id,
-      sprintID: active.sprint.id,
-      workItemID: item.id,
-      profileID: implementer.id,
-      authorName: implementer.name,
-      category: .suggestedAction,
-      body: "Keep the migration path covered",
-      isActionCandidate: true,
-      actionDestination: .teamPractice
-    )
-    try await store.saveRetrospectiveNotes([candidate])
-    _ = try await completeSprint(active, delivering: item, in: store)
-    await store.close()
-
-    try fixture.execute(
-      """
-      UPDATE retrospective_syntheses SET id = lower(id);
-      DELETE FROM schema_migrations WHERE version = 46;
-      """
-    )
-
-    let reopened = try SQLiteStore(url: fixture.databaseURL)
-    let pending = try #require(
-      try await reopened.fetchRetrospectiveSyntheses(productID: product.id).first
-    )
-    let generating = try await reopened.beginRetrospectiveSynthesis(
-      id: pending.id,
-      profileID: analyst.id
-    )
-    #expect(generating.status == .generating)
-    #expect(
-      try await reopened.fetchRetrospectiveSynthesisSourceNotes(
-        synthesisID: pending.id
-      ).map(\.id) == [candidate.id]
-    )
-    await reopened.close()
   }
 
   @Test("Managed demo sessions are durable and candidate-bound")

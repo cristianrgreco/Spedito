@@ -10,7 +10,7 @@ protocol TicketAttentionSoundPlaying: AnyObject {
 final class BundledTicketAttentionSoundPlayer: TicketAttentionSoundPlaying {
   private lazy var sound: NSSound? = {
     guard
-      let url = Bundle.module.url(
+      let url = StoryPointlessResources.url(
         forResource: "ticket-attention",
         withExtension: "wav"
       )

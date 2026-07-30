@@ -6,13 +6,25 @@ agents, controls cost and risk, and moves work from backlog to verified release
 through an agile workflow without installing developer tools or using a terminal.
 
 The project now has an initial native implementation foundation: a SwiftUI macOS
-executable, a dependency-free SQLite control plane, guarded ticket workflow,
+executable, one dependency-free SQLite control plane per product, guarded ticket workflow,
 role-aware AI team, comments, and a durable activity timeline. The app discovers
-an exact compatible Codex runtime, performs the hidden App Server handshake, and
-shows its real connection state. **Autosuggest Tickets** runs one read-only,
+the installed Codex app or an explicitly selected custom installation, performs
+capability and App Server handshakes, and shows its real connection state.
+Codex versions remain visible for diagnostics but are not rejected merely for
+being newer. **Autosuggest Tickets** runs one read-only,
 schema-constrained Business Analyst turn and can produce a coherent set of up
 to 24 analysis, UX, and implementation proposals. Roles are recommended future
 owners and may repeat; they are not separate suggestion agents or quotas.
+Starter-backlog and Epic planning now inspect verified **Environments**
+knowledge and repository evidence before treating executable work as ready.
+Their structured results classify environment readiness and each ticket's
+relationship to it. If a reusable environment is missing, the plan must include
+one concrete Implementer foundation task and every ticket that needs to build,
+test, run, prototype, or demo the product must depend on it directly or
+transitively; contradictory plans fail validation. Business-friendly
+clarification resolves material technology or hosting constraints, while
+runtime paths, caches, and sandbox plumbing stay out of the non-technical
+Product Owner's questions.
 Proposals are classified as Story, Task, or Bug and appear as a vertically
 staggered dependency outline above the backlog; suggestions remain outside
 backlog scope until the owner accepts them. The backlog itself is now a compact,
@@ -27,14 +39,16 @@ de-emphasized while valid targets stay at full opacity. Insertion lines and
 constraint labels overlay the fixed row boundaries rather than resizing the
 table; top/bottom ranking actions also reject dependency-invalid orders.
 Full-width separators reinforce the shared column layout. Explicit row
-selection, section-wide select-all, bulk actions, and grouped drag/drop move
-several tickets between Backlog and Next sprint in one dependency-safe plan
-update. Any row opens a full editor for type, priority, context, acceptance
-criteria, flexible custom fields, dependency context, and a durable ticket-level
-conversation addressed to one selected team member at a time; there is no implicit
-team-wide broadcast. Owners can add or remove blockers while creating or editing manual
-tickets; cycles are rejected, prerequisites are re-ranked automatically, and
-unfinished blockers outside the sprint prevent it from starting. Suggested work
+selection, section-wide select-all, visible section buttons that move selected
+tickets (or the whole section when none are selected there), and grouped
+drag/drop move several tickets between Backlog and Next sprint in one
+dependency-safe plan update. Any row opens a full editor for type, priority,
+context, acceptance criteria, flexible custom fields, dependency context, and a
+durable ticket-level conversation addressed to one selected team member at a
+time; there is no implicit team-wide broadcast. Owners can add or remove blockers
+while creating or editing manual tickets; cycles are rejected, prerequisites are
+re-ranked automatically, and unfinished blockers outside the sprint prevent it
+from starting. Suggested work
 uses aligned cards with explicit **Blocked by** and **Blocks** relationships rather
 than tree indentation. Sprint Planning now places an editable ticket beside its durable
 conversation. The owner chooses exactly one team member for each message; that member
@@ -65,7 +79,11 @@ knowledge changes, follow-up recommendations, and demo submissions are shown in
 chronological order in the ticket Work log with attribution.
 An agent that needs a Product Owner choice enters a durable attention state; its
 structured options are selectable in the Work log, with a free-form response still
-available, and the submitted owner response queues the same thread to resume.
+available, and the submitted owner response queues the same thread to resume. The
+question may include a safe **Open evidence** action for a workspace-relative decision
+artifact. Awaiting-owner results cannot also create candidate-bound Product knowledge
+proposals or demos; after the owner answers, the same agent updates the evidence and
+returns the completed candidate, final knowledge proposals, and review recipe.
 When a ticket newly enters **Needs your input**, StoryPointless plays a brief
 notification chime. Refreshing or reopening an already-waiting ticket does not
 repeat the sound.
@@ -104,6 +122,12 @@ limitation guidance are proposed as a complete Environments update for Tech Lead
 review. Agents receive
 read-only access to the active product's central Git metadata, so status,
 diff, history, and conflict inspection do not need Product Owner approval. Their
+turns also receive read-only access to that product's `.storypointless` control
+directory. Stable SQLite views expose live tickets, Work logs, Epics, sprints,
+verified Product knowledge, decisions, delivery provenance, retrospectives, and
+team configuration. Agents can therefore discover evidence such as which ticket
+implemented a feature by querying current product data and Git history instead
+of receiving a copied projection of the whole product in every prompt. Their
 turns inherit that product-scoped thread profile so the exact Git grant is not
 replaced by the generic delivery profile when work begins or resumes. Their
 App Server process disables optional Git locks, ignores the user's global Git
@@ -133,7 +157,7 @@ from review to In Progress five times before StoryPointless pauses automatic rev
 for Product Owner direction. The ticket acceptance
 room then provides one **Demo**
 button. StoryPointless prepares a detached preview checkout, starts a sandboxed local
-service through the same pinned Codex App Server runtime and opens its loopback browser URL, launches a reviewed macOS app, opens a
+service through the selected Codex App Server runtime and opens its loopback browser URL, launches a reviewed macOS app, opens a
 review artifact, or captures a bounded scenario result according to that reviewed
 recipe. Repeated web and app demo clicks reuse a healthy process. **Stop demo**,
 Product Owner feedback, approval, product switching, and app shutdown terminate the
@@ -148,6 +172,12 @@ reviewed integrated revision and tells the Implementer that accepted trunk work 
 the Integrator's resolution are now its baseline. In Ready for Demo, a comment receives
 an explanatory reply without changing the reviewed candidate. It routes to the assigned Implementer,
 falling back to the latest participating team member and then the Tech Lead.
+During active delivery, including review and a paused permission request, the
+Product Owner can either leave an informational comment or explicitly ask the
+currently responsible team member without resuming or changing the run. A
+previously saved owner comment after a pending permission request remains
+individually routable until an agent replies. Ticket replies stream the same
+concise inline activity summary and Stop action as product Chat.
 Owner demo feedback follows the same revision loop,
 while **Approve and complete** promotes the reviewed integrated SHA to local `trunk`,
 moves the ticket to Done, and admits newly unblocked work. Interrupted runs are
@@ -157,7 +187,9 @@ unless it was waiting on a permission decision. Ordinary work explicitly resumes
 the persisted Conversation and continues in the same ticket workspace with a focused
 recovery instruction; it does not receive the original “start the ticket” briefing again.
 Any completed structured result is recovered before another implementation turn is
-started. A Product Owner stop remains paused until they explicitly resume it.
+started. A final-answer item is retained until its matching Codex turn reports completion,
+so validation or repair never submits a second turn while the first is still closing. A
+Product Owner stop remains paused until they explicitly resume it.
 Switching products does not suspend delivery. Every active product keeps its own
 scheduler, agent turns, telemetry, permissions, and durable execution context while the
 selected product changes only the visible UI projection. Returning to a product shows
@@ -193,18 +225,49 @@ owned by the relevant section instead of the macOS title bar, and the full
 list-first backlog page scrolls vertically. Creation and
 configuration sheets use explicit left-aligned labels, bordered text fields,
 and multiline editors rather than macOS Form value rows.
-The Team sidebar is configuration only: it shows reusable members, capabilities,
-models, effort, and instructions without pretending those profiles are idle or
-online. Live agent-run counts, assignment, state, and current context health live
-with their tickets on the Sprint Board.
+The Team sidebar keeps **Chat** at its top level. Team settings and the reusable
+member roster are nested inside a separate **Team members** disclosure group, so
+configuration does not compete with Chat as a destination. The roster shows
+capabilities, models, effort, and instructions without pretending those profiles
+are idle or online. Its expand/collapse transition is clipped to the nested group,
+and the compact model and effort controls keep normal horizontal insets with each
+caret beside its label. Live agent-run counts, assignment, state, and current
+context health live with their tickets on the Sprint Board.
+Chat is the product-level place to ask any selected team member a question. Each
+top-level message creates an independent thread, replies resume only that thread,
+and separate threads can respond concurrently. A new top-level thread receives
+at most the latest 100 active-room messages; a reply retains only its parent
+thread's conversation context. Chat prefers the stable agent-facing database
+views, but it can inspect other active-product tables read-only when an
+operational question needs evidence those views do not contain. Run-status
+answers use persisted activity rather than an empty comment history, and
+permission answers report the owner-facing reason and exact scope without
+exposing Codex protocol identifiers, signatures, or worktree paths. The
+responding agent supplies a concise durable thread title and a Markdown-formatted
+answer, rendered with the same chat bubbles used by Ticket and Epic
+conversations. Those bubbles hug short content and use a relaxed maximum width so
+longer replies remain readable without becoming a narrow column. Thread titles
+aim for five words rather than collapsing into a one-word topic. While an agent works, the bottom
+status strip streams supported,
+concise Codex activity summaries instead of showing an indefinite generic
+spinner. Thread-list timestamps are fixed send/update times rather than ticking
+relative timers. The thread pane uses the same quiet sidebar treatment as the
+rest of the app, with a pale accent selection. Completed threads can be archived,
+shown again, and restored without deleting their messages or Codex context;
+archived messages no longer seed new top-level threads. Archive actions use the
+same red destructive treatment as Backlog ticket archival. A new thread offers
+the team-member picker, and every follow-up can address a different member. A
+same-member reply resumes that member's Codex session; changing members starts a
+role-specific session with the durable visible thread transcript and current
+product evidence.
 The starter team is Business Analyst, UX Designer, Tech Lead, and Implementer. The
 Tech Lead performs normal delivery review; specialist frontend, backend, security,
 and other team members are optional additions rather than permanent headcount.
 The current product header opens a searchable, launcher-style product library
 with scrollable descriptions, current-workspace state, double-click/open, and
 new-product creation. The first product uses the app accent color for its initial
-tile, while later products receive a durable color from a light/dark-safe palette
-so the active workspace is visually distinct. Each product loads its own backlog,
+tile, while later products follow the Epics' contrast-spaced green, indigo,
+orange, teal, pink, and blue rotation. Each product loads its own backlog,
 team, sprints, and knowledge, and the most recently opened product is restored on restart. When
 multiple products exist without a valid remembered selection, the library is
 shown automatically once rather than interrupting every launch.
@@ -212,6 +275,12 @@ Product settings can archive the current product after safely suspending its
 active delivery. Archived products leave active navigation but retain their
 backlog, Work logs, Product knowledge, source workspace, and delivery history;
 the product library can show, restore, and reopen them.
+Each product keeps its authoritative database beside its repository at
+`<product workspace>/.storypointless/product.sqlite`. New databases are created
+directly from one declarative final schema; distributed builds do not replay the
+development migration history. The one-time development cutover splits the old
+shared `storypointless.sqlite` into these product stores, preserves identifiers
+and relationships, and leaves the shared source database intact as a backup.
 Product Context keeps the potentially long product description out of the
 sidebar while allowing the owner to review and edit what future agents receive.
 Manual ticket creation also requires the same simple Story/Task/Bug choice.
@@ -391,7 +460,23 @@ the existing debug process, and launches the verified executable in the
 foreground. Do not use it when preserving an active agent turn matters; normal
 user-initiated app quit continues to use the app's asynchronous shutdown path.
 
-These developer commands are not part of the customer experience. Debug builds
-can use the exact compatible runtime inside the installed Codex app as a
-development fixture. The shipped product will be a signed application that
-manages its own compatible Codex and Git runtimes without exposing a terminal.
+Build a local macOS application bundle with the native app icon using:
+
+```sh
+./scripts/build_app.sh release
+```
+
+The bundle is written to `.build/app/release/StoryPointless.app`. The
+`STORYPOINTLESS_BUNDLE_IDENTIFIER`, `STORYPOINTLESS_VERSION`,
+`STORYPOINTLESS_BUILD_NUMBER`, and `STORYPOINTLESS_SIGN_IDENTITY` environment
+variables supply release metadata and signing identity. Local builds receive an
+ad-hoc signature by default; a Developer ID identity opts into hardened-runtime
+signing. This is a packaging checkpoint, not yet a customer release: local Git
+distribution, third-party notices, notarization, and the installer/update path
+still need to be completed and verified.
+
+These developer commands are not part of the customer experience. StoryPointless
+uses the official Codex app by default, lets the owner choose another explicitly
+added Codex app or executable from the sidebar connection menu, and remembers
+that application-wide choice. The shipped product will still require a supported
+Codex installation while keeping its CLI and App Server terminal hidden.

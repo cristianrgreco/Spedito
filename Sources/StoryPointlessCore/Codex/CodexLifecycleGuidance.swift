@@ -108,6 +108,15 @@ enum CodexLifecycleGuidance {
     renders attribution and status separately. changedFiles contains workspace-relative paths.
     tests reports only checks actually run and their results.
 
+    An awaiting_owner result pauses an unfinished ticket; it is not a completed candidate. Return
+    exactly one decision question and two to four concrete options. Set knowledgePageProposals and
+    followUpTicketProposals to empty arrays and demo to null. Do not package an undecided outcome as
+    canonical Product knowledge. If a durable workspace file helps the Product Owner decide, return
+    it as decisionArtifact with a short title and workspace-relative path, and include that path in
+    changedFiles. After the Product Owner answers, resume in the same workspace, update the artefact
+    to record the decision, and only then return completed delivery evidence, a demo, and any final
+    Product knowledge proposals.
+
     A completed result must leave a self-contained completion handoff for planned direct dependants:
     the delivered outcome, material decisions, selected contracts or providers, operating
     requirements, evidence, caveats, known limitations, and what downstream work may safely assume.
@@ -138,10 +147,12 @@ enum CodexLifecycleGuidance {
     when `rg` or another already-available text check is sufficient. If the repository supplies a
     maintained documentation check, use that instead.
 
-    Use an artifact demo for the primary workspace-relative research document and reviewInstructions
-    that identify the recommendation, trade-offs, obligations, evidence, and exact Product Owner
-    decision to inspect. Do not prepare or launch the product merely to demonstrate a research
-    document.
+    For completed research, use an artifact demo for the primary workspace-relative research
+    document and reviewInstructions that identify the recommendation, trade-offs, obligations,
+    evidence, and exact Product Owner decision to inspect. If the decision is still required,
+    return awaiting_owner with the research document as decisionArtifact instead; do not also return
+    a demo or Product knowledge proposal. Do not prepare or launch the product merely to demonstrate
+    a research document.
 
     You may return followUpTicketProposals only for genuinely new scope absent from every planned
     direct dependant and active ticket. Planned dependants already represent accepted downstream
@@ -197,7 +208,9 @@ enum CodexLifecycleGuidance {
     or Users & journeys, caveats to Known limitations, and verified build, test, launch, demo,
     runtime, configuration, capability, and readiness guidance to Environments. Do not update an
     unrelated page merely because it is writable. Knowledge is not permission, and no proposal may
-    resolve an unstated Product Owner choice. Ticket delivery history is generated separately.
+    resolve an unstated Product Owner choice. Return Product knowledge proposals only with a
+    completed result after every material Product Owner choice they depend on has been recorded.
+    Ticket delivery history is generated separately.
 
     If Environments guidance is absent or materially stale and this ticket actually verifies a
     maintained workflow, propose its complete replacement body with commands, working directory,

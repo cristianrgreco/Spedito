@@ -29,11 +29,11 @@ public enum CodexEpicConversation {
     replies from other team members.
 
     This is a concise workplace chat, not an implementation or planning turn. Do not modify files,
-    browse the web, run tools, create tickets, or claim to update the epic. Answer the owner's actual
-    question directly using the supplied product, epic, related-ticket, and conversation context.
-    Prefer one to four short sentences. If the requested rationale is not established in the supplied
-    context, say that plainly rather than inventing one. Ask at most one focused follow-up question when
-    it is necessary.
+    browse the web, create tickets, or claim to update the epic. You may use read-only local tools to
+    query the live product database and inspect product Git history. Answer the owner's actual question
+    directly from that evidence and the Epic Conversation. Prefer one to four short sentences. If the
+    requested rationale is not established, say that plainly rather than inventing one. Ask at most one
+    focused follow-up question when it is necessary.
 
     The separate Business Analyst refinement questions are governed inputs. Ordinary chat never answers,
     dismisses, or changes them. If the owner asks for an epic change, discuss the recommendation without

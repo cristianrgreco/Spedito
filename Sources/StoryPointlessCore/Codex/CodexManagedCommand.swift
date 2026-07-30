@@ -88,9 +88,13 @@ public enum CodexPermissionProfiles {
     """#
 
   private static func deliveryProtectedFilesystemEntries(
-    readOnlyGitDirectory: URL?
+    readOnlyGitDirectory: URL?,
+    readOnlyProductDirectory: URL?
   ) -> String {
     let gitEntry = readOnlyGitDirectory.map {
+      #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
+    } ?? ""
+    let productEntry = readOnlyProductDirectory.map {
       #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
     } ?? ""
     return normalizedFilesystemEntries(
@@ -100,15 +104,20 @@ public enum CodexPermissionProfiles {
         + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-wal"="deny","#
         + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-shm"="deny","#
         + gitEntry
+        + productEntry
         + workspaceRootEntries
     )
   }
 
   static let deliveryProfileOverride =
-    deliveryProfileOverrideValue(readOnlyGitDirectory: nil)
+    deliveryProfileOverrideValue(
+      readOnlyGitDirectory: nil,
+      readOnlyProductDirectory: nil
+    )
 
   static func deliveryThreadConfiguration(
-    readOnlyGitDirectory: URL
+    readOnlyGitDirectory: URL,
+    readOnlyProductDirectory: URL? = nil
   ) -> JSONValue {
     var filesystem: [String: JSONValue] = [
       ":minimal": .string("read"),
@@ -131,6 +140,9 @@ public enum CodexPermissionProfiles {
       ]),
     ]
     filesystem[readOnlyGitDirectory.standardizedFileURL.path] = .string("read")
+    if let readOnlyProductDirectory {
+      filesystem[readOnlyProductDirectory.standardizedFileURL.path] = .string("read")
+    }
     return .object([
       "permissions.\(delivery)": .object([
         "description": .string(
@@ -143,9 +155,10 @@ public enum CodexPermissionProfiles {
   }
 
   static func deliveryProfileOverrideValue(
-    readOnlyGitDirectory: URL?
+    readOnlyGitDirectory: URL?,
+    readOnlyProductDirectory: URL? = nil
   ) -> String {
-    #"permissions.\#(delivery)={description="Ticket worktree writes with read-only product Git and scoped runtime opt-in",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory))},network={enabled=false}}"#
+    #"permissions.\#(delivery)={description="Ticket worktree writes with read-only product Git and product context",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory, readOnlyProductDirectory: readOnlyProductDirectory))},network={enabled=false}}"#
   }
 
   private static let demoProtectedFilesystemEntries = normalizedFilesystemEntries(

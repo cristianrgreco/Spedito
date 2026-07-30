@@ -73,7 +73,11 @@ struct SprintTicketWorkLogHistoryTests {
       options: [
         "Configure the deployment runtime",
         "Use an existing authorised runtime",
-      ]
+      ],
+      decisionArtifact: TicketDecisionArtifact(
+        title: "Runtime comparison",
+        path: "docs/runtime-comparison.md"
+      )
     )
     let questionComment = TicketComment(
       workItemID: workItemID,
@@ -119,6 +123,13 @@ struct SprintTicketWorkLogHistoryTests {
     let answeredQuestion = try #require(displayed.first?.answeredQuestions.first)
     #expect(answeredQuestion.selectedOption == selectedOption)
     #expect(answeredQuestion.answer == selectedOption)
+    #expect(
+      displayed.first?.ownerQuestion?.decisionArtifact
+        == TicketDecisionArtifact(
+          title: "Runtime comparison",
+          path: "docs/runtime-comparison.md"
+        )
+    )
   }
 
   @Test("A structured Other answer remains attached to its question")
@@ -642,6 +653,85 @@ struct SprintTicketWorkLogHistoryTests {
       )
     )
     #expect(fallback.id == techLead.id)
+  }
+
+  @Test("Ticket questions route to the team member with the active run")
+  func activeTicketQuestionRouting() throws {
+    let productID = UUID()
+    let workItemID = UUID()
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+    let designer = AgentProfile(
+      productID: productID,
+      name: "UX Designer",
+      role: .uxDesigner
+    )
+    let activeRun = AgentRun(
+      productID: productID,
+      workItemID: workItemID,
+      profileID: designer.id,
+      status: .awaitingOwner,
+      updatedAt: Date(timeIntervalSince1970: 4_000)
+    )
+
+    let recipient = try #require(
+      SprintTicketCommentRouting.activeQuestionRecipient(
+        workItemID: workItemID,
+        assignedProfileID: implementer.id,
+        comments: [],
+        runs: [activeRun],
+        profiles: [implementer, designer]
+      )
+    )
+
+    #expect(recipient.id == designer.id)
+  }
+
+  @Test("A comment after a permission request remains routable until an agent replies")
+  func unansweredPermissionCommentRouting() throws {
+    let workItemID = UUID()
+    let requestDate = Date(timeIntervalSince1970: 5_000)
+    let earlierComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "Earlier context",
+      createdAt: requestDate.addingTimeInterval(-1)
+    )
+    let question = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "Why is this access needed?",
+      createdAt: requestDate.addingTimeInterval(1)
+    )
+
+    let unanswered = try #require(
+      SprintTicketCommentRouting.unansweredOwnerComment(
+        workItemID: workItemID,
+        since: requestDate,
+        comments: [earlierComment, question]
+      )
+    )
+    #expect(unanswered.id == question.id)
+
+    let reply = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "UX Designer",
+      body: "Here is why.",
+      createdAt: requestDate.addingTimeInterval(2)
+    )
+    #expect(
+      SprintTicketCommentRouting.unansweredOwnerComment(
+        workItemID: workItemID,
+        since: requestDate,
+        comments: [earlierComment, question, reply]
+      ) == nil
+    )
   }
 
   @Test("Run context separates mandatory knowledge from ticket-relevant knowledge")

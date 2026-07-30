@@ -289,9 +289,10 @@ delivery views.
 
 Each product has a durable identifying color used by its initial tile in the
 product library and current-product header. The first product uses the app accent
-color; later products receive a distinct color from a curated light/dark-safe
-palette so switching products is immediately visible. Assigned colors do not
-change across relaunches.
+color; later products follow the Epics' contrast-spaced sequence starting from
+green: green, indigo, orange, teal, pink, and blue. The sequence cycles only
+after the palette is exhausted, and assigned colors do not change across
+relaunches.
 
 Switching the selected product changes only what the Product Owner is viewing.
 Active delivery continues in the background for every product without
@@ -484,12 +485,26 @@ context. Follow-ups inside one conversation thread retain that thread's context
 and are processed in order; separate conversation threads may run concurrently
 subject to the normal scheduler and shared-usage constraints.
 
+For a product room, a new top-level thread receives at most the previous 100
+room messages as conversational history. A reply resumes only its own agent
+thread; if that underlying thread must be recovered, StoryPointless rebuilds it
+from the parent message and replies in that product conversation thread, not
+from unrelated room traffic. Durable product facts are discovered from the
+live product database and repository rather than copied into either history.
+The responding profile returns a concise durable title for the thread and a
+readable Markdown message that uses short paragraphs, whitespace, and lists
+where useful. The room renders the same owner/agent chat bubbles as Ticket and
+Epic conversations. While a turn is active, a bottom status strip streams
+concise supported activity summaries—never raw chain-of-thought—and keeps the
+stop action nearby. Thread rows show a fixed last-update time rather than a
+continuously ticking relative timer.
+
 The room composer creates a new top-level thread by default; replying from an
-open thread keeps the message there. If an agent is already working, a follow-up
-is accepted immediately and shown as pending for the next safe turn boundary
-rather than being lost or unpredictably injected mid-action. An explicit
-**Interrupt and redirect** control is available when the owner genuinely wants
-to stop the current turn.
+open thread keeps the message there. The owner may start other top-level threads
+while one agent is working; a follow-up in the active thread waits until that
+response finishes so it cannot be unpredictably injected mid-turn. An explicit
+**Stop** control is available when the owner genuinely wants to cancel the
+current response.
 
 A conversation thread is a product-level UI record, not necessarily one Codex
 thread. A direct conversation may resume one bounded Codex thread for follow-up
@@ -524,19 +539,26 @@ discussing after this happens, but stale actions are never auto-applied.
    begin with an empty, agent-planned product, an approved starter template, or
    a managed clone whose existing history and default branch become the
    product's accepted starting point.
-3. The owner adds Codex through an in-app “Sign in with ChatGPT” flow or an
-   OpenAI API key.
+3. StoryPointless discovers the signed-in official Codex app. The owner can
+   confirm it or explicitly add and select another Codex installation.
 4. StoryPointless creates an opinionated starter team: business analyst, UX
    designer, lead/reviewer, and general implementer. The owner can add optional
    specialist team members such as frontend, backend, security, accessibility, or
    marketing when the product actually needs them. Profiles use Codex models,
    reasoning effort, role instructions, permission policies, and concurrency
    limits.
-5. StoryPointless proposes a starter delivery policy based on the stack and
-   risk tier.
-6. A diagnostic work item verifies the local repository, sandbox, agent,
-   permission prompts, event reporting, and credential revocation before real
-   work begins.
+5. The Business Analyst assesses delivery-environment readiness from verified
+   **Environments** knowledge and repository-owned evidence. If the product has
+   no sufficient way to build, test, prototype, demo, and locally run its likely
+   work, the owner is asked only for a material technology or hosting constraint
+   in business terms; the team recommends the simplest suitable option when the
+   owner has no preference.
+6. StoryPointless proposes the starter delivery policy and any required
+   environment-foundation work. Executable product tickets are blocked by that
+   foundation, while authorised research and genuinely environment-neutral
+   design can proceed in parallel. The foundation verifies the repository,
+   sandbox, stable build/test/run/demo entry points, permission behaviour,
+   event reporting, and credential boundaries before dependent work begins.
 
 The onboarding must make data and credential boundaries explicit. “Connected”
 should show exactly what can be read, changed, deployed, and billed.
@@ -567,6 +589,45 @@ return 1–24 tickets and should normally use as many as the product genuinely
 needs. Business Analyst, UX Designer, and Implementer roles may repeat freely;
 the role is a routing recommendation for later delivery. The decoder rejects
 unknown dependency references, self-dependencies, and dependency cycles.
+
+Every starter-backlog and epic plan also returns a structured environment
+assessment: **sufficient**, **foundation required**, or **not required**. Each
+proposed ticket declares whether it is independent of, establishes, or requires
+the product environment. When a foundation is required, the plan names exactly
+one proposed Implementer task or accepted active ticket as that foundation, and
+every ticket that needs an executable environment must depend on it directly or
+transitively. StoryPointless rejects a generated plan that omits or contradicts
+that dependency path.
+
+The assessment uses verified **Environments** guidance plus repository-owned
+manifests, scripts, CI, and documentation; an incidental runtime installed on
+the Product Owner's Mac is not evidence of a supported product environment. A
+non-technical owner is not asked to choose Node versus Python, package-manager
+paths, caches, or sandbox permissions by default. Clarification instead asks
+about material outcomes such as portability, hosting, privacy, cost, and
+maintenance, presents a recommendation, and exposes technical stack choices
+only when the owner has expressed a relevant preference. Every clarification
+choice is a complete answer rather than a promise to provide information later;
+an unlisted existing constraint is entered through the question's **Other**
+field. Choosing a standard recommendation explicitly uses evidence already
+available without creating research work, while choosing time-boxed research
+creates a separate Business Analyst ticket before the environment foundation.
+Because each question permits exactly one selection, every option describes the
+complete resulting scope; options never compound earlier choices with labels
+such as “as well,” “too,” or “also.”
+
+The environment-foundation ticket is a concrete delivery outcome, not a vague
+investigation. Its acceptance criteria establish the approved toolchain and
+supported versions; repository-owned build, test, local-run, and demo entry
+points; run-private temporary and cache locations; required filesystem,
+localhost, network, and service capabilities; a successful managed readiness
+check; known limitations; and a verified **Environments** Product knowledge
+update. When current external evidence is genuinely needed to recommend a
+stack, hosting model, licence, cost, or maintenance approach, the Business
+Analyst proposes a separate research ticket only with Product Owner
+authorisation, and the foundation depends on it. Deployment constraints are
+considered early, but production accounts, credentials, signing identities, and
+release authority remain separately approved work.
 
 Epic planning must cover the complete path to the agreed outcome without
 forcing every outcome through the same delivery stages. When the owner has
@@ -622,10 +683,15 @@ proposal is:
 
 - **Business Analyst:** investigate and recommend a suitable weather-data
   provider;
+- **Implementer:** when verified **Environments** guidance is insufficient,
+  establish and document the reusable delivery environment, depending on any
+  authorised technical recommendation;
 - **UX Designer:** design and validate the location-search and forecast
-  prototype;
+  prototype, proceeding independently when its review artefact does not require
+  the missing runtime;
 - **Implementer:** build the approved experience, depending on the UX contract
-  and provider interface while remaining able to start against mocks; and
+  and provider interface while remaining able to start against mocks, and also
+  depending on the environment foundation when one is required; and
 - **Implementer:** add a service only if caching, credential protection,
   aggregation, or another backend responsibility is justified. This may be a
   separate parallel ticket, but it does not require a permanent backend team member.
@@ -710,10 +776,13 @@ Governed initial Epic and Ticket refinement share one contract: the Business
 Analyst asks consequential questions first, then the application applies the
 completed metadata or ticket snapshot as one versioned refinement result. A
 Ticket refinement preserves existing blockers and adds any newly recommended
-prerequisites in that same update. It fails rather than overwriting a newer
-saved ticket version. Proposed delivery tickets, ordinary team-chat edits, and
-later planning suggestions remain reviewable changes; the owner approves them
-before they alter scope.
+prerequisites in that same update. For executable work it consults verified
+**Environments** knowledge: an existing foundation is proposed as a dependency,
+while a missing foundation is surfaced as a separate split recommendation
+rather than hidden inside the feature ticket. It fails rather than overwriting
+a newer saved ticket version. Proposed delivery tickets, ordinary team-chat
+edits, and later planning suggestions remain reviewable changes; the owner
+approves them before they alter scope.
 
 ### 9.3 Backlog refinement
 
@@ -726,10 +795,12 @@ sprint board. Its primary information is product scope and planning confidence:
   between them changes sprint intent but never starts execution. A
   cross-section move preserves the ticket's authoritative backlog rank when the
   chosen destination does not express a different relative position;
-- rows have explicit multi-selection and section-wide select-all. Bulk buttons
-  or dragging any selected row move the selected set in one persisted operation;
-  selecting a complete dependency branch succeeds, while an invalid partial
-  move explains which prerequisite or dependent must also be selected;
+- rows have explicit multi-selection and section-wide select-all. Each section
+  has a visible move button that acts on its selected tickets, or every ticket
+  in that section when none are selected there. These buttons and dragging any
+  selected row move the target set in one persisted operation; selecting a
+  complete dependency branch succeeds, while an invalid partial move explains
+  which prerequisite or dependent must also be selected;
 - ticket creation belongs to the Backlog section, and sprint-planning actions
   belong to the backlog header rather than a global title-bar toolbar;
 - every row opens a focused ticket surface with editable core and custom fields,
@@ -870,9 +941,37 @@ The product owner primarily sees:
 Raw agent traces remain available for audit and debugging, but they are not the
 main experience.
 
-### 9.7 Team conversations
+### 9.7 Team chat and conversations
 
-The product owner can talk to the team without leaving StoryPointless. Ticket
+The product owner can talk to the team without leaving StoryPointless. A
+**Chat** destination at the top of the Team section opens a product room where
+each top-level question selects exactly one team member and becomes an
+independent Slack-style thread. Team settings and the configured member roster
+sit inside a separate nested **Team members** disclosure group beneath Chat,
+rather than presenting configuration as peer destinations. The disclosure
+animation stays clipped to that group; compact model and effort controls retain
+normal horizontal insets and place each caret immediately beside its label. Its quiet thread pane uses a light sidebar
+background and a pale accent selection rather than the strong system selection
+fill, with comfortable horizontal insets within each thread row. The split panes
+have no artificial minimum widths, and shared chat bubbles
+size to short content while allowing longer replies to use a comfortably wider
+measure. The thread header keeps
+the subject, recipient, and actions without repeating a completed-status badge.
+Completed threads can be archived to remove them from the active list;
+the owner can show archived threads and restore one without losing its messages
+or Codex context. Archive actions use the same red icon-and-label destructive
+treatment as Backlog tickets. Archived messages do not become context for a new
+top-level thread. Every message offers a team-member picker. A reply to the same
+member resumes that role-specific Codex session; selecting a different member
+starts a fresh role-specific session supplied with the durable visible thread
+transcript and current product evidence. Generated thread titles contain four to
+six words and aim for five, avoiding vague one-word topic labels. Product Chat
+prefers the documented agent-facing database views but may inspect other
+product-scoped tables read-only when those views do not contain evidence needed
+for the Product Owner's question. In particular, current-run answers use durable
+run activity and permission answers include the request's owner-facing purpose,
+scope, and decision state; chat never exposes Codex session identifiers,
+permission signatures, worktree paths, or other protocol internals. Ticket
 and Epic conversations address exactly one selected profile per message. A
 ticket defaults to its assigned implementer when available, otherwise the
 business analyst (falling back to the lead); an Epic defaults to the business
@@ -888,6 +987,16 @@ its active context boundary—for example product knowledge, selected tickets,
 sprint plan, or an exact repository revision—so the owner can see what the
 agents know and change that scope deliberately.
 
+The Sprint Board Work log keeps informational comments distinct from questions.
+During In Progress or In Review, the owner can explicitly ask the team member
+with the active run; if none is active, routing falls back to the assigned team
+member and existing participant rules. This read-only side question does not
+resume, interrupt, approve, deny, or otherwise change delivery. The same option
+remains available while a permission request is pending, and an owner comment
+saved after that request can be routed in place until an agent replies. While
+the recipient works, the Work log shows the same concise supported activity
+summary and Stop action as product Chat, never raw reasoning.
+
 Rooms show top-level threads as independently actionable rows with subject,
 participants, linked ticket or sprint, last update, unread count, and state.
 Agent replies remain inside those threads, allowing the owner to send multiple
@@ -895,7 +1004,7 @@ messages immediately and return to whichever result or question needs
 attention. Thread nesting stops at one reply level; deeper recursive threads
 would recreate the navigation problems of general chat products.
 
-Conversation is an interaction surface, not a second source of truth. An owner
+Chat is an interaction surface, not a second source of truth. An owner
 can ask the business analyst to review a ticket, ask the lead about sequencing,
 or ask a group to challenge a plan. Agents may perform bounded analysis and
 return a typed action proposal. A ticket proposal shows, in business language:
@@ -1050,6 +1159,11 @@ preview version reaches acceptance. If context health
 is poor after repeated compaction, StoryPointless starts a fresh thread with a
 structured handoff while retaining the same ticket workspace. Previous previews
 and feedback remain available in the item history.
+
+Asking the active team member a question is different from supplying direction
+to resume. It starts a read-only ticket Conversation, leaves the delivery run
+and any pending permission request unchanged, and records the attributed reply
+in the same Work log.
 
 ### 9.11 Ticket documentation and knowledge promotion
 
@@ -1462,7 +1576,13 @@ author-attributed ticket comment, records the exact question and options, and
 enters **Awaiting owner**. The Work log presents those options as selectable
 answers, keeps a free-form alternative, and places the chosen text in the
 Product Owner response for review before resuming. A Product Owner reply on that
-ticket resumes the same run and thread. If StoryPointless relaunches while that
+ticket resumes the same run and thread. Supporting research or design evidence
+may be attached as a safe workspace-relative decision artifact that the Product
+Owner can open directly. Because the decision is not final, the paused result
+cannot also create candidate-bound Product knowledge proposals, follow-up ticket
+proposals, or a managed demo. After the answer, the continuing team member
+updates the artifact, records the decision, and returns the completed candidate
+with any final knowledge proposals and review recipe. If StoryPointless relaunches while that
 run is active, it preserves and explicitly resumes the same Conversation and
 ticket workspace, then starts only a focused continuation turn; it does not
 brief the team member as though the ticket were new. If a live permission
@@ -1522,15 +1642,17 @@ Knowledge accumulates through controlled promotion rather than by indexing every
 agent message:
 
 1. During a run, agents post concise ticket comments for progress, discoveries,
-   blockers, and requested decisions.
+   blockers, and requested decisions. A requested decision may link to a
+   workspace-relative evidence artifact, but does not create a canonical
+   knowledge proposal before the Product Owner answers.
 2. The candidate includes documentation diffs and a structured delivery note.
 3. Material “why” choices become decision records rather than being buried in a
    comment or code review.
 4. Review checks documentation against the exact code candidate and evidence.
 5. Acceptance publishes verified claims and decisions into the product knowledge
    base and marks contradicted claims stale.
-6. Later work receives only relevant, current, provenance-backed material in its
-   context pack.
+6. Later work can discover relevant, current, provenance-backed material through
+   the active product's read-only context views and repository.
 
 This creates three intentionally different layers: the full run trace for audit,
 the ticket history for delivery context, and the curated knowledge base for
@@ -1558,13 +1680,17 @@ the page read-only and verifies the proposal with the exact candidate before
 automatic publication, unless stricter Product Owner knowledge approval is enabled.
 Knowledge does not itself grant a runtime or permission.
 
-### 14.5 Context packs
+### 14.5 Context access
 
-Before a delivery run starts, StoryPointless builds a small, inspectable context
-pack from the contract, relevant decisions, code map, prior failures, policies,
-and related work. The agent and owner can see why each item was included.
-Review runs still receive their required read-only context, but do not add
-repeated **Knowledge used** cards to the ticket Work log.
+Before a delivery run starts, StoryPointless supplies the exact assigned
+contract, direct prerequisite handoffs, current conversation, permission scope,
+and writable knowledge destinations. The agent receives the active product's
+exact read-only database path and stable views plus read-only repository and Git
+history access. It discovers broader decisions, prior failures, related work,
+and verified knowledge live instead of receiving a copied whole-product
+projection. The agent and owner can still see which bounded ticket knowledge
+records were relied upon. Review runs receive the same required read-only
+product access but do not add repeated **Knowledge used** cards to the Work log.
 
 Page selection prioritises direct provenance, canonical subject and title
 relevance, and prerequisite handoffs. Full-body term overlap is capped so a long
@@ -1575,8 +1701,8 @@ The inspectable **Knowledge used** record separates **Always included** mandator
 pages from pages **Relevant to this ticket**. Empty mandatory pages are shown only
 as update destinations and are not described as supplied facts.
 
-Context-pack quality becomes a first-class metric: relevance, token cost,
-missing-context escalations, stale-claim rate, and reuse success.
+Context quality remains a first-class metric: relevance, query evidence, token
+cost, missing-context escalations, stale-claim rate, and reuse success.
 
 ### 14.6 Continuous maintenance
 
@@ -1657,8 +1783,9 @@ visually distinct.
 
 - StoryPointless never asks users to paste subscription session tokens into the
   application.
-- ChatGPT subscription login is offered through Codex App Server's documented
-  authentication flow.
+- The first release uses the selected Codex installation's existing ChatGPT or
+  API authentication state. A future embedded login must use App Server's
+  documented authentication flow.
 - API keys use the macOS Keychain, are never included in model context or logs,
   and can be revoked and rotated.
 - Repository permissions are per product and least-privilege.
@@ -1727,40 +1854,42 @@ DevOps/Platform Engineer, Performance Engineer, Privacy Reviewer, Technical
 Writer, and Data Analyst. Removing a custom team member archives it so historical
 runs and decisions remain attributable.
 
-Codex App Server supports embedded ChatGPT sign-in as well as API-key access.
-Credentials remain in the Codex harness or macOS Keychain rather than being
-copied into StoryPointless records.
+The first release reuses the selected Codex installation's authentication.
+Codex App Server also supports embedded ChatGPT sign-in and API-key access for a
+later onboarding flow. Credentials remain in the Codex harness or macOS
+Keychain rather than being copied into StoryPointless records.
 
 ### 17.2 Runtime ownership and compatibility
 
 The production app must not depend on an arbitrary `codex` executable found on
-the user's `PATH`. Requiring a separate Codex installation would break the
-one-app promise and make behavior depend on an unknown version, configuration,
-update cadence, and authentication state.
-
-StoryPointless instead owns a **pinned Codex runtime**. The first release ships a
-known-good runtime inside the signed application. Later releases may move the
-same pinned artifact into app-managed storage so the runtime can be updated
-independently, but downloading and switching versions remains a StoryPointless
-operation rather than a user prerequisite or an uncontrolled Codex self-update.
+the user's `PATH`. The first release instead discovers the signed-in official
+Codex macOS app through its bundle identifier and uses the Codex executable
+inside that installation. The Product Owner can explicitly add other Codex apps
+or executable files, choose among them from the Codex connection menu, remove
+custom entries, and retry a failed connection. StoryPointless remembers one
+application-wide choice. It never discovers package-manager installations or
+silently selects an arbitrary executable.
 
 The App Server protocol is currently experimental and its generated schemas are
-specific to the Codex version that produced them. The integration must therefore:
+specific to the Codex version that produced them. Compatibility is therefore a
+layered capability check rather than exact version equality. StoryPointless must:
 
-- compile its adapter against schemas generated by the exact pinned runtime;
-- check the runtime version and initialization capabilities before every run;
+- inspect the selected executable and expose its version for diagnostics;
+- require the permission-request feature used by StoryPointless;
+- complete App Server initialization with the required experimental capability;
+- confirm the server is running on supported macOS and load its live model
+  catalog before reporting a connection;
 - run contract tests for authentication, approvals, interruption, resumption,
-  file changes, usage, and streamed events before approving an update;
-- stage updates atomically and retain the previous known-good runtime for
-  rollback;
-- refuse an unknown or incompatible runtime with a clear recovery path; and
-- isolate Codex state in a StoryPointless-managed home directory.
+  file changes, usage, model listing, and streamed events;
+- allow newer or otherwise different versions when every required capability
+  succeeds; and
+- refuse missing or incompatible behavior with a clear recovery path.
 
-A user-installed Codex runtime may be selectable in developer diagnostics when
-its exact version passes the compatibility handshake. It is not the default or
-a supported dependency for ordinary users. Pinning protects the local protocol;
-remote authentication, model availability, and service behavior still require
-compatibility monitoring and timely StoryPointless updates.
+Custom installations are an advanced, explicit trust decision because
+StoryPointless launches the selected executable with the same scoped access as
+the official Codex runtime. Remote App Server and Docker Sandbox connections are
+deferred. Authentication, model availability, and service behavior still
+require compatibility monitoring and timely StoryPointless updates.
 
 ### 17.3 Recommended execution topology
 
@@ -1774,11 +1903,11 @@ flowchart TB
     PO["Product owner"] --> UI
     subgraph DESKTOP["StoryPointless macOS app"]
         UI["Board, acceptance, and knowledge UI"]
-        DB["Local SQLite application store"]
+        DB["Product-scoped SQLite stores"]
         ORCH["Policy, budget, and dependency orchestrator"]
         EXEC["Local execution service"]
         REPO["Local product and Git repository"]
-        CODEX["Pinned, app-managed Codex runtime"]
+        CODEX["Selected compatible Codex installation"]
         NATIVE["Codex Seatbelt and network sandbox"]
         SBX["Optional Docker Sandboxes backend"]
         UI --> ORCH
@@ -1827,42 +1956,42 @@ model or the sole orchestration mechanism.
 
 Recommended sequence:
 
-1. Pinned, StoryPointless-managed Codex runtime controlled through the App
-   Server's bidirectional JSON-RPC protocol.
+1. Official installed Codex app, with explicit custom-installation selection,
+   controlled through the App Server's bidirectional JSON-RPC protocol.
 2. Local repository and isolated worktree manager.
 3. Native Codex sandbox and permission bridge.
 4. StoryPointless MCP tools for ticket events, questions, and evidence.
 5. Docker Sandboxes feasibility spike behind the execution-backend interface.
 
-The user never sees or installs a Codex CLI. StoryPointless launches its managed
-runtime as an internal agent engine without a terminal window and renders its
+The user installs the normal Codex app but never needs to use or separately
+install its CLI. StoryPointless launches the selected runtime as an internal
+agent engine without a terminal window and renders its
 sessions, streamed events, diffs, questions, and approvals through native
 product UI.
 
 ### 17.7 Toolchains and sandbox options
 
-“Install the app and nothing else” remains the desired product experience. The
-minimum signed application bundle contains:
+The first release requires the official Codex app as its normal agent engine.
+The minimum signed StoryPointless application bundle contains:
 
 - local Git support, either through a bundled self-contained distribution or an
   embedded Git library;
-- a pinned Codex runtime for the supported Mac architecture;
 - the application runtime and local database;
 - the native execution and permission bridge; and
 - base templates and migration logic.
 
-Git is GPLv2 software and Codex is Apache-2.0 software. Distribution must retain
-the required licenses, notices, and source/offer obligations, use the Git marks
-accurately, and be reviewed before release. Bundled executables must also be
-signed as nested application components and included in the software bill of
-materials.
+Git is GPLv2 software. Distribution must retain the required licenses, notices,
+and source/offer obligations, use the Git marks accurately, and be reviewed
+before release. Any bundled executable must also be signed as a nested
+application component and included in the software bill of materials. Codex is
+not redistributed in this phase.
 
 There are two credible ways to supply product tools:
 
 1. **Native managed tools.** StoryPointless ships a small baseline and, after
    human approval, downloads verified toolchains into an app-managed directory.
-   Codex never installs system-wide packages. This preserves the one-install
-   promise and uses Codex's macOS filesystem and network sandbox.
+   Codex never installs system-wide packages. This keeps product toolchains
+   managed while using Codex's macOS filesystem and network sandbox.
 2. **Docker Sandboxes.** Each ticket runs in an Ubuntu microVM that already
    includes Git and common Node, Python, Go, and Java tools. Codex can use `sudo`
    inside the VM, install packages, and retain them for the sandbox lifetime.
@@ -1934,8 +2063,10 @@ coordination cost this product is meant to remove.
 
 ### 18.2 SQLite storage boundary
 
-SQLite is the local application's durable operational memory, not where the
-generated product's source code lives. It stores structured records such as:
+Each product owns one SQLite database at
+`<product workspace>/.storypointless/product.sqlite`. It is that product's
+durable operational memory, not where generated source code lives. It stores
+structured records such as:
 
 - products, work items, immutable contract versions, comments, and priorities;
 - workflow state, plans, dependencies, scheduler leases, and parallelism policy;
@@ -1943,18 +2074,23 @@ generated product's source code lives. It stores structured records such as:
   interruption reasons;
 - usage measurements, check results, review attestations, preview versions, and
   paths and hashes for artifacts; and
-- decisions, knowledge provenance, application settings, and schema versions.
+- decisions, knowledge provenance, product settings, conversation threads, and
+  the current declarative schema version.
 
 Source code and worktrees remain in local Git repositories. Large logs,
 screenshots, videos, and build artifacts remain as files referenced by SQLite.
 Credentials remain in the Codex credential store or macOS Keychain.
 
-The MVP should use ordinary transactional tables for current state plus an
+The MVP uses ordinary transactional tables for current state plus an
 append-only activity/run log for audit and recovery; it does not need full event
 sourcing. SQLite fits the single-user local product because it is transactional,
-requires no database service, survives process restarts, supports migrations and
-backups, and can atomically coordinate a ticket transition with the scheduler
-lease that caused it.
+requires no database service, survives process restarts, supports safe snapshots
+and backups, and can atomically coordinate a ticket transition with the
+scheduler lease that caused it. Fresh installs create the current schema
+directly rather than replaying historical migrations. The pre-distribution
+cutover has one restart-safe importer that splits the former shared development
+database into product databases and preserves the original as a backup; the
+shipping product schema contains no historical migration ledger.
 
 ### 18.3 Local execution service
 
@@ -2094,7 +2230,8 @@ the platform—it is not a permanent product-category restriction in the UI.
 1. Install and open the signed macOS application.
 2. Describe the product; StoryPointless creates a local directory and repository
    and lets the lead profile propose the initial structure.
-3. Add a Codex teammate through the embedded ChatGPT sign-in flow.
+3. Confirm the discovered signed-in Codex app or select another explicitly
+   added compatible installation.
 4. Review the proposed business analyst, lead, implementer, and reviewer
    model/effort profiles and the global/profile parallelism policies.
 5. Create a work item with AI-assisted acceptance criteria.
@@ -2104,7 +2241,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 8. Review a system-generated forecast and remaining shared usage, then start a
    one-item sprint without choosing a token budget.
 9. The internal execution service creates an isolated worktree and starts the
-   pinned, app-managed agent engine.
+   selected compatible Codex installation.
 10. The board streams normalized milestones, usage, questions, and artifacts.
 11. Fast local deterministic checks run in the ticket worktree.
 12. Full checks and separate reviewer threads inspect immutable ticket
@@ -2127,8 +2264,8 @@ the platform—it is not a permanent product-category restriction in the UI.
   notarized build.
 - One local product workspace and local Git repository.
 - Product and repository creation without an existing codebase.
-- Local Git support, a pinned app-managed Codex runtime, and an execution
-  backend.
+- Local Git support, discovery of the official Codex app, explicit custom Codex
+  installation selection, and an execution backend.
 - Separate backlog/refinement workspace and simplified sprint board with Ready
   to Pick, In Progress, In Review, Ready for Demo, and Done columns.
 - Work items, contract versions, acceptance criteria, dependencies, and comments.
@@ -2245,7 +2382,7 @@ ticket-throughput gaming.
 ### Activation
 
 - Time from signup to successful diagnostic run.
-- Percentage completing the sandbox diagnostic, Codex sign-in, initial product
+- Percentage completing the sandbox diagnostic, Codex connection, initial product
   creation, and local preview.
 - Percentage creating a ready work contract.
 - Percentage reaching first accepted preview within 24 hours.
@@ -2368,9 +2505,9 @@ contradiction detection, and inspectable context packs.
 and App Server behavior can change independently of StoryPointless.
 
 **Mitigation:** use only documented Codex integration and authentication
-surfaces, pin and compatibility-test bundled runtimes, never extract session
-tokens, retain an OpenAI API-key path, and recheck terms before marketing plan
-compatibility.
+surfaces, capability-test selected installations, maintain contract coverage
+against current releases, never extract session tokens, retain an OpenAI API-key
+path, and recheck terms before marketing plan compatibility.
 
 ### 23.8 Release automation concentrates risk
 
@@ -2460,7 +2597,7 @@ Kanban board can be built.
 2. Is their main pain requirements, coordination, verification, cost, release,
    or context?
 3. Can they confidently accept a preview using the proposed evidence?
-4. Does a single self-contained installation genuinely remove setup anxiety?
+4. Does relying on an already installed Codex app preserve a low-anxiety setup?
 5. Will users accept hard pauses for budget and permissions?
 6. Do they value sprint cadence, or would a continuous outcome queue fit better?
 7. Will they trust model-and-effort recommendations over choosing Codex settings
@@ -2519,21 +2656,21 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-003 | Prototype end-to-end founder journey | Clickable flow includes ambiguity, a blocker, verification, rejection, and release |
 | SP-004 | Test positioning and working title | Users can accurately explain the product without “AI Jira” prompting |
 | SP-005 | Run three concierge deliveries | Each produces an accepted or explicitly rejected preview with complete economics |
-| SP-006 | Validate Codex auth and embedding | Written matrix for ChatGPT sign-in, API billing, storage, revocation, pinned runtime compatibility, update, and rollback |
+| SP-006 | Validate Codex auth and embedding | Written matrix for installed-app authentication, future embedded ChatGPT sign-in, API billing, storage, revocation, capability compatibility, and update recovery |
 | SP-007 | Decide execution backend boundary | Native Codex sandbox and Docker Sandboxes spikes are compared against security, UX, recovery, and programmatic-control criteria |
 
 ### MVP foundation
 
 | ID | Item | Acceptance signal |
 | --- | --- | --- |
-| SP-101 | Signed macOS application and local workspace | One notarized installation opens a product workspace without external developer tooling |
+| SP-101 | Signed macOS application and local workspace | A notarized StoryPointless installation discovers the supported Codex app and opens a product workspace without external developer tooling |
 | SP-102 | Local product and repository creation | New product creates a recoverable local Git repository without GitHub or an existing codebase |
 | SP-103 | Versioned work items and contracts | Active run always links to an immutable approved contract version |
 | SP-104 | Fixed workflow and policy engine | Invalid transitions are rejected with an understandable reason |
 | SP-105 | Durable activity and run timeline | Ticket transitions and run events are auditable and current state survives restart without requiring full event sourcing |
 | SP-106 | Local execution supervisor | App can start, observe, cancel, recover, and clean up bounded child processes |
 | SP-107 | Isolated execution workspace | Each code-changing implementation run uses its own branch/worktree; planning is read-only and review is pinned to an immutable candidate checkout |
-| SP-108 | Pinned Codex App Server adapter | Exact-version schemas, embedded sign-in, and JSON-RPC start a bounded run and emit normalized events and artifacts; update and rollback tests pass |
+| SP-108 | Capability-checked Codex App Server adapter | Official-app discovery, explicit custom selection, App Server capability checks, and JSON-RPC start a bounded run and emit normalized events and artifacts; newer compatible versions connect without an application update |
 | SP-109 | Secrets and log redaction | Test credentials never appear in prompt, event, artifact, or application logs |
 | SP-110 | Realtime board projection | Trusted events update state without agent prose directly mutating authority |
 | SP-111 | Sprint activity projection | Thirty parallelized tickets produce thirty visible board runs with assignments, active/waiting/blocked/reviewing state, context health, and an explanation of scheduler constraints |
@@ -2558,14 +2695,14 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-211 | Basic provenance-backed knowledge query | Owner can ask why or how, receive a current answer linked to decisions, tickets, exact commits and evidence, or receive an explicit unknown when support is insufficient |
 | SP-212 | Context-bound team conversations | Owner can DM profiles or use product, sprint, ticket, and simple group rooms; agent work returns typed, business-readable action proposals and only an explicit accepted diff mutates a ticket or authorizes governed work |
 | SP-213 | Ticket attachments and visual delivery artifacts | Owners and agents can attach versioned files to a ticket without storing large blobs in SQLite; images, PDFs, and other supported artifacts open in an accessible in-app viewer; UX contracts require a reviewable visual artifact such as wireframes, screenshots, or an interactive prototype before reaching Ready for Demo; the board and ticket show the primary artifact and preserve its author, candidate revision, provenance, and history |
-| SP-214 | Managed one-click demo launcher | An agent proposes a typed, candidate-bound demo specification for a loopback browser preview, macOS app, review artifact, or bounded captured result; StoryPointless validates and smoke-tests it against the exact integrated revision before **Ready for Demo**, runs each command through a candidate-scoped connection to the pinned App Server with the exact cache-backed preview as the only writable root under a broad-runtime-read, localhost-only permission profile rather than a binary/path allow-list, allocates the loopback port, waits for typed readiness, opens the correct result from one **Demo** button, reports actionable root failures rather than only trailing test summaries, offers **Retry demo preparation** without requiring a comment or repeating implementation/review when only the post-review smoke preparation failed, and stops the owned App Server command session on **Stop demo**, feedback, approval, product switching, shutdown, or connection loss while removing the preview checkout after feedback or approval |
-| SP-215 | Global team chat launcher | A persistent chat control is available from every primary product view and opens the same familiar conversation UI used on tickets; the owner addresses exactly one selected team member for terminology, guidance, product questions, or a request for help without navigating away; the thread is retained per product, can include an explicit summary of the current view or selected object, shows thinking, typing, unread, and failure states, and presents any proposed mutation as a reviewable action rather than changing product state silently |
+| SP-214 | Managed one-click demo launcher | An agent proposes a typed, candidate-bound demo specification for a loopback browser preview, macOS app, review artifact, or bounded captured result; StoryPointless validates and smoke-tests it against the exact integrated revision before **Ready for Demo**, runs each command through a candidate-scoped connection to the selected App Server with the exact cache-backed preview as the only writable root under a broad-runtime-read, localhost-only permission profile rather than a binary/path allow-list, allocates the loopback port, waits for typed readiness, opens the correct result from one **Demo** button, reports actionable root failures rather than only trailing test summaries, offers **Retry demo preparation** without requiring a comment or repeating implementation/review when only the post-review smoke preparation failed, and stops the owned App Server command session on **Stop demo**, feedback, approval, product switching, shutdown, or connection loss while removing the preview checkout after feedback or approval |
+| SP-215 | Product team Chat | **Chat** is available at the top of every product's Team sidebar section while settings and the member roster are nested in a clipped disclosure group with compact, properly inset model and effort controls whose carets sit beside their labels; Chat opens the familiar thread-and-timeline UI with a quiet sidebar background, pale accent selection, comfortable row insets, naturally resizable split panes, and shared owner/agent bubbles that hug short content up to a readable maximum; every message addresses exactly one selected team member for terminology, guidance, product questions, or help, and a top-level message creates an independent retained product thread; a same-member reply resumes that role's Codex thread, while switching members starts a role-specific session with the durable visible thread transcript and current product evidence; a new thread sees at most the latest 100 active-room messages; the agent supplies a four-to-six-word title that aims for five plus a whitespace-aware Markdown response; a bottom status strip streams concise supported Codex activity with Stop, fixed thread timestamps do not tick, failure and archive controls remain visible without a redundant completed-status badge, completed threads can be archived with the standard red destructive treatment and restored without losing messages or Codex context, and no chat response silently changes authoritative product state |
 | SP-216 | Git and Codex degraded-mode resilience | Startup and continuous capability checks distinguish Codex disconnected, incompatible, unauthenticated, or temporarily unreachable states from missing, damaged, or unusable Git support; the product, backlog, sprint history, knowledge, reports, and other unaffected local data remain available; only dependent actions are disabled with a plain-language reason, retry and guided repair paths are offered, interrupted runs and worktrees are reconciled without data loss, and diagnostics expose enough detail for recovery without requiring the owner to use a terminal |
 | SP-217 | Action-required notifications | StoryPointless sends deduplicated macOS notifications only when the Product Owner must act—for example to answer a question, review a demo, resolve an integration failure, recover a stopped run, or decide a retrospective action; clicking a notification opens the exact product and relevant ticket, sprint, or retrospective context; resolving the action clears its notification and in-app badge; category preferences, permission-denied guidance, and quiet handling while the relevant view is already focused prevent progress chatter from becoming notification noise |
 | SP-218 | Remote product-bundle sync | The Codebase view offers **Connect remote** for an optional, provider-neutral Git remote and clearly shows disconnected, ahead, behind, syncing, conflict, and up-to-date states; the versioned remote contains the complete portable product bundle—accepted source history, product definition, epics and tickets, sprint and retrospective records, knowledge, decisions, reports, delivery provenance, and referenced attachments—rather than source code alone; credentials, Codex sessions, secrets, transient worktrees, caches, and machine-specific runtime state are excluded; the owner can push or synchronize explicitly, interrupted transfers are recoverable, incoming changes are validated against the bundle schema, and divergent history is never overwritten silently |
 | SP-219 | Existing Git repository import | **Create product** offers **Import Git repository** for an authenticated or public repository URL; StoryPointless clones the repository into its managed product workspace, preserves branches, history, authorship, default-branch identity, and remote provenance, then treats the imported default branch as the accepted trunk for subsequent ticket worktrees and integration; a recoverable discovery pass identifies the stack, runnable checks, existing product context, incomplete work, and likely delivery risks without modifying the clone; README files, documentation, ADRs, runbooks, and other durable guidance are classified and presented as reviewable, source-linked Product knowledge proposals with page destinations, freshness and originating commit/path metadata; accepting a proposal creates or updates canonical knowledge without deleting the original repository files, while any later consolidation or removal is an explicit reviewed change; clone, authentication, submodule, large-file, unsupported-layout, and partial-import failures remain recoverable and never leave a product that appears ready when its codebase is incomplete |
 | SP-220 | Non-disruptive live Codebase updates | While the Codebase view is open, StoryPointless detects newly created or integrated commits and branch changes without requiring a manual reload; the currently visible commit list, selection, file tree, diff, and scroll position remain stable while a compact **New changes** indicator reports the number of unseen commits; selecting it reveals all pending changes together in the correct order, preserves the current selection where possible, and clearly marks the newly inserted history; repeated filesystem events are deduplicated, loading never flashes an empty state over existing content, and unavailable or failed refreshes remain recoverable without replacing the last valid snapshot |
-| SP-221 | Strict role-scoped agent permission profiles | Every agent turn uses a capability-detected, named permission profile with explicit runtime workspace roots and least-privilege access: implementers can read and write only their assigned ticket worktree; Tech Leads can read the immutable candidate and relevant product context, gaining narrowly scoped write access only while resolving an authorized integration issue; BA, refinement, suggestion, and planning turns are read-only within the active product workspace. Delivery begins with Codex's minimal platform/runtime reads, the exact writable ticket root, and read-only access to the active product's central Git metadata so status, diff, history, and conflict inspection do not require Product Owner intervention. Git's shared object store makes the product the deliberate read boundary, while other products and other checked-out ticket worktree paths remain inaccessible. The agent environment disables optional Git locks, ignores user-global Git configuration, and uses a noninteractive pager; StoryPointless alone stages, commits, changes branches, integrates, promotes, and cleans up. The profile must not deny an ancestor required to traverse the assigned root, grant broad host reads as a convenience, or copy the workspace to `/tmp` to bypass isolation. StoryPointless does not discover package managers, resolve project runtimes, or grant runtime paths automatically. When a tool is blocked, the assigned agent diagnoses the executable, its foreseeable traversal, symlink and runtime dependencies, or the network boundary and uses Codex's capability-checked permission-request tool to ask once for the smallest coherent capability. A package-manager runtime request may batch its executable, link, and installation roots while excluding data, configuration, credentials, and unrelated user locations; requesting each file or directory sequentially, repeating the same approved command, adding shell wrappers, or substituting stale evidence is not acceptable recovery. Additional Homebrew, compiler, SDK, service, filesystem, or network capabilities use a scoped Product Owner decision rather than a growing binary whitelist. Product-scoped grants match an exact command and its requested capabilities while ignoring the changing ticket-worktree path only after verifying that the requested working directory is inside the assigned workspace; they never broaden into a binary-only rule. Profiles deny the StoryPointless database, other products, other ticket worktrees, credentials, `.env` files, `.ssh`, `.aws`, and other configured sensitive paths. Network access is disabled by default and any temporary or persistent grant requires an explicit Product Owner decision with visible scope and provenance. Startup and run admission verify that the installed Codex App Server supports the required permission-profile, permission-request, and workspace-root capabilities; unsupported, incomplete, or rejected isolation fails closed with a plain-language recovery path rather than silently falling back to a broader legacy sandbox. Automated adversarial tests prove the active nested ticket root remains writable and active-product Git reads succeed while Git writes, cross-product, cross-worktree, secret, database, unauthorized-network, and workspace-copy escape attempts are denied before autonomous execution is described as production-safe. |
+| SP-221 | Strict role-scoped agent permission profiles | Every agent turn uses a capability-detected, named permission profile with explicit runtime workspace roots and least-privilege access: implementers can read and write only their assigned ticket worktree; Tech Leads can read the immutable candidate and relevant product context, gaining narrowly scoped write access only while resolving an authorized integration issue; BA, refinement, suggestion, planning, and product Conversation turns are read-only within the active product workspace. Delivery begins with Codex's minimal platform/runtime reads, the exact writable ticket root, and read-only access to the active product's central Git metadata and `.storypointless` control directory. Stable SQLite views expose live tickets, dependencies, Work logs, Epics, sprints, verified Product knowledge, decisions, delivery provenance, retrospectives, and team configuration; the repository exposes current files and Git history. Agents can discover evidence such as which ticket implemented a feature without receiving a copied whole-product prompt, and re-query before consequential conclusions. Git's shared object store and the product database make the product the deliberate read boundary, while other products and other checked-out ticket worktree paths remain inaccessible. The agent environment disables optional Git locks, ignores user-global Git configuration, and uses a noninteractive pager; StoryPointless alone stages, commits, changes branches, integrates, promotes, and cleans up. The profile must not deny an ancestor required to traverse the assigned root, grant broad host reads as a convenience, or copy the workspace to `/tmp` to bypass isolation. StoryPointless does not discover package managers, resolve project runtimes, or grant runtime paths automatically. When a tool is blocked, the assigned agent diagnoses the executable, its foreseeable traversal, symlink and runtime dependencies, or the network boundary and uses Codex's capability-checked permission-request tool to ask once for the smallest coherent capability. A package-manager runtime request may batch its executable, link, and installation roots while excluding data, configuration, credentials, and unrelated user locations; requesting each file or directory sequentially, repeating the same approved command, adding shell wrappers, or substituting stale evidence is not acceptable recovery. Additional Homebrew, compiler, SDK, service, filesystem, or network capabilities use a scoped Product Owner decision rather than a growing binary whitelist. Product-scoped grants match an exact command and its requested capabilities while ignoring the changing ticket-worktree path only after verifying that the requested working directory is inside the assigned workspace; they never broaden into a binary-only rule. Profiles deny the legacy shared database, every other product database, other products, other ticket worktrees, credentials, `.env` files, `.ssh`, `.aws`, and other configured sensitive paths. The active product database is read-only; attempts to modify it fail at both filesystem policy and SQLite mode. Network access is disabled by default and any temporary or persistent grant requires an explicit Product Owner decision with visible scope and provenance. Startup and run admission verify that the installed Codex App Server supports the required permission-profile, permission-request, and workspace-root capabilities; unsupported, incomplete, or rejected isolation fails closed with a plain-language recovery path rather than silently falling back to a broader legacy sandbox. Automated adversarial tests prove the active nested ticket root remains writable and active-product Git and context reads succeed while Git and database writes, cross-product, cross-worktree, secret, unauthorized-network, and workspace-copy escape attempts are denied before autonomous execution is described as production-safe. |
 
 ### Post-MVP experiments
 
@@ -2578,6 +2715,7 @@ The backlog is ordered to retire product risk before technical scale risk.
 | SP-305 | Forecast calibration | P50/P90 reports are measured and improve with local history |
 | SP-306 | Evidence-based retrospective | Suggested experiment is tied to an observed failure and later measured |
 | SP-307 | Historical sprint boards | The Sprint Board can switch between the active sprint and read-only past sprint snapshots, preserving each sprint's final ticket placement, assignments, outcomes, comments, evidence, and retrospective links |
+| SP-308 | Provider-neutral ACP agent runtimes | StoryPointless can discover, configure, and run at least one non-OpenAI Agent Client Protocol (ACP) runtime without provider-specific workflow or UI branching. An ACP adapter maps sessions, prompts, streamed updates, tool calls, cancellation, usage, and authentication into the normalized run lifecycle and negotiates capabilities before admitting work. Implementation and review require the runtime to prove the necessary sandbox, scoped approval, recovery, audit, and workspace-isolation guarantees; a missing guarantee fails closed or limits that runtime to an explicitly safe read-only role. The Product Owner reviews the provider and model, data path, expected cost, authentication method, and known limitations. Distributed or downloaded runtimes are pinned and verified, use provider-compliant authentication, and include required licences, notices, signatures, and software-bill-of-materials entries. |
 
 ## 27. Decisions to make next
 
@@ -2600,10 +2738,10 @@ The backlog is ordered to retire product risk before technical scale risk.
 - **Source control:** local only; no GitHub requirement in MVP.
 - **Deployment:** a future work-item conversation, not onboarding or a special
   MVP release integration.
-- **Codex runtime:** pinned and owned by StoryPointless; a separately installed
-  Codex version is not required or trusted by default.
-- **Installation:** one signed app remains the target; Docker Sandboxes is being
-  evaluated rather than assumed.
+- **Codex runtime:** the official installed Codex app by default, with explicit
+  owner-selected custom installations and capability-based compatibility.
+- **Installation:** signed StoryPointless and Codex apps are required in the
+  first release; Docker Sandboxes is deferred.
 - **Availability:** normal quit checkpoints and interrupts active turns; work is
   preserved as paused and can resume when the app reopens.
 - **Collaboration:** single user for MVP.
@@ -2661,7 +2799,7 @@ they should be rechecked before making compatibility or pricing claims.
   must be managed explicitly.
 - [OpenAI: Unlocking the Codex harness](https://openai.com/index/unlocking-the-codex-harness/)
   recommends Codex App Server as the first-class product-integration method and
-  documents bundling a pinned binary in local clients.
+  documents runtime-distribution considerations for local clients.
 - [OpenAI: Codex open-source repository](https://github.com/openai/codex)
   distributes the native harness and App Server under Apache-2.0.
 - [Git: About](https://git-scm.com/about.html) documents Git's GPLv2 license;
@@ -2685,7 +2823,8 @@ they should be rechecked before making compatibility or pricing claims.
 The first implementation milestone is a functional Apple Silicon macOS build,
 not the complete board. It succeeds when one owner can:
 
-1. launch StoryPointless without installing Codex, Git, Docker, or a database;
+1. launch StoryPointless with the official Codex app installed, but without
+   separately installing Git, Docker, a Codex CLI, or a database;
 2. create a product from an unrestricted plain-language description;
 3. use the browser-product fixture to create one locally previewable candidate;
 4. refine two independent tickets with the business-analyst profile and approve
@@ -2693,7 +2832,7 @@ not the complete board. It succeeds when one owner can:
 5. configure business analyst, lead, implementer, and reviewer profiles in the
    sidebar, then see truthful ticket-level active, waiting, blocked, and reviewing
    runs on the Sprint Board;
-6. start both items and observe two pinned Codex runs working in separate
+6. start both items and observe two Codex runs working in separate
    worktrees without seeing a terminal;
 7. see durable milestones, questions, approvals, diff summaries, checks,
    context health, compactions, internal safety status, and available shared
@@ -2710,10 +2849,11 @@ not the complete board. It succeeds when one owner can:
 12. quit during a subsequent run, then reopen the app and recover or resume the
     interrupted work with its workspace and history intact.
 
-The implementation order should retire integration risk first: pinned runtime
-handshake and generated schemas, sandboxed file change, process interruption and
-recovery, repository/workspace management, SQLite persistence, and finally the
-local merge queue, ticket-knowledge/query slice, and thin native workflow UI.
+The implementation order should retire integration risk first: installed-runtime
+discovery and capability handshake, supported protocol schemas, sandboxed file
+change, process interruption and recovery, repository/workspace management,
+SQLite persistence, and finally the local merge queue,
+ticket-knowledge/query slice, and thin native workflow UI.
 Signing, notarization, Docker Sandboxes, broad stack coverage, sophisticated
 planning, and visual polish follow after this vertical slice works reliably.
 

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import StoryPointlessCore
 import SwiftUI
@@ -8,6 +9,29 @@ enum CodexConnectionState: Equatable {
   case connected(version: String, userAgent: String)
   case unavailable(String)
   case incompatible(String)
+
+  var showsRetryAction: Bool {
+    switch self {
+    case .notChecked, .unavailable, .incompatible:
+      true
+    case .checking, .connected:
+      false
+    }
+  }
+}
+
+enum CodexInstallationSelectionError: Error, LocalizedError {
+  case invalidSelection
+  case workInProgress
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidSelection:
+      "Choose a Codex app or an executable named codex."
+    case .workInProgress:
+      "Wait for the current team work to finish before changing the Codex installation."
+    }
+  }
 }
 
 private struct PlanningConversationKey: Hashable {
@@ -297,8 +321,17 @@ final class AppModel: ObservableObject {
   @Published private(set) var agentRunKnowledgeDestinations: [AgentRunKnowledgeDestination] = []
   @Published private(set) var liveRunActivities: [UUID: CodexLiveActivity] = [:]
   @Published private(set) var suggestionBatch: TicketSuggestionBatch?
+  @Published private(set) var conversationThreads: [ProductConversationThread] = []
+  @Published private(set) var conversationMessagesByThread:
+    [UUID: [ProductConversationMessage]] = [:]
+  @Published private(set) var respondingConversationThreadIDs: Set<UUID> = []
+  @Published private(set) var productConversationActivities:
+    [UUID: CodexLiveActivity] = [:]
+  @Published private(set) var conversationErrorsByThread: [UUID: String] = [:]
   @Published private(set) var codexModels: [CodexModelOption] = []
   @Published private(set) var codexConnectionState = CodexConnectionState.notChecked
+  @Published private(set) var codexInstallations: [CodexInstallation] = []
+  @Published private(set) var selectedCodexInstallationID: String?
   @Published var selectedProductID: UUID?
   @Published private(set) var shouldPresentProductLibraryOnLaunch = false
   @Published var errorMessage: String?
@@ -309,6 +342,7 @@ final class AppModel: ObservableObject {
   @Published private(set) var isTicketConversationMessageRunning = false
   @Published private(set) var ticketConversationWorkItemID: UUID?
   @Published private(set) var ticketConversationRecipientID: UUID?
+  @Published private(set) var ticketConversationActivity: CodexLiveActivity?
   @Published private(set) var isEpicConversationMessageRunning = false
   @Published private(set) var epicConversationEpicID: UUID?
   @Published private(set) var epicConversationRecipientID: UUID?
@@ -343,12 +377,19 @@ final class AppModel: ObservableObject {
     return sprintHistory.first { $0.sprint.state == .draft }
   }
 
-  private let store: SQLiteStore?
+  private let storeRegistry: ProductStoreRegistry?
+  private let injectedStore: SQLiteStore?
+  private var store: SQLiteStore? {
+    if let injectedStore { return injectedStore }
+    guard let selectedProductID else { return nil }
+    return storeRegistry?.store(for: selectedProductID)
+  }
   private let gitWorkspaceManager = GitWorkspaceManager()
   private let demoLauncher = MacOSDemoLauncher()
   private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
   private let ticketSuggestionRecoveryPolicy = TicketSuggestionRecoveryPolicy()
   private let ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying
+  private let codexInstallationPreferences: CodexInstallationPreferences
   private var codexClient: CodexAppServerClient?
   private var suggestionTask: Task<Void, Never>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
@@ -357,6 +398,8 @@ final class AppModel: ObservableObject {
   private var activePlanningTurn: (threadID: String, turnID: String)?
   private var activeSprintGoalTurn: (threadID: String, turnID: String)?
   private var activeTicketConversationTurn: (threadID: String, turnID: String)?
+  private var ticketConversationActivityTask: Task<Void, Never>?
+  private var ticketConversationActivityMonitorID: UUID?
   private var activeEpicConversationTurn: (threadID: String, turnID: String)?
   private var activeTicketRefinementTurn: (threadID: String, turnID: String)?
   private var epicPlanningThreadID: String?
@@ -380,6 +423,12 @@ final class AppModel: ObservableObject {
     let turnID: String
   }
 
+  private struct ActiveProductConversationTurn: Sendable {
+    let productID: UUID
+    let threadID: String
+    let turnID: String
+  }
+
   private var activeExecutionTurns: [UUID: ActiveExecutionTurn] = [:]
   private var liveApprovalRequests: [UUID: CodexServerRequest] = [:]
   private var liveApprovalRequestProductIDs: [UUID: UUID] = [:]
@@ -392,6 +441,13 @@ final class AppModel: ObservableObject {
   private var activeRetrospectiveSynthesisTurns: [
     UUID: (threadID: String, turnID: String)
   ] = [:]
+  private var activeProductConversationTurns: [
+    UUID: ActiveProductConversationTurn
+  ] = [:]
+  private var productConversationActivityTasks:
+    [UUID: Task<Void, Never>] = [:]
+  private var productConversationActivityMonitorIDs: [UUID: UUID] = [:]
+  private var cancelledProductConversationThreadIDs: Set<UUID> = []
   private var didLoad = false
   private var didResolveInitialProductSelection = false
   private var automaticallyRecoveredSuggestionSessionIDs: Set<UUID> = []
@@ -400,17 +456,27 @@ final class AppModel: ObservableObject {
   private static let selectedProductDefaultsKey = "selectedProductID"
 
   init() {
+    codexInstallationPreferences = CodexInstallationPreferences()
     ticketAttentionSoundPlayer = BundledTicketAttentionSoundPlayer()
     selectedProductID = UserDefaults.standard.string(
       forKey: Self.selectedProductDefaultsKey
     ).flatMap(UUID.init(uuidString:))
     do {
       let baseURL = try Self.applicationSupportURL()
-      store = try SQLiteStore(url: baseURL.appendingPathComponent("storypointless.sqlite"))
+      storeRegistry = try ProductStoreRegistry(
+        productWorkspacesRootURL: baseURL.appendingPathComponent(
+          "Product Workspaces",
+          isDirectory: true
+        ),
+        legacyDatabaseURL: baseURL.appendingPathComponent("storypointless.sqlite")
+      )
+      injectedStore = nil
     } catch {
-      store = nil
+      storeRegistry = nil
+      injectedStore = nil
       errorMessage = error.localizedDescription
     }
+    refreshCodexInstallations()
   }
 
   init(
@@ -419,9 +485,26 @@ final class AppModel: ObservableObject {
     ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying =
       BundledTicketAttentionSoundPlayer()
   ) {
-    self.store = store
+    codexInstallationPreferences = CodexInstallationPreferences()
+    storeRegistry = nil
+    injectedStore = store
     self.selectedProductID = selectedProductID
     self.ticketAttentionSoundPlayer = ticketAttentionSoundPlayer
+    refreshCodexInstallations()
+  }
+
+  private func store(for productID: UUID) -> SQLiteStore? {
+    injectedStore ?? storeRegistry?.store(for: productID)
+  }
+
+  private func fetchProducts(
+    status: ProductStatus = .active
+  ) async throws -> [Product] {
+    if let storeRegistry {
+      return try await storeRegistry.fetchProducts(status: status)
+    }
+    guard let injectedStore else { return [] }
+    return try await injectedStore.fetchProducts(status: status)
   }
 
   @discardableResult
@@ -433,11 +516,19 @@ final class AppModel: ObservableObject {
     eventActor: String? = nil,
     eventDetail: String? = nil
   ) async throws -> AgentRun {
-    guard let store else {
+    let runStore: SQLiteStore?
+    if let injectedStore {
+      runStore = injectedStore
+    } else if let storeRegistry {
+      runStore = await storeRegistry.findStore(containingAgentRun: id)
+    } else {
+      runStore = store
+    }
+    guard let runStore else {
       throw PersistenceError.recordNotFound("StoryPointless database")
     }
-    let previousRun = try await store.fetchAgentRun(id: id)
-    let updatedRun = try await store.updateAgentRun(
+    let previousRun = try await runStore.fetchAgentRun(id: id)
+    let updatedRun = try await runStore.updateAgentRun(
       id: id,
       status: status,
       codexThreadID: codexThreadID,
@@ -457,6 +548,28 @@ final class AppModel: ObservableObject {
 
   var selectedProduct: Product? {
     products.first { $0.id == selectedProductID }
+  }
+
+  var selectedCodexInstallation: CodexInstallation? {
+    codexInstallations.first { $0.id == selectedCodexInstallationID }
+  }
+
+  var canChangeCodexInstallation: Bool {
+    !isShuttingDown
+      && suggestionTask == nil
+      && epicPlanningTask == nil
+      && retrospectiveSynthesisTasks.isEmpty
+      && activeExecutionTurns.isEmpty
+      && activeProductConversationTurns.isEmpty
+      && activePlanningTurn == nil
+      && activeSprintGoalTurn == nil
+      && activeTicketConversationTurn == nil
+      && activeEpicConversationTurn == nil
+      && activeTicketRefinementTurn == nil
+      && activeEpicPlanningTurn == nil
+      && !demoSessions.contains {
+        $0.status == .preparing || $0.status == .starting || $0.status == .ready
+      }
   }
 
   var canAutosuggestTickets: Bool {
@@ -581,9 +694,23 @@ final class AppModel: ObservableObject {
   func load() async {
     guard !didLoad else { return }
     didLoad = true
-    try? await store?.interruptPendingAgentPermissionRequests()
-    try? await store?.requeueGeneratingRetrospectiveSyntheses()
+    do {
+      try await storeRegistry?.prepare()
+      let stores = storeRegistry?.allStores ?? injectedStore.map { [$0] } ?? []
+      for productStore in stores {
+        try await productStore.interruptPendingAgentPermissionRequests()
+        try await productStore.interruptWorkingConversationThreads()
+        try await productStore.requeueGeneratingRetrospectiveSyntheses()
+      }
+    } catch {
+      errorMessage = error.localizedDescription
+    }
     await reload()
+    for product in products + archivedProducts {
+      if let workspace = try? Self.productWorkspaceURL(productID: product.id) {
+        try? Self.excludeProductControlDirectoryFromGit(at: workspace)
+      }
+    }
     await recoverDemoSessions()
     await connectCodex()
     await recoverTicketSuggestionSessionIfNeeded()
@@ -598,18 +725,31 @@ final class AppModel: ObservableObject {
   }
 
   func createProductAndSelect(name: String, vision: String) async -> Bool {
-    guard let store else { return false }
     do {
-      let product = try await store.createProduct(name: name, vision: vision)
-      _ = try await store.seedDefaultProfiles(productID: product.id)
-      _ = try await store.seedKnowledgeBase(productID: product.id)
+      let product: Product
+      let productStore: SQLiteStore
+      if let storeRegistry {
+        product = try await storeRegistry.createProduct(name: name, vision: vision)
+        guard let createdStore = storeRegistry.store(for: product.id) else {
+          throw PersistenceError.recordNotFound("product database \(product.id)")
+        }
+        productStore = createdStore
+      } else if let injectedStore {
+        product = try await injectedStore.createProduct(name: name, vision: vision)
+        productStore = injectedStore
+      } else {
+        return false
+      }
+      _ = try await productStore.seedDefaultProfiles(productID: product.id)
+      _ = try await productStore.seedKnowledgeBase(productID: product.id)
       selectedProductID = product.id
       rememberSelectedProduct(product.id)
-      products = try await store.fetchProducts()
-      archivedProducts = try await store.fetchProducts(status: .archived)
+      products = try await fetchProducts()
+      archivedProducts = try await fetchProducts(status: .archived)
       await reloadSelectedProduct()
       let workspace = try Self.productWorkspaceURL(productID: product.id)
       _ = try await gitWorkspaceManager.ensureRepository(at: workspace)
+      try Self.excludeProductControlDirectoryFromGit(at: workspace)
       return true
     } catch {
       errorMessage = error.localizedDescription
@@ -668,8 +808,8 @@ final class AppModel: ObservableObject {
 
     do {
       _ = try await store.archiveProduct(id: product.id)
-      products = try await store.fetchProducts()
-      archivedProducts = try await store.fetchProducts(status: .archived)
+      products = try await fetchProducts()
+      archivedProducts = try await fetchProducts(status: .archived)
       selectedProductID = products.first?.id
       if let selectedProductID {
         rememberSelectedProduct(selectedProductID)
@@ -688,11 +828,14 @@ final class AppModel: ObservableObject {
   }
 
   func restoreProductAndSelect(_ product: Product) async -> Bool {
-    guard let store, product.status == .archived else { return false }
+    guard
+      let store = store(for: product.id),
+      product.status == .archived
+    else { return false }
     do {
       _ = try await store.restoreProduct(id: product.id)
-      products = try await store.fetchProducts()
-      archivedProducts = try await store.fetchProducts(status: .archived)
+      products = try await fetchProducts()
+      archivedProducts = try await fetchProducts(status: .archived)
       guard let restored = products.first(where: { $0.id == product.id }) else {
         throw PersistenceError.recordNotFound("restored product \(product.id)")
       }
@@ -1054,6 +1197,7 @@ final class AppModel: ObservableObject {
     ticketConversationWorkItemID = item.id
     ticketConversationRecipientID = recipient.id
     defer {
+      stopTicketConversationActivityMonitoring()
       isTicketConversationMessageRunning = false
       ticketConversationWorkItemID = nil
       ticketConversationRecipientID = nil
@@ -1112,6 +1256,10 @@ final class AppModel: ObservableObject {
         outputSchema: CodexTicketConversation.outputSchema
       )
       activeTicketConversationTurn = (threadID: threadID, turnID: turnID)
+      monitorTicketConversationActivity(
+        client: client,
+        threadID: threadID
+      )
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID
@@ -1150,6 +1298,10 @@ final class AppModel: ObservableObject {
 
   func cancelTicketConversationMessage() {
     guard let client = codexClient, let activeTicketConversationTurn else { return }
+    ticketConversationActivity = CodexLiveActivity(
+      text: "Stopping this response…",
+      kind: .thinking
+    )
     Task {
       try? await client.interruptTurn(
         threadID: activeTicketConversationTurn.threadID,
@@ -1542,6 +1694,401 @@ final class AppModel: ObservableObject {
     }
   }
 
+  @discardableResult
+  func sendProductConversationMessage(
+    threadID: UUID?,
+    recipientID: UUID,
+    body: String
+  ) async -> UUID? {
+    let messageBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard
+      !messageBody.isEmpty,
+      let product = selectedProduct,
+      let recipient = profiles.first(where: {
+        $0.id == recipientID && $0.productID == product.id
+      }),
+      let store = store(for: product.id),
+      let client = codexClient,
+      case .connected = codexConnectionState
+    else { return nil }
+
+    let thread: ProductConversationThread
+    let turnPrompt: String
+    do {
+      if let threadID {
+        guard
+          let existingThread = conversationThreads.first(where: {
+            $0.id == threadID && $0.productID == product.id
+          }),
+          !existingThread.isArchived
+        else {
+          throw PersistenceError.recordNotFound("Conversation thread \(threadID)")
+        }
+        let switchesRecipient = existingThread.recipientProfileID != recipient.id
+        let ownerMessage = ProductConversationMessage(
+          threadID: threadID,
+          authorKind: .owner,
+          authorName: "Me",
+          body: messageBody
+        )
+        thread = try await store.appendConversationMessage(
+          ownerMessage,
+          threadStatus: .working,
+          threadRecipientProfileID: switchesRecipient ? recipient.id : nil,
+          resetsCodexThread: switchesRecipient
+        )
+        if switchesRecipient {
+          turnPrompt = CodexProductConversation.handoffPrompt(
+            messages: try await store.fetchConversationMessages(threadID: threadID)
+          )
+        } else if existingThread.codexThreadID == nil {
+          turnPrompt = CodexProductConversation.recoveryPrompt(
+            messages: try await store.fetchConversationMessages(threadID: threadID)
+          )
+        } else {
+          turnPrompt = CodexProductConversation.resumedThreadPrompt(
+            ownerMessage: messageBody
+          )
+        }
+      } else {
+        let recentMessages = try await store.fetchRecentConversationMessages(
+          productID: product.id,
+          limit: 100
+        )
+        let now = Date()
+        let createdThread = ProductConversationThread(
+          productID: product.id,
+          recipientProfileID: recipient.id,
+          subject: Self.conversationSubject(from: messageBody),
+          createdAt: now,
+          updatedAt: now
+        )
+        let ownerMessage = ProductConversationMessage(
+          threadID: createdThread.id,
+          authorKind: .owner,
+          authorName: "Me",
+          body: messageBody,
+          createdAt: now
+        )
+        thread = try await store.createConversationThread(
+          createdThread,
+          initialMessage: ownerMessage
+        )
+        turnPrompt = CodexProductConversation.newThreadPrompt(
+          ownerMessage: messageBody,
+          recentRoomMessages: recentMessages
+        )
+      }
+      try await reloadProductConversations(productID: product.id, store: store)
+    } catch {
+      errorMessage = error.localizedDescription
+      return nil
+    }
+
+    respondingConversationThreadIDs.insert(thread.id)
+    conversationErrorsByThread.removeValue(forKey: thread.id)
+    defer {
+      stopProductConversationActivityMonitoring(threadID: thread.id)
+      respondingConversationThreadIDs.remove(thread.id)
+      activeProductConversationTurns.removeValue(forKey: thread.id)
+    }
+
+    do {
+      let workspace = try Self.productWorkspaceURL(productID: product.id)
+      let developerInstructions = CodexProductConversation.developerInstructions(
+        productInstructions: inheritedAgentInstructions(for: product),
+        customInstructions: recipient.customInstructionText,
+        recipient: recipient
+      )
+
+      var codexThreadID: String
+      var prompt = turnPrompt
+      if let existingCodexThreadID = thread.codexThreadID {
+        do {
+          codexThreadID = try await client.resumeReadOnlyThread(
+            threadID: existingCodexThreadID,
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: recipient.model
+          )
+        } catch let error as CodexRPCError where error.isThreadNotFound {
+          codexThreadID = try await client.startReadOnlyThread(
+            workingDirectory: workspace,
+            developerInstructions: developerInstructions,
+            model: recipient.model
+          )
+          prompt = CodexProductConversation.recoveryPrompt(
+            messages: try await store.fetchConversationMessages(threadID: thread.id)
+          )
+        }
+      } else {
+        codexThreadID = try await client.startReadOnlyThread(
+          workingDirectory: workspace,
+          developerInstructions: developerInstructions,
+          model: recipient.model
+        )
+      }
+      _ = try await store.updateConversationThread(
+        id: thread.id,
+        status: .working,
+        codexThreadID: codexThreadID
+      )
+      if cancelledProductConversationThreadIDs.contains(thread.id) {
+        throw CancellationError()
+      }
+      let turnID = try await client.startStructuredTurn(
+        threadID: codexThreadID,
+        prompt: prompt,
+        effort: recipient.reasoningEffort,
+        outputSchema: CodexProductConversation.outputSchema
+      )
+      activeProductConversationTurns[thread.id] = ActiveProductConversationTurn(
+        productID: product.id,
+        threadID: codexThreadID,
+        turnID: turnID
+      )
+      monitorProductConversationActivity(
+        threadID: thread.id,
+        client: client,
+        codexThreadID: codexThreadID
+      )
+      if cancelledProductConversationThreadIDs.contains(thread.id) {
+        try? await client.interruptTurn(
+          threadID: codexThreadID,
+          turnID: turnID
+        )
+        throw CancellationError()
+      }
+      let response = try await client.waitForFinalAgentMessage(
+        threadID: codexThreadID,
+        turnID: turnID,
+        timeout: .seconds(300)
+      )
+      let reply = try CodexProductConversation.decode(response)
+      cancelledProductConversationThreadIDs.remove(thread.id)
+      _ = try await store.appendConversationMessage(
+        ProductConversationMessage(
+          threadID: thread.id,
+          authorKind: .agent,
+          authorName: recipient.name,
+          body: reply.message
+        ),
+        threadStatus: .complete,
+        threadSubject: reply.threadTitle
+      )
+      try await reloadProductConversations(productID: product.id, store: store)
+      return thread.id
+    } catch is CancellationError {
+      cancelledProductConversationThreadIDs.remove(thread.id)
+      _ = try? await store.updateConversationThread(
+        id: thread.id,
+        status: .cancelled
+      )
+      try? await reloadProductConversations(productID: product.id, store: store)
+      return thread.id
+    } catch {
+      let wasCancelled =
+        cancelledProductConversationThreadIDs.remove(thread.id) != nil
+        || isShuttingDown
+      _ = try? await store.updateConversationThread(
+        id: thread.id,
+        status: wasCancelled ? .cancelled : .failed
+      )
+      if wasCancelled {
+        conversationErrorsByThread.removeValue(forKey: thread.id)
+      } else {
+        conversationErrorsByThread[thread.id] = error.localizedDescription
+      }
+      try? await reloadProductConversations(productID: product.id, store: store)
+      return thread.id
+    }
+  }
+
+  func cancelProductConversation(threadID: UUID) {
+    guard respondingConversationThreadIDs.contains(threadID) else { return }
+    cancelledProductConversationThreadIDs.insert(threadID)
+    productConversationActivities[threadID] = CodexLiveActivity(
+      text: "Stopping this response…",
+      kind: .thinking
+    )
+    guard
+      let client = codexClient,
+      let turn = activeProductConversationTurns[threadID]
+    else { return }
+    Task {
+      try? await client.interruptTurn(
+        threadID: turn.threadID,
+        turnID: turn.turnID
+      )
+    }
+  }
+
+  @discardableResult
+  func archiveProductConversation(threadID: UUID) async -> Bool {
+    guard
+      !respondingConversationThreadIDs.contains(threadID),
+      let product = selectedProduct,
+      let thread = conversationThreads.first(where: {
+        $0.id == threadID && $0.productID == product.id
+      }),
+      !thread.isArchived,
+      let store = store(for: product.id)
+    else { return false }
+
+    do {
+      _ = try await store.archiveConversationThread(id: threadID)
+      conversationErrorsByThread.removeValue(forKey: threadID)
+      try await reloadProductConversations(productID: product.id, store: store)
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  @discardableResult
+  func restoreProductConversation(threadID: UUID) async -> Bool {
+    guard
+      let product = selectedProduct,
+      let thread = conversationThreads.first(where: {
+        $0.id == threadID && $0.productID == product.id
+      }),
+      thread.isArchived,
+      let store = store(for: product.id)
+    else { return false }
+
+    do {
+      _ = try await store.restoreConversationThread(id: threadID)
+      try await reloadProductConversations(productID: product.id, store: store)
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  private func monitorProductConversationActivity(
+    threadID: UUID,
+    client: CodexAppServerClient,
+    codexThreadID: String
+  ) {
+    stopProductConversationActivityMonitoring(threadID: threadID)
+    let monitorID = UUID()
+    productConversationActivityMonitorIDs[threadID] = monitorID
+    productConversationActivities[threadID] = CodexLiveActivity(
+      text: "Thinking through your question…",
+      kind: .thinking
+    )
+
+    productConversationActivityTasks[threadID] = Task { [weak self] in
+      guard let self else { return }
+      var accumulator = CodexLiveActivityAccumulator()
+      let messages = await client.inboundMessages(replayRecent: false)
+      for await message in messages {
+        guard !Task.isCancelled else { break }
+        guard case .notification(let notification) = message else { continue }
+        guard
+          notification.params["threadId"]?.stringValue == codexThreadID,
+          self.productConversationActivityMonitorIDs[threadID] == monitorID
+        else { continue }
+
+        switch accumulator.consume(notification) {
+        case .activity(let activity):
+          self.productConversationActivities[threadID] = activity
+        case .turnFinished:
+          self.stopProductConversationActivityMonitoring(threadID: threadID)
+          return
+        case nil:
+          continue
+        }
+      }
+
+      guard self.productConversationActivityMonitorIDs[threadID] == monitorID
+      else { return }
+      self.stopProductConversationActivityMonitoring(threadID: threadID)
+    }
+  }
+
+  private func stopProductConversationActivityMonitoring(threadID: UUID) {
+    productConversationActivityTasks.removeValue(forKey: threadID)?.cancel()
+    productConversationActivityMonitorIDs.removeValue(forKey: threadID)
+    productConversationActivities.removeValue(forKey: threadID)
+  }
+
+  private func monitorTicketConversationActivity(
+    client: CodexAppServerClient,
+    threadID: String
+  ) {
+    stopTicketConversationActivityMonitoring()
+    let monitorID = UUID()
+    ticketConversationActivityMonitorID = monitorID
+    ticketConversationActivity = CodexLiveActivity(
+      text: "Thinking through your question…",
+      kind: .thinking
+    )
+
+    ticketConversationActivityTask = Task { [weak self] in
+      guard let self else { return }
+      var accumulator = CodexLiveActivityAccumulator()
+      let messages = await client.inboundMessages(replayRecent: false)
+      for await message in messages {
+        guard !Task.isCancelled else { break }
+        guard case .notification(let notification) = message else { continue }
+        guard
+          notification.params["threadId"]?.stringValue == threadID,
+          self.ticketConversationActivityMonitorID == monitorID
+        else { continue }
+
+        switch accumulator.consume(notification) {
+        case .activity(let activity):
+          self.ticketConversationActivity = activity
+        case .turnFinished:
+          self.stopTicketConversationActivityMonitoring()
+          return
+        case nil:
+          continue
+        }
+      }
+
+      guard self.ticketConversationActivityMonitorID == monitorID else { return }
+      self.stopTicketConversationActivityMonitoring()
+    }
+  }
+
+  private func stopTicketConversationActivityMonitoring() {
+    ticketConversationActivityTask?.cancel()
+    ticketConversationActivityTask = nil
+    ticketConversationActivityMonitorID = nil
+    ticketConversationActivity = nil
+  }
+
+  private func reloadProductConversations(
+    productID: UUID,
+    store: SQLiteStore
+  ) async throws {
+    let threads = try await store.fetchConversationThreads(productID: productID)
+    var messagesByThread: [UUID: [ProductConversationMessage]] = [:]
+    for thread in threads {
+      messagesByThread[thread.id] = try await store.fetchConversationMessages(
+        threadID: thread.id
+      )
+    }
+    guard selectedProductID == productID else { return }
+    conversationThreads = threads
+    conversationMessagesByThread = messagesByThread
+  }
+
+  private static func conversationSubject(from message: String) -> String {
+    let firstLine = message
+      .split(whereSeparator: \.isNewline)
+      .first
+      .map(String.init)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? "Conversation"
+    guard firstLine.count > 72 else { return firstLine }
+    return "\(firstLine.prefix(69))…"
+  }
+
   func proposeRetrospectiveAction(
     sprintID: UUID,
     body: String,
@@ -1742,6 +2289,38 @@ final class AppModel: ObservableObject {
     body: String
   ) async -> TicketComment? {
     await appendOwnerComment(workItemID: workItemID, body: body)
+  }
+
+  func openDecisionArtifact(
+    _ artifact: TicketDecisionArtifact,
+    workItemID: UUID
+  ) {
+    let workspaceCandidates =
+      runs
+      .filter { $0.workItemID == workItemID }
+      .sorted { $0.createdAt > $1.createdAt }
+      .compactMap { $0.worktreePath }
+      .map { URL(fileURLWithPath: $0, isDirectory: true) }
+    let productWorkspace =
+      workItems.first(where: { $0.id == workItemID })
+      .flatMap { try? Self.productWorkspaceURL(productID: $0.productID) }
+    let workspaces = workspaceCandidates + (productWorkspace.map { [$0] } ?? [])
+
+    for workspace in workspaces {
+      guard
+        let artifactURL = try? TicketDecisionArtifactValidator.resolveExistingFile(
+          artifact,
+          in: workspace
+        )
+      else { continue }
+      guard NSWorkspace.shared.open(artifactURL) else {
+        errorMessage = "macOS could not open \(artifact.title)."
+        return
+      }
+      return
+    }
+    errorMessage =
+      "The decision evidence “\(artifact.title)” is no longer available in the preserved ticket workspace."
   }
 
   func stopAgentRun(_ run: AgentRun) async {
@@ -4155,7 +4734,7 @@ final class AppModel: ObservableObject {
   }
 
   private func sprintExecutionContext(productID: UUID) async -> SprintExecutionContext? {
-    guard let store else { return nil }
+    guard let store = store(for: productID) else { return nil }
     do {
       let availableProducts = try await store.fetchProducts()
       guard
@@ -4201,7 +4780,7 @@ final class AppModel: ObservableObject {
 
   private func recoverOrphanedExecutionRuns(productID: UUID) async {
     guard
-      let store,
+      let store = store(for: productID),
       let client = codexClient,
       let context = await sprintExecutionContext(productID: productID)
     else { return }
@@ -4371,10 +4950,7 @@ final class AppModel: ObservableObject {
           threadID: threadID,
           workingDirectory: workspace,
           developerInstructions: CodexTicketExecutor.developerInstructions(
-            productInstructions: inheritedAgentInstructions(
-              for: product,
-              availableKnowledge: context.knowledgePages
-            ),
+            productInstructions: inheritedAgentInstructions(for: product),
             customInstructions: assignee.customInstructionText,
             assignee: assignee
           ),
@@ -4724,8 +5300,8 @@ final class AppModel: ObservableObject {
     context: SprintExecutionContext,
     reason: String
   ) async {
-    guard let store else { return }
     let productID = context.product.id
+    guard let store = store(for: productID) else { return }
     if let integrationPath = candidate.integrationWorktreePath {
       try? await gitWorkspaceManager.removeWorktree(
         repositoryURL: Self.productWorkspaceURL(productID: productID),
@@ -4796,12 +5372,12 @@ final class AppModel: ObservableObject {
   private func processNextIntegrationCandidate(
     context: SprintExecutionContext
   ) async -> Bool {
-    guard let store else { return false }
     let plan = context.plan
     let profiles = context.profiles
     let runs = context.runs
     let workItems = context.workItems
     let productID = plan.sprint.productID
+    guard let store = store(for: productID) else { return false }
     guard activeIntegrationTasks[productID] == nil else { return false }
     do {
       try await requeueStaleReadyCandidates(productID: productID)
@@ -4936,7 +5512,7 @@ final class AppModel: ObservableObject {
     productID: UUID,
     excluding excludedCandidateID: UUID? = nil
   ) async throws {
-    guard let store else { return }
+    guard let store = store(for: productID) else { return }
     let repositoryURL = try Self.productWorkspaceURL(productID: productID)
     let candidates = try await store.fetchCandidateRevisions(productID: productID)
     for candidate in candidates
@@ -4963,7 +5539,7 @@ final class AppModel: ObservableObject {
     _ candidate: CandidateRevision,
     reason: String
   ) async throws {
-    guard let store else { return }
+    guard let store = store(for: candidate.productID) else { return }
     await stopDemoSession(candidate, removesPreview: true)
     _ = try await store.updateCandidateRevision(
       id: candidate.id,
@@ -5015,7 +5591,7 @@ final class AppModel: ObservableObject {
     context: SprintExecutionContext
   ) async {
     guard
-      let store,
+      let store = store(for: context.product.id),
       let client = codexClient,
       let item = context.workItems.first(where: { $0.id == queuedRun.workItemID }),
       let assignee = context.profiles.first(where: { $0.id == queuedRun.profileID })
@@ -5097,7 +5673,6 @@ final class AppModel: ObservableObject {
       let developerInstructions = CodexTicketExecutor.developerInstructions(
         productInstructions: inheritedAgentInstructions(
           for: product,
-          availableKnowledge: knowledgePages,
           includesMandatoryKnowledge: false
         ),
         customInstructions: assignee.customInstructionText,
@@ -5243,7 +5818,10 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          runtimeWorkspaceRoots: [workspace]
+          runtimeWorkspaceRoots: [
+            workspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         activeThreadID = try await client.startWorkspaceThread(
@@ -5275,7 +5853,10 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          runtimeWorkspaceRoots: [workspace]
+          runtimeWorkspaceRoots: [
+            workspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       }
       activeExecutionTurns[run.id] = ActiveExecutionTurn(
@@ -5402,7 +5983,10 @@ final class AppModel: ObservableObject {
         ),
         effort: assignee.reasoningEffort,
         outputSchema: CodexTicketExecutor.outputSchema,
-        runtimeWorkspaceRoots: [workspaceURL]
+        runtimeWorkspaceRoots: [
+          workspaceURL,
+          try Self.productDatabaseURL(productID: productID).deletingLastPathComponent(),
+        ]
       )
       activeExecutionTurns[runID] = ActiveExecutionTurn(
         productID: productID,
@@ -5444,6 +6028,25 @@ final class AppModel: ObservableObject {
     _ result: TicketExecutionResult,
     workspaceURL: URL
   ) async throws {
+    let actualChangePaths: [String]
+    if result.status == .completed || result.decisionArtifact != nil {
+      actualChangePaths = try await gitWorkspaceManager.ticketChangePaths(
+        ticketWorkspaceURL: workspaceURL
+      )
+    } else {
+      actualChangePaths = []
+    }
+    if let decisionArtifact = result.decisionArtifact {
+      _ = try TicketDecisionArtifactValidator.resolveExistingFile(
+        decisionArtifact,
+        in: workspaceURL
+      )
+      guard actualChangePaths.contains(decisionArtifact.path) else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "decisionArtifact must reference a file created or changed by this ticket."
+        )
+      }
+    }
     guard result.status == .completed else { return }
     guard let demo = result.demo else {
       throw TicketExecutionGenerationError.invalidResponse(
@@ -5471,9 +6074,6 @@ final class AppModel: ObservableObject {
     } catch {
       throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
     }
-    let actualChangePaths = try await gitWorkspaceManager.ticketChangePaths(
-      ticketWorkspaceURL: workspaceURL
-    )
     let substantiveChangePaths = Set(
       actualChangePaths.filter {
         !$0.hasPrefix("knowledge/delivery-history/")
@@ -5509,7 +6109,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let run = try? await store.fetchAgentRun(id: implementationRunID),
       let item = context.workItems.first(where: { $0.id == run.workItemID }),
@@ -5525,7 +6125,11 @@ final class AppModel: ObservableObject {
       ownerQuestion:
         result.status == .awaitingOwner
         ? result.question.map {
-          TicketOwnerQuestion(prompt: $0, options: result.options)
+          TicketOwnerQuestion(
+            prompt: $0,
+            options: result.options,
+            decisionArtifact: result.decisionArtifact
+          )
         }
         : nil
     )
@@ -5658,7 +6262,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let client = codexClient,
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
@@ -5706,10 +6310,7 @@ final class AppModel: ObservableObject {
       }
       let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
       let developerInstructions = CodexTechLeadReviewer.developerInstructions(
-        productInstructions: inheritedAgentInstructions(
-          for: product,
-          availableKnowledge: context.knowledgePages
-        ),
+        productInstructions: inheritedAgentInstructions(for: product),
         customInstructions: techLead.customInstructionText,
         reviewer: techLead
       )
@@ -5722,7 +6323,10 @@ final class AppModel: ObservableObject {
             workingDirectory: reviewWorkspace.url,
             developerInstructions: developerInstructions,
             model: techLead.model,
-            allowsApprovals: true
+            allowsApprovals: true,
+            readOnlyProductDirectory: try Self.productDatabaseURL(
+              productID: product.id
+            ).deletingLastPathComponent()
           )
           resumedReviewThreadID = resumedThreadID
           if
@@ -5792,7 +6396,10 @@ final class AppModel: ObservableObject {
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: true
+          allowsApprovals: true,
+          readOnlyProductDirectory: try Self.productDatabaseURL(
+            productID: product.id
+          ).deletingLastPathComponent()
         )
         turnPrompt = fullReviewPrompt
         if replacedUnavailableThread {
@@ -5824,14 +6431,20 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [reviewWorkspace.url]
+          runtimeWorkspaceRoots: [
+            reviewWorkspace.url,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         threadID = try await client.startReadOnlyThread(
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: true
+          allowsApprovals: true,
+          readOnlyProductDirectory: try Self.productDatabaseURL(
+            productID: product.id
+          ).deletingLastPathComponent()
         )
         turnPrompt = fullReviewPrompt
         _ = try await updateAgentRun(
@@ -5853,7 +6466,10 @@ final class AppModel: ObservableObject {
           prompt: turnPrompt,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [reviewWorkspace.url]
+          runtimeWorkspaceRoots: [
+            reviewWorkspace.url,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       }
 
@@ -5892,7 +6508,10 @@ final class AppModel: ObservableObject {
           """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [reviewWorkspace.url]
+          runtimeWorkspaceRoots: [
+            reviewWorkspace.url,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
           productID: product.id,
@@ -5994,7 +6613,7 @@ final class AppModel: ObservableObject {
     _ candidate: CandidateRevision,
     context: SprintExecutionContext
   ) async {
-    guard let store else { return }
+    guard let store = store(for: candidate.productID) else { return }
     do {
       let implementation = try CodexTicketExecutor.decode(
         candidate.executionResultJSON
@@ -6019,7 +6638,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
       let implementationRun = try? await store.fetchAgentRun(
@@ -6116,7 +6735,7 @@ final class AppModel: ObservableObject {
     workItem: WorkItem,
     reviewerName: String
   ) async throws {
-    guard let store else { return }
+    guard let store = store(for: workItem.productID) else { return }
     if !requiresKnowledgeApproval {
       _ = try await publishReviewedKnowledgePageProposals(
         candidate: try await store.fetchCandidateRevision(id: candidateID),
@@ -6180,7 +6799,7 @@ final class AppModel: ObservableObject {
     preparedIntegration: GitIntegrationSnapshot? = nil
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let client = codexClient,
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(
@@ -6266,15 +6885,15 @@ final class AppModel: ObservableObject {
       let threadID = try await client.startReadOnlyThread(
         workingDirectory: workspace,
         developerInstructions: CodexTechLeadReviewer.developerInstructions(
-          productInstructions: inheritedAgentInstructions(
-            for: product,
-            availableKnowledge: context.knowledgePages
-          ),
+          productInstructions: inheritedAgentInstructions(for: product),
           customInstructions: techLead.customInstructionText,
           reviewer: techLead
         ),
         model: techLead.model,
-        allowsApprovals: true
+        allowsApprovals: true,
+        readOnlyProductDirectory: try Self.productDatabaseURL(
+          productID: product.id
+        ).deletingLastPathComponent()
       )
       _ = try await updateAgentRun(
         id: reviewRun.id,
@@ -6308,7 +6927,10 @@ final class AppModel: ObservableObject {
         ),
         effort: techLead.reasoningEffort,
         outputSchema: CodexTechLeadReviewer.outputSchema,
-        runtimeWorkspaceRoots: [workspace]
+        runtimeWorkspaceRoots: [
+          workspace,
+          try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+        ]
       )
       activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
         productID: product.id,
@@ -6344,7 +6966,10 @@ final class AppModel: ObservableObject {
           """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
-          runtimeWorkspaceRoots: [workspace]
+          runtimeWorkspaceRoots: [
+            workspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
         activeExecutionTurns[reviewRun.id] = ActiveExecutionTurn(
           productID: product.id,
@@ -6468,7 +7093,7 @@ final class AppModel: ObservableObject {
     integration: GitIntegrationSnapshot?
   ) async throws {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let client = codexClient,
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(
@@ -6604,7 +7229,7 @@ final class AppModel: ObservableObject {
 
             \(remainingFindings.isEmpty ? "- The review did not provide a concrete finding." : remainingFindings)
 
-            Ask the assigned specialist a question without restarting work, or add Product Owner direction and choose Resume work.
+            Ask the assigned specialist a question without restarting work, or add Product Owner direction and choose Submit answers.
             """
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
@@ -6623,10 +7248,7 @@ final class AppModel: ObservableObject {
         isDirectory: true
       )
       let developerInstructions = CodexTicketExecutor.developerInstructions(
-        productInstructions: inheritedAgentInstructions(
-          for: product,
-          availableKnowledge: context.knowledgePages
-        ),
+        productInstructions: inheritedAgentInstructions(for: product),
         customInstructions: implementer.customInstructionText,
         assignee: implementer
       )
@@ -6692,7 +7314,10 @@ final class AppModel: ObservableObject {
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          runtimeWorkspaceRoots: [revisionWorkspace]
+          runtimeWorkspaceRoots: [
+            revisionWorkspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         revisionThreadID = try await client.startWorkspaceThread(
@@ -6723,7 +7348,10 @@ final class AppModel: ObservableObject {
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
           outputSchema: CodexTicketExecutor.outputSchema,
-          runtimeWorkspaceRoots: [revisionWorkspace]
+          runtimeWorkspaceRoots: [
+            revisionWorkspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       }
       activeExecutionTurns[implementationRun.id] = ActiveExecutionTurn(
@@ -6792,7 +7420,7 @@ final class AppModel: ObservableObject {
     conflictedFiles: [String]
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
       let techLead = context.profiles.first(where: { $0.role == .lead })
@@ -6855,7 +7483,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan
   ) async {
     guard
-      let store,
+      let store = store(for: candidate.productID),
       let worktreePath = candidate.integrationWorktreePath
     else { return }
     do {
@@ -6901,7 +7529,7 @@ final class AppModel: ObservableObject {
     continuationMessage: String?
   ) async {
     guard
-      let store,
+      let store = store(for: plan.sprint.productID),
       let client = codexClient,
       let context = await sprintExecutionContext(productID: plan.sprint.productID),
       let item = context.workItems.first(where: { $0.id == candidate.workItemID }),
@@ -6922,10 +7550,7 @@ final class AppModel: ObservableObject {
         productID: product.id
       ).appendingPathComponent(".git", isDirectory: true)
       let developerInstructions = CodexConflictIntegrator.developerInstructions(
-        productInstructions: inheritedAgentInstructions(
-          for: product,
-          availableKnowledge: context.knowledgePages
-        )
+        productInstructions: inheritedAgentInstructions(for: product)
       )
       var replacedUnavailableThread = false
       var threadID: String
@@ -6986,7 +7611,10 @@ final class AppModel: ObservableObject {
           prompt: resolutionPrompt,
           effort: "medium",
           outputSchema: CodexConflictIntegrator.outputSchema,
-          runtimeWorkspaceRoots: [workspace]
+          runtimeWorkspaceRoots: [
+            workspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       } catch let error as CodexRPCError where error.isThreadNotFound {
         threadID = try await client.startWorkspaceThread(
@@ -7014,7 +7642,10 @@ final class AppModel: ObservableObject {
           prompt: resolutionPrompt,
           effort: "medium",
           outputSchema: CodexConflictIntegrator.outputSchema,
-          runtimeWorkspaceRoots: [workspace]
+          runtimeWorkspaceRoots: [
+            workspace,
+            try Self.productDatabaseURL(productID: product.id).deletingLastPathComponent(),
+          ]
         )
       }
       activeExecutionTurns[resolutionRun.id] = ActiveExecutionTurn(
@@ -7088,7 +7719,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan
   ) async {
     guard
-      let store,
+      let store = store(for: candidate.productID),
       let implementationRun = try? await store.fetchAgentRun(
         id: candidate.implementationRunID
       ),
@@ -7121,7 +7752,7 @@ final class AppModel: ObservableObject {
     plan: SprintPlan,
     workspace: URL
   ) async throws {
-    guard let store else { return }
+    guard let store = store(for: candidate.productID) else { return }
     let integration = try await gitWorkspaceManager.completeConflictResolution(
       integrationWorkspaceURL: workspace,
       candidateHeadSHA: candidate.headSHA
@@ -7156,7 +7787,7 @@ final class AppModel: ObservableObject {
     workItemID: UUID,
     resolutionRunID: UUID?
   ) async {
-    guard let store else { return }
+    guard let store = store(for: candidate.productID) else { return }
     if let resolutionRunID {
       _ = try? await updateAgentRun(
         id: resolutionRunID,
@@ -7185,8 +7816,8 @@ final class AppModel: ObservableObject {
 
   private func handleSprintOwnerComment(workItemID: UUID, body: String) async {
     guard
-      let store,
       let plan = sprintPlan,
+      let store = store(for: plan.sprint.productID),
       plan.sprint.state == .active,
       let sprintItem = plan.items.first(where: { $0.workItemID == workItemID }),
       let implementerID = sprintItem.implementerProfileID
@@ -7427,9 +8058,17 @@ final class AppModel: ObservableObject {
     startsTurn: Bool = false,
     at: Date = Date()
   ) async {
-    guard let store else { return }
+    let telemetryStore: SQLiteStore?
+    if let injectedStore {
+      telemetryStore = injectedStore
+    } else if let storeRegistry {
+      telemetryStore = await storeRegistry.findStore(containingAgentRun: runID)
+    } else {
+      telemetryStore = nil
+    }
+    guard let telemetryStore else { return }
     guard
-      let updated = try? await store.recordAgentRunActivity(
+      let updated = try? await telemetryStore.recordAgentRunActivity(
         id: runID,
         activity: activity,
         contextUsedTokens: contextUsedTokens,
@@ -7568,14 +8207,16 @@ final class AppModel: ObservableObject {
     let approvalRequestIDs = liveApprovalRequestProductIDs.compactMap {
       productID == nil || $0.value == productID ? $0.key : nil
     }
-    if let store {
-      for requestID in approvalRequestIDs {
-        if let updated = try? await store.updateAgentPermissionRequest(
-          id: requestID,
-          status: .interrupted
-        ) {
-          replacePermissionRequest(updated)
-        }
+    for requestID in approvalRequestIDs {
+      guard
+        let requestProductID = liveApprovalRequestProductIDs[requestID],
+        let requestStore = store(for: requestProductID)
+      else { continue }
+      if let updated = try? await requestStore.updateAgentPermissionRequest(
+        id: requestID,
+        status: .interrupted
+      ) {
+        replacePermissionRequest(updated)
       }
     }
     for requestID in approvalRequestIDs {
@@ -7612,6 +8253,16 @@ final class AppModel: ObservableObject {
       task.cancel()
     }
     if let client = codexClient {
+      for (conversationThreadID, turn) in activeProductConversationTurns {
+        try? await client.interruptTurn(
+          threadID: turn.threadID,
+          turnID: turn.turnID
+        )
+        _ = try? await store(for: turn.productID)?.updateConversationThread(
+          id: conversationThreadID,
+          status: .cancelled
+        )
+      }
       for turn in activeRetrospectiveSynthesisTurns.values {
         try? await client.interruptTurn(
           threadID: turn.threadID,
@@ -7623,6 +8274,13 @@ final class AppModel: ObservableObject {
       await task.value
     }
     retrospectiveSynthesisTasks.removeAll()
+    cancelledProductConversationThreadIDs.removeAll()
+    for threadID in Array(productConversationActivityTasks.keys) {
+      stopProductConversationActivityMonitoring(threadID: threadID)
+    }
+    stopTicketConversationActivityMonitoring()
+    activeProductConversationTurns.removeAll()
+    respondingConversationThreadIDs.removeAll()
     activeRetrospectiveSynthesisTurns.removeAll()
     await epicConversationPersistenceTask?.value
     await stopAllDemoSessions()
@@ -7714,7 +8372,10 @@ final class AppModel: ObservableObject {
     synthesisID: UUID,
     product: Product
   ) async {
-    guard let store, let client = codexClient else { return }
+    guard
+      let store = store(for: product.id),
+      let client = codexClient
+    else { return }
     var startedSynthesis: RetrospectiveSynthesis?
     do {
       let productProfiles = try await store.fetchAgentProfiles(productID: product.id)
@@ -7770,10 +8431,7 @@ final class AppModel: ObservableObject {
       let threadID = try await client.startReadOnlyThread(
         workingDirectory: workspace,
         developerInstructions: CodexRetrospectiveSynthesizer.developerInstructions(
-          productInstructions: inheritedAgentInstructions(
-            for: product,
-            availableKnowledge: productKnowledge
-          ),
+          productInstructions: inheritedAgentInstructions(for: product),
           customInstructions: analyst.customInstructionText
         ),
         model: analyst.model
@@ -7883,29 +8541,34 @@ final class AppModel: ObservableObject {
 
   private func inheritedAgentInstructions(
     for product: Product,
-    availableKnowledge: [KnowledgePage]? = nil,
     includesMandatoryKnowledge: Bool = true
   ) -> String {
     let shared = product.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard includesMandatoryKnowledge else { return shared }
-    let productKnowledge = (availableKnowledge ?? knowledgePages).filter {
-      $0.productID == product.id
-    }
-    let mandatory = KnowledgeContextSelector.mandatoryPages(in: productKnowledge)
-    guard !mandatory.isEmpty else { return shared }
-    let context = mandatory.map { page in
-      """
-      ### \(page.title) [verified, page ID: \(page.id.uuidString)]
-      \(page.bodyMarkdown)
-      """
-    }.joined(separator: "\n\n")
+    let databasePath =
+      (try? Self.productDatabaseURL(productID: product.id).path)
+      ?? ".storypointless/product.sqlite"
+    let knowledgeScope =
+      includesMandatoryKnowledge
+      ? """
+        Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
+        rows in that view as verified reusable knowledge.
+        """
+      : """
+        Query agent_verified_knowledge when the assigned ticket needs durable product context.
+        """
     return [
       shared,
       """
-      VERIFIED MANDATORY PRODUCT KNOWLEDGE
-      These pages are always included because they contain durable product and operating guidance:
+      LIVE PRODUCT CONTEXT
+      The authoritative, live product database is at:
+      \(databasePath)
 
-      \(context)
+      You may inspect it read-only with `/usr/bin/sqlite3 -readonly`. Use the stable agent_product,
+      agent_team, agent_epics, agent_tickets, agent_ticket_dependencies, agent_work_log,
+      agent_sprints, agent_verified_knowledge, agent_decisions, agent_delivery_provenance, and
+      agent_retrospectives views. Search the product Git history when repository evidence is useful.
+      The database can change while you work, so re-read a record before relying on mutable state.
+      \(knowledgeScope)
       """,
     ]
     .filter { !$0.isEmpty }
@@ -7917,7 +8580,9 @@ final class AppModel: ObservableObject {
     productID: UUID,
     pages: [KnowledgePage]
   ) async throws {
-    guard let store else { throw CodexClientError.notConnected }
+    guard let store = store(for: productID) else {
+      throw CodexClientError.notConnected
+    }
     try await store.setAgentRunKnowledgeContext(
       runID: runID,
       pageIDs: pages.map(\.id)
@@ -7991,7 +8656,7 @@ final class AppModel: ObservableObject {
     candidate: CandidateRevision,
     runID: UUID
   ) async throws -> [KnowledgePageProposal] {
-    guard let store else {
+    guard let store = store(for: candidate.productID) else {
       throw PersistenceError.recordNotFound("knowledge context for agent run \(runID)")
     }
     let productDestinations = try await store.fetchAgentRunKnowledgeDestinations(
@@ -8073,15 +8738,15 @@ final class AppModel: ObservableObject {
   }
 
   func reload() async {
-    guard let store else {
+    guard storeRegistry != nil || injectedStore != nil else {
       isLoading = false
       return
     }
     isLoading = true
     defer { isLoading = false }
     do {
-      products = try await store.fetchProducts()
-      archivedProducts = try await store.fetchProducts(status: .archived)
+      products = try await fetchProducts()
+      archivedProducts = try await fetchProducts(status: .archived)
       if !didResolveInitialProductSelection {
         didResolveInitialProductSelection = true
         let rememberedSelectionIsValid = products.contains { $0.id == selectedProductID }
@@ -8102,7 +8767,10 @@ final class AppModel: ObservableObject {
   }
 
   func reloadSelectedProduct() async {
-    guard let store, let productID = selectedProductID else {
+    guard
+      let productID = selectedProductID,
+      let store = store(for: productID)
+    else {
       epics = []
       workItems = []
       dependencies = []
@@ -8124,6 +8792,9 @@ final class AppModel: ObservableObject {
       knowledgePageProposals = []
       agentRunKnowledgeContext = []
       agentRunKnowledgeDestinations = []
+      conversationThreads = []
+      conversationMessagesByThread = [:]
+      conversationErrorsByThread = [:]
       return
     }
     do {
@@ -8193,6 +8864,14 @@ final class AppModel: ObservableObject {
       let loadedSuggestionBatch = try await store.fetchLatestTicketSuggestionBatch(
         productID: productID
       )
+      let loadedConversationThreads = try await store.fetchConversationThreads(
+        productID: productID
+      )
+      var loadedConversationMessages: [UUID: [ProductConversationMessage]] = [:]
+      for thread in loadedConversationThreads {
+        loadedConversationMessages[thread.id] =
+          try await store.fetchConversationMessages(threadID: thread.id)
+      }
 
       guard selectedProductID == productID else { return }
       epics = loadedEpics
@@ -8216,6 +8895,8 @@ final class AppModel: ObservableObject {
       retrospectiveSyntheses = loadedRetrospectiveSyntheses
       retrospectiveActionSources = loadedRetrospectiveActionSources
       suggestionBatch = loadedSuggestionBatch
+      conversationThreads = loadedConversationThreads
+      conversationMessagesByThread = loadedConversationMessages
     } catch {
       presentExecutionError(error, productID: productID)
     }
@@ -8223,7 +8904,9 @@ final class AppModel: ObservableObject {
 
   private func connectCodex() async {
     codexConnectionState = .checking
-    let candidates = Self.codexRuntimeCandidates()
+    codexModels = []
+    refreshCodexInstallations()
+    let candidates = selectedCodexInstallation.map(\.runtimeCandidate).map { [$0] } ?? []
 
     do {
       let descriptor = try await Task.detached(priority: .userInitiated) {
@@ -8236,7 +8919,15 @@ final class AppModel: ObservableObject {
         )
       )
       let client = CodexAppServerClient(transport: transport)
-      let info = try await client.connect()
+      let info: CodexConnectionInfo
+      let models: [CodexModelOption]
+      do {
+        info = try await client.connect()
+        models = try await client.listModels()
+      } catch {
+        await client.disconnect()
+        throw error
+      }
       codexClient = client
       demoLauncher.useExecutor(
         CodexWorkspaceCommandExecutor(executableURL: descriptor.executableURL)
@@ -8244,10 +8935,10 @@ final class AppModel: ObservableObject {
       startApprovalRouting(client: client)
       codexConnectionState = .connected(version: descriptor.version, userAgent: info.userAgent)
       scheduleRetrospectiveSyntheses()
-      codexModels = (try? await client.listModels()) ?? []
+      codexModels = models
     } catch let error as CodexRuntimeError {
       switch error {
-      case .incompatible:
+      case .missingRequiredFeature:
         codexConnectionState = .incompatible(error.localizedDescription)
       default:
         codexConnectionState = .unavailable(error.localizedDescription)
@@ -8255,6 +8946,116 @@ final class AppModel: ObservableObject {
     } catch {
       codexConnectionState = .unavailable(error.localizedDescription)
     }
+  }
+
+  func selectCodexInstallation(id: String) async {
+    guard canChangeCodexInstallation else {
+      errorMessage = CodexInstallationSelectionError.workInProgress.localizedDescription
+      return
+    }
+    guard codexInstallations.contains(where: { $0.id == id }) else {
+      errorMessage = CodexInstallationSelectionError.invalidSelection.localizedDescription
+      return
+    }
+    guard selectedCodexInstallationID != id else { return }
+
+    selectedCodexInstallationID = id
+    codexInstallationPreferences.saveSelectedInstallationID(id)
+    await reconnectCodex()
+  }
+
+  func addCodexInstallation(at selectionURL: URL) async {
+    guard canChangeCodexInstallation else {
+      errorMessage = CodexInstallationSelectionError.workInProgress.localizedDescription
+      return
+    }
+
+    let executableURL = CodexInstallationDiscovery.executableURL(
+      forSelection: selectionURL
+    )
+    guard
+      executableURL.lastPathComponent == "codex",
+      FileManager.default.isExecutableFile(atPath: executableURL.path)
+    else {
+      errorMessage = CodexInstallationSelectionError.invalidSelection.localizedDescription
+      return
+    }
+
+    if let existing = codexInstallations.first(where: {
+      Self.sameFileLocation($0.executableURL, executableURL)
+    }) {
+      await selectCodexInstallation(id: existing.id)
+      return
+    }
+
+    do {
+      _ = try await Task.detached(priority: .userInitiated) {
+        try CodexRuntimeResolver().resolve(
+          candidates: [
+            CodexRuntimeCandidate(executableURL: executableURL, source: .custom)
+          ]
+        )
+      }.value
+    } catch let error as CodexRuntimeError {
+      errorMessage = error.localizedDescription
+      return
+    } catch {
+      errorMessage = error.localizedDescription
+      return
+    }
+
+    var stored = codexInstallationPreferences.customInstallations()
+    let installation = CodexInstallationDiscovery.customInstallation(
+      forSelection: selectionURL,
+      existing: stored
+    )
+    if !stored.contains(where: { $0.id == installation.id }) {
+      stored.append(installation)
+      codexInstallationPreferences.saveCustomInstallations(stored)
+    }
+    refreshCodexInstallations()
+    await selectCodexInstallation(id: installation.id)
+  }
+
+  func removeCodexInstallation(id: String) async {
+    guard canChangeCodexInstallation else {
+      errorMessage = CodexInstallationSelectionError.workInProgress.localizedDescription
+      return
+    }
+    guard codexInstallations.first(where: { $0.id == id })?.kind == .custom else {
+      return
+    }
+
+    let wasSelected = selectedCodexInstallationID == id
+    let remaining = codexInstallationPreferences.customInstallations().filter {
+      $0.id != id
+    }
+    codexInstallationPreferences.saveCustomInstallations(remaining)
+    refreshCodexInstallations()
+
+    if wasSelected {
+      let replacementID = codexInstallations.first?.id
+      selectedCodexInstallationID = replacementID
+      codexInstallationPreferences.saveSelectedInstallationID(replacementID)
+      await reconnectCodex()
+    }
+  }
+
+  func retryCodexConnection() async {
+    guard canChangeCodexInstallation else {
+      errorMessage = CodexInstallationSelectionError.workInProgress.localizedDescription
+      return
+    }
+    await reconnectCodex()
+  }
+
+  private func reconnectCodex() async {
+    approvalRoutingTask?.cancel()
+    approvalRoutingTask = nil
+    await codexClient?.disconnect()
+    codexClient = nil
+    demoLauncher.clearExecutor()
+    await connectCodex()
   }
 
   func pendingPermissionRequest(workItemID: UUID) -> AgentPermissionRequest? {
@@ -8272,7 +9073,7 @@ final class AppModel: ObservableObject {
   ) async {
     guard
       request.status.needsOwnerDecision,
-      let store,
+      let store = store(for: request.productID),
       let client = codexClient
     else {
       errorMessage =
@@ -8379,10 +9180,6 @@ final class AppModel: ObservableObject {
     _ request: CodexServerRequest,
     client: CodexAppServerClient
   ) async {
-    guard let store else {
-      await client.rejectUnsupportedServerRequest(request)
-      return
-    }
     let presentation: CodexApprovalPresentation
     do {
       presentation = try CodexAppServerClient.approvalPresentation(for: request)
@@ -8390,10 +9187,11 @@ final class AppModel: ObservableObject {
       await client.rejectUnsupportedServerRequest(request)
       return
     }
-    let runID = activeExecutionTurns.first(where: {
+    let activeMatch = activeExecutionTurns.first(where: {
         $0.value.threadID == presentation.threadID
           && $0.value.turnID == presentation.turnID
-      })?.key
+      })
+    let runID = activeMatch?.key
       ?? runs
         .filter {
           $0.codexThreadID == presentation.threadID
@@ -8401,8 +9199,17 @@ final class AppModel: ObservableObject {
         }
         .max(by: { $0.createdAt < $1.createdAt })?
         .id
+    let runStore: SQLiteStore?
+    if let productID = activeMatch?.value.productID {
+      runStore = store(for: productID)
+    } else if let runID, let storeRegistry {
+      runStore = await storeRegistry.findStore(containingAgentRun: runID)
+    } else {
+      runStore = injectedStore ?? store
+    }
     guard
       let runID,
+      let store = runStore,
       let run = try? await store.fetchAgentRun(id: runID)
     else {
       await client.rejectUnsupportedServerRequest(request)
@@ -8515,7 +9322,7 @@ final class AppModel: ObservableObject {
   }
 
   func revokePermissionGrant(_ grant: AgentPermissionGrant) async {
-    guard grant.isActive, let store else { return }
+    guard grant.isActive, let store = store(for: grant.productID) else { return }
     do {
       _ = try await store.revokeAgentPermissionGrant(id: grant.id)
       permissionGrants.removeAll { $0.id == grant.id }
@@ -8571,22 +9378,32 @@ final class AppModel: ObservableObject {
     generateEpicPlan(epic, recovering: session)
   }
 
-  private static func codexRuntimeCandidates() -> [CodexRuntimeCandidate] {
-    var candidates: [CodexRuntimeCandidate] = []
-    if let bundled = Bundle.main.url(forAuxiliaryExecutable: "codex") {
-      candidates.append(CodexRuntimeCandidate(executableURL: bundled, source: .bundled))
-    }
+  private func refreshCodexInstallations() {
+    let officialApplicationURL = NSWorkspace.shared.urlForApplication(
+      withBundleIdentifier: CodexInstallationDiscovery.officialBundleIdentifier
+    )
+    codexInstallations = CodexInstallationDiscovery.discover(
+      officialApplicationURL: officialApplicationURL,
+      bundledExecutableURL: Bundle.main.url(forAuxiliaryExecutable: "codex"),
+      customInstallations: codexInstallationPreferences.customInstallations()
+    )
 
-    #if DEBUG
-      candidates.append(
-        CodexRuntimeCandidate(
-          executableURL: URL(fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"),
-          source: .developmentFixture
-        )
+    let savedID =
+      selectedCodexInstallationID
+      ?? codexInstallationPreferences.selectedInstallationID()
+    if let savedID {
+      selectedCodexInstallationID = savedID
+    } else {
+      selectedCodexInstallationID = codexInstallations.first?.id
+      codexInstallationPreferences.saveSelectedInstallationID(
+        selectedCodexInstallationID
       )
-    #endif
+    }
+  }
 
-    return candidates
+  private static func sameFileLocation(_ lhs: URL, _ rhs: URL) -> Bool {
+    lhs.standardizedFileURL.resolvingSymlinksInPath().path
+      == rhs.standardizedFileURL.resolvingSymlinksInPath().path
   }
 
   private static func applicationSupportURL() throws -> URL {
@@ -8615,6 +9432,40 @@ final class AppModel: ObservableObject {
       .appendingPathComponent(productID.uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+  }
+
+  private static func productDatabaseURL(productID: UUID) throws -> URL {
+    ProductStoreRegistry.databaseURL(
+      productID: productID,
+      productWorkspacesRootURL: try applicationSupportURL()
+        .appendingPathComponent("Product Workspaces", isDirectory: true)
+    )
+  }
+
+  private static func excludeProductControlDirectoryFromGit(
+    at workspaceURL: URL
+  ) throws {
+    let gitDirectory = workspaceURL
+      .appendingPathComponent(".git", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: gitDirectory.path) else { return }
+    let excludeURL = gitDirectory
+      .appendingPathComponent("info", isDirectory: true)
+      .appendingPathComponent("exclude")
+    let directory = excludeURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    let existing =
+      (try? String(contentsOf: excludeURL, encoding: .utf8)) ?? ""
+    let entry = "/\(ProductStoreRegistry.controlDirectoryName)/"
+    guard !existing.split(whereSeparator: \.isNewline).map(String.init).contains(entry)
+    else { return }
+    let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
+    try Data("\(existing)\(separator)\(entry)\n".utf8).write(
+      to: excludeURL,
+      options: .atomic
+    )
   }
 
   private static func ticketWorktreesRootURL(productID: UUID) throws -> URL {

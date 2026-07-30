@@ -5,6 +5,44 @@ import Testing
 
 @Suite("Planning drop policy")
 struct PlanningDropPolicyTests {
+  @Test("Bulk move targets selected section tickets, or every ticket without a selection")
+  func bulkMoveTargetsSelectionOrWholeSection() {
+    let productID = UUID()
+    let first = WorkItem(
+      productID: productID,
+      key: "T1",
+      title: "First"
+    )
+    let second = WorkItem(
+      productID: productID,
+      key: "T2",
+      title: "Second"
+    )
+    let unrelatedSelection = UUID()
+
+    let allToSprint = PlanningBulkMoveAction(
+      items: [first, second],
+      selectedWorkItemIDs: [unrelatedSelection],
+      destination: .candidateSprint
+    )
+    let selectedToBacklog = PlanningBulkMoveAction(
+      items: [first, second],
+      selectedWorkItemIDs: [second.id, unrelatedSelection],
+      destination: .backlog
+    )
+    let selectedToSprint = PlanningBulkMoveAction(
+      items: [first, second],
+      selectedWorkItemIDs: [first.id, second.id],
+      destination: .candidateSprint
+    )
+
+    #expect(allToSprint.targetItems.map(\.id) == [first.id, second.id])
+    #expect(allToSprint.title == "Move all to next sprint")
+    #expect(selectedToBacklog.targetItems.map(\.id) == [second.id])
+    #expect(selectedToBacklog.title == "Move 1 to backlog")
+    #expect(selectedToSprint.title == "Move 2 to next sprint")
+  }
+
   @Test("Moving a prerequisite into an empty sprint preserves backlog rank")
   func prerequisiteCanEnterEmptySprint() {
     let fixture = Fixture()
@@ -229,6 +267,75 @@ struct PlanningDropPolicyTests {
       try await store.fetchWorkItems(productID: product.id).map(\.id)
         == [prerequisite.id, dependant.id]
     )
+    await store.close()
+  }
+
+  @Test("Visible bulk actions persist whole-section moves in both directions")
+  @MainActor
+  func bulkActionsPersistWholeSectionMoves() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "StoryPointlessPlanningBulkMove-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let store = try SQLiteStore(
+      url: directory.appendingPathComponent("planning-bulk-move.sqlite")
+    )
+    let product = try await store.createProduct(
+      name: "Bulk planning",
+      vision: "Move a complete dependency branch together"
+    )
+    let prerequisite = try await store.createWorkItem(
+      productID: product.id,
+      title: "Define the contract"
+    )
+    let dependant = try await store.createWorkItem(
+      productID: product.id,
+      title: "Use the contract",
+      dependsOnWorkItemIDs: [prerequisite.id]
+    )
+    let model = AppModel(store: store, selectedProductID: product.id)
+    await model.reloadSelectedProduct()
+
+    let moveAllToSprint = PlanningBulkMoveAction(
+      items: model.workItems,
+      selectedWorkItemIDs: [],
+      destination: .candidateSprint
+    )
+    model.addToCandidateSprint(moveAllToSprint.targetItems)
+
+    for _ in 0..<100 {
+      if model.candidateSprintPlan?.items.count == 2 {
+        break
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(
+      Set(model.candidateSprintPlan?.items.map(\.workItemID) ?? [])
+        == [prerequisite.id, dependant.id]
+    )
+
+    let moveAllToBacklog = PlanningBulkMoveAction(
+      items: model.workItems,
+      selectedWorkItemIDs: [],
+      destination: .backlog
+    )
+    model.removeFromCandidateSprint(moveAllToBacklog.targetItems)
+
+    for _ in 0..<100 {
+      if model.candidateSprintPlan?.items.isEmpty == true {
+        break
+      }
+      try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(model.candidateSprintPlan?.items.isEmpty == true)
     await store.close()
   }
 

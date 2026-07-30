@@ -34,11 +34,24 @@ public enum CodexTicketSuggestionGenerator {
     separate ticket. Do not bury source selection inside design or implementation. Only assign selection
     to an implementer when the Product Owner explicitly chose implementation-time selection without a
     separate recommendation.
+    Before proposing executable product work, inspect verified Environments knowledge and repository-owned
+    manifests, scripts, CI, and documentation. Decide whether the current environment can build, test,
+    prototype, demo, and locally run the planned outcome. Do not infer readiness from a runtime merely
+    being installed somewhere on the Product Owner's Mac, scan the host for package managers, or silently
+    pre-authorise machine paths. If the environment is insufficient, make a concrete Implementer-owned
+    foundation task establish the approved toolchain, stable repository entry points, isolated temporary
+    and cache locations, required capabilities, a managed demo with readiness evidence, and a verified
+    Environments update. Create a separate Business Analyst research ticket before it only when the Product
+    Owner authorised evidence gathering for a material stack, hosting, licensing, cost, maintenance, or
+    deployment choice. Work that needs the missing environment must depend on the establishment task;
+    research, product decisions, and neutral design artefacts that genuinely do not need it may proceed in
+    parallel. Do not make an ordinary feature ticket rediscover or establish its environment incidentally.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
     Temporary proposal references belong only in the reference field. Never repeat one at the start
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
-    Do not modify files, use tools, browse the web, or make product decisions on the owner's behalf. Return only
+    Do not modify files, browse the web, or make product decisions on the owner's behalf. You may use
+    read-only local tools to query the live product database and inspect product Git history. Return only
     the JSON requested by the output schema. Every proposal must explain why it belongs in the backlog.
     """
 
@@ -105,6 +118,17 @@ public enum CodexTicketSuggestionGenerator {
       An implementation ticket may depend on an agreed UX direction and data contract while still noting
       that mocked data can let implementation begin. Research or provider selection should be a Business
       Analyst ticket, not a conclusion silently embedded in an implementation ticket.
+      Return the top-level environmentAssessment using sufficient, foundation_required, or not_required
+      with the same meanings as the output schema. Give a concise rationale. Set foundationTicketReference
+      to null unless the environment is missing; then identify the exact proposed reference or active
+      backlog key for the foundation.
+      For every suggestion set environmentRelationship to independent when it needs no executable product
+      environment, establishes when it creates or repairs the reusable delivery environment, or requires
+      when it will build, test, run, prototype, or demo using that environment. If verified Environments
+      guidance is absent or insufficient, include the establishment task and make every requires ticket
+      depend on it. A Product Owner preference or a responsible recommendation must resolve the intended
+      stack before that establishment task is delivered; do not use the task as a placeholder for asking
+      the owner later.
       """
   }
 
@@ -169,6 +193,27 @@ public enum CodexTicketSuggestionGenerator {
       approved output without guessing its conclusion. Never stop at a research ticket when the agreed
       outcome includes user-visible behaviour. Otherwise create tickets that deliver the agreed outcome.
 
+      Assess delivery-environment readiness from verified Environments knowledge and repository evidence.
+      In epic.environmentAssessment return:
+      - sufficient when the existing verified environment covers the planned executable work;
+      - foundation_required when an accepted existing ticket or one proposed Implementer task must establish
+        the environment first; or
+      - not_required when this epic has no executable product work.
+      Give a concise rationale. foundationTicketReference must be null unless readiness is
+      foundation_required; then it must identify the exact proposed reference or active ticket key that
+      establishes the environment. Mark every suggestion's environmentRelationship as independent,
+      establishes, or requires. Every requires ticket in a foundation_required plan must depend directly
+      or transitively on foundationTicketReference. Do not block evidence research or a neutral design
+      artefact that genuinely does not need the environment.
+
+      An environment-establishment task is a concrete delivery outcome, not vague technical investigation.
+      Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
+      test, local-run, and demo entry points; run-private temporary and cache locations; the complete
+      filesystem, localhost, network, and service capability boundary; a successful managed readiness
+      check; limitations; and a verified Environments Product knowledge update. Consider the intended
+      deployment destination early when it affects the stack, but leave production accounts, credentials,
+      signing identities, and irreversible release access to separately authorised release work.
+
       Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets. Split work
       where it creates an independently understandable, reviewable, or parallelizable outcome. Include
       testable acceptance criteria, genuine dependencies, suitable ticket types, priorities, and future
@@ -195,6 +240,9 @@ public enum CodexTicketSuggestionGenerator {
       reference is unique, the dependency graph is acyclic, and every dependsOn value exactly matches either
       the reference of another ticket in this response or one of these active backlog keys:
       \(existingKeys.isEmpty ? "none" : existingKeys).
+      Preserve or correct environmentAssessment and every environmentRelationship. If the assessment says
+      foundation_required, its foundation ticket must exist and every requires ticket must depend on it
+      directly or transitively.
       """
   }
 
@@ -202,8 +250,9 @@ public enum CodexTicketSuggestionGenerator {
     .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
-      "required": .array([.string("suggestions")]),
+      "required": .array([.string("environmentAssessment"), .string("suggestions")]),
       "properties": .object([
+        "environmentAssessment": environmentAssessmentSchema,
         "suggestions": suggestionArraySchema
       ]),
     ])
@@ -220,7 +269,7 @@ public enum CodexTicketSuggestionGenerator {
           "additionalProperties": .bool(false),
           "required": .array([
             .string("title"), .string("goal"), .string("successCriteria"),
-            .string("constraints"),
+            .string("constraints"), .string("environmentAssessment"),
           ]),
           "properties": .object([
             "title": .object(["type": .string("string")]),
@@ -231,9 +280,36 @@ public enum CodexTicketSuggestionGenerator {
               "items": .object(["type": .string("string")]),
             ]),
             "constraints": .object(["type": .string("string")]),
+            "environmentAssessment": environmentAssessmentSchema,
           ]),
         ]),
         "suggestions": suggestionArraySchema,
+      ]),
+    ])
+  }
+
+  private static var environmentAssessmentSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([
+        .string("readiness"), .string("rationale"),
+        .string("foundationTicketReference"),
+      ]),
+      "properties": .object([
+        "readiness": .object([
+          "type": .string("string"),
+          "enum": .array(
+            EpicEnvironmentReadiness.allCases.map { .string($0.rawValue) }
+          ),
+        ]),
+        "rationale": .object(["type": .string("string")]),
+        "foundationTicketReference": .object([
+          "anyOf": .array([
+            .object(["type": .string("string")]),
+            .object(["type": .string("null")]),
+          ])
+        ]),
       ]),
     ])
   }
@@ -249,7 +325,7 @@ public enum CodexTicketSuggestionGenerator {
         "required": .array([
           .string("reference"), .string("title"), .string("body"),
           .string("type"), .string("acceptanceCriteria"), .string("role"), .string("priority"),
-          .string("rationale"), .string("dependsOn"),
+          .string("rationale"), .string("dependsOn"), .string("environmentRelationship"),
         ]),
         "properties": .object([
           "reference": .object(["type": .string("string")]),
@@ -283,6 +359,12 @@ public enum CodexTicketSuggestionGenerator {
             "type": .string("array"),
             "items": .object(["type": .string("string")]),
           ]),
+          "environmentRelationship": .object([
+            "type": .string("string"),
+            "enum": .array(
+              TicketEnvironmentRelationship.allCases.map { .string($0.rawValue) }
+            ),
+          ]),
         ]),
       ]),
     ])
@@ -301,11 +383,27 @@ public enum CodexTicketSuggestionGenerator {
     } catch {
       throw TicketSuggestionGenerationError.invalidResponse(error.localizedDescription)
     }
+    let ticketSuggestions = try decodeSuggestions(
+      response.suggestions,
+      existingItems: existingItems
+    )
+    _ = try decodeEnvironmentAssessment(
+      response.environmentAssessment,
+      suggestions: response.suggestions,
+      ticketSuggestions: ticketSuggestions,
+      existingItems: existingItems
+    )
+    return ticketSuggestions
+  }
 
-    guard (1...24).contains(response.suggestions.count) else {
+  private static func decodeSuggestions(
+    _ suggestions: [GeneratedSuggestion],
+    existingItems: [WorkItem]
+  ) throws -> [TicketSuggestionDraft] {
+    guard (1...24).contains(suggestions.count) else {
       throw TicketSuggestionGenerationError.invalidResponse("Expected between 1 and 24 tickets.")
     }
-    let references = response.suggestions.map { normalizedReference($0.reference) }
+    let references = suggestions.map { normalizedReference($0.reference) }
     guard references.allSatisfy({ !$0.isEmpty }) else {
       throw TicketSuggestionGenerationError.invalidResponse(
         "Every ticket needs a non-empty reference."
@@ -326,7 +424,7 @@ public enum CodexTicketSuggestionGenerator {
       uniquingKeysWith: { first, _ in first }
     )
     let validDependencyReferences = referenceSet.union(existingItemByReference.keys)
-    guard response.suggestions.allSatisfy({ suggestion in
+    guard suggestions.allSatisfy({ suggestion in
       suggestion.dependsOn.map(normalizedReference)
         .allSatisfy(validDependencyReferences.contains)
     }) else {
@@ -335,7 +433,7 @@ public enum CodexTicketSuggestionGenerator {
       )
     }
     let dependencies = Dictionary(
-      uniqueKeysWithValues: response.suggestions.map {
+      uniqueKeysWithValues: suggestions.map {
         (
           normalizedReference($0.reference),
           $0.dependsOn.map(normalizedReference).filter(referenceSet.contains)
@@ -348,17 +446,21 @@ public enum CodexTicketSuggestionGenerator {
       )
     }
 
-    return try response.suggestions.map { suggestion in
+    return try suggestions.map { suggestion in
       guard
         !suggestion.reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
         !suggestion.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
         !suggestion.acceptanceCriteria.isEmpty,
         let type = WorkItemType(rawValue: suggestion.type),
         let role = AgentRole(rawValue: suggestion.role),
-        let priority = priority(named: suggestion.priority)
+        let priority = priority(named: suggestion.priority),
+        let environmentRelationship = TicketEnvironmentRelationship(
+          rawValue: suggestion.environmentRelationship
+        )
       else {
         throw TicketSuggestionGenerationError.invalidResponse(
-          "Each ticket needs a reference, title, type, criteria, valid role, and priority."
+          "Each ticket needs a reference, title, type, criteria, valid role, priority, "
+            + "and environment relationship."
         )
       }
       let reference = normalizedReference(suggestion.reference)
@@ -396,7 +498,8 @@ public enum CodexTicketSuggestionGenerator {
           Set(
             dependencyReferences.compactMap { existingItemByReference[$0]?.key }
           )
-        ).sorted()
+        ).sorted(),
+        environmentRelationship: environmentRelationship
       )
     }
   }
@@ -424,7 +527,16 @@ public enum CodexTicketSuggestionGenerator {
         "The epic needs a title, goal, and at least one success criterion."
       )
     }
-    let ticketSuggestions = try decode(text, existingItems: existingItems)
+    let ticketSuggestions = try decodeSuggestions(
+      response.suggestions,
+      existingItems: existingItems
+    )
+    let environmentAssessment = try decodeEnvironmentAssessment(
+      response.epic.environmentAssessment,
+      suggestions: response.suggestions,
+      ticketSuggestions: ticketSuggestions,
+      existingItems: existingItems
+    )
     let decisionOutputTerms = [
       "analysis", "assessment", "comparison", "decision", "evaluate", "evaluation",
       "findings", "options", "recommend", "research", "select", "selection",
@@ -447,7 +559,125 @@ public enum CodexTicketSuggestionGenerator {
       goal: goal,
       successCriteria: criteria,
       constraints: response.epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
+      environmentAssessment: environmentAssessment,
       ticketSuggestions: ticketSuggestions
+    )
+  }
+
+  private static func decodeEnvironmentAssessment(
+    _ generated: GeneratedEnvironmentAssessment,
+    suggestions: [GeneratedSuggestion],
+    ticketSuggestions: [TicketSuggestionDraft],
+    existingItems: [WorkItem]
+  ) throws -> EpicEnvironmentAssessment {
+    guard
+      let readiness = EpicEnvironmentReadiness(rawValue: generated.readiness),
+      !generated.rationale.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse(
+        "The plan needs a valid environment readiness assessment and rationale."
+      )
+    }
+
+    let generatedReferences = suggestions.map { normalizedReference($0.reference) }
+    let proposalReferenceByGeneratedReference = Dictionary(
+      uniqueKeysWithValues: generatedReferences.enumerated().map { index, reference in
+        (reference, ticketSuggestions[index].reference)
+      }
+    )
+    let activeExistingItems = existingItems.filter { $0.state != .cancelled }
+    let existingItemByReference = Dictionary(
+      activeExistingItems.map { (normalizedReference($0.key), $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let trimmedFoundationReference = generated.foundationTicketReference?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let foundationReference = trimmedFoundationReference.isEmpty
+      ? nil
+      : normalizedReference(trimmedFoundationReference)
+    let establishingReferences = Set(
+      zip(generatedReferences, ticketSuggestions).compactMap { reference, suggestion in
+        suggestion.environmentRelationship == .establishes ? reference : nil
+      }
+    )
+
+    switch readiness {
+    case .sufficient:
+      guard foundationReference == nil, establishingReferences.isEmpty else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A sufficient environment cannot also declare an environment-foundation ticket."
+        )
+      }
+    case .notRequired:
+      guard
+        foundationReference == nil,
+        ticketSuggestions.allSatisfy({ $0.environmentRelationship == .independent })
+      else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A plan that needs no executable environment must mark every ticket independent."
+        )
+      }
+    case .foundationRequired:
+      guard let foundationReference else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A missing environment must identify its foundation ticket."
+        )
+      }
+      let proposedFoundationIndex = generatedReferences.firstIndex(of: foundationReference)
+      let isExistingFoundation = existingItemByReference[foundationReference] != nil
+      guard proposedFoundationIndex != nil || isExistingFoundation else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "The environment foundation must reference a proposed or active ticket."
+        )
+      }
+      if let proposedFoundationIndex {
+        let foundation = ticketSuggestions[proposedFoundationIndex]
+        guard
+          establishingReferences == Set([foundationReference]),
+          foundation.environmentRelationship == .establishes,
+          foundation.suggestedRole == .implementer,
+          foundation.type == .task
+        else {
+          throw TicketSuggestionGenerationError.invalidResponse(
+            "The proposed environment foundation must be the only establishes ticket "
+              + "and must be an Implementer task."
+          )
+        }
+      } else {
+        guard establishingReferences.isEmpty else {
+          throw TicketSuggestionGenerationError.invalidResponse(
+            "A plan using an existing environment foundation cannot propose a second one."
+          )
+        }
+      }
+
+      let dependencies = Dictionary(
+        uniqueKeysWithValues: zip(generatedReferences, suggestions).map {
+          reference, suggestion in
+          (reference, suggestion.dependsOn.map(normalizedReference))
+        }
+      )
+      for (reference, suggestion) in zip(generatedReferences, ticketSuggestions)
+      where suggestion.environmentRelationship == .requires {
+        guard hasDependencyPath(
+          from: reference,
+          to: foundationReference,
+          dependencies: dependencies
+        ) else {
+          throw TicketSuggestionGenerationError.invalidResponse(
+            "Every ticket that requires the missing environment must depend on its foundation."
+          )
+        }
+      }
+    }
+
+    let durableFoundationReference = foundationReference.flatMap {
+      proposalReferenceByGeneratedReference[$0] ?? existingItemByReference[$0]?.key
+    }
+    return EpicEnvironmentAssessment(
+      readiness: readiness,
+      rationale: generated.rationale.trimmingCharacters(in: .whitespacesAndNewlines),
+      foundationTicketReference: durableFoundationReference
     )
   }
 
@@ -488,9 +718,25 @@ public enum CodexTicketSuggestionGenerator {
 
     return dependencies.keys.contains { visit($0) }
   }
+
+  private static func hasDependencyPath(
+    from reference: String,
+    to target: String,
+    dependencies: [String: [String]]
+  ) -> Bool {
+    var pending = dependencies[reference] ?? []
+    var visited: Set<String> = []
+    while let current = pending.popLast() {
+      if current == target { return true }
+      guard visited.insert(current).inserted else { continue }
+      pending.append(contentsOf: dependencies[current] ?? [])
+    }
+    return false
+  }
 }
 
 private struct GeneratedResponse: Decodable {
+  let environmentAssessment: GeneratedEnvironmentAssessment
   let suggestions: [GeneratedSuggestion]
 }
 
@@ -504,6 +750,13 @@ private struct GeneratedEpic: Decodable {
   let goal: String
   let successCriteria: [String]
   let constraints: String
+  let environmentAssessment: GeneratedEnvironmentAssessment
+}
+
+private struct GeneratedEnvironmentAssessment: Decodable {
+  let readiness: String
+  let rationale: String
+  let foundationTicketReference: String?
 }
 
 private struct GeneratedSuggestion: Decodable {
@@ -516,4 +769,5 @@ private struct GeneratedSuggestion: Decodable {
   let priority: String
   let rationale: String
   let dependsOn: [String]
+  let environmentRelationship: String
 }

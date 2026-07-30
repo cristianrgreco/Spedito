@@ -28,6 +28,8 @@ let package = Package(
       name: "StoryPointlessApp",
       dependencies: ["StoryPointlessCore"],
       resources: [
+        .copy("Resources/AppIcon.icns"),
+        .copy("Resources/AppIcon.png"),
         .copy("Resources/ticket-attention.wav")
       ]
     ),

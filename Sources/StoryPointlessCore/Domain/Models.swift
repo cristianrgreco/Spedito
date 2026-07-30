@@ -21,14 +21,29 @@ public enum ProductColor: String, Codable, CaseIterable, Hashable, Sendable {
   case pink
   case indigo
 
-  static let automaticallyAssigned: [ProductColor] = [
-    .blue,
-    .teal,
+  static let assignmentOrder: [ProductColor] = [
     .green,
-    .orange,
-    .pink,
     .indigo,
+    .orange,
+    .teal,
+    .pink,
+    .blue,
   ]
+
+  static func nextAssigned(after existingColors: [ProductColor]) -> ProductColor {
+    guard !existingColors.isEmpty else {
+      return .accent
+    }
+
+    let rotatedColors = existingColors.filter { $0 != .accent }
+    let usedColors = Set(rotatedColors)
+    if let unusedColor = assignmentOrder.first(where: {
+      !usedColors.contains($0)
+    }) {
+      return unusedColor
+    }
+    return assignmentOrder[rotatedColors.count % assignmentOrder.count]
+  }
 }
 
 public struct Product: Identifiable, Codable, Hashable, Sendable {
@@ -440,6 +455,34 @@ public enum TicketSuggestionStatus: String, Codable, Sendable {
   case rejected
 }
 
+public enum TicketEnvironmentRelationship: String, Codable, CaseIterable, Hashable, Sendable {
+  case independent
+  case establishes
+  case requires
+}
+
+public enum EpicEnvironmentReadiness: String, Codable, CaseIterable, Hashable, Sendable {
+  case sufficient
+  case foundationRequired = "foundation_required"
+  case notRequired = "not_required"
+}
+
+public struct EpicEnvironmentAssessment: Codable, Hashable, Sendable {
+  public let readiness: EpicEnvironmentReadiness
+  public let rationale: String
+  public let foundationTicketReference: String?
+
+  public init(
+    readiness: EpicEnvironmentReadiness,
+    rationale: String,
+    foundationTicketReference: String? = nil
+  ) {
+    self.readiness = readiness
+    self.rationale = rationale
+    self.foundationTicketReference = foundationTicketReference
+  }
+}
+
 public struct TicketSuggestion: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let sessionID: UUID
@@ -509,6 +552,7 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
   public let rationale: String
   public let dependsOnReferences: [String]
   public let dependsOnExistingWorkItemKeys: [String]
+  public let environmentRelationship: TicketEnvironmentRelationship
 
   public init(
     reference: String,
@@ -520,7 +564,8 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
     priority: WorkItemPriority,
     rationale: String,
     dependsOnReferences: [String] = [],
-    dependsOnExistingWorkItemKeys: [String] = []
+    dependsOnExistingWorkItemKeys: [String] = [],
+    environmentRelationship: TicketEnvironmentRelationship = .independent
   ) {
     self.reference = reference
     self.title = title
@@ -532,6 +577,7 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
     self.rationale = rationale
     self.dependsOnReferences = dependsOnReferences
     self.dependsOnExistingWorkItemKeys = dependsOnExistingWorkItemKeys
+    self.environmentRelationship = environmentRelationship
   }
 }
 
@@ -540,6 +586,7 @@ public struct EpicPlanDraft: Codable, Hashable, Sendable {
   public let goal: String
   public let successCriteria: [String]
   public let constraints: String
+  public let environmentAssessment: EpicEnvironmentAssessment
   public let ticketSuggestions: [TicketSuggestionDraft]
 
   public init(
@@ -547,12 +594,14 @@ public struct EpicPlanDraft: Codable, Hashable, Sendable {
     goal: String,
     successCriteria: [String],
     constraints: String,
+    environmentAssessment: EpicEnvironmentAssessment,
     ticketSuggestions: [TicketSuggestionDraft]
   ) {
     self.title = title
     self.goal = goal
     self.successCriteria = successCriteria
     self.constraints = constraints
+    self.environmentAssessment = environmentAssessment
     self.ticketSuggestions = ticketSuggestions
   }
 }
@@ -573,13 +622,109 @@ public enum CommentAuthorKind: String, Codable, Sendable {
   case system
 }
 
+public enum ConversationThreadStatus: String, Codable, CaseIterable, Sendable {
+  case working
+  case complete
+  case needsInput = "needs_input"
+  case failed
+  case cancelled
+  case archived
+
+  public var title: String {
+    switch self {
+    case .working: "Working"
+    case .complete: "Complete"
+    case .needsInput: "Needs your input"
+    case .failed: "Failed"
+    case .cancelled: "Cancelled"
+    case .archived: "Archived"
+    }
+  }
+}
+
+public struct ProductConversationThread: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let recipientProfileID: UUID
+  public var subject: String
+  public var status: ConversationThreadStatus
+  public var codexThreadID: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    recipientProfileID: UUID,
+    subject: String,
+    status: ConversationThreadStatus = .working,
+    codexThreadID: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.recipientProfileID = recipientProfileID
+    self.subject = subject
+    self.status = status
+    self.codexThreadID = codexThreadID
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+
+  public var isArchived: Bool {
+    status == .archived
+  }
+}
+
+public struct ProductConversationMessage: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let threadID: UUID
+  public let authorKind: CommentAuthorKind
+  public let authorName: String
+  public let body: String
+  public let createdAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    threadID: UUID,
+    authorKind: CommentAuthorKind,
+    authorName: String,
+    body: String,
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.threadID = threadID
+    self.authorKind = authorKind
+    self.authorName = authorName
+    self.body = body
+    self.createdAt = createdAt
+  }
+}
+
+public struct TicketDecisionArtifact: Codable, Hashable, Sendable {
+  public let title: String
+  public let path: String
+
+  public init(title: String, path: String) {
+    self.title = title
+    self.path = path
+  }
+}
+
 public struct TicketOwnerQuestion: Codable, Hashable, Sendable {
   public let prompt: String
   public let options: [String]
+  public let decisionArtifact: TicketDecisionArtifact?
 
-  public init(prompt: String, options: [String]) {
+  public init(
+    prompt: String,
+    options: [String],
+    decisionArtifact: TicketDecisionArtifact? = nil
+  ) {
     self.prompt = prompt
     self.options = options
+    self.decisionArtifact = decisionArtifact
   }
 
   public static func presentation(
@@ -587,13 +732,16 @@ public struct TicketOwnerQuestion: Codable, Hashable, Sendable {
     structuredQuestion: TicketOwnerQuestion?
   ) -> TicketOwnerQuestionPresentation? {
     if let legacyPresentation = parseLegacyWorkLogBody(body) {
-      guard
-        structuredQuestion == nil
-          || structuredQuestion == legacyPresentation.question
-      else {
-        return structuredQuestion.map {
-          TicketOwnerQuestionPresentation(context: body, question: $0)
-        }
+      if let structuredQuestion,
+        (
+          structuredQuestion.prompt != legacyPresentation.question.prompt
+            || structuredQuestion.options != legacyPresentation.question.options
+        )
+      {
+        return TicketOwnerQuestionPresentation(
+          context: body,
+          question: structuredQuestion
+        )
       }
       return TicketOwnerQuestionPresentation(
         context: legacyPresentation.context,

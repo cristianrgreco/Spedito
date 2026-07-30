@@ -72,6 +72,10 @@ final class MacOSDemoLauncher {
     self.executor = executor
   }
 
+  func clearExecutor() {
+    executor = nil
+  }
+
   func smokeTest(
     candidateID: UUID,
     specification: DemoLaunchSpecification,

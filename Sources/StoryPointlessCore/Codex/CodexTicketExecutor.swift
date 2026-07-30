@@ -84,6 +84,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
   public let tests: [String]
   public let knowledgeNotes: [String]
   public let reviewInstructions: [String]
+  public let decisionArtifact: TicketDecisionArtifact?
   public let demo: DemoLaunchSpecification?
   public let retrospectiveWentWell: [String]
   public let retrospectiveCouldImprove: [String]
@@ -101,6 +102,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     tests: [String],
     knowledgeNotes: [String],
     reviewInstructions: [String],
+    decisionArtifact: TicketDecisionArtifact? = nil,
     demo: DemoLaunchSpecification? = nil,
     retrospectiveWentWell: [String],
     retrospectiveCouldImprove: [String],
@@ -117,6 +119,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     self.tests = tests
     self.knowledgeNotes = knowledgeNotes
     self.reviewInstructions = reviewInstructions
+    self.decisionArtifact = decisionArtifact
     self.demo = demo
     self.retrospectiveWentWell = retrospectiveWentWell
     self.retrospectiveCouldImprove = retrospectiveCouldImprove
@@ -158,6 +161,11 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
       return sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
     case .awaitingOwner:
       var sections = [comment]
+      if let decisionArtifact {
+        sections.append(
+          "Decision evidence: \(decisionArtifact.title) (`\(decisionArtifact.path)`)"
+        )
+      }
       if let question, !question.isEmpty {
         sections.append("Question for you: \(question)")
       }
@@ -166,6 +174,75 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
       }
       return sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
+  }
+}
+
+public enum TicketDecisionArtifactValidationError: Error, Equatable, LocalizedError, Sendable {
+  case invalid(String)
+
+  public var errorDescription: String? {
+    switch self {
+    case .invalid(let detail):
+      "The decision evidence is invalid: \(detail)"
+    }
+  }
+}
+
+public enum TicketDecisionArtifactValidator {
+  public static func normalized(
+    _ artifact: TicketDecisionArtifact
+  ) throws -> TicketDecisionArtifact {
+    let title = artifact.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let path = artifact.path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "decisionArtifact needs a short Product Owner-facing title."
+      )
+    }
+    guard !path.isEmpty else {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "decisionArtifact needs a workspace-relative file path."
+      )
+    }
+    do {
+      _ = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+        path,
+        in: URL(fileURLWithPath: "/private/tmp/storypointless-decision-artifact")
+      )
+    } catch {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "decisionArtifact path is unsafe: \(error.localizedDescription)"
+      )
+    }
+    return TicketDecisionArtifact(
+      title: title,
+      path: path.hasPrefix("./") ? String(path.dropFirst(2)) : path
+    )
+  }
+
+  public static func resolveExistingFile(
+    _ artifact: TicketDecisionArtifact,
+    in workspaceURL: URL
+  ) throws -> URL {
+    let target: URL
+    do {
+      target = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+        artifact.path,
+        in: workspaceURL
+      )
+    } catch {
+      throw TicketDecisionArtifactValidationError.invalid(error.localizedDescription)
+    }
+    var isDirectory: ObjCBool = false
+    guard
+      FileManager.default.fileExists(atPath: target.path, isDirectory: &isDirectory),
+      !isDirectory.boolValue
+    else {
+      throw TicketDecisionArtifactValidationError.invalid(
+        "the file “\(artifact.path)” is missing from the ticket workspace."
+      )
+    }
+    return target
   }
 }
 
@@ -488,8 +565,11 @@ public enum CodexTicketExecutor {
     handling any required scoped capability prevents that, return awaiting_owner instead. A missing
     sandbox filesystem or network capability is not an unavailable external dependency: use the
     available `request_permissions` tool rather than asking the Product Owner to restore, enable,
-    add, or confirm access in an ordinary Work log question. Return only the JSON required by the
-    supplied schema.
+    add, or confirm access in an ordinary Work log question. For awaiting_owner, return one question
+    and two to four options, empty knowledgePageProposals and followUpTicketProposals, and a null
+    demo. Put any existing workspace evidence needed for the decision in decisionArtifact; do not
+    turn an undecided outcome into a Product knowledge proposal. Return only the JSON required by
+    the supplied schema.
     """
   }
 
@@ -507,6 +587,7 @@ public enum CodexTicketExecutor {
         .string("tests"),
         .string("knowledgeNotes"),
         .string("reviewInstructions"),
+        .string("decisionArtifact"),
         .string("demo"),
         .string("retrospectiveWentWell"),
         .string("retrospectiveCouldImprove"),
@@ -517,6 +598,9 @@ public enum CodexTicketExecutor {
       "properties": .object([
         "status": .object([
           "type": .string("string"),
+          "description": .string(
+            "Use awaiting_owner only for an unresolved Product Owner decision; it is not completion."
+          ),
           "enum": .array([
             .string(TicketExecutionStatus.completed.rawValue),
             .string(TicketExecutionStatus.awaitingOwner.rawValue),
@@ -524,6 +608,9 @@ public enum CodexTicketExecutor {
         ]),
         "comment": .object(["type": .string("string")]),
         "question": .object([
+          "description": .string(
+            "One decision question for awaiting_owner; null for completed."
+          ),
           "anyOf": .array([
             .object(["type": .string("string")]),
             .object(["type": .string("null")]),
@@ -531,6 +618,9 @@ public enum CodexTicketExecutor {
         ]),
         "options": .object([
           "type": .string("array"),
+          "description": .string(
+            "Two to four decision options for awaiting_owner; empty for completed."
+          ),
           "items": .object(["type": .string("string")]),
         ]),
         "summary": .object(["type": .string("string")]),
@@ -551,6 +641,7 @@ public enum CodexTicketExecutor {
           "maxItems": .number(6),
           "items": .object(["type": .string("string")]),
         ]),
+        "decisionArtifact": nullableDecisionArtifactSchema,
         "demo": nullableDemoLaunchSpecificationSchema,
         "retrospectiveWentWell": .object([
           "type": .string("array"),
@@ -567,6 +658,9 @@ public enum CodexTicketExecutor {
         ]),
         "knowledgePageProposals": .object([
           "type": .string("array"),
+          "description": .string(
+            "Final candidate-bound Product knowledge proposals. Must be empty for awaiting_owner."
+          ),
           "maxItems": .number(4),
           "items": .object([
             "type": .string("object"),
@@ -597,6 +691,9 @@ public enum CodexTicketExecutor {
         ]),
         "followUpTicketProposals": .object([
           "type": .string("array"),
+          "description": .string(
+            "Final research follow-up proposals. Must be empty for awaiting_owner."
+          ),
           "maxItems": .number(12),
           "items": followUpTicketProposalSchema,
         ]),
@@ -620,6 +717,9 @@ public enum CodexTicketExecutor {
     let options = generated.options
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
+    let decisionArtifact = try generated.decisionArtifact.map {
+      try TicketDecisionArtifactValidator.normalized($0)
+    }
     guard !comment.isEmpty else {
       throw TicketExecutionGenerationError.invalidResponse("A Work log comment is required.")
     }
@@ -644,11 +744,25 @@ public enum CodexTicketExecutor {
           "Awaiting-owner results cannot include a demo recipe."
         )
       }
+    } else if decisionArtifact != nil {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Completed results must use their managed demo rather than decisionArtifact."
+      )
     }
     let summary = generated.summary.trimmingCharacters(in: .whitespacesAndNewlines)
     let changedFiles = clean(generated.changedFiles)
     let tests = clean(generated.tests)
     var reviewInstructions = clean(generated.reviewInstructions)
+    if let decisionArtifact {
+      let normalizedChangedFiles = Set(
+        changedFiles.map { $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0 }
+      )
+      guard normalizedChangedFiles.contains(decisionArtifact.path) else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "decisionArtifact must also be listed in changedFiles."
+        )
+      }
+    }
     if generated.status == .completed {
       guard !summary.isEmpty else {
         throw TicketExecutionGenerationError.invalidResponse(
@@ -730,6 +844,7 @@ public enum CodexTicketExecutor {
       tests: tests,
       knowledgeNotes: clean(generated.knowledgeNotes),
       reviewInstructions: reviewInstructions,
+      decisionArtifact: decisionArtifact,
       demo: generated.demo,
       retrospectiveWentWell: Array(clean(generated.retrospectiveWentWell).prefix(2)),
       retrospectiveCouldImprove: Array(clean(generated.retrospectiveCouldImprove).prefix(2)),
@@ -758,6 +873,37 @@ public enum CodexTicketExecutor {
         .object(["type": .string("string")]),
         .object(["type": .string("null")]),
       ])
+    ])
+  }
+
+  private static var nullableDecisionArtifactSchema: JSONValue {
+    .object([
+      "description": .string(
+        "Workspace evidence for an awaiting_owner decision. Use null for completed results."
+      ),
+      "anyOf": .array([
+        .object([
+          "type": .string("object"),
+          "additionalProperties": .bool(false),
+          "required": .array([
+            .string("title"),
+            .string("path"),
+          ]),
+          "properties": .object([
+            "title": .object([
+              "type": .string("string"),
+              "description": .string("Short Product Owner-facing evidence title."),
+            ]),
+            "path": .object([
+              "type": .string("string"),
+              "description": .string(
+                "Workspace-relative file path also present in changedFiles."
+              ),
+            ]),
+          ]),
+        ]),
+        .object(["type": .string("null")]),
+      ]),
     ])
   }
 
@@ -889,6 +1035,9 @@ public enum CodexTicketExecutor {
       ]),
     ])
     return .object([
+      "description": .string(
+        "Managed review recipe for a completed candidate. Must be null for awaiting_owner."
+      ),
       "anyOf": .array([
         specification,
         .object(["type": .string("null")]),
@@ -1081,6 +1230,7 @@ private struct GeneratedTicketExecutionResult: Codable {
   let tests: [String]
   let knowledgeNotes: [String]
   let reviewInstructions: [String]
+  let decisionArtifact: TicketDecisionArtifact?
   let demo: DemoLaunchSpecification?
   let retrospectiveWentWell: [String]
   let retrospectiveCouldImprove: [String]

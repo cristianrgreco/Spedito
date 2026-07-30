@@ -3,7 +3,8 @@ import Foundation
 public struct CodexRuntimeCandidate: Equatable, Sendable {
   public enum Source: String, Equatable, Sendable {
     case bundled
-    case developmentFixture = "development_fixture"
+    case officialApplication = "official_application"
+    case custom
   }
 
   public let executableURL: URL
@@ -30,70 +31,71 @@ public struct CodexRuntimeDescriptor: Equatable, Sendable {
 public enum CodexRuntimeError: Error, Equatable, LocalizedError, Sendable {
   case notFound
   case couldNotInspect(String)
-  case incompatible(expected: String, actual: String, path: String)
   case missingRequiredFeature(name: String, path: String)
 
   public var errorDescription: String? {
     switch self {
     case .notFound:
-      "The StoryPointless Codex runtime is not installed."
+      "Codex is not installed. Install the Codex app or add another Codex installation."
     case .couldNotInspect(let path):
-      "Could not inspect the Codex runtime at \(path)."
-    case .incompatible(let expected, let actual, _):
-      "Codex runtime \(actual) is incompatible with this build; expected \(expected)."
+      "StoryPointless could not inspect the Codex installation at \(path)."
     case .missingRequiredFeature(let name, _):
-      "The StoryPointless Codex runtime does not support the required \(name) capability."
+      "This Codex installation does not support the required \(name) capability."
     }
   }
 }
 
 public struct CodexRuntimeResolver: Sendable {
-  public static let pinnedVersion = "0.144.0-alpha.4"
+  public static let requiredFeatures: Set<String> = [
+    CodexPermissionProfiles.requestPermissionsFeature
+  ]
 
-  public let expectedVersion: String
+  public let requiredFeatures: Set<String>
 
-  public init(expectedVersion: String = Self.pinnedVersion) {
-    self.expectedVersion = expectedVersion
+  public init(requiredFeatures: Set<String> = Self.requiredFeatures) {
+    self.requiredFeatures = requiredFeatures
   }
 
   public func resolve(candidates: [CodexRuntimeCandidate]) throws -> CodexRuntimeDescriptor {
-    var firstIncompatible: CodexRuntimeError?
+    var firstInspectionError: CodexRuntimeError?
 
     for candidate in candidates {
       guard FileManager.default.isExecutableFile(atPath: candidate.executableURL.path) else {
         continue
       }
 
-      let version = try inspectVersion(at: candidate.executableURL)
-      guard version == expectedVersion else {
-        if firstIncompatible == nil {
-          firstIncompatible = .incompatible(
-            expected: expectedVersion,
-            actual: version,
-            path: candidate.executableURL.path
-          )
+      do {
+        let version = try inspectVersion(at: candidate.executableURL)
+        let enabledFeatures = try inspectEnabledFeatures(at: candidate.executableURL)
+        if let missingFeature = requiredFeatures.subtracting(enabledFeatures).sorted().first {
+          if firstInspectionError == nil {
+            firstInspectionError = .missingRequiredFeature(
+              name: missingFeature,
+              path: candidate.executableURL.path
+            )
+          }
+          continue
         }
-        continue
-      }
-      let enabledFeatures = try inspectEnabledFeatures(at: candidate.executableURL)
-      guard enabledFeatures.contains(CodexPermissionProfiles.requestPermissionsFeature) else {
-        if firstIncompatible == nil {
-          firstIncompatible = .missingRequiredFeature(
-            name: CodexPermissionProfiles.requestPermissionsFeature,
-            path: candidate.executableURL.path
-          )
-        }
-        continue
-      }
 
-      return CodexRuntimeDescriptor(
-        executableURL: candidate.executableURL,
-        version: version,
-        source: candidate.source
-      )
+        return CodexRuntimeDescriptor(
+          executableURL: candidate.executableURL,
+          version: version,
+          source: candidate.source
+        )
+      } catch let error as CodexRuntimeError {
+        if firstInspectionError == nil {
+          firstInspectionError = error
+        }
+      } catch {
+        if firstInspectionError == nil {
+          firstInspectionError = .couldNotInspect(
+            candidate.executableURL.path
+          )
+        }
+      }
     }
 
-    if let firstIncompatible { throw firstIncompatible }
+    if let firstInspectionError { throw firstInspectionError }
     throw CodexRuntimeError.notFound
   }
 

@@ -29,6 +29,12 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
   private var isPreparingToTerminate = false
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    if let iconURL = StoryPointlessResources.url(
+      forResource: "AppIcon",
+      withExtension: "png"
+    ) {
+      NSApplication.shared.applicationIconImage = NSImage(contentsOf: iconURL)
+    }
     NSApplication.shared.setActivationPolicy(.regular)
 
     DispatchQueue.main.async {

@@ -101,6 +101,7 @@ private struct ProductOnboardingView: View {
 }
 
 private enum WorkspaceDestination: String, Hashable {
+  case conversation
   case backlog
   case sprint
   case retrospectives
@@ -309,6 +310,8 @@ private struct ProductWorkspaceView: View {
     } detail: {
       Group {
         switch destination {
+        case .conversation:
+          ProductConversationView()
         case .backlog:
           BacklogView(
             onNewTicket: { epicID in
@@ -614,7 +617,37 @@ private struct TeamSidebar: View {
             .tag(WorkspaceDestination.codebase)
         }
 
-        Section {
+        Section("Team") {
+          Label("Chat", systemImage: "bubble.left.and.bubble.right")
+            .tag(WorkspaceDestination.conversation)
+
+          Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+              isTeamExpanded.toggle()
+            }
+          } label: {
+            HStack(spacing: 7) {
+              Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(isTeamExpanded ? 90 : 0))
+                .frame(width: 12)
+              Label("Team members", systemImage: "person.3")
+              Text(model.profiles.count.formatted())
+                .font(.caption2.monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(.quaternary, in: Capsule())
+              Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .help(isTeamExpanded ? "Collapse team members" : "Expand team members")
+          .accessibilityLabel("Team members")
+          .accessibilityValue(isTeamExpanded ? "Expanded" : "Collapsed")
+
           if isTeamExpanded {
             Button {
               showingTeamPrompts = true
@@ -627,7 +660,7 @@ private struct TeamSidebar: View {
                   Text("Team settings")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.primary)
-                  Text("Models, effort & instructions")
+                  Text("Models, effort and instructions")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 }
@@ -639,9 +672,11 @@ private struct TeamSidebar: View {
               .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .padding(.leading, 19)
             .padding(.top, 3)
             .padding(.bottom, 9)
             .help("Configure team models, effort, and instructions")
+            .transition(.opacity)
 
             ForEach(model.profiles) { profile in
               VStack(alignment: .leading, spacing: 7) {
@@ -664,31 +699,13 @@ private struct TeamSidebar: View {
                   ProfileEffortMenu(profile: profile)
                 }
                 .padding(.leading, 29)
+                .padding(.trailing, 8)
               }
+              .padding(.leading, 19)
               .padding(.vertical, 3)
+              .transition(.opacity)
             }
           }
-        } header: {
-          Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
-              isTeamExpanded.toggle()
-            }
-          } label: {
-            HStack(spacing: 6) {
-              Image(systemName: isTeamExpanded ? "chevron.down" : "chevron.right")
-                .font(.caption2.weight(.semibold))
-              Text("Team")
-              Text(model.profiles.count.formatted())
-                .font(.caption2.monospacedDigit())
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-                .background(.quaternary, in: Capsule())
-              Spacer()
-            }
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .help(isTeamExpanded ? "Collapse team" : "Expand team")
         }
       }
       .listStyle(.sidebar)
@@ -706,10 +723,527 @@ private struct TeamSidebar: View {
 
 }
 
-private struct SidebarCodexStatus: View {
+private struct ProductConversationView: View {
   @EnvironmentObject private var model: AppModel
+  @State private var selectedThreadID: UUID?
+  @State private var selectedRecipientID: UUID?
+  @State private var draft = ""
+  @State private var isStartingThread = false
+  @State private var showingArchived = false
+
+  private var activeThreads: [ProductConversationThread] {
+    model.conversationThreads.filter { !$0.isArchived }
+  }
+
+  private var archivedThreads: [ProductConversationThread] {
+    model.conversationThreads.filter(\.isArchived)
+  }
+
+  private var selectedThread: ProductConversationThread? {
+    model.conversationThreads.first { $0.id == selectedThreadID }
+  }
+
+  private var selectedRecipient: AgentProfile? {
+    let recipientID = selectedRecipientID ?? selectedThread?.recipientProfileID
+    return model.profiles.first { $0.id == recipientID }
+  }
+
+  private var messages: [ProductConversationMessage] {
+    guard let selectedThreadID else { return [] }
+    return model.conversationMessagesByThread[selectedThreadID] ?? []
+  }
+
+  private var isSelectedThreadResponding: Bool {
+    guard let selectedThreadID else { return false }
+    return model.respondingConversationThreadIDs.contains(selectedThreadID)
+  }
+
+  private var archiveThreadTitle: AttributedString {
+    var title = AttributedString("Archive thread")
+    title.foregroundColor = .red
+    return title
+  }
 
   var body: some View {
+    HSplitView {
+      threadList
+        .frame(idealWidth: 290, maxWidth: 360)
+        .frame(maxHeight: .infinity)
+
+      VStack(spacing: 0) {
+        conversationHeader
+        Divider()
+        conversationTimeline
+        Divider()
+        conversationStatus
+        if selectedThread?.isArchived == true {
+          archivedThreadFooter
+        } else {
+          composer
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .navigationTitle("Chat")
+    .onAppear {
+      if selectedThreadID == nil, let firstThread = activeThreads.first {
+        selectedThreadID = firstThread.id
+        selectedRecipientID = firstThread.recipientProfileID
+      } else {
+        synchronizeRecipientWithSelection()
+      }
+    }
+    .onChange(of: model.selectedProductID) { _, _ in
+      selectedThreadID = activeThreads.first?.id
+      selectedRecipientID = nil
+      draft = ""
+      showingArchived = false
+      synchronizeRecipientWithSelection()
+    }
+    .onChange(of: model.conversationThreads) { _, threads in
+      let active = threads.filter { !$0.isArchived }
+      if isStartingThread, let newest = active.first {
+        selectedThreadID = newest.id
+        isStartingThread = false
+      } else if
+        let selectedThreadID,
+        !threads.contains(where: { thread in
+          thread.id == selectedThreadID
+            && (showingArchived || !thread.isArchived)
+        })
+      {
+        self.selectedThreadID = active.first?.id
+      }
+    }
+    .onChange(of: showingArchived) { _, isShowingArchived in
+      if !isShowingArchived, selectedThread?.isArchived == true {
+        selectedThreadID = activeThreads.first?.id
+      }
+    }
+    .onChange(of: selectedThreadID) {
+      synchronizeRecipientWithSelection()
+    }
+  }
+
+  private var threadList: some View {
+    VStack(spacing: 0) {
+      HStack {
+        Text("Threads")
+          .font(.headline)
+        Spacer()
+        Button {
+          selectedThreadID = nil
+          selectedRecipientID = nil
+          draft = ""
+          chooseDefaultRecipient()
+        } label: {
+          Label("New thread", systemImage: "square.and.pencil")
+            .labelStyle(.iconOnly)
+        }
+        .help("Start a new chat thread")
+
+        if !archivedThreads.isEmpty {
+          Button {
+            showingArchived.toggle()
+          } label: {
+            Label(
+              showingArchived ? "Hide archived threads" : "Show archived threads",
+              systemImage: showingArchived ? "archivebox.fill" : "archivebox"
+            )
+            .labelStyle(.iconOnly)
+          }
+          .help(showingArchived ? "Hide archived threads" : "Show archived threads")
+        }
+      }
+      .padding(.horizontal, 14)
+      .frame(height: 48)
+
+      Divider()
+
+      if activeThreads.isEmpty && (!showingArchived || archivedThreads.isEmpty) {
+        ContentUnavailableView(
+          archivedThreads.isEmpty ? "No chat threads" : "No active threads",
+          systemImage: "bubble.left.and.bubble.right",
+          description: Text(
+            archivedThreads.isEmpty
+              ? "Ask a team member a product question to begin."
+              : "Use the archive button above to show archived threads."
+          )
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 3) {
+            ForEach(activeThreads) { thread in
+              threadButton(thread)
+            }
+
+            if showingArchived, !archivedThreads.isEmpty {
+              Text("Archived")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.top, activeThreads.isEmpty ? 3 : 12)
+                .padding(.bottom, 3)
+
+              ForEach(archivedThreads) { thread in
+                threadButton(thread)
+              }
+            }
+          }
+          .padding(8)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+      }
+    }
+    .frame(maxHeight: .infinity)
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+  }
+
+  @ViewBuilder
+  private var conversationHeader: some View {
+    HStack(spacing: 10) {
+      if let thread = selectedThread {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(thread.subject)
+            .font(.headline)
+            .lineLimit(1)
+          Text("Thread with \(selectedRecipient?.name ?? "team member")")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        Menu {
+          if thread.isArchived {
+            Button("Restore thread", systemImage: "arrow.uturn.backward") {
+              restore(thread)
+            }
+          } else {
+            Button(role: .destructive) {
+              archive(thread)
+            } label: {
+              Label {
+                Text(archiveThreadTitle)
+              } icon: {
+                Image(systemName: "archivebox")
+                  .foregroundStyle(.red)
+              }
+            }
+            .tint(.red)
+            .disabled(model.respondingConversationThreadIDs.contains(thread.id))
+          }
+        } label: {
+          Label("Thread actions", systemImage: "ellipsis")
+            .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Thread actions")
+      } else {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("New thread")
+            .font(.headline)
+          Text("New threads can run independently.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+      }
+    }
+    .padding(.horizontal, 18)
+    .frame(height: 48)
+  }
+
+  private var conversationTimeline: some View {
+    ScrollViewReader { proxy in
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 14) {
+          if selectedThread != nil {
+            ForEach(messages) { message in
+              ProductConversationMessageRow(message: message)
+            }
+          }
+          Color.clear
+            .frame(height: 1)
+            .padding(.bottom, 14)
+            .id("product-conversation-bottom")
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 14)
+      }
+      .defaultScrollAnchor(.bottom)
+      .overlay {
+        if selectedThread == nil {
+          ConversationEmptyState(
+            detail:
+              "Ask about tickets, Product knowledge, delivery history, retrospectives, or Git."
+          )
+        }
+      }
+      .onChange(of: messages.count) { _, _ in
+        Task { @MainActor in
+          await Task.yield()
+          withAnimation(.easeOut(duration: 0.18)) {
+            proxy.scrollTo("product-conversation-bottom", anchor: .bottom)
+          }
+        }
+      }
+      .onAppear {
+        proxy.scrollTo("product-conversation-bottom", anchor: .bottom)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  @ViewBuilder
+  private var conversationStatus: some View {
+    if let thread = selectedThread, isSelectedThreadResponding {
+      ConversationRespondingStatus(
+        profile: selectedRecipient,
+        fallbackName: "Team member",
+        status: "is thinking…",
+        activity: model.productConversationActivities[thread.id],
+        onStop: {
+          model.cancelProductConversation(threadID: thread.id)
+        }
+      )
+    } else if
+      let thread = selectedThread,
+      let error = model.conversationErrorsByThread[thread.id]
+    {
+      HStack(spacing: 8) {
+        Image(systemName: "exclamationmark.triangle")
+          .foregroundStyle(.orange)
+        Text(error)
+          .font(.caption)
+          .foregroundStyle(.primary)
+        Spacer()
+      }
+      .padding(.horizontal, 14)
+      .frame(minHeight: 38)
+      .background(Color.orange.opacity(0.075))
+    }
+  }
+
+  private var archivedThreadFooter: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "archivebox")
+        .foregroundStyle(.secondary)
+      Text("This thread is archived.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer()
+      if let thread = selectedThread {
+        Button("Restore thread") {
+          restore(thread)
+        }
+      }
+    }
+    .padding(.horizontal, 14)
+    .frame(minHeight: 48)
+    .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
+  }
+
+  private var composer: some View {
+    TeamConversationComposer(
+      profiles: model.profiles,
+      recipientID: recipientBinding,
+      message: $draft,
+      isSending: isStartingThread && selectedThread == nil,
+      isResponding: isSelectedThreadResponding,
+      sendError: nil,
+      onSend: send
+    )
+  }
+
+  private func threadButton(_ thread: ProductConversationThread) -> some View {
+    Button {
+      selectedThreadID = thread.id
+    } label: {
+      ConversationThreadRow(
+        thread: thread,
+        recipient: model.profiles.first {
+          $0.id == thread.recipientProfileID
+        },
+        isResponding: model.respondingConversationThreadIDs.contains(thread.id),
+        isSelected: selectedThreadID == thread.id
+      )
+    }
+    .buttonStyle(.plain)
+    .contextMenu {
+      if thread.isArchived {
+        Button("Restore thread", systemImage: "arrow.uturn.backward") {
+          restore(thread)
+        }
+      } else {
+        Button(role: .destructive) {
+          archive(thread)
+        } label: {
+          Label {
+            Text(archiveThreadTitle)
+          } icon: {
+            Image(systemName: "archivebox")
+              .foregroundStyle(.red)
+          }
+        }
+        .tint(.red)
+        .disabled(model.respondingConversationThreadIDs.contains(thread.id))
+      }
+    }
+  }
+
+  private var recipientBinding: Binding<UUID?> {
+    Binding(
+      get: { selectedRecipientID ?? selectedThread?.recipientProfileID },
+      set: { selectedRecipientID = $0 }
+    )
+  }
+
+  private func synchronizeRecipientWithSelection() {
+    if let selectedThread {
+      selectedRecipientID = selectedThread.recipientProfileID
+    } else {
+      selectedRecipientID = nil
+      chooseDefaultRecipient()
+    }
+  }
+
+  private func chooseDefaultRecipient() {
+    guard selectedRecipientID == nil else { return }
+    selectedRecipientID =
+      model.profiles.first(where: { $0.role == .businessAnalyst })?.id
+      ?? model.profiles.first(where: { $0.role == .lead })?.id
+      ?? model.profiles.first?.id
+  }
+
+  private func send() {
+    guard let recipientID = selectedRecipient?.id else { return }
+    let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty else { return }
+    let currentThreadID = selectedThreadID
+    if currentThreadID == nil {
+      isStartingThread = true
+    }
+    draft = ""
+    Task {
+      let resultingThreadID = await model.sendProductConversationMessage(
+        threadID: currentThreadID,
+        recipientID: recipientID,
+        body: message
+      )
+      if let resultingThreadID {
+        selectedThreadID = resultingThreadID
+      } else if currentThreadID == nil {
+        isStartingThread = false
+        draft = message
+      }
+    }
+  }
+
+  private func archive(_ thread: ProductConversationThread) {
+    Task {
+      guard await model.archiveProductConversation(threadID: thread.id) else {
+        return
+      }
+      if !showingArchived, selectedThreadID == thread.id {
+        selectedThreadID = activeThreads.first?.id
+      }
+    }
+  }
+
+  private func restore(_ thread: ProductConversationThread) {
+    Task {
+      guard await model.restoreProductConversation(threadID: thread.id) else {
+        return
+      }
+      selectedThreadID = thread.id
+    }
+  }
+}
+
+private struct ConversationThreadRow: View {
+  let thread: ProductConversationThread
+  let recipient: AgentProfile?
+  let isResponding: Bool
+  let isSelected: Bool
+  @State private var isHovering = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(alignment: .firstTextBaseline) {
+        Text(thread.subject)
+          .font(.callout.weight(.medium))
+          .lineLimit(2)
+        Spacer(minLength: 4)
+        if isResponding {
+          ProgressView()
+            .controlSize(.mini)
+        }
+      }
+      HStack(spacing: 5) {
+        Text(recipient?.name ?? "Team member")
+        Text("·")
+        Text(thread.updatedAt.formatted(date: .omitted, time: .shortened))
+      }
+      .font(.caption2)
+      .foregroundStyle(.secondary)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      isSelected
+        ? Color.accentColor.opacity(0.1)
+        : (isHovering ? Color.primary.opacity(0.045) : Color.clear),
+      in: RoundedRectangle(cornerRadius: 7)
+    )
+    .contentShape(RoundedRectangle(cornerRadius: 7))
+    .onHover { hovering in
+      withAnimation(.easeOut(duration: 0.12)) {
+        isHovering = hovering
+      }
+    }
+  }
+}
+
+private struct ProductConversationMessageRow: View {
+  @EnvironmentObject private var model: AppModel
+  let message: ProductConversationMessage
+
+  var body: some View {
+    TeamConversationMessageBubble(
+      authorKind: message.authorKind,
+      authorName: message.authorName,
+      body: message.body,
+      createdAt: message.createdAt,
+      authorProfile: model.profiles.first { $0.name == message.authorName }
+    )
+  }
+}
+
+private struct SidebarCodexStatus: View {
+  @EnvironmentObject private var model: AppModel
+  @State private var showingConnectionPopover = false
+
+  var body: some View {
+    Button {
+      showingConnectionPopover.toggle()
+    } label: {
+      statusLabel
+    }
+    .buttonStyle(.plain)
+    .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
+    .background(.bar)
+    .help(model.codexConnectionState.diagnostic ?? "Choose the Codex installation")
+    .accessibilityLabel("Codex connection")
+    .accessibilityValue(model.codexConnectionState.detail)
+    .popover(isPresented: $showingConnectionPopover, arrowEdge: .bottom) {
+      connectionPopover
+    }
+  }
+
+  private var statusLabel: some View {
     HStack(spacing: 9) {
       Image(systemName: model.codexConnectionState.symbolName)
         .foregroundStyle(model.codexConnectionState.tint)
@@ -725,9 +1259,138 @@ private struct SidebarCodexStatus: View {
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 14)
-    .frame(height: 42)
-    .background(.bar)
-    .accessibilityElement(children: .combine)
+    .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
+    .contentShape(Rectangle())
+  }
+
+  private var connectionPopover: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Codex installation")
+          .font(.headline)
+        Text("Choose which local Codex installation StoryPointless uses.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .padding(14)
+
+      Divider()
+
+      if model.codexInstallations.isEmpty {
+        Text("No installations found")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .padding(14)
+      } else {
+        ForEach(model.codexInstallations) { installation in
+          HStack(spacing: 8) {
+            Button {
+              showingConnectionPopover = false
+              Task {
+                await model.selectCodexInstallation(id: installation.id)
+              }
+            } label: {
+              HStack(spacing: 10) {
+                Image(
+                  systemName: installation.id == model.selectedCodexInstallationID
+                    ? "checkmark.circle.fill" : "circle"
+                )
+                .foregroundStyle(
+                  installation.id == model.selectedCodexInstallationID
+                    ? Color.green : Color.secondary
+                )
+                .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(installation.name)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+                  Text(installation.executableURL.path)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+              }
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.canChangeCodexInstallation)
+            .help(installation.executableURL.path)
+
+            if installation.kind == .custom {
+              Button(role: .destructive) {
+                Task {
+                  await model.removeCodexInstallation(id: installation.id)
+                }
+              } label: {
+                Image(systemName: "trash")
+                  .foregroundStyle(.red)
+                  .frame(width: 24, height: 24)
+              }
+              .buttonStyle(.plain)
+              .disabled(!model.canChangeCodexInstallation)
+              .help("Remove \(installation.name)")
+            }
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 9)
+          .background(
+            installation.id == model.selectedCodexInstallationID
+              ? Color.accentColor.opacity(0.08) : Color.clear
+          )
+        }
+      }
+
+      Divider()
+
+      VStack(alignment: .leading, spacing: 10) {
+        Button {
+          showingConnectionPopover = false
+          chooseCodexInstallation()
+        } label: {
+          Label("Add Codex installation…", systemImage: "plus")
+        }
+        .disabled(!model.canChangeCodexInstallation)
+
+        if model.codexConnectionState.showsRetryAction {
+          Button {
+            showingConnectionPopover = false
+            Task {
+              await model.retryCodexConnection()
+            }
+          } label: {
+            Label("Retry connection", systemImage: "arrow.clockwise")
+          }
+          .disabled(!model.canChangeCodexInstallation)
+        }
+
+        if let diagnostic = model.codexConnectionState.diagnostic {
+          Text(diagnostic)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .padding(14)
+    }
+    .frame(width: 330)
+  }
+
+  private func chooseCodexInstallation() {
+    let panel = NSOpenPanel()
+    panel.title = "Add Codex installation"
+    panel.message = "Choose a Codex app or an executable named codex."
+    panel.prompt = "Add"
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.treatsFilePackagesAsDirectories = false
+
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    Task {
+      await model.addCodexInstallation(at: url)
+    }
   }
 }
 
@@ -1339,13 +2002,14 @@ private struct ProfileModelMenu: View {
       HStack(spacing: 4) {
         Text(model.modelOption(for: profile)?.displayName ?? profile.model)
           .lineLimit(1)
-        Spacer(minLength: 3)
         Image(systemName: "chevron.down")
           .font(.system(size: 7, weight: .semibold))
       }
       .font(.system(size: 10, weight: .regular))
       .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-      .frame(width: 122, height: 16, alignment: .leading)
+      .padding(.horizontal, 6)
+      .frame(height: 18, alignment: .leading)
+      .fixedSize(horizontal: true, vertical: false)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -1399,13 +2063,14 @@ private struct ProfileEffortMenu: View {
     } label: {
       HStack(spacing: 4) {
         Text(profile.reasoningEffort.displayEffort)
-        Spacer(minLength: 3)
         Image(systemName: "chevron.down")
           .font(.system(size: 7, weight: .semibold))
       }
       .font(.system(size: 10, weight: .regular))
       .foregroundStyle(Color(nsColor: .tertiaryLabelColor))
-      .frame(width: 66, height: 16, alignment: .leading)
+      .padding(.horizontal, 6)
+      .frame(height: 18, alignment: .leading)
+      .fixedSize(horizontal: true, vertical: false)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -2017,6 +2682,63 @@ enum PlanningDropTargetState {
       return target
     }
     return current == target ? nil : current
+  }
+}
+
+enum PlanningBulkMoveDestination {
+  case candidateSprint
+  case backlog
+}
+
+struct PlanningBulkMoveAction {
+  let items: [WorkItem]
+  let selectedWorkItemIDs: Set<UUID>
+  let destination: PlanningBulkMoveDestination
+
+  private var selectedItems: [WorkItem] {
+    items.filter { selectedWorkItemIDs.contains($0.id) }
+  }
+
+  var targetItems: [WorkItem] {
+    return selectedItems.isEmpty ? items : selectedItems
+  }
+
+  var title: String {
+    let quantity = selectedItems.isEmpty
+      ? "all"
+      : selectedItems.count.formatted()
+    switch destination {
+    case .candidateSprint:
+      return "Move \(quantity) to next sprint"
+    case .backlog:
+      return "Move \(quantity) to backlog"
+    }
+  }
+
+  var compactTitle: String {
+    let quantity = selectedItems.isEmpty
+      ? "All"
+      : selectedItems.count.formatted()
+    switch destination {
+    case .candidateSprint:
+      return "\(quantity) to sprint"
+    case .backlog:
+      return "\(quantity) to backlog"
+    }
+  }
+
+  var helpText: String {
+    let noun = targetItems.count == 1 ? "ticket" : "tickets"
+    let subject =
+      selectedItems.isEmpty
+      ? "all \(items.count.formatted())"
+      : "\(targetItems.count.formatted()) selected"
+    switch destination {
+    case .candidateSprint:
+      return "Move \(subject) backlog \(noun) to the next sprint"
+    case .backlog:
+      return "Return \(subject) sprint \(noun) to the backlog"
+    }
   }
 }
 
@@ -2860,6 +3582,13 @@ private struct CandidateSprintPanel: View {
       at: activeDropTarget.index
     )
   }
+  private var bulkMoveAction: PlanningBulkMoveAction {
+    PlanningBulkMoveAction(
+      items: items,
+      selectedWorkItemIDs: selectedWorkItemIDs,
+      destination: .backlog
+    )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -2877,6 +3606,19 @@ private struct CandidateSprintPanel: View {
           }
         }
         Spacer(minLength: 4)
+        Button {
+          model.removeFromCandidateSprint(bulkMoveAction.targetItems)
+        } label: {
+          ViewThatFits(in: .horizontal) {
+            Label(bulkMoveAction.title, systemImage: "arrow.left")
+            Label(bulkMoveAction.compactTitle, systemImage: "arrow.left")
+            Image(systemName: "arrow.left")
+          }
+        }
+        .buttonStyle(.bordered)
+        .disabled(items.isEmpty)
+        .accessibilityLabel(bulkMoveAction.title)
+        .help(bulkMoveAction.helpText)
         Button(action: onPlanSprint) {
           Label(
             planningIsComplete ? "Review plan" : "Plan sprint",
@@ -3485,6 +4227,14 @@ private struct PlanningTicketList: View {
     PlanningDropSurfaceStyle.restingBackground(for: colorScheme)
   }
 
+  private var bulkMoveAction: PlanningBulkMoveAction {
+    PlanningBulkMoveAction(
+      items: items,
+      selectedWorkItemIDs: selectedWorkItemIDs,
+      destination: isCandidateSection ? .backlog : .candidateSprint
+    )
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .center, spacing: 12) {
@@ -3501,6 +4251,21 @@ private struct PlanningTicketList: View {
           }
         }
         Spacer()
+        if !isCandidateSection {
+          Button {
+            model.addToCandidateSprint(bulkMoveAction.targetItems)
+          } label: {
+            ViewThatFits(in: .horizontal) {
+              Label(bulkMoveAction.title, systemImage: "arrow.right")
+              Label(bulkMoveAction.compactTitle, systemImage: "arrow.right")
+              Image(systemName: "arrow.right")
+            }
+          }
+          .buttonStyle(.bordered)
+          .disabled(items.isEmpty || !model.canEditCandidateSprint)
+          .accessibilityLabel(bulkMoveAction.title)
+          .help(bulkMoveAction.helpText)
+        }
         if let onAddTicket {
           Button(action: onAddTicket) {
             Label("Add ticket", systemImage: "wand.and.stars")
@@ -10123,6 +10888,62 @@ enum SprintTicketWorkLogHistory {
 }
 
 enum SprintTicketCommentRouting {
+  static func activeQuestionRecipient(
+    workItemID: UUID,
+    assignedProfileID: UUID?,
+    comments: [TicketComment],
+    runs: [AgentRun],
+    profiles: [AgentProfile]
+  ) -> AgentProfile? {
+    let activeStatuses: Set<AgentRunStatus> = [.queued, .running, .awaitingOwner]
+    let activeRun = runs
+      .filter {
+        $0.workItemID == workItemID && activeStatuses.contains($0.status)
+      }
+      .max {
+        let lhsDate = $0.lastActivityAt ?? $0.updatedAt
+        let rhsDate = $1.lastActivityAt ?? $1.updatedAt
+        if lhsDate != rhsDate { return lhsDate < rhsDate }
+        return $0.id.uuidString < $1.id.uuidString
+      }
+    if
+      let activeRun,
+      let activeProfile = profiles.first(where: { $0.id == activeRun.profileID })
+    {
+      return activeProfile
+    }
+    return replyRecipient(
+      workItemID: workItemID,
+      assignedProfileID: assignedProfileID,
+      comments: comments,
+      runs: runs,
+      profiles: profiles
+    )
+  }
+
+  static func unansweredOwnerComment(
+    workItemID: UUID,
+    since date: Date,
+    comments: [TicketComment]
+  ) -> TicketComment? {
+    let relevantComments = comments
+      .filter { $0.workItemID == workItemID && $0.createdAt >= date }
+      .sorted {
+        if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+        return $0.id.uuidString < $1.id.uuidString
+      }
+    guard
+      let ownerIndex = relevantComments.lastIndex(where: {
+        $0.authorKind == .owner
+      })
+    else { return nil }
+    guard
+      !relevantComments.suffix(from: relevantComments.index(after: ownerIndex))
+        .contains(where: { $0.authorKind == .agent })
+    else { return nil }
+    return relevantComments[ownerIndex]
+  }
+
   static func replyRecipient(
     workItemID: UUID,
     assignedProfileID: UUID?,
@@ -10220,6 +11041,16 @@ private struct SprintTicketDetailView: View {
 
   private var commentReplyRecipient: AgentProfile? {
     SprintTicketCommentRouting.replyRecipient(
+      workItemID: item.id,
+      assignedProfileID: currentSprintItem?.implementerProfileID ?? currentItem.ownerProfileID,
+      comments: comments,
+      runs: model.runs,
+      profiles: model.profiles
+    )
+  }
+
+  private var questionRecipient: AgentProfile? {
+    SprintTicketCommentRouting.activeQuestionRecipient(
       workItemID: item.id,
       assignedProfileID: currentSprintItem?.implementerProfileID ?? currentItem.ownerProfileID,
       comments: comments,
@@ -10338,6 +11169,23 @@ private struct SprintTicketDetailView: View {
 
   private var pendingPermissionRequest: AgentPermissionRequest? {
     model.pendingPermissionRequest(workItemID: item.id)
+  }
+
+  private var unansweredPermissionComment: TicketComment? {
+    guard let pendingPermissionRequest else { return nil }
+    return SprintTicketCommentRouting.unansweredOwnerComment(
+      workItemID: item.id,
+      since: pendingPermissionRequest.createdAt,
+      comments: comments
+    )
+  }
+
+  private var activeTicketConversationProfile: AgentProfile? {
+    guard
+      model.ticketConversationWorkItemID == item.id,
+      let recipientID = model.ticketConversationRecipientID
+    else { return nil }
+    return model.profiles.first { $0.id == recipientID }
   }
 
   private func trunkPromotionValue(for candidate: CandidateRevision) -> String {
@@ -11593,7 +12441,33 @@ private struct SprintTicketDetailView: View {
                             ? { selection in
                               selectOwnerAnswer(selection)
                             }
-                            : nil
+                            : nil,
+                          routedRecipientName:
+                            comment.id == unansweredPermissionComment?.id
+                            ? questionRecipient?.name
+                            : nil,
+                          isRouting:
+                            comment.id == unansweredPermissionComment?.id
+                              && isAskingQuestion,
+                          onRoute:
+                            comment.id == unansweredPermissionComment?.id
+                            && !model.isTicketConversationMessageRunning
+                            ? {
+                              guard let questionRecipient else { return }
+                              Task {
+                                _ = await routeExistingQuestion(
+                                  comment,
+                                  to: questionRecipient
+                                )
+                              }
+                            }
+                            : nil,
+                          onOpenDecisionArtifact: { artifact in
+                            model.openDecisionArtifact(
+                              artifact,
+                              workItemID: item.id
+                            )
+                          }
                         )
                       case .event(let event):
                         SprintTicketEventRow(
@@ -11655,6 +12529,16 @@ private struct SprintTicketDetailView: View {
 
       Divider()
 
+      if model.ticketConversationWorkItemID == item.id {
+        ConversationRespondingStatus(
+          profile: activeTicketConversationProfile,
+          fallbackName: "Team member",
+          status: "is thinking…",
+          activity: model.ticketConversationActivity,
+          onStop: model.cancelTicketConversationMessage
+        )
+      }
+
       commentComposer
     }
     .frame(width: detailWidth, height: detailHeight)
@@ -11711,6 +12595,7 @@ private struct SprintTicketDetailView: View {
       hasActiveOwnerQuestion: activeOwnerQuestionComment != nil,
       commentReplyRecipientName: commentReplyRecipient?.name,
       pausedQuestionRecipientName: pausedQuestionRecipient?.name,
+      questionRecipientName: questionRecipient?.name,
       ownerAnswer: ownerAnswer,
       isPostingComment: isPostingComment,
       isAskingQuestion: isAskingQuestion,
@@ -11730,6 +12615,10 @@ private struct SprintTicketDetailView: View {
       onAskPausedRecipient: { body in
         guard let pausedQuestionRecipient else { return false }
         return await askQuestion(body, to: pausedQuestionRecipient)
+      },
+      onAskQuestionRecipient: { body in
+        guard let questionRecipient else { return false }
+        return await askQuestion(body, to: questionRecipient)
       },
       onResumeWork: { body in
         await resumeWork(body)
@@ -11782,7 +12671,6 @@ private struct SprintTicketDetailView: View {
   private func selectOwnerAnswer(_ selection: TicketOwnerAnswerSelection) {
     ownerAnswerSelection = selection
     commentComposerFocusResetRequest += 1
-    workLogScrollRequest += 1
   }
 
   private func askQuestion(
@@ -11883,6 +12771,39 @@ private struct SprintTicketDetailView: View {
     return false
   }
 
+  private func routeExistingQuestion(
+    _ comment: TicketComment,
+    to recipient: AgentProfile
+  ) async -> Bool {
+    guard
+      comment.authorKind == .owner,
+      !isAskingQuestion,
+      !model.isTicketConversationMessageRunning
+    else { return false }
+    commentError = nil
+    isAskingQuestion = true
+
+    do {
+      _ = try await model.sendTicketConversationMessage(
+        for: currentItem,
+        to: recipient,
+        ownerMessage: comment.body,
+        allowsProposal: false
+      )
+      let latestComments = await model.comments(for: item.id)
+      if latestComments != comments {
+        comments = latestComments
+      }
+      workLogScrollRequest += 1
+      isAskingQuestion = false
+      return true
+    } catch {
+      commentError = error.localizedDescription
+      isAskingQuestion = false
+      return false
+    }
+  }
+
   private func answeredOwnerQuestions(
     answer: String
   ) -> [TicketAnsweredQuestion] {
@@ -11933,6 +12854,7 @@ private struct SprintTicketCommentComposer: View {
   let hasActiveOwnerQuestion: Bool
   let commentReplyRecipientName: String?
   let pausedQuestionRecipientName: String?
+  let questionRecipientName: String?
   let ownerAnswer: String?
   let isPostingComment: Bool
   let isAskingQuestion: Bool
@@ -11945,6 +12867,7 @@ private struct SprintTicketCommentComposer: View {
   let onPostComment: (String) async -> Bool
   let onAskCommentRecipient: (String) async -> Bool
   let onAskPausedRecipient: (String) async -> Bool
+  let onAskQuestionRecipient: (String) async -> Bool
   let onResumeWork: (String) async -> Bool
   let onAcceptTicket: () -> Void
 
@@ -11969,6 +12892,12 @@ private struct SprintTicketCommentComposer: View {
       && !isConversationMessageRunning
   }
 
+  private var canAskQuestionRecipient: Bool {
+    canPostComment
+      && questionRecipientName != nil
+      && !isConversationMessageRunning
+  }
+
   private var resumeBody: String {
     if hasActiveOwnerQuestion {
       return ownerAnswer ?? ""
@@ -11985,10 +12914,10 @@ private struct SprintTicketCommentComposer: View {
     HStack(alignment: .top, spacing: 12) {
       ZStack {
         Circle()
-          .fill(Color.blue.opacity(0.12))
+          .fill(ConversationPalette.owner.opacity(0.12))
         Image(systemName: "person.fill")
           .font(.caption.weight(.semibold))
-          .foregroundStyle(.blue)
+          .foregroundStyle(ConversationPalette.owner)
       }
       .frame(width: 34, height: 34)
 
@@ -12071,10 +13000,10 @@ private struct SprintTicketCommentComposer: View {
         }
         Text(
           hasPendingPermissionRequest
-            ? "Use Allow or Deny on the permission request above. You can still add context here."
+            ? "Use Allow or Deny on the permission request above, or ask the waiting team member for an explanation without resuming work."
             : hasActiveOwnerQuestion
-              ? "Choose an answer above or select Other, then choose Resume work."
-              : "Ask a question without restarting work, or add direction and choose Resume work."
+              ? "Choose an answer above or select Other, then choose Submit answers."
+              : "Ask a question without restarting work, or add direction and choose Submit answers."
         )
         .foregroundStyle(.secondary)
       }
@@ -12106,6 +13035,10 @@ private struct SprintTicketCommentComposer: View {
   private var actionButtons: some View {
     if hasPendingPermissionRequest {
       commentButton(style: .bordered)
+      questionButton(
+        recipientName: questionRecipientName,
+        action: onAskQuestionRecipient
+      )
     } else if canRetryFailedPostReviewDemo {
       commentButton(style: .bordered)
 
@@ -12129,8 +13062,13 @@ private struct SprintTicketCommentComposer: View {
         .disabled(!canPostComment)
       }
 
-      Button(isResumingWork ? "Resuming…" : "Resume work") {
+      Button {
         submitResumeWork()
+      } label: {
+        Label(
+          isResumingWork ? "Submitting…" : "Submit answers",
+          systemImage: "paperplane.fill"
+        )
       }
       .buttonStyle(.borderedProminent)
       .disabled(!canResumeWork)
@@ -12169,8 +13107,33 @@ private struct SprintTicketCommentComposer: View {
           ? "Accept or reject every proposed knowledge change first."
           : "Promote this exact reviewed revision to the accepted trunk."
       )
+    } else if
+      ticketState == .running
+        || ticketState == .integrating
+        || ticketState == .verifying
+    {
+      commentButton(style: .bordered)
+      questionButton(
+        recipientName: questionRecipientName,
+        action: onAskQuestionRecipient
+      )
     } else {
       commentButton(style: .borderedProminent)
+    }
+  }
+
+  @ViewBuilder
+  private func questionButton(
+    recipientName: String?,
+    action: @escaping (String) async -> Bool
+  ) -> some View {
+    if let recipientName {
+      Button(isAskingQuestion ? "Asking…" : "Ask \(recipientName)") {
+        submitDraft(using: action)
+      }
+      .buttonStyle(.borderedProminent)
+      .tint(.purple)
+      .disabled(!canAskQuestionRecipient)
     }
   }
 
@@ -13337,11 +14300,15 @@ private struct SprintTicketCommentRow: View {
   let ownerAnswerSelection: TicketOwnerAnswerSelection?
   let customOwnerAnswer: Binding<String>?
   let onSelectOwnerAnswer: ((TicketOwnerAnswerSelection) -> Void)?
+  let routedRecipientName: String?
+  let isRouting: Bool
+  let onRoute: (() -> Void)?
+  var onOpenDecisionArtifact: ((TicketDecisionArtifact) -> Void)? = nil
   @FocusState private var isCustomOwnerAnswerFocused: Bool
 
   private var accent: Color {
     switch comment.authorKind {
-    case .owner: .blue
+    case .owner: ConversationPalette.owner
     case .agent: authorProfile?.role.tint ?? .indigo
     case .system: .secondary
     }
@@ -13430,6 +14397,15 @@ private struct SprintTicketCommentRow: View {
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
         }
+        if let routedRecipientName, let onRoute {
+          Button(isRouting ? "Asking…" : "Ask \(routedRecipientName) about this") {
+            onRoute()
+          }
+          .buttonStyle(.bordered)
+          .tint(.purple)
+          .controlSize(.small)
+          .disabled(isRouting)
+        }
       }
     }
     .padding(.top, 14)
@@ -13454,6 +14430,17 @@ private struct SprintTicketCommentRow: View {
         .font(.body.weight(.medium))
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
+
+      if let artifact = question.decisionArtifact {
+        Button {
+          onOpenDecisionArtifact?(artifact)
+        } label: {
+          Label("Open \(artifact.title)", systemImage: "doc.text")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(onOpenDecisionArtifact == nil)
+      }
 
       VStack(spacing: 6) {
         ForEach(question.options, id: \.self) { option in
@@ -17156,6 +18143,7 @@ private struct TeamConversationComposer: View {
   let isResponding: Bool
   let sendError: String?
   let onSend: () -> Void
+  var allowsRecipientSelection = true
   @FocusState private var isFocused: Bool
 
   private var selectedRecipient: AgentProfile? {
@@ -17170,43 +18158,54 @@ private struct TeamConversationComposer: View {
       && !isResponding
   }
 
+  private func recipientLabel(showsDisclosureIndicator: Bool) -> some View {
+    HStack(spacing: 6) {
+      Image(systemName: selectedRecipient?.role.symbolName ?? "person")
+        .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
+      Text(selectedRecipient?.name ?? "Choose a team member")
+        .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
+      if showsDisclosureIndicator {
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.tertiary)
+      }
+    }
+    .padding(.horizontal, 9)
+    .padding(.vertical, 5)
+    .background(
+      (selectedRecipient?.role.tint ?? Color.secondary).opacity(0.1),
+      in: Capsule()
+    )
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
       HStack {
         Text("To")
           .font(.caption)
           .foregroundStyle(.secondary)
-        Menu {
-          ForEach(profiles) { profile in
-            Button {
-              recipientID = profile.id
-            } label: {
-              HStack {
-                Label(profile.name, systemImage: profile.role.symbolName)
-                if recipientID == profile.id {
-                  Image(systemName: "checkmark")
+        if allowsRecipientSelection {
+          Menu {
+            ForEach(profiles) { profile in
+              Button {
+                recipientID = profile.id
+              } label: {
+                HStack {
+                  Label(profile.name, systemImage: profile.role.symbolName)
+                  if recipientID == profile.id {
+                    Image(systemName: "checkmark")
+                  }
                 }
               }
             }
+          } label: {
+            recipientLabel(showsDisclosureIndicator: true)
           }
-        } label: {
-          HStack(spacing: 6) {
-            Image(systemName: selectedRecipient?.role.symbolName ?? "person")
-              .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
-            Text(selectedRecipient?.name ?? "Choose a teammate")
-              .foregroundStyle(selectedRecipient?.role.tint ?? Color.secondary)
-            Image(systemName: "chevron.down")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(.tertiary)
-          }
-          .padding(.horizontal, 9)
-          .padding(.vertical, 5)
-          .background(
-            (selectedRecipient?.role.tint ?? Color.secondary).opacity(0.1),
-            in: Capsule()
-          )
+          .menuStyle(.borderlessButton)
+        } else {
+          recipientLabel(showsDisclosureIndicator: false)
+            .help("Replies stay with this thread's team member")
         }
-        .menuStyle(.borderlessButton)
         Spacer()
       }
 
@@ -17269,22 +18268,31 @@ private struct ConversationRespondingStatus: View {
   let profile: AgentProfile?
   let fallbackName: String
   let status: String
+  var activity: CodexLiveActivity? = nil
   let onStop: () -> Void
 
   var body: some View {
     let tint = profile?.role.tint ?? Color.purple
     HStack(spacing: 7) {
-      ProgressView()
-        .controlSize(.mini)
-        .tint(tint)
+      if let activity {
+        Image(systemName: activity.kind.symbolName)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(tint)
+          .frame(width: 14)
+      } else {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(tint)
+      }
       HStack(spacing: 0) {
         Text(profile?.name ?? fallbackName)
           .fontWeight(.semibold)
           .foregroundStyle(tint)
-        Text(" \(status)")
+        Text(activity.map { " · \($0.text)" } ?? " \(status)")
           .foregroundStyle(.primary)
       }
       .font(.caption)
+      .lineLimit(2)
       Spacer()
       Button("Stop", action: onStop)
         .controlSize(.mini)
@@ -17559,6 +18567,10 @@ private struct TicketConversationView<ReviewContent: View>: View {
               ? "is reviewing your response…"
               : "is reviewing this ticket…"
             : "is thinking…",
+          activity:
+            isAgentResponding
+            ? nil
+            : model.ticketConversationActivity,
           onStop: {
             if isAgentResponding {
               onStopRefinement()
@@ -17940,31 +18952,44 @@ private func mentionedProfile(
     .first { body.hasPrefix("@\($0.name) ") }
 }
 
-private struct TicketCommentBubble: View {
-  let comment: TicketComment
+private enum ConversationPalette {
+  static let owner = Color(nsColor: .secondaryLabelColor)
+}
+
+private struct TeamConversationMessageBubble: View {
+  let authorKind: CommentAuthorKind
+  let authorName: String
+  let messageBody: String
+  let createdAt: Date
   let authorProfile: AgentProfile?
   let mentionedProfile: AgentProfile?
 
   init(
-    comment: TicketComment,
+    authorKind: CommentAuthorKind,
+    authorName: String,
+    body: String,
+    createdAt: Date,
     authorProfile: AgentProfile? = nil,
     mentionedProfile: AgentProfile? = nil
   ) {
-    self.comment = comment
+    self.authorKind = authorKind
+    self.authorName = authorName
+    messageBody = body
+    self.createdAt = createdAt
     self.authorProfile = authorProfile
     self.mentionedProfile = mentionedProfile
   }
 
   private var accent: Color {
-    switch comment.authorKind {
-    case .owner: .blue
+    switch authorKind {
+    case .owner: ConversationPalette.owner
     case .agent: authorProfile?.role.tint ?? .indigo
     case .system: .secondary
     }
   }
 
   private var symbolName: String {
-    switch comment.authorKind {
+    switch authorKind {
     case .owner: "person.fill"
     case .agent: authorProfile?.role.symbolName ?? "sparkles"
     case .system: "gearshape.fill"
@@ -17972,11 +18997,11 @@ private struct TicketCommentBubble: View {
   }
 
   private var displayName: String {
-    comment.authorKind == .owner ? "Me" : comment.authorName
+    authorKind == .owner ? "Me" : authorName
   }
 
   private var isOwner: Bool {
-    comment.authorKind == .owner
+    authorKind == .owner
   }
 
   private var avatar: some View {
@@ -17990,11 +19015,20 @@ private struct TicketCommentBubble: View {
     .frame(width: 28, height: 28)
   }
 
+  private var messageDocument: some View {
+    TicketMarkdownDocument(
+      source: messageBody,
+      baseFont: .callout,
+      highlightedText: mentionedProfile.map { "@\($0.name)" },
+      highlightedColor: mentionedProfile?.role.tint
+    )
+  }
+
   private var messageContent: some View {
     VStack(alignment: isOwner ? .trailing : .leading, spacing: 5) {
       HStack(spacing: 7) {
         if isOwner {
-          Text(comment.createdAt, style: .time)
+          Text(createdAt, style: .time)
             .font(.caption2)
             .foregroundStyle(.tertiary)
           Text(displayName)
@@ -18003,34 +19037,33 @@ private struct TicketCommentBubble: View {
         } else {
           Text(displayName)
             .font(
-              comment.authorKind == .agent
+              authorKind == .agent
                 ? .subheadline.weight(.semibold)
                 : .caption.weight(.semibold)
             )
-            .foregroundStyle(comment.authorKind == .agent ? accent : Color.primary)
-          if comment.authorKind == .agent, let authorProfile {
+            .foregroundStyle(authorKind == .agent ? accent : Color.primary)
+          if authorKind == .agent, let authorProfile {
             Image(systemName: authorProfile.role.symbolName)
               .font(.caption2.weight(.semibold))
               .foregroundStyle(accent)
               .help(authorProfile.role.capabilityTitle)
           }
-          Text(comment.createdAt, style: .time)
+          Text(createdAt, style: .time)
             .font(.caption2)
             .foregroundStyle(.tertiary)
         }
       }
-      TicketMarkdownDocument(
-        source: comment.body,
-        baseFont: .callout,
-        highlightedText: mentionedProfile.map { "@\($0.name)" },
-        highlightedColor: mentionedProfile?.role.tint
-      )
+      ViewThatFits(in: .horizontal) {
+        messageDocument
+          .fixedSize(horizontal: true, vertical: true)
+        messageDocument
+      }
         .textSelection(.enabled)
         .multilineTextAlignment(.leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: 340, alignment: isOwner ? .trailing : .leading)
+        .frame(maxWidth: 560, alignment: isOwner ? .trailing : .leading)
     }
   }
 
@@ -18047,6 +19080,33 @@ private struct TicketCommentBubble: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: isOwner ? .trailing : .leading)
+  }
+}
+
+private struct TicketCommentBubble: View {
+  let comment: TicketComment
+  let authorProfile: AgentProfile?
+  let mentionedProfile: AgentProfile?
+
+  init(
+    comment: TicketComment,
+    authorProfile: AgentProfile? = nil,
+    mentionedProfile: AgentProfile? = nil
+  ) {
+    self.comment = comment
+    self.authorProfile = authorProfile
+    self.mentionedProfile = mentionedProfile
+  }
+
+  var body: some View {
+    TeamConversationMessageBubble(
+      authorKind: comment.authorKind,
+      authorName: comment.authorName,
+      body: comment.body,
+      createdAt: comment.createdAt,
+      authorProfile: authorProfile,
+      mentionedProfile: mentionedProfile
+    )
   }
 }
 
@@ -19265,17 +20325,17 @@ private struct EpicPlanningConversationPanel: View {
           .padding(.horizontal, 11)
           .padding(.vertical, 9)
           .background(
-            isOwner ? Color.accentColor.opacity(0.1) : accent.opacity(0.075),
+            isOwner ? ConversationPalette.owner.opacity(0.1) : accent.opacity(0.075),
             in: RoundedRectangle(cornerRadius: 11)
           )
       }
       if isOwner {
         Circle()
-          .fill(Color.accentColor.opacity(0.12))
+          .fill(ConversationPalette.owner.opacity(0.12))
           .overlay {
             Image(systemName: "person.fill")
               .font(.caption)
-              .foregroundStyle(Color.accentColor)
+              .foregroundStyle(ConversationPalette.owner)
           }
           .frame(width: 28, height: 28)
       } else {
@@ -19781,13 +20841,27 @@ extension WorkItemState {
 }
 
 extension CodexConnectionState {
+  fileprivate var isConnected: Bool {
+    if case .connected = self { return true }
+    return false
+  }
+
   fileprivate var detail: String {
     switch self {
     case .notChecked: "Not checked"
     case .checking: "Checking compatibility…"
     case .connected(let version, _): "Connected · \(version)"
     case .unavailable: "Not available"
-    case .incompatible: "Update required"
+    case .incompatible: "Not compatible"
+    }
+  }
+
+  fileprivate var diagnostic: String? {
+    switch self {
+    case .unavailable(let message), .incompatible(let message):
+      message
+    default:
+      nil
     }
   }
 
