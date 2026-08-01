@@ -54,11 +54,11 @@ struct MacOSDemoLauncherTests {
       title: "Local page",
       launchCommand: DemoCommand(
         executable: "python3",
-        arguments: ["-m", "http.server", "{{PORT}}", "--bind", "127.0.0.1"],
-        timeoutSeconds: 10
+        arguments: ["-u", "-m", "http.server", "{{PORT}}", "--bind", "127.0.0.1"],
+        timeoutSeconds: 30
       ),
       portEnvironmentVariable: "PORT",
-      readiness: DemoReadinessCheck(kind: .http, path: "/", timeoutSeconds: 10),
+      readiness: DemoReadinessCheck(kind: .http, path: "/", timeoutSeconds: 30),
       presentation: DemoPresentation(kind: .browser, path: "/index.html")
     )
 
@@ -174,8 +174,14 @@ struct MacOSDemoLauncherTests {
 }
 
 private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
+  private struct RunningProcess {
+    let process: Process
+    let outputURL: URL
+    let outputHandle: FileHandle
+  }
+
   private var completed: [CodexManagedCommandRequest] = []
-  private var processes: [String: Process] = [:]
+  private var processes: [String: RunningProcess] = [:]
 
   func runManagedCommand(
     _ request: CodexManagedCommandRequest
@@ -237,35 +243,50 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
     process.environment = ProcessInfo.processInfo.environment.merging(request.environment) {
       _, requested in requested
     }
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    try process.run()
-    processes[processID] = process
+    let outputURL = request.workspaceRoot
+      .appendingPathComponent(".demo-test-process-\(processID).log")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    let outputHandle = try FileHandle(forWritingTo: outputURL)
+    process.standardOutput = outputHandle
+    process.standardError = outputHandle
+    do {
+      try process.run()
+    } catch {
+      try? outputHandle.close()
+      throw error
+    }
+    processes[processID] = RunningProcess(
+      process: process,
+      outputURL: outputURL,
+      outputHandle: outputHandle
+    )
     return processID
   }
 
   func managedCommandSnapshot(
     processID: String
   ) async -> CodexManagedCommandSnapshot? {
-    guard let process = processes[processID] else { return nil }
-    if process.isRunning {
-      return .running(standardOutput: "", standardError: "")
+    guard let runningProcess = processes[processID] else { return nil }
+    let output = (try? String(contentsOf: runningProcess.outputURL, encoding: .utf8)) ?? ""
+    if runningProcess.process.isRunning {
+      return .running(standardOutput: output, standardError: "")
     }
     return .exited(
       CodexManagedCommandResult(
-        exitCode: Int(process.terminationStatus),
-        standardOutput: "",
+        exitCode: Int(runningProcess.process.terminationStatus),
+        standardOutput: output,
         standardError: ""
       )
     )
   }
 
   func terminateManagedCommand(processID: String) async {
-    guard let process = processes.removeValue(forKey: processID) else { return }
-    if process.isRunning {
-      process.terminate()
-      process.waitUntilExit()
+    guard let runningProcess = processes.removeValue(forKey: processID) else { return }
+    if runningProcess.process.isRunning {
+      runningProcess.process.terminate()
+      runningProcess.process.waitUntilExit()
     }
+    try? runningProcess.outputHandle.close()
   }
 
   func completedRequests() -> [CodexManagedCommandRequest] {
@@ -273,6 +294,6 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   }
 
   func runningProcessCount() -> Int {
-    processes.values.filter(\.isRunning).count
+    processes.values.filter(\.process.isRunning).count
   }
 }

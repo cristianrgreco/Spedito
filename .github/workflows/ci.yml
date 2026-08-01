@@ -30,8 +30,9 @@ jobs:
       - name: Verify pinned build environment
         shell: bash
         run: |
-          [[ "$(xcodebuild -version | head -n 1)" == "Xcode 26.6" ]]
-          xcodebuild -version
+          xcode_version="$(xcodebuild -version)"
+          [[ "${xcode_version%%$'\n'*}" == "Xcode 26.6" ]]
+          printf '%s\n' "$xcode_version"
           swift --version
 
       - name: Check changed-file whitespace
