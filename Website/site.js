@@ -8,6 +8,14 @@ const showcaseSlides = [
     alt: "StoryPointless Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
   },
   {
+    file: "25-customize-your-team.webp",
+    phase: "Adapt",
+    title: "Customise the team",
+    caption:
+      "Tune team roles, models, effort, and instructions for the product.",
+    alt: "StoryPointless team settings for roles, models, effort, and instructions.",
+  },
+  {
     file: "1-epic-ai-refinement.webp",
     phase: "Define",
     title: "Refine an Epic",
@@ -146,14 +154,6 @@ const showcaseSlides = [
     title: "Learn from reports",
     caption: "Make delivery patterns visible across Sprints.",
     alt: "StoryPointless Reports showing delivery patterns and team performance.",
-  },
-  {
-    file: "25-customize-your-team.webp",
-    phase: "Adapt",
-    title: "Customise the team",
-    caption:
-      "Tune team roles, models, effort, and instructions for the product.",
-    alt: "StoryPointless team settings for roles, models, effort, and instructions.",
   },
 ];
 
@@ -388,4 +388,95 @@ if (showcase) {
   );
 
   activate(0, false);
+}
+
+const faq = document.querySelector("[data-faq]");
+
+if (faq) {
+  const items = [...faq.querySelectorAll("details")];
+  const animations = new Map();
+  const reduceMotion = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches;
+  let foundOpenItem = false;
+
+  items.forEach((item) => {
+    if (!item.open) {
+      return;
+    }
+
+    if (foundOpenItem) {
+      item.open = false;
+      return;
+    }
+
+    foundOpenItem = true;
+  });
+
+  const animateItem = (item, shouldOpen) => {
+    const summary = item.querySelector("summary");
+    const startHeight = item.getBoundingClientRect().height;
+
+    if (shouldOpen) {
+      item.open = true;
+    }
+
+    const endHeight = shouldOpen
+      ? item.scrollHeight
+      : summary.getBoundingClientRect().height + 1;
+
+    item.style.height = `${startHeight}px`;
+    item.style.overflow = "hidden";
+
+    const animation = item.animate(
+      {
+        height: [`${startHeight}px`, `${endHeight}px`],
+      },
+      {
+        duration: 280,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+      },
+    );
+
+    animations.set(item, animation);
+
+    animation.addEventListener(
+      "finish",
+      () => {
+        item.open = shouldOpen;
+        item.style.removeProperty("height");
+        item.style.removeProperty("overflow");
+        animations.delete(item);
+      },
+      { once: true },
+    );
+  };
+
+  items.forEach((item) => {
+    item.querySelector("summary").addEventListener("click", (event) => {
+      event.preventDefault();
+
+      if (animations.size > 0) {
+        return;
+      }
+
+      const shouldOpen = !item.open;
+
+      items.forEach((otherItem) => {
+        if (otherItem !== item && otherItem.open) {
+          if (reduceMotion) {
+            otherItem.open = false;
+          } else {
+            animateItem(otherItem, false);
+          }
+        }
+      });
+
+      if (reduceMotion) {
+        item.open = shouldOpen;
+      } else {
+        animateItem(item, shouldOpen);
+      }
+    });
+  });
 }

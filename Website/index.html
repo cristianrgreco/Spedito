@@ -26,6 +26,7 @@
         <a href="#parallel">Delivery</a>
         <a href="#context">Knowledge</a>
         <a href="#safety">Safety</a>
+        <a href="#faq">FAQ</a>
       </nav>
       <a
         class="button button-small"
@@ -105,7 +106,7 @@
               aria-label="Previous screenshot"
             >
               <img
-                src="./screenshots/25-customize-your-team.webp"
+                src="./screenshots/24-reports.webp"
                 alt=""
                 width="3216"
                 height="2100"
@@ -138,7 +139,7 @@
               aria-label="Next screenshot"
             >
               <img
-                src="./screenshots/1-epic-ai-refinement.webp"
+                src="./screenshots/25-customize-your-team.webp"
                 alt=""
                 width="3216"
                 height="2100"
@@ -213,7 +214,7 @@
               </div>
               <div class="prompt">
                 <b>Agent</b>
-                <p>Of course. Run <code>npm install && npm run dev</code>.</p>
+                <p>Of course. Run <code>npm install &amp;&amp; npm run dev</code>.</p>
               </div>
               <div class="prompt owner">
                 <b>You</b>
@@ -244,28 +245,30 @@
               <span>StoryPointless</span>
             </div>
             <div class="demo-panel app-mock">
-              <div class="demo-status">
-                <span><i></i> Ready for Demo</span>
-                <code>T18</code>
-              </div>
-              <div class="demo-body">
-                <small>Reviewed product increment</small>
-                <h3>Import an existing product</h3>
-                <p>
-                  Open a repository as a StoryPointless product with its
-                  history and current branch preserved.
-                </p>
-                <ul>
-                  <li><span>✓</span> Acceptance checks passed</li>
-                  <li><span>✓</span> Tech Lead approved</li>
-                  <li><span>✓</span> Integrated against current product</li>
-                  <li><span>✓</span> Demo preparation succeeded</li>
-                </ul>
-                <div class="revision">
-                  <span>Exact reviewed revision</span>
-                  <code>3f8d12a</code>
+              <div class="mock-screen">
+                <div class="demo-status">
+                  <span><i></i> T3 · Ready for Demo</span>
+                  <code>Ticket details</code>
                 </div>
-                <button type="button"><span aria-hidden="true">▶</span> Demo</button>
+                <div class="demo-body">
+                  <small>Tech Lead · reviewed product increment</small>
+                  <h3>View weather for an entered location</h3>
+                  <p>
+                    Search for a place and see its current conditions with a
+                    seven-day forecast.
+                  </p>
+                  <ul>
+                    <li><span>✓</span> Acceptance checks passed</li>
+                    <li><span>✓</span> Tech Lead approved</li>
+                    <li><span>✓</span> Integrated against current product</li>
+                    <li><span>✓</span> Demo preparation succeeded</li>
+                  </ul>
+                  <div class="revision">
+                    <span>Exact reviewed revision</span>
+                    <code>3f8d12a</code>
+                  </div>
+                  <button type="button"><span aria-hidden="true">▶</span> Demo</button>
+                </div>
               </div>
             </div>
             <p class="punchline good">
@@ -329,79 +332,60 @@
               <span>StoryPointless</span>
             </div>
             <div class="refinement-panel app-mock">
-              <div class="refinement-topbar">
-                <div>
-                  <small>Starting idea</small>
-                  <b>“Let people share stuff.”</b>
+              <div class="mock-screen">
+                <div class="refinement-topbar">
+                  <div>
+                    <small>Epic details · Starting idea</small>
+                    <b>“Let people share stuff.”</b>
+                  </div>
+                  <span>Refining</span>
                 </div>
-                <span>Refining</span>
-              </div>
 
-              <div class="ba-questions">
-                <div>
-                  <span>Business Analyst</span>
-                  <b>Who should be able to open a shared result?</b>
-                  <small>Anyone with the unguessable link</small>
+                <div class="ba-questions">
+                  <div>
+                    <span>Business Analyst</span>
+                    <b>Who should be able to open a shared result?</b>
+                    <small>Anyone with the unguessable link</small>
+                  </div>
+                  <div>
+                    <span>Business Analyst</span>
+                    <b>How long should the link remain available?</b>
+                    <small>Seven days, with manual revocation</small>
+                  </div>
                 </div>
-                <div>
-                  <span>Business Analyst</span>
-                  <b>How long should the link remain available?</b>
-                  <small>Seven days, with manual revocation</small>
-                </div>
-                <div>
-                  <span>Business Analyst</span>
-                  <b>What should an expired link reveal?</b>
-                  <small>Nothing about the original result</small>
-                </div>
-              </div>
 
-              <div class="refinement-result">
-                <div class="epic-result">
-                  <small>Epic</small>
-                  <b>Share a saved result safely</b>
-                  <span>5 Tickets · 2 can start now</span>
-                </div>
-                <div class="backlog-plan">
-                  <div class="backlog-ticket">
-                    <em>P0</em><code>T21</code>
-                    <span>Define privacy, expiry, and revocation</span>
-                    <small>Ready</small>
+                <div class="refinement-result">
+                  <div class="epic-result">
+                    <small>Epic</small>
+                    <b>Share a saved result safely</b>
+                    <span>3 Tickets · 2 can start now</span>
                   </div>
-                  <div class="backlog-ticket">
-                    <em>P0</em><code>T22</code>
-                    <span>Design shared and unavailable states</span>
-                    <small>Ready · parallel</small>
-                  </div>
-                  <div class="backlog-ticket">
-                    <em>P1</em><code>T23</code>
-                    <span>Build expiring private links</span>
-                    <small>After T21</small>
-                  </div>
-                  <div class="backlog-ticket">
-                    <em>P1</em><code>T24</code>
-                    <span>Add the sharing experience</span>
-                    <small>After T22 + T23</small>
-                  </div>
-                  <div class="backlog-ticket">
-                    <em>P1</em><code>T25</code>
-                    <span>Verify privacy, expiry, and accessibility</span>
-                    <small>After T24</small>
-                  </div>
-                </div>
-                <div class="knowledge-capture">
-                  <div class="capture-title">
-                    <i>▦</i>
-                    <div>
-                      <small>Saved to Product knowledge</small>
-                      <b>Sharing and link privacy</b>
+                  <div class="backlog-plan">
+                    <div class="backlog-ticket">
+                      <em>P0</em><code>T21</code>
+                      <span>Define privacy, expiry, and revocation</span>
+                      <small>Ready</small>
                     </div>
-                    <span>Approved</span>
+                    <div class="backlog-ticket">
+                      <em>P0</em><code>T22</code>
+                      <span>Design shared, expired, and unavailable states</span>
+                      <small>Ready · parallel</small>
+                    </div>
+                    <div class="backlog-ticket">
+                      <em>P1</em><code>T23</code>
+                      <span>Build and verify expiring private links</span>
+                      <small>After T21 + T22</small>
+                    </div>
                   </div>
-                  <div class="captured-decisions">
-                    <span>Private unguessable links</span>
-                    <span>Links expire after seven days</span>
-                    <span>Owner can revoke</span>
-                    <span>Expired links reveal nothing</span>
+                  <div class="knowledge-capture">
+                    <div class="capture-title">
+                      <i>▦</i>
+                      <div>
+                        <small>Saved to Product knowledge</small>
+                        <b>Sharing and link privacy</b>
+                      </div>
+                      <span>Approved</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -460,34 +444,41 @@
               <span>StoryPointless</span>
             </div>
             <div class="sprint-plan app-mock">
-              <div class="plan-header">
-                <b>Sprint 4</b>
-                <small>2 ready in parallel</small>
-              </div>
-              <div class="wave">
-                <span>Wave 1</span>
-                <div class="wave-tickets">
-                  <div class="ticket blue">
-                    <small>T12</small>
-                    <b>Choose provider</b>
-                    <em>Business Analyst</em>
-                  </div>
-                  <div class="ticket purple">
-                    <small>T13</small>
-                    <b>Design failure states</b>
-                    <em>UX Designer</em>
+              <div class="mock-screen sprint-plan-screen">
+                <div class="plan-header">
+                  <div><small>Plan Sprint 4</small><b>Share saved results safely</b></div>
+                  <span>2 waves</span>
+                </div>
+                <div class="plan-metrics">
+                  <div><small>Scope</small><b>3 Tickets</b></div>
+                  <div><small>Execution</small><b>2 parallel</b></div>
+                  <div><small>Risks</small><b>No flags</b></div>
+                </div>
+                <div class="wave">
+                  <span>Wave 1 · Starts immediately</span>
+                  <div class="wave-tickets">
+                    <div class="ticket blue">
+                      <small>T12 · Research</small>
+                      <b>Choose provider</b>
+                      <em>Business Analyst</em>
+                    </div>
+                    <div class="ticket purple">
+                      <small>T13 · Design</small>
+                      <b>Design failure states</b>
+                      <em>UX Designer</em>
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div class="join-lines" aria-hidden="true">
-                <i></i><i></i><i></i>
-              </div>
-              <div class="wave wave-two">
-                <span>Wave 2</span>
-                <div class="ticket orange">
-                  <small>T14</small>
-                  <b>Build approved experience</b>
-                  <em>After T12 and T13</em>
+                <div class="join-lines" aria-hidden="true">
+                  <i></i><i></i><i></i>
+                </div>
+                <div class="wave wave-two">
+                  <span>Wave 2 · After prerequisites</span>
+                  <div class="ticket orange">
+                    <small>T14 · Story</small>
+                    <b>Build approved experience</b>
+                    <em>After T12 and T13</em>
+                  </div>
                 </div>
               </div>
             </div>
@@ -548,35 +539,32 @@
               <span>StoryPointless</span>
             </div>
             <div class="git-flow app-mock">
-              <div class="git-step">
-                <span>1</span>
-                <div>
-                  <b>Isolated Ticket workspace</b>
-                  <small>The agent can change only its assigned work.</small>
+              <div class="mock-screen">
+                <div class="git-ticketbar">
+                  <div><small>T14 · Ticket details</small><b>Build approved experience</b></div>
+                  <span>In Review</span>
                 </div>
-              </div>
-              <i aria-hidden="true">↓</i>
-              <div class="git-step">
-                <span>2</span>
-                <div>
-                  <b>Exact candidate</b>
-                  <small>Checks and delivery evidence are attached.</small>
+                <div class="git-worklog">
+                  <div class="git-log-event">
+                    <i>1</i>
+                    <div><small>Implementer · 10:42</small><b>Candidate v2 created</b><span>7 files · exact revision 3f8d12a</span></div>
+                  </div>
+                  <div class="git-log-event">
+                    <i>2</i>
+                    <div><small>Checks · 10:44</small><b>42 tests passed</b><span>Delivery evidence attached</span></div>
+                  </div>
+                  <div class="git-log-event review">
+                    <i>3</i>
+                    <div><small>Tech Lead · 10:51</small><b>Independent review approved</b><span>Acceptance criteria and diff reviewed</span></div>
+                  </div>
+                  <div class="git-log-event final">
+                    <i>4</i>
+                    <div><small>Integration · 10:54</small><b>Ready for your demo</b><span>The reviewed result was integrated cleanly</span></div>
+                  </div>
                 </div>
-              </div>
-              <i aria-hidden="true">↓</i>
-              <div class="git-step">
-                <span>3</span>
-                <div>
-                  <b>Independent review</b>
-                  <small>A Tech Lead reviews the immutable revision.</small>
-                </div>
-              </div>
-              <i aria-hidden="true">↓</i>
-              <div class="git-step final-step">
-                <span>4</span>
-                <div>
-                  <b>You approve what you demoed</b>
-                  <small>That exact reviewed result becomes the product.</small>
+                <div class="git-candidate">
+                  <div><small>Exact candidate</small><code>3f8d12a</code></div>
+                  <span>Review preserved</span>
                 </div>
               </div>
             </div>
@@ -647,84 +635,76 @@
               <span>StoryPointless</span>
             </div>
             <div class="context-after app-mock">
-              <div class="knowledge-topbar">
-                <span>Product memory</span>
-                <small><i></i> 47 verified pages</small>
-              </div>
-              <div class="knowledge-layout">
-                <div class="knowledge-sidebar">
-                  <div class="selected">
-                    <span>▦</span> Product <em>18</em>
-                  </div>
-                  <div><span>⌘</span> Codebase <em>42</em></div>
-                  <div><span>◇</span> Decisions <em>9</em></div>
-                  <div><span>↻</span> Retrospectives <em>4</em></div>
-                  <div><span>⌁</span> Reports <em>3</em></div>
+              <div class="mock-screen">
+                <div class="knowledge-topbar">
+                  <span>Product knowledge</span>
+                  <small><i></i> 47 verified pages</small>
                 </div>
-
-                <div class="knowledge-main">
-                  <div class="knowledge-title">
-                    <div>
-                      <small>Current product</small>
-                      <b>Knowledge</b>
+                <div class="knowledge-layout">
+                  <div class="knowledge-main">
+                    <div class="knowledge-title">
+                      <div>
+                        <small>Current product</small>
+                        <b>Knowledge</b>
+                      </div>
+                      <span aria-hidden="true">⌕</span>
                     </div>
-                    <span aria-hidden="true">⌕</span>
-                  </div>
 
-                  <div class="knowledge-pages">
-                    <div>
-                      <span>Product</span>
-                      <b>Sharing and link privacy</b>
-                      <small><i>✓</i> Verified · 3 decisions</small>
-                    </div>
-                    <div>
-                      <span>Architecture</span>
-                      <b>Ticket workspace isolation</b>
-                      <small><i>✓</i> Verified · 7 sources</small>
-                    </div>
-                  </div>
-
-                  <div class="knowledge-widgets">
-                    <div class="knowledge-graph">
-                      <header>
-                        <b>Connected knowledge</b>
-                        <span>12 links</span>
-                      </header>
-                      <div class="graph-canvas" aria-hidden="true">
-                        <i class="edge edge-one"></i>
-                        <i class="edge edge-two"></i>
-                        <i class="edge edge-three"></i>
-                        <i class="edge edge-four"></i>
-                        <span class="graph-node node-ticket">T18</span>
-                        <span class="graph-node node-decision">D4</span>
-                        <span class="graph-node node-page">Page</span>
-                        <span class="graph-node node-evidence">E9</span>
-                        <span class="graph-node node-report">R3</span>
+                    <div class="knowledge-pages">
+                      <div>
+                        <span>Product</span>
+                        <b>Sharing and link privacy</b>
+                        <small><i>✓</i> Verified · 3 decisions</small>
+                      </div>
+                      <div>
+                        <span>Architecture</span>
+                        <b>Ticket workspace isolation</b>
+                        <small><i>✓</i> Verified · 7 sources</small>
                       </div>
                     </div>
 
-                    <div class="knowledge-report">
-                      <header>
-                        <b>Delivery report</b>
-                        <span>4 sprints</span>
-                      </header>
-                      <div class="report-bars" aria-label="Delivery trend improving">
-                        <i style="--bar: 42%"></i>
-                        <i style="--bar: 55%"></i>
-                        <i style="--bar: 68%"></i>
-                        <i style="--bar: 82%"></i>
+                    <div class="knowledge-widgets">
+                      <div class="knowledge-graph">
+                        <header>
+                          <b>Connected knowledge</b>
+                          <span>12 links</span>
+                        </header>
+                        <div class="graph-canvas" aria-hidden="true">
+                          <i class="edge edge-one"></i>
+                          <i class="edge edge-two"></i>
+                          <i class="edge edge-three"></i>
+                          <i class="edge edge-four"></i>
+                          <span class="graph-node node-ticket">T18</span>
+                          <span class="graph-node node-decision">D4</span>
+                          <span class="graph-node node-page">Page</span>
+                          <span class="graph-node node-evidence">E9</span>
+                          <span class="graph-node node-report">R3</span>
+                        </div>
                       </div>
-                      <small>First-pass acceptance</small>
-                    </div>
-                  </div>
 
-                  <div class="context-pack">
-                    <i>✦</i>
-                    <div>
-                      <small>Prepared for T19</small>
-                      <b>Current, relevant, and traceable</b>
+                      <div class="knowledge-report">
+                        <header>
+                          <b>Delivery report</b>
+                          <span>4 sprints</span>
+                        </header>
+                        <div class="report-bars" aria-label="Delivery trend improving">
+                          <i style="--bar: 42%"></i>
+                          <i style="--bar: 55%"></i>
+                          <i style="--bar: 68%"></i>
+                          <i style="--bar: 82%"></i>
+                        </div>
+                        <small>First-pass acceptance</small>
+                      </div>
                     </div>
-                    <span>6 sources</span>
+
+                    <div class="context-pack">
+                      <i>✦</i>
+                      <div>
+                        <small>Prepared for T19</small>
+                        <b>Current, relevant, and traceable</b>
+                      </div>
+                      <span>6 sources</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -784,62 +764,64 @@
               <span>StoryPointless</span>
             </div>
             <div class="worklog-panel app-mock">
-              <div class="worklog-topbar">
-                <div>
-                  <small>T18</small>
-                  <b>Work log</b>
-                </div>
-                <span>Exact candidate <code>3f8d12a</code></span>
-              </div>
-              <div class="worklog-events">
-                <div class="worklog-event">
-                  <time>10:42</time>
-                  <i class="event-purple">I</i>
+              <div class="mock-screen">
+                <div class="worklog-topbar">
                   <div>
-                    <small>Implementer</small>
-                    <b>Candidate revision created</b>
-                    <span>7 files changed · Delivery note attached</span>
+                    <small>T18 · Ticket details</small>
+                    <b>Work log</b>
+                  </div>
+                  <span>Exact candidate <code>3f8d12a</code></span>
+                </div>
+                <div class="worklog-events">
+                  <div class="worklog-event">
+                    <time>10:42</time>
+                    <i class="event-purple">I</i>
+                    <div>
+                      <small>Implementer</small>
+                      <b>Candidate revision created</b>
+                      <span>7 files changed · Delivery note attached</span>
+                    </div>
+                  </div>
+                  <div class="worklog-event">
+                    <time>10:44</time>
+                    <i class="event-green">✓</i>
+                    <div>
+                      <small>Checks</small>
+                      <b>42 tests passed</b>
+                      <span>Build succeeded · No warnings</span>
+                    </div>
+                  </div>
+                  <div class="worklog-event">
+                    <time>10:51</time>
+                    <i class="event-blue">TL</i>
+                    <div>
+                      <small>Tech Lead</small>
+                      <b>Exact candidate approved</b>
+                      <span>Acceptance criteria and diff reviewed</span>
+                    </div>
+                  </div>
+                  <div class="worklog-event">
+                    <time>10:54</time>
+                    <i class="event-green">✓</i>
+                    <div>
+                      <small>Integration</small>
+                      <b>Merged cleanly against current product</b>
+                      <span>Candidate review remains valid</span>
+                    </div>
+                  </div>
+                  <div class="worklog-event">
+                    <time>10:56</time>
+                    <i class="event-purple">▶</i>
+                    <div>
+                      <small>Demo</small>
+                      <b>Preparation succeeded</b>
+                      <span>The exact reviewed revision is ready</span>
+                    </div>
                   </div>
                 </div>
-                <div class="worklog-event">
-                  <time>10:44</time>
-                  <i class="event-green">✓</i>
-                  <div>
-                    <small>Checks</small>
-                    <b>42 tests passed</b>
-                    <span>Build succeeded · No warnings</span>
-                  </div>
+                <div class="worklog-footer">
+                  Every claim has an author, a time, and an exact revision.
                 </div>
-                <div class="worklog-event">
-                  <time>10:51</time>
-                  <i class="event-blue">TL</i>
-                  <div>
-                    <small>Tech Lead</small>
-                    <b>Exact candidate approved</b>
-                    <span>Acceptance criteria and diff reviewed</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:54</time>
-                  <i class="event-green">✓</i>
-                  <div>
-                    <small>Integration</small>
-                    <b>Merged cleanly against current product</b>
-                    <span>Candidate review remains valid</span>
-                  </div>
-                </div>
-                <div class="worklog-event">
-                  <time>10:56</time>
-                  <i class="event-purple">▶</i>
-                  <div>
-                    <small>Demo</small>
-                    <b>Preparation succeeded</b>
-                    <span>The exact reviewed revision is ready</span>
-                  </div>
-                </div>
-              </div>
-              <div class="worklog-footer">
-                Every claim has an author, a time, and an exact revision.
               </div>
             </div>
             <p class="punchline good">
@@ -888,41 +870,29 @@
               <span>StoryPointless</span>
             </div>
             <div class="recovery-panel app-mock">
-              <div class="recovery-topbar">
-                <span><i></i> Delivery recovered</span>
-                <small>Same Ticket · Same workspace</small>
-              </div>
-              <div class="recovered-ticket">
-                <div>
-                  <small>T23 · In Progress</small>
-                  <h3>Build expiring private links</h3>
-                  <p>Resuming from the last confirmed checkpoint.</p>
+              <div class="mock-screen">
+                <div class="recovery-topbar">
+                  <span><i></i> T23 · Delivery recovered</span>
+                  <small>Same Ticket · Same workspace</small>
                 </div>
-                <span>Recovered</span>
-              </div>
-              <div class="recovered-state">
-                <div><span>✓</span><b>Ticket workspace</b><small>Preserved</small></div>
-                <div><span>✓</span><b>Conversation</b><small>Ready to resume</small></div>
-                <div><span>✓</span><b>Product decisions</b><small>4 linked</small></div>
-                <div><span>✓</span><b>Work log</b><small>Current</small></div>
-              </div>
-              <div class="recovery-timeline">
-                <div>
-                  <time>Yesterday · 17:42</time>
-                  <span>Application closed; run and workspace preserved.</span>
+                <div class="recovered-ticket">
+                  <div>
+                    <small>In Progress</small>
+                    <h3>Build expiring private links</h3>
+                    <p>Resuming from the last confirmed checkpoint.</p>
+                  </div>
+                  <span>Recovered</span>
                 </div>
-                <div>
-                  <time>Today · 09:12</time>
-                  <span>Same Conversation and Ticket workspace recovered.</span>
+                <div class="recovered-state">
+                  <div><span>✓</span><b>Ticket workspace</b><small>Preserved</small></div>
+                  <div><span>✓</span><b>Conversation</b><small>Ready to resume</small></div>
+                  <div><span>✓</span><b>Product decisions</b><small>4 linked</small></div>
+                  <div><span>✓</span><b>Work log</b><small>Current</small></div>
                 </div>
-                <div class="resume-event">
-                  <time>Now</time>
-                  <span>Implementation continuing from the saved checkpoint.</span>
+                <div class="resume-bar">
+                  <span>Last activity: link expiry checks</span>
+                  <b><i></i> Resuming work</b>
                 </div>
-              </div>
-              <div class="resume-bar">
-                <span>Last activity: link expiry checks</span>
-                <b><i></i> Resuming work</b>
               </div>
             </div>
             <p class="punchline good">
@@ -979,62 +949,193 @@
               <span>StoryPointless</span>
             </div>
             <div class="sandbox-panel app-mock">
-              <div class="sandbox-topbar">
-                <span><i></i> Codex macOS sandbox</span>
-                <small>Active</small>
-              </div>
-
-              <div class="product-boundaries">
-                <small>Product workspaces</small>
-                <div class="product-pills">
-                  <div class="active">
-                    <i>A</i>
-                    <span><b>Atlas</b><small>Current product</small></span>
+              <div class="mock-screen">
+                <div class="sandbox-topbar">
+                  <span><i></i> T14 · Ticket details</span>
+                  <small>Needs your input</small>
+                </div>
+                <div class="sandbox-log">
+                  <div class="sandbox-event">
+                    <i>⚒</i>
+                    <div><small>Implementer · Started work</small><b>Picked up the authorised Ticket</b></div>
                   </div>
-                  <div>
-                    <i>C</i>
-                    <span><b>Client portal</b><small>Not accessible</small></span>
-                    <em>⌁</em>
+                  <div class="access-request-card">
+                    <div class="access-request-title">
+                      <div><small>Implementer</small><b>Allow additional access?</b></div>
+                      <span>Needs your input</span>
+                    </div>
+                    <p>The agent needs access outside its current Ticket workspace.</p>
+                    <label>Why this is needed</label>
+                    <strong>Verify the provider’s current documentation and privacy terms.</strong>
+                    <div class="exact-access">
+                      <span>Exact access</span>
+                      <b>Network access · provider documentation only</b>
+                    </div>
+                    <div class="access-boundary-note">
+                      <span>Current product</span>
+                      <span>T14 workspace</span>
+                      <span>No credentials</span>
+                    </div>
+                    <div class="access-actions">
+                      <button type="button">Deny</button>
+                      <button type="button">Allow once</button>
+                    </div>
                   </div>
-                  <div>
-                    <i>N</i>
-                    <span><b>Notes app</b><small>Not accessible</small></span>
-                    <em>⌁</em>
-                  </div>
                 </div>
-              </div>
-
-              <div class="ticket-boundary">
-                <div class="boundary-heading">
-                  <span>Assigned agent · T14</span>
-                  <b>Ticket workspace</b>
-                </div>
-                <div class="access-row">
-                  <span>Ticket files</span><em class="write">Read + write</em>
-                </div>
-                <div class="access-row">
-                  <span>Product knowledge</span><em>Read only</em>
-                </div>
-                <div class="access-row">
-                  <span>Product Git history</span><em>Read only</em>
-                </div>
-                <div class="blocked-access">
-                  <span>Other Tickets</span>
-                  <span>Other products</span>
-                  <span>Credentials</span>
-                  <span>Network</span>
-                </div>
-              </div>
-
-              <div class="scoped-request">
-                <span>Needs anything else?</span>
-                <b>Ask the Product Owner for the smallest exact access.</b>
               </div>
             </div>
             <p class="punchline good">
               The safe boundary exists before the first prompt is sent.
             </p>
           </article>
+        </div>
+      </section>
+
+      <section class="faq" id="faq">
+        <div class="faq-heading">
+          <h2>FAQs</h2>
+        </div>
+
+        <div class="faq-grid" data-faq>
+          <details open>
+            <summary>Is StoryPointless a local app?</summary>
+            <div class="faq-answer">
+              <p>
+                Yes. StoryPointless runs on your Mac and uses your local Codex.
+                Product state, workspaces, Work logs, and Product knowledge stay
+                local. Code changes are made in an ordinary local Git
+                repository, so you can push it to a remote or share it yourself
+                whenever you like. Network access is off unless you explicitly
+                allow it. Built-in remote connection and sync are planned for a
+                later version.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>What does it work with?</summary>
+            <div class="faq-answer">
+              <p>
+                For now: Codex on Apple silicon Macs running macOS 14 or later.
+                StoryPointless uses Codex App Server because it provides a
+                proper two-way integration: structured live activity, diffs,
+                questions, approvals, usage, and resumable sessions—without
+                scraping a terminal. Future Agent Client Protocol (ACP) support
+                is intended to broaden the provider range, but only where a
+                runtime can meet the same sandbox, approval, recovery, and audit
+                guarantees.
+              </p>
+            </div>
+          </details>
+
+          <details class="faq-featured">
+            <summary>How is this different from tools like Spec Kit?</summary>
+            <div class="faq-answer">
+              <p>
+                Spec Kit turns “build this” into a nine-command constitutional
+                ceremony:
+              </p>
+              <div class="command-parade" aria-label="Spec Kit command workflow">
+                <code>/speckit.constitution</code>
+                <code>/speckit.specify</code>
+                <code>/speckit.clarify</code>
+                <code>/speckit.plan</code>
+                <code>/speckit.checklist</code>
+                <code>/speckit.tasks</code>
+                <code>/speckit.analyze</code>
+                <code>/speckit.implement</code>
+                <code>/speckit.converge</code>
+              </div>
+              <div class="spec-kit-diagrams">
+                <figure>
+                  <div class="diagram-scroll">
+                    <img
+                      src="./diagrams/spec-kit-sequence.png"
+                      alt="A very large Spec Kit sequence diagram showing interactions between the developer, CLI, AI agent, file system, and Git across the complete workflow."
+                      width="1311"
+                      height="5138"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  </div>
+                </figure>
+              </div>
+              <p>
+                When the software-delivery process needs a 146-line sequence
+                diagram and its own scroll bar, the process may have become the
+                product. If this diagram sparks joy, StoryPointless may feel
+                alarmingly straightforward.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>Do I need to know Git or use a terminal?</summary>
+            <div class="faq-answer">
+              <p>
+                No. StoryPointless handles isolated Ticket workspaces,
+                revisions, review candidates, integration, checks, and Demo
+                preparation underneath the product workflow.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>Who is on the AI team?</summary>
+            <div class="faq-answer">
+              <p>
+                The default team includes a Business Analyst, UX Designer, Tech
+                Lead, and Implementer. You can tune their models, effort, and
+                instructions for each product.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>Can agents really work in parallel?</summary>
+            <div class="faq-answer">
+              <p>
+                Yes—when the dependency graph says they can. Independent Tickets
+                run in separate workspaces; dependent work waits; integration is
+                coordinated and reviewed.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>What happens when I close the app?</summary>
+            <div class="faq-answer">
+              <p>
+                The Backlog, decisions, Work logs, Product knowledge, run state,
+                and Ticket workspaces are durable. Interrupted work can resume
+                from the same product context.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>Does StoryPointless replace the Product Owner?</summary>
+            <div class="faq-answer">
+              <p>
+                No. AI can ask focused questions, propose scope, identify
+                dependencies, and deliver work. Consequential decisions, access,
+                Sprint scope, and acceptance remain yours.
+              </p>
+            </div>
+          </details>
+
+          <details>
+            <summary>So when is a Ticket actually Done?</summary>
+            <div class="faq-answer">
+              <p>
+                After the exact version of the change has passed its checks,
+                received independent review, integrated cleanly into the current
+                product, produced a working Demo, and been accepted by the
+                Product Owner.
+              </p>
+            </div>
+          </details>
+
         </div>
       </section>
 

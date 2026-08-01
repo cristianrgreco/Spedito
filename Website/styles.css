@@ -1442,11 +1442,19 @@ h3 {
 }
 
 .plan-chat {
-  min-height: 650px;
+  min-height: 500px;
+}
+
+.plan-chat .prompt {
+  margin-top: 12px;
+}
+
+.plan-chat .prompt:first-child {
+  margin-top: 0;
 }
 
 .refinement-panel {
-  min-height: 650px;
+  min-height: 500px;
 }
 
 .refinement-panel {
@@ -1694,23 +1702,6 @@ h3 {
   font-weight: 750;
 }
 
-.captured-decisions {
-  margin-top: 9px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.captured-decisions span {
-  padding: 4px 6px;
-  border: 1px solid rgba(46, 122, 94, 0.18);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.75);
-  color: #355f4d;
-  font-size: 6px;
-  font-weight: 620;
-}
-
 .sprint-plan {
   position: relative;
   background: #edf3f7;
@@ -1719,18 +1710,65 @@ h3 {
 .plan-header {
   padding-bottom: 14px;
   display: flex;
+  align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--line);
   font-size: 11px;
 }
 
-.plan-header small {
+.plan-header div small,
+.plan-header div b {
+  display: block;
+}
+
+.plan-header div small {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.plan-header div b {
+  margin-top: 2px;
+}
+
+.plan-header > span {
+  padding: 4px 7px;
+  border-radius: 99px;
+  background: #e8f2ff;
   color: var(--green);
+  font-size: 8px;
   font-weight: 680;
 }
 
+.plan-metrics {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.plan-metrics > div {
+  padding: 8px;
+  border-radius: 8px;
+  background: #f4f4f4;
+}
+
+.plan-metrics small,
+.plan-metrics b {
+  display: block;
+}
+
+.plan-metrics small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.plan-metrics b {
+  margin-top: 2px;
+  font-size: 9px;
+}
+
 .wave {
-  margin-top: 21px;
+  margin-top: 14px;
 }
 
 .wave > span {
@@ -2003,63 +2041,151 @@ h3 {
 
 .git-flow {
   min-height: 500px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
   background: #edf3f7;
 }
 
-.git-step {
-  padding: 13px;
+.git-ticketbar {
+  min-height: 58px;
+  padding: 0 15px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--surface);
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
 }
 
-.git-step > span {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: var(--purple-pale);
-  color: var(--purple-deep);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-  font-weight: 750;
-}
-
-.git-step b,
-.git-step small {
+.git-ticketbar small,
+.git-ticketbar b {
   display: block;
 }
 
-.git-step b {
+.git-ticketbar small {
+  color: var(--purple-deep);
+  font-size: 8px;
+}
+
+.git-ticketbar b {
+  margin-top: 2px;
   font-size: 11px;
 }
 
-.git-step small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 9px;
+.git-ticketbar > span {
+  padding: 5px 7px;
+  border-radius: 99px;
+  background: #f0eaff;
+  color: #6955d9;
+  font-size: 8px;
+  font-weight: 720;
 }
 
-.git-flow > i {
-  height: 24px;
+.git-worklog {
+  position: relative;
+  padding: 15px;
+  display: grid;
+  gap: 7px;
+}
+
+.git-worklog::before {
+  content: "";
+  position: absolute;
+  top: 36px;
+  bottom: 36px;
+  left: 30px;
+  width: 1px;
+  background: var(--line);
+}
+
+.git-log-event {
+  position: relative;
+  z-index: 1;
+  min-height: 67px;
+  padding: 10px 10px 10px 45px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: white;
+}
+
+.git-log-event > i {
+  position: absolute;
+  top: 18px;
+  left: 4px;
+  width: 23px;
+  height: 23px;
   display: grid;
   place-items: center;
-  color: var(--muted);
-  font-size: 11px;
+  border-radius: 50%;
+  background: #ece9ff;
+  color: #6655d8;
+  font-size: 8px;
   font-style: normal;
+  font-weight: 750;
+  box-shadow: 0 0 0 4px white;
 }
 
-.git-step.final-step {
-  border-color: rgba(46, 122, 94, 0.3);
-  background: var(--green-pale);
+.git-log-event small,
+.git-log-event b,
+.git-log-event span {
+  display: block;
+}
+
+.git-log-event small,
+.git-log-event span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.git-log-event b {
+  margin: 2px 0;
+  font-size: 10px;
+}
+
+.git-log-event.review {
+  border-color: rgba(255, 140, 51, 0.28);
+  background: #fffaf5;
+}
+
+.git-log-event.review > i {
+  background: #fff0df;
+  color: #ef8427;
+}
+
+.git-log-event.final {
+  border-color: rgba(44, 190, 92, 0.25);
+  background: #f6fff8;
+}
+
+.git-log-event.final > i {
+  background: #e4f9e9;
+  color: #25a84f;
+}
+
+.git-candidate {
+  margin: 0 15px 15px;
+  padding: 10px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 8px;
+  background: #eff7ff;
+}
+
+.git-candidate small,
+.git-candidate code {
+  display: block;
+}
+
+.git-candidate small,
+.git-candidate > span {
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.git-candidate code {
+  margin-top: 2px;
+  color: var(--brand-deep);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .evidence-chat,
@@ -2067,6 +2193,11 @@ h3 {
 .recovery-chat,
 .recovery-panel {
   min-height: 540px;
+}
+
+.recovery-chat,
+.recovery-panel {
+  min-height: 330px;
 }
 
 .agent-progress {
@@ -2548,43 +2679,7 @@ h3 {
 .knowledge-layout {
   min-height: 391px;
   display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-}
-
-.knowledge-sidebar {
-  padding: 12px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border-right: 1px solid var(--line);
-  background: rgba(232, 226, 218, 0.66);
-}
-
-.knowledge-sidebar > div {
-  min-height: 29px;
-  padding: 0 7px;
-  display: grid;
-  grid-template-columns: 17px 1fr auto;
-  align-items: center;
-  border-radius: 7px;
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 610;
-}
-
-.knowledge-sidebar > div.selected {
-  background: var(--purple-pale);
-  color: var(--purple-deep);
-}
-
-.knowledge-sidebar span {
-  font-size: 9px;
-}
-
-.knowledge-sidebar em {
-  color: #918a92;
-  font-size: 7px;
-  font-style: normal;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .knowledge-main {
@@ -2778,29 +2873,29 @@ h3 {
 
 .edge-one {
   width: 42%;
-  top: 23px;
-  left: 14%;
-  transform: rotate(11deg);
+  top: 50%;
+  left: 50%;
+  transform: rotate(195deg);
 }
 
 .edge-two {
-  width: 38%;
-  top: 39px;
-  left: 13%;
-  transform: rotate(-18deg);
+  width: 39%;
+  top: 50%;
+  left: 50%;
+  transform: rotate(162deg);
 }
 
 .edge-three {
-  width: 39%;
-  top: 38px;
-  left: 53%;
-  transform: rotate(-19deg);
+  width: 40%;
+  top: 50%;
+  left: 50%;
+  transform: rotate(-16deg);
 }
 
 .edge-four {
   width: 41%;
-  top: 42px;
-  left: 53%;
+  top: 50%;
+  left: 50%;
   transform: rotate(17deg);
 }
 
@@ -2985,10 +3080,181 @@ h3 {
 .sandbox-topbar > small {
   padding: 4px 7px;
   border-radius: 99px;
-  background: var(--green-pale);
-  color: var(--green);
+  background: #fff0df;
+  color: #d66d16;
   font-size: 7px;
   font-weight: 720;
+}
+
+.sandbox-log {
+  padding: 15px;
+}
+
+.sandbox-event {
+  min-height: 52px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sandbox-event > i {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8f2ff;
+  color: #2189e8;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.sandbox-event small,
+.sandbox-event b {
+  display: block;
+}
+
+.sandbox-event small {
+  color: #2189e8;
+  font-size: 8px;
+}
+
+.sandbox-event b {
+  margin-top: 2px;
+  font-size: 10px;
+}
+
+.access-request-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid rgba(255, 133, 38, 0.45);
+  border-radius: 11px;
+  background: #fff7ef;
+}
+
+.access-request-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.access-request-title small,
+.access-request-title b {
+  display: block;
+}
+
+.access-request-title small {
+  color: var(--purple);
+  font-size: 8px;
+}
+
+.access-request-title b {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.access-request-title > span {
+  padding: 4px 6px;
+  border-radius: 99px;
+  background: #ffe8d3;
+  color: #d66d16;
+  font-size: 7px;
+  font-weight: 720;
+}
+
+.access-request-card > p {
+  margin: 7px 0 12px;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.access-request-card > label {
+  display: block;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.access-request-card > strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.exact-access {
+  margin-top: 12px;
+  padding: 9px;
+  border: 1px solid rgba(255, 133, 38, 0.22);
+  border-radius: 8px;
+  background: #fff0e3;
+}
+
+.exact-access span,
+.exact-access b {
+  display: block;
+}
+
+.exact-access span {
+  color: #d66d16;
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.exact-access b {
+  margin-top: 3px;
+  font-size: 9px;
+}
+
+.access-boundary-note {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.access-boundary-note span {
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: white;
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.access-boundary-note span::before {
+  content: "✓";
+  margin-right: 4px;
+  color: var(--green);
+  font-weight: 800;
+}
+
+.access-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.access-actions button {
+  min-height: 29px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 8px;
+  font-weight: 680;
+}
+
+.access-actions button:last-child {
+  border-color: #1687ed;
+  background: #1687ed;
+  color: white;
 }
 
 .product-boundaries {
@@ -3171,39 +3437,26 @@ h3 {
 .app-mock {
   --app-border: rgba(23, 38, 48, 0.13);
   position: relative;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
   border-color: var(--app-border);
   border-radius: 13px;
   background-color: #f3f5f6;
   box-shadow:
     0 18px 42px rgba(23, 66, 92, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.8) inset;
+  font-size: 11px;
+  line-height: 1.35;
 }
 
-.app-mock::before {
-  content: "StoryPointless";
-  position: absolute;
-  top: 0;
-  right: 0;
-  left: 0;
-  z-index: 3;
-  height: 36px;
-  padding-left: 66px;
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--app-border);
-  background:
-    radial-gradient(circle at 17px 18px, #ff5f57 0 4px, transparent 4.5px),
-    radial-gradient(circle at 31px 18px, #febc2e 0 4px, transparent 4.5px),
-    radial-gradient(circle at 45px 18px, #28c840 0 4px, transparent 4.5px),
-    rgba(249, 249, 249, 0.97);
-  color: #3e4850;
-  font-size: 9px;
-  font-weight: 680;
-  letter-spacing: -0.01em;
-}
-
-.app-mock > :first-child {
-  margin-top: 36px;
+.mock-screen {
+  min-width: 0;
+  min-height: 100%;
+  overflow: hidden;
+  background: #fff;
 }
 
 .app-mock :is(
@@ -3220,7 +3473,7 @@ h3 {
 
 .app-mock :is(
     .ticket,
-    .git-step,
+    .git-log-event,
     .epic-result,
     .backlog-ticket,
     .knowledge-pages > div,
@@ -3236,11 +3489,11 @@ h3 {
 }
 
 .app-mock small {
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .app-mock .ba-questions span {
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .app-mock .ba-questions b,
@@ -3249,12 +3502,7 @@ h3 {
 .app-mock .recovered-state b,
 .app-mock .product-pills b,
 .app-mock .boundary-heading b {
-  font-size: 9px;
-}
-
-.app-mock .knowledge-sidebar > div.selected {
-  background: rgba(46, 149, 204, 0.13);
-  color: var(--brand-deep);
+  font-size: 11px;
 }
 
 .app-mock .product-pills > div.active {
@@ -3269,6 +3517,574 @@ h3 {
 .app-mock .demo-body button {
   background: var(--brand);
   box-shadow: 0 6px 0 rgba(46, 149, 204, 0.16);
+}
+
+.sprint-plan-screen {
+  padding: 15px;
+  background: #fff;
+}
+
+.sprint-plan .ticket {
+  min-height: 78px;
+  padding: 10px;
+}
+
+.sprint-plan .ticket em {
+  margin-top: 7px;
+}
+
+.sprint-plan .join-lines {
+  height: 36px;
+}
+
+.sprint-plan .join-lines i:first-child,
+.sprint-plan .join-lines i:nth-child(2) {
+  height: 19px;
+}
+
+.sprint-plan .join-lines i:last-child {
+  top: 18px;
+}
+
+.sprint-plan .join-lines::after {
+  top: 18px;
+  height: 18px;
+}
+
+.app-mock .worklog-event {
+  min-height: 68px;
+}
+
+.app-mock .ba-questions > div {
+  grid-template-columns: 108px 1fr;
+}
+
+.app-mock .backlog-ticket {
+  min-height: 48px;
+  grid-template-columns: 30px 34px 1fr auto;
+  gap: 8px;
+}
+
+.app-mock .knowledge-layout {
+  min-height: 384px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.demo-panel .mock-screen {
+  display: flex;
+  flex-direction: column;
+}
+
+.demo-status {
+  min-height: 56px;
+  padding: 0 20px;
+  font-size: 12px;
+}
+
+.demo-status code,
+.revision code {
+  font-size: 11px;
+}
+
+.demo-body {
+  flex: 1;
+  padding: 36px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.demo-body > small {
+  font-size: 10px;
+}
+
+.demo-body h3 {
+  margin-top: 10px;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.demo-body > p {
+  margin-top: 12px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.demo-body ul {
+  margin: 28px 0;
+  padding: 20px 0;
+  gap: 14px;
+  font-size: 11px;
+}
+
+.revision {
+  margin-bottom: 18px;
+  font-size: 11px;
+}
+
+.demo-body button {
+  height: 58px;
+  font-size: 15px;
+}
+
+.refinement-topbar {
+  min-height: 64px;
+  padding: 0 18px;
+}
+
+.refinement-topbar small {
+  font-size: 9px;
+}
+
+.refinement-topbar b {
+  font-size: 14px;
+}
+
+.refinement-topbar > span {
+  padding: 6px 9px;
+  font-size: 9px;
+}
+
+.ba-questions {
+  padding: 14px 16px;
+  gap: 8px;
+}
+
+.ba-questions > div {
+  padding: 11px 12px;
+}
+
+.ba-questions b {
+  font-size: 11px;
+}
+
+.ba-questions small {
+  font-size: 10px;
+}
+
+.epic-result {
+  min-height: 60px;
+  padding: 11px 14px;
+}
+
+.epic-result small {
+  font-size: 8px;
+}
+
+.epic-result b {
+  font-size: 14px;
+}
+
+.epic-result > span {
+  font-size: 9px;
+}
+
+.backlog-ticket em {
+  font-size: 8px;
+}
+
+.backlog-ticket code {
+  font-size: 9px;
+}
+
+.backlog-ticket > small {
+  font-size: 9px;
+}
+
+.knowledge-capture {
+  padding: 12px;
+}
+
+.capture-title {
+  grid-template-columns: 32px 1fr auto;
+  gap: 10px;
+}
+
+.capture-title > i {
+  width: 32px;
+  height: 32px;
+}
+
+.capture-title small {
+  font-size: 9px;
+}
+
+.capture-title b {
+  font-size: 11px;
+}
+
+.capture-title > span {
+  padding: 5px 7px;
+  font-size: 8px;
+}
+
+.evidence-chat,
+.worklog-panel {
+  min-height: 460px;
+}
+
+.worklog-topbar {
+  min-height: 60px;
+  padding: 0 18px;
+}
+
+.worklog-topbar small,
+.worklog-topbar > span,
+.worklog-topbar code {
+  font-size: 9px;
+}
+
+.worklog-topbar b {
+  font-size: 14px;
+}
+
+.worklog-events {
+  padding: 14px 18px 8px;
+  gap: 4px;
+}
+
+.worklog-events::before {
+  left: 86px;
+}
+
+.worklog-event {
+  grid-template-columns: 42px 32px 1fr;
+  gap: 10px;
+}
+
+.worklog-event time {
+  font-size: 8px;
+}
+
+.worklog-event > i {
+  width: 32px;
+  height: 32px;
+  font-size: 9px;
+}
+
+.worklog-event small,
+.worklog-event span {
+  font-size: 9px;
+}
+
+.worklog-event b {
+  font-size: 11px;
+}
+
+.worklog-footer {
+  margin: 0 18px 16px;
+  padding: 11px;
+  font-size: 9px;
+}
+
+.recovery-topbar {
+  min-height: 54px;
+  padding: 0 18px;
+}
+
+.recovery-topbar > span {
+  font-size: 11px;
+}
+
+.recovery-topbar > small {
+  font-size: 9px;
+}
+
+.recovered-ticket {
+  margin: 16px;
+  padding: 16px;
+}
+
+.recovered-ticket small,
+.recovered-ticket > span {
+  font-size: 9px;
+}
+
+.recovered-ticket h3 {
+  font-size: 18px;
+}
+
+.recovered-ticket p {
+  font-size: 11px;
+}
+
+.recovered-state {
+  margin: 0 16px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.recovered-state > div {
+  min-height: 74px;
+  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.recovered-state span {
+  grid-row: auto;
+  width: 24px;
+  height: 24px;
+  margin-bottom: 7px;
+  flex: 0 0 24px;
+  font-size: 9px;
+}
+
+.recovered-state small {
+  font-size: 9px;
+}
+
+.resume-bar {
+  margin: 12px 16px 16px;
+  padding: 12px 14px;
+}
+
+.resume-bar > span {
+  font-size: 9px;
+}
+
+.resume-bar > b {
+  font-size: 10px;
+}
+
+.knowledge-topbar {
+  min-height: 46px;
+  padding: 0 16px;
+  font-size: 11px;
+}
+
+.knowledge-topbar small {
+  font-size: 10px;
+}
+
+.knowledge-main {
+  padding: 18px 20px;
+}
+
+.knowledge-title small {
+  font-size: 10px;
+}
+
+.knowledge-title b {
+  font-size: 20px;
+}
+
+.knowledge-title > span {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+
+.knowledge-pages {
+  margin-top: 12px;
+  gap: 10px;
+}
+
+.knowledge-pages > div {
+  padding: 12px;
+}
+
+.knowledge-pages span {
+  font-size: 8px;
+}
+
+.knowledge-pages b {
+  font-size: 11px;
+}
+
+.knowledge-pages small {
+  margin-top: 7px;
+  font-size: 10px;
+}
+
+.knowledge-widgets {
+  margin-top: 10px;
+  gap: 10px;
+}
+
+.knowledge-graph,
+.knowledge-report {
+  padding: 12px;
+}
+
+.knowledge-graph header b,
+.knowledge-report header b {
+  font-size: 10px;
+}
+
+.knowledge-graph header span,
+.knowledge-report header span {
+  font-size: 9px;
+}
+
+.graph-canvas {
+  height: 100px;
+  margin-top: 8px;
+}
+
+.graph-node {
+  width: 32px;
+  height: 32px;
+  font-size: 7px;
+}
+
+.node-ticket,
+.node-evidence {
+  top: 4px;
+}
+
+.node-decision,
+.node-report {
+  bottom: 4px;
+}
+
+.node-page {
+  top: calc(50% - 19px);
+  left: calc(50% - 19px);
+  width: 38px;
+  height: 38px;
+}
+
+.report-bars {
+  height: 91px;
+}
+
+.knowledge-report > small {
+  font-size: 10px;
+}
+
+.context-pack {
+  min-height: 62px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  gap: 11px;
+}
+
+.context-pack > i {
+  width: 34px;
+  height: 34px;
+  flex-basis: 34px;
+  font-size: 12px;
+}
+
+.context-pack small,
+.context-pack > span {
+  font-size: 9px;
+}
+
+.context-pack b {
+  font-size: 11px;
+}
+
+.permission-stack,
+.sandbox-panel {
+  min-height: 480px;
+}
+
+.sandbox-topbar {
+  min-height: 54px;
+  padding: 0 18px;
+}
+
+.sandbox-topbar > span {
+  font-size: 11px;
+}
+
+.sandbox-topbar > small {
+  padding: 5px 8px;
+  font-size: 9px;
+}
+
+.sandbox-log {
+  padding: 18px;
+}
+
+.sandbox-event {
+  min-height: 60px;
+  padding: 10px 12px;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+}
+
+.sandbox-event > i {
+  width: 34px;
+  height: 34px;
+  font-size: 12px;
+}
+
+.sandbox-event small {
+  font-size: 10px;
+}
+
+.sandbox-event b {
+  font-size: 12px;
+}
+
+.access-request-card {
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.access-request-title small {
+  font-size: 10px;
+}
+
+.access-request-title b {
+  font-size: 16px;
+}
+
+.access-request-title > span {
+  padding: 5px 8px;
+  font-size: 9px;
+}
+
+.access-request-card > p {
+  margin: 9px 0 14px;
+  font-size: 11px;
+}
+
+.access-request-card > label {
+  font-size: 10px;
+}
+
+.access-request-card > strong {
+  font-size: 12px;
+}
+
+.exact-access {
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.exact-access span {
+  font-size: 9px;
+}
+
+.exact-access b {
+  font-size: 11px;
+}
+
+.access-boundary-note {
+  margin-top: 12px;
+  gap: 7px;
+}
+
+.access-boundary-note span {
+  padding: 6px 8px;
+  font-size: 9px;
+}
+
+.access-actions {
+  margin-top: 16px;
+  gap: 8px;
+}
+
+.access-actions button {
+  min-height: 36px;
+  padding: 0 13px;
+  font-size: 10px;
 }
 
 /* One readable type scale for the prompting side of every comparison. */
@@ -3357,6 +4173,151 @@ h3 {
 .before .permission-request small,
 .before .permission-request em {
   font-size: 11px;
+}
+
+.faq {
+  width: var(--page);
+  margin: 0 auto;
+  padding: 115px 0;
+}
+
+.faq-heading {
+  max-width: none;
+}
+
+.faq-grid {
+  margin-top: 42px;
+  border-top: 1px solid var(--line);
+}
+
+.faq details {
+  padding-right: 24px;
+  padding-left: 24px;
+  overflow: clip;
+  border-bottom: 1px solid var(--line);
+  transition: background 220ms ease;
+}
+
+.faq details[open] {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.faq summary {
+  min-height: 76px;
+  padding: 20px 54px 20px 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  list-style: none;
+}
+
+.faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq summary::after {
+  content: "+";
+  width: 27px;
+  height: 27px;
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--brand-deep);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  font-weight: 500;
+  transform: translateY(-50%) rotate(0deg);
+  transition:
+    border-color 220ms ease,
+    color 220ms ease,
+    transform 260ms ease;
+}
+
+.faq details[open] summary::after {
+  content: "−";
+  border-color: rgba(46, 149, 204, 0.35);
+  transform: translateY(-50%) rotate(180deg);
+}
+
+.faq summary:focus-visible {
+  outline: 3px solid rgba(46, 149, 204, 0.42);
+  outline-offset: 4px;
+}
+
+.faq-answer {
+  max-width: 800px;
+  padding: 0 54px 28px 0;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.faq-answer p {
+  margin: 0 0 16px;
+}
+
+.faq-answer > :last-child {
+  margin-bottom: 0;
+}
+
+.faq-featured .faq-answer {
+  max-width: none;
+}
+
+.command-parade {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 5px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-color: rgba(76, 49, 131, 0.28) transparent;
+}
+
+.command-parade code {
+  flex: 0 0 auto;
+  padding: 6px 7px;
+  border: 1px solid rgba(116, 82, 200, 0.18);
+  border-radius: 7px;
+  background: var(--purple-pale);
+  color: var(--purple-deep);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.spec-kit-diagrams {
+  margin: 20px 0 24px;
+}
+
+.spec-kit-diagrams figure {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+}
+
+.diagram-scroll {
+  height: 560px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(23, 101, 143, 0.34) transparent;
+}
+
+.diagram-scroll img {
+  width: 100%;
+  height: auto;
+  display: block;
 }
 
 .final-cta {
@@ -3609,6 +4570,10 @@ footer > a:last-child {
     padding: 85px 0;
   }
 
+  .faq {
+    padding: 85px 0;
+  }
+
   .proof-heading {
     grid-template-columns: 1fr;
   }
@@ -3652,7 +4617,7 @@ footer > a:last-child {
     min-height: 0;
   }
 
-  .ba-questions > div {
+  .app-mock .ba-questions > div {
     grid-template-columns: 1fr;
   }
 
@@ -3671,7 +4636,7 @@ footer > a:last-child {
     margin-top: 5px;
   }
 
-  .backlog-ticket {
+  .app-mock .backlog-ticket {
     grid-template-columns: 22px 27px 1fr;
     padding-top: 7px;
     padding-bottom: 7px;
@@ -3692,17 +4657,127 @@ footer > a:last-child {
     min-height: 0;
   }
 
-  .knowledge-sidebar {
-    display: none;
-  }
-
   .knowledge-layout,
   .knowledge-widgets {
     grid-template-columns: 1fr;
   }
 
+  .knowledge-pages {
+    grid-template-columns: 1fr;
+  }
+
+  .knowledge-main {
+    padding: 16px;
+  }
+
+  .knowledge-title {
+    gap: 12px;
+  }
+
+  .knowledge-title > div,
+  .knowledge-pages > div,
+  .context-pack > div {
+    min-width: 0;
+  }
+
+  .knowledge-pages b {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .context-pack {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .context-pack > i {
+    grid-row: 1 / 3;
+  }
+
+  .context-pack > span {
+    grid-column: 2;
+    margin-left: 0;
+  }
+
+  .recovered-state {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .demo-body {
+    padding: 25px;
+  }
+
+  .demo-body h3 {
+    font-size: 21px;
+  }
+
+  .worklog-topbar {
+    min-height: 70px;
+    padding: 12px 14px;
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+  }
+
+  .worklog-events {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .worklog-events::before {
+    left: 63px;
+  }
+
+  .worklog-event {
+    grid-template-columns: 30px 28px minmax(0, 1fr);
+    gap: 7px;
+  }
+
+  .worklog-event > i {
+    width: 28px;
+    height: 28px;
+  }
+
+  .sandbox-log {
+    padding: 12px;
+  }
+
+  .access-request-card {
+    padding: 13px;
+  }
+
   .product-pills {
     grid-template-columns: 1fr;
+  }
+
+  .faq-grid {
+    margin-top: 34px;
+  }
+
+  .faq summary {
+    min-height: 62px;
+    padding-left: 0;
+    font-size: 14px;
+  }
+
+  .faq details {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .faq-answer {
+    padding-right: 42px;
+    padding-left: 0;
+  }
+
+  .command-parade code {
+    font-size: 9px;
+  }
+
+  .diagram-scroll {
+    height: 340px;
   }
 
   footer {
