@@ -37,24 +37,21 @@ struct MacOSDemoLauncherTests {
     await launcher.stop(candidateID: candidateID)
   }
 
-  @Test("A loopback web service becomes ready and is stopped after its smoke test")
+  @Test("A browser service becomes ready and is stopped after its smoke test")
   func webSmokeTest() async throws {
-    guard
-      FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/python3")
-        || FileManager.default.isExecutableFile(atPath: "/usr/local/bin/python3")
-    else {
-      return
-    }
     let workspace = try makeWorkspace()
     defer { try? FileManager.default.removeItem(at: workspace) }
-    try Data("ready\n".utf8).write(to: workspace.appendingPathComponent("index.html"))
     let executor = DemoCommandExecutorStub()
-    let launcher = MacOSDemoLauncher(executor: executor)
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ReadyLoopbackURLProtocol.self]
+    let urlSession = URLSession(configuration: configuration)
+    defer { urlSession.invalidateAndCancel() }
+    let launcher = MacOSDemoLauncher(executor: executor, urlSession: urlSession)
     let specification = DemoLaunchSpecification(
       title: "Local page",
       launchCommand: DemoCommand(
-        executable: "python3",
-        arguments: ["-u", "-m", "http.server", "{{PORT}}", "--bind", "127.0.0.1"],
+        executable: "test-browser-service",
+        arguments: ["{{PORT}}"],
         timeoutSeconds: 30
       ),
       portEnvironmentVariable: "PORT",
@@ -68,6 +65,11 @@ struct MacOSDemoLauncherTests {
       workspaceURL: workspace
     )
     #expect(await executor.runningProcessCount() == 0)
+    let request = try #require(await executor.startedRequests().first)
+    let port = try #require(request.environment["PORT"])
+    #expect(Int(port) != nil)
+    #expect(request.command == ["test-browser-service", port])
+    #expect(request.permissionProfile == CodexPermissionProfiles.demo)
   }
 
   @Test("Homebrew Node can read its approved OpenSSL runtime configuration")
@@ -173,6 +175,36 @@ struct MacOSDemoLauncherTests {
   }
 }
 
+private final class ReadyLoopbackURLProtocol: URLProtocol, @unchecked Sendable {
+  override class func canInit(with request: URLRequest) -> Bool {
+    request.url?.host == "127.0.0.1" && request.url?.path == "/"
+  }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+    request
+  }
+
+  override func startLoading() {
+    guard
+      let url = request.url,
+      let response = HTTPURLResponse(
+        url: url,
+        statusCode: 200,
+        httpVersion: "HTTP/1.1",
+        headerFields: nil
+      )
+    else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+      return
+    }
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: Data("ready".utf8))
+    client?.urlProtocolDidFinishLoading(self)
+  }
+
+  override func stopLoading() {}
+}
+
 private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   private struct RunningProcess {
     let process: Process
@@ -181,6 +213,7 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   }
 
   private var completed: [CodexManagedCommandRequest] = []
+  private var started: [CodexManagedCommandRequest] = []
   private var processes: [String: RunningProcess] = [:]
 
   func runManagedCommand(
@@ -225,20 +258,20 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   }
 
   func startManagedCommand(_ request: CodexManagedCommandRequest) async throws -> String {
+    started.append(request)
     let processID = UUID().uuidString
     let process = Process()
     let executable =
-      if request.command.first == "python3" {
-        if FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/python3") {
-          "/opt/homebrew/bin/python3"
-        } else {
-          "/usr/local/bin/python3"
-        }
+      if request.command.first == "test-browser-service" {
+        "/bin/sleep"
       } else {
         request.command.first ?? ""
       }
     process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = Array(request.command.dropFirst())
+    process.arguments =
+      request.command.first == "test-browser-service"
+      ? ["60"]
+      : Array(request.command.dropFirst())
     process.currentDirectoryURL = request.workingDirectory
     process.environment = ProcessInfo.processInfo.environment.merging(request.environment) {
       _, requested in requested
@@ -291,6 +324,10 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
 
   func completedRequests() -> [CodexManagedCommandRequest] {
     completed
+  }
+
+  func startedRequests() -> [CodexManagedCommandRequest] {
+    started
   }
 
   func runningProcessCount() -> Int {
