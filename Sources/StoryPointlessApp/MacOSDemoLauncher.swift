@@ -1,4 +1,5 @@
 import AppKit
+import CFNetwork
 import Darwin
 import Foundation
 import StoryPointlessCore
@@ -83,12 +84,12 @@ final class MacOSDemoLauncher {
     executor: (any CodexManagedCommandExecuting)? = nil,
     fileManager: FileManager = .default,
     workspace: NSWorkspace = .shared,
-    urlSession: URLSession = .shared
+    urlSession: URLSession? = nil
   ) {
     self.executor = executor
     self.fileManager = fileManager
     self.workspace = workspace
-    self.urlSession = urlSession
+    self.urlSession = urlSession ?? Self.makeReadinessURLSession()
   }
 
   func useExecutor(_ executor: any CodexManagedCommandExecuting) {
@@ -433,6 +434,7 @@ final class MacOSDemoLauncher {
     port: Int
   ) async throws {
     let deadline = ContinuousClock.now + .seconds(readiness.timeoutSeconds)
+    var lastReadinessDetail = ""
     while ContinuousClock.now < deadline {
       guard await isRunning(processID: processID) else {
         throw DemoLauncherError.serviceStopped(
@@ -447,20 +449,46 @@ final class MacOSDemoLauncher {
         let path = readiness.path ?? "/"
         if let url = URL(string: "http://127.0.0.1:\(port)\(path)") {
           var request = URLRequest(url: url)
+          request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
           request.timeoutInterval = 1
-          if let (_, response) = try? await urlSession.data(for: request),
-            let http = response as? HTTPURLResponse,
-            (200...399).contains(http.statusCode)
-          {
-            return
+          do {
+            let (_, response) = try await urlSession.data(for: request)
+            if let http = response as? HTTPURLResponse {
+              if (200...399).contains(http.statusCode) {
+                return
+              }
+              lastReadinessDetail = "The loopback endpoint returned HTTP \(http.statusCode)."
+            } else {
+              lastReadinessDetail = "The loopback endpoint returned an invalid response."
+            }
+          } catch {
+            lastReadinessDetail = "The loopback request failed: \(error.localizedDescription)"
           }
         }
       }
       try await Task.sleep(for: .milliseconds(200))
     }
+    let processDetail = await outputSummary(processID: processID)
     throw DemoLauncherError.readinessTimedOut(
-      await outputSummary(processID: processID)
+      [processDetail, lastReadinessDetail]
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
     )
+  }
+
+  private static func makeReadinessURLSession() -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    configuration.urlCache = nil
+    configuration.httpCookieStorage = nil
+    configuration.httpShouldSetCookies = false
+    configuration.waitsForConnectivity = false
+    configuration.connectionProxyDictionary = [
+      kCFNetworkProxiesHTTPEnable as String: false,
+      kCFNetworkProxiesHTTPSEnable as String: false,
+      kCFNetworkProxiesSOCKSEnable as String: false,
+    ]
+    return URLSession(configuration: configuration)
   }
 
   private func isRunning(processID: String) async -> Bool {
