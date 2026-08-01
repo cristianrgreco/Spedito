@@ -1,7 +1,8 @@
 # Releasing StoryPointless
 
-StoryPointless early releases are built by GitHub Actions from explicit semantic
-version tags. A push to `main` runs CI but does not publish a release.
+StoryPointless early releases are built and published by GitHub Actions from an
+explicit semantic version. A push to `main` runs CI but does not publish a
+release.
 
 ## Current release properties
 
@@ -25,25 +26,30 @@ Do not describe these artifacts as trusted, notarized, or production-ready.
    accurately.
 3. Choose a semantic version below `1.0.0` while the project remains an early
    preview.
-4. Create and push an annotated tag:
-
-   ```sh
-   git switch main
-   git pull --ff-only
-   git tag -a v0.1.0 -m "StoryPointless v0.1.0"
-   git push origin v0.1.0
-   ```
-
-5. Watch the **Release** GitHub Actions workflow. It runs the full test suite,
-   builds the application bundle, verifies its ad-hoc signature, creates and
-   validates a DMG and SHA-256 checksum, and publishes both to GitHub Releases.
+4. Open the repository's **Actions** tab, choose **Release**, select **Run
+   workflow**, leave the branch set to `main`, enter a version such as `0.1.0`,
+   and run it.
+5. Watch the workflow. It runs the full test suite, builds the application
+   bundle, verifies its ad-hoc signature, creates and validates a DMG and SHA-256
+   checksum, creates the annotated version tag, and publishes both files to
+   GitHub Releases.
 6. Download the published assets on a separate machine or clean user account and
    verify the checksum, launch instructions, and first-run experience.
 
-The workflow validates tag syntax and uses `--verify-tag`, so it will not create
-a release for an unpushed or mistyped tag. Do not retag or replace a published
-version. Correct a bad release with a new patch version and explain the
-superseded build in its release notes.
+The same release can be started from the command line by creating and pushing
+the version tag:
+
+```sh
+git switch main
+git pull --ff-only
+git tag -a v0.1.0 -m "StoryPointless v0.1.0"
+git push origin v0.1.0
+```
+
+The workflow validates the version and uses `--verify-tag`. A manual run creates
+its tag only after the tests, app bundle, and DMG have passed validation. Do not
+retag or replace a published version. Correct a bad release with a new patch
+version and explain the superseded build in its release notes.
 
 ## Verifying an artifact
 

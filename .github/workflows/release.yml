@@ -4,12 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, for example 0.1.0"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -21,18 +27,31 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
     steps:
-      - name: Check out tagged revision
+      - name: Check out release revision
         uses: actions/checkout@v6
 
-      - name: Validate version tag
+      - name: Validate release version
         id: version
         shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+              echo "Manual releases must run from the $DEFAULT_BRANCH branch." >&2
+              exit 64
+            fi
+            tag="v${REQUESTED_VERSION#v}"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Expected a semantic version tag such as v0.1.0" >&2
             exit 64
           fi
-          echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "value=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Verify pinned build environment
         shell: bash
@@ -72,15 +91,43 @@ jobs:
           echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
           echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
 
+      - name: Create release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          remote_commit="$(
+            git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk 'NR == 1 { print $1 }'
+          )"
+          if [[ -z "$remote_commit" ]]; then
+            remote_commit="$(
+              git ls-remote origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }'
+            )"
+          fi
+          if [[ -n "$remote_commit" ]]; then
+            if [[ "$remote_commit" != "$GITHUB_SHA" ]]; then
+              echo "The tag $RELEASE_TAG already points to another revision." >&2
+              exit 65
+            fi
+            echo "Reusing $RELEASE_TAG from this release revision."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" -m "StoryPointless $RELEASE_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             "${{ steps.artifact.outputs.dmg }}" \
             "${{ steps.artifact.outputs.checksum }}" \
             --verify-tag \
             --latest \
-            --title "StoryPointless $GITHUB_REF_NAME — early preview" \
+            --title "StoryPointless $RELEASE_TAG — early preview" \
             --notes "Early preview: open the DMG and drag StoryPointless to Applications. This Apple Silicon build is ad-hoc signed, not notarized, and provided without warranty. Back up important repositories and review the README before use." \
             --generate-notes
