@@ -2,9 +2,9 @@ const showcaseSlides = [
   {
     file: "0-sprint-board-overview.webp",
     phase: "Deliver",
-    title: "See the whole Sprint",
+    title: "See your AI team at work.",
     caption:
-      "Track what can start, what is moving, what needs review, and what is ready to demo.",
+      "See what’s moving, blocked, under review, and ready to demo—without asking agents for updates.",
     alt: "StoryPointless Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
   },
   {
@@ -477,6 +477,34 @@ if (faq) {
       } else {
         animateItem(item, shouldOpen);
       }
+    });
+  });
+}
+
+const tourLink = document.querySelector('a[href="#tour"]');
+const tour = document.querySelector("#tour");
+
+if (tourLink && tour) {
+  tourLink.addEventListener("click", (event) => {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+
+    tour.scrollIntoView({
+      behavior: reduceMotion ? "auto" : "smooth",
+      block: "center",
+      inline: "nearest",
     });
   });
 }
