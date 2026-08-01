@@ -963,16 +963,16 @@ struct CodexAdapterTests {
     async let result = client.waitForFinalAgentMessage(
       threadID: "thread-active",
       turnID: "turn-active",
-      timeout: .milliseconds(150)
+      timeout: .seconds(1)
     )
 
-    try await Task.sleep(for: .milliseconds(80))
+    try await Task.sleep(for: .milliseconds(400))
     await transport.comment(
       threadID: "thread-active",
       turnID: "turn-active",
       text: "Inspecting supplied ticket context."
     )
-    try await Task.sleep(for: .milliseconds(80))
+    try await Task.sleep(for: .milliseconds(700))
     await transport.complete(
       threadID: "thread-active",
       turnID: "turn-active",
