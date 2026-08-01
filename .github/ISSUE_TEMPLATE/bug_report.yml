@@ -1,0 +1,58 @@
+name: Bug report
+description: Report reproducible behaviour that should already work
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the early preview. Do not include credentials, private repositories, customer data, or security vulnerabilities. Report vulnerabilities using SECURITY.md.
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This report does not contain a security vulnerability or private data.
+          required: true
+  - type: input
+    attributes:
+      label: StoryPointless version
+      description: Release tag or commit SHA
+      placeholder: v0.1.0 or abc1234
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: macOS and hardware
+      placeholder: macOS 26.4, Apple M2
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Codex version
+      description: Include the selected Codex app or executable version when relevant.
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Describe the observed behaviour and its Product Owner impact.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+      description: Use a minimal example with synthetic data.
+      placeholder: |
+        1. Create a product…
+        2. Open…
+        3. Select…
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional evidence
+      description: Add sanitized logs, screenshots, or other context. Drag files here after removing private data.

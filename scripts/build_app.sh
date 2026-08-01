@@ -64,6 +64,9 @@ install -m 644 \
 install -m 644 \
   "$project_root/Sources/StoryPointlessApp/Resources/ticket-attention.wav" \
   "$resources_path/ticket-attention.wav"
+install -m 644 \
+  "$project_root/LICENSE" \
+  "$resources_path/LICENSE.txt"
 
 plutil -replace CFBundleIdentifier -string "$bundle_identifier" "$contents_path/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$marketing_version" "$contents_path/Info.plist"

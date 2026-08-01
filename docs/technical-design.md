@@ -1,11 +1,16 @@
 # StoryPointless technical design
 
-**Status:** Initial implementation baseline  
-**Date:** 27 July 2026
+- **Status:** Architecture baseline for the early implementation
+- **Date:** 1 August 2026
 
-## 1. First executable outcome
+This document describes the architecture and the invariants the implementation
+must preserve. It is not a release-support statement. The
+[README](../README.md) records what is available in the current early preview,
+and the [product specification](product-spec.md) records intended behaviour.
 
-The first vertical slice is a native Apple Silicon macOS application that can
+## 1. Executable outcome
+
+The implemented vertical slice is a native Apple Silicon macOS application that can
 persist a local product, work items, workflow transitions, comments, agent
 profiles, runs, decisions, knowledge proposals, and an audit timeline. It then
 grows into the walking skeleton defined in the product specification:
@@ -20,16 +25,15 @@ grows into the walking skeleton defined in the product specification:
 7. publish reviewed ticket documentation and knowledge; and
 8. interrupt, reopen, reconcile, and resume work.
 
-The first implementation proves the durable control plane before adding the
-Codex process adapter. The board must project real state; it will not initially
-simulate agents moving cards.
+The board projects durable state and supported Codex events; it does not
+simulate agents moving cards or treat agent-authored narration as authority.
 
 ## 2. Technology baseline
 
 - **Application UI:** SwiftUI, using AppKit only for macOS lifecycle, Keychain,
   process, file-panel, and preview integration that SwiftUI does not cover.
 - **Language:** Swift 6 with strict concurrency.
-- **Deployment target:** macOS 14+, Apple Silicon for private builds.
+- **Deployment target:** macOS 14+, Apple Silicon for early builds.
 - **Application data:** one system SQLite database per product, with no database
   daemon or third-party dependency.
 - **Generated source:** local Git repository and isolated worktrees; source and
@@ -42,9 +46,11 @@ simulate agents moving cards.
 - **Testing:** Swift Testing for domain, schema/import, persistence, state-machine,
   scheduling, recovery, and adapter-contract tests.
 
-The repository begins as a Swift package so the domain and engine can be built
-and tested without generated project files. A signed Xcode application target
-will wrap the same modules before distribution.
+The repository is a Swift package so the domain and engine can be built and
+tested without generated project files. `scripts/build_app.sh` assembles those
+modules into a conventional application bundle. Early bundles are ad-hoc signed;
+Developer ID signing, notarization, and an update channel remain distribution
+work.
 
 ## 3. Module boundaries
 
@@ -231,9 +237,11 @@ earlier blocker label does not perpetuate a non-material cycle. The fifth review
 return to **In Progress** preserves the workspace and findings but pauses automatic
 revision until the Product Owner provides direction.
 
-Git implementation is behind a protocol. The spike may use a known executable;
-the distributed product must provide its own compatible Git implementation and
-must not depend on Xcode Command Line Tools being installed.
+Git implementation is behind a protocol. The current workspace manager invokes
+the host's `/usr/bin/git`, so an early build may depend on an installed Apple
+developer toolchain. A later self-contained distribution must provide or embed a
+compatible Git implementation and must not trigger an unexpected Command Line
+Tools installation during the Product Owner workflow.
 
 ### 6.1 Managed candidate demos
 
@@ -666,89 +674,35 @@ and verified Environments page through the normal direct-prerequisite context
 rules. Production credentials, signing identities, and release authority are
 not implied by local environment readiness.
 
-## 10. Near-term implementation sequence
+## 10. Implementation and distribution boundary
 
-1. **Complete:** core domain model, workflow state machine, SQLite schema, and
-   persistence.
-2. **Complete:** separate backlog/refinement and simplified sprint-board shells,
-   guided ticket-by-ticket planning, readiness validation, frozen authorization,
-   and idempotent internal run creation.
-3. **Partial:** official-app and explicit custom Codex discovery, remembered
-   selection, capability-based compatibility, JSONL transport, initialization
-   handshake, structured read-only and workspace-write turns, bounded waits,
-   interruption, and truthful connection state are complete; authentication UX
-   and usage telemetry remain.
-4. **Partial:** a durable, deduplicated **Autosuggest Tickets** session now
-   uses one BA thread to present a single analysis progress card followed by up
-   to 24 rationale-backed proposals classified as Story, Task, or Bug. Suggested
-   owner roles may repeat. A vertically staggered, dashed dependency outline is
-   now projected as compact purple rows inside the ranked backlog, and cyclic
-   graphs are rejected. Connected paths support group review, references to active
-   backlog tickets become real cross-batch edges, and failed proposal sessions can
-   be retried or dismissed. Accept/reject is durable and only acceptance creates
-   scope. Ticket editing, custom fields,
-   dependency-safe ranking, preflight-validating next-sprint drag/drop, and
-   durable ticket comments are complete. Cross-section drops preserve global
-   rank unless their selected insertion point requires a reorder, and the same
-   policy validates both the preview and persisted action. Ticket chat replies
-   and reviewable action proposals use optimistic base versions and
-   stale-proposal protection. Product/sprint conversations, profile DMs,
-   context packs and batch review remain. Product-level independently scheduled
-   direct conversation threads are implemented in the sidebar.
-5. Lightweight epic records and collapsible backlog grouping, without placing
-   epics on the execution board or requiring them for small products.
-6. **Partial:** the durable scheduler admits all dependency-free implementation
-   runs in parallel, routes concurrent Codex notifications by thread and turn,
-   records attributed Work log updates, pauses for owner input, resumes the same
-   Codex thread, persists paused questions as structured comment data, presents
-   their choices natively in the Work log, and chronologically interleaves
-   permission requests, run context, candidate revisions, knowledge proposals,
-   follow-up recommendations, and demo submissions with comments and audit
-   events. It performs independent read-only Tech Lead review, returns findings
-   to the original implementer, and supports owner demo feedback and approval.
-   Restart recovery continues interrupted implementation in its existing
-   Conversation and workspace with permission-aware recovery context, requeues
-   integration, and continues interrupted Tech Lead review in the same
-   Conversation against its verified immutable candidate SHA or post-conflict
-   integrated SHA. Implementation and
-   review both recover a completed structured result before starting another
-   turn.
-7. **Partial:** product repository bootstrap, ticket-named private branches and
-   worktrees, versioned candidate commit ranges, detached integration worktrees,
-   a rank-ordered serial candidate queue, internal Integrator conflict runs,
-   parallel exact-candidate Tech Lead review, focused post-conflict re-review,
-   and Product Owner promotion to `trunk` are
-   implemented. Durable multi-process merge-queue leases remain.
-8. Pinned checks, reviewer checkout, loopback preview, release finalization, and
-   an agent-authored quit checkpoint. Normal termination already interrupts all
-   active turns, persists their state, and preserves their workspaces.
-9. **Partial:** ticket delivery notes are verified during Tech Lead review;
-   agents can propose complete canonical-page creations or updates; and the
-   reviewed proposals are published automatically and committed on the integrated
-   revision. Candidate-sourced pages remain excluded from accepted-workspace
-   Markdown synchronization until their source candidate is promoted, preventing a
-   normal trunk checkpoint from publishing them early. A runtime feature flag
-   restores per-proposal Product Owner approval for testing stricter governance.
-   Material unstated owner choices still pause execution rather than entering a
-   proposal. Verified mandatory pages remain available through live product
-   context and bounded delivery records,
-   Environments is backfilled and updateable through the same proposal path, and
-   Work log context records distinguish always-included from ticket-relevant
-   knowledge. Decision capture and richer sourced knowledge-change diffs remain.
-10. **Partial:** durable agent observations, in-progress attributed Product
-   Owner action ideas with active-sprint deletion, reviewable Product Owner
-   retrospective proposals, Ways of working promotion, and backlog-ticket
-   creation with automatic refinement entry are implemented. Per-run candidates
-   remain immutable; Product Owner ideas become immutable when the sprint
-   completes. Sprint completion creates one durable read-only Business Analyst
-   synthesis that links zero to five consolidated final actions to their frozen
-   source notes. Interrupted
-   synthesis is requeued, invalid output fails safely for retry, and the Product
-   Owner can explicitly continue without AI suggestions. Structured metric
-   evidence snapshots, retrospective experiments, and normalized before/after
-   reporting remain; the existing UI shell must continue to render unavailable
-   metrics honestly until these events exist.
-11. Quit checkpoint, stale-lease reconciliation, and resume.
+The repository implements the local control plane, owner-facing planning and
+delivery workflow, Codex App Server adapter, isolated ticket workspaces,
+candidate review and integration, managed local demos, recovery, Product
+knowledge, conversations, retrospectives, and reporting described above.
 
-Signing, notarization, managed tool downloads, Docker Sandboxes, cloud release,
-and production operations follow only after this slice is reliable.
+Architecture descriptions are invariants and intended behaviour, not evidence
+that every path is production-ready. Current availability and known limitations
+are maintained in the README. In particular:
+
+- release bundles are ad-hoc signed and are not notarized;
+- the app does not bundle Codex and requires a compatible installed runtime;
+- the Git workspace manager currently invokes the host's Git implementation;
+- supported toolchains depend on the product repository and owner-approved
+  capabilities;
+- no cloud backend, multi-user synchronization, automatic deployment, or update
+  service is implemented; and
+- the isolation, recovery, and permission model has not received an independent
+  security audit.
+
+GitHub Actions may build the same Swift package using the repository's pinned
+Apple Silicon macOS and Xcode versions, then publish a branded disk image with
+an Applications shortcut as an explicitly marked early release. Adding
+Developer ID signing later must use repository secrets, hardened-runtime
+signing, notarization, and release verification without making credentials
+available to pull-request workflows or agent runs.
+
+Material changes to workflow, persistence, permissions, execution, integration,
+or recovery require corresponding updates to this design and the product
+specification. Release-only changes update the README and release workflow as
+well.

@@ -1,0 +1,38 @@
+name: Product proposal
+description: Propose an owner-visible improvement or outcome
+title: "[Proposal]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the Product Owner problem and desired outcome. A proposal is not accepted scope until a maintainer agrees that it fits the product direction.
+  - type: checkboxes
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and the public roadmap for related work.
+          required: true
+  - type: textarea
+    attributes:
+      label: Product Owner problem
+      description: Who encounters the problem, and what are they unable to accomplish confidently?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Desired outcome
+      description: Describe observable success without prescribing implementation unnecessarily.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Example journey
+      description: Give a concise before-and-after example.
+  - type: textarea
+    attributes:
+      label: Important constraints
+      description: Note privacy, permission, recovery, compatibility, accessibility, or data-migration constraints.
+  - type: textarea
+    attributes:
+      label: Alternatives considered
+      description: Explain existing workarounds or smaller approaches, if any.

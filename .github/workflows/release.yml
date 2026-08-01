@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Check out tagged revision
+        uses: actions/checkout@v6
+
+      - name: Validate version tag
+        id: version
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a semantic version tag such as v0.1.0" >&2
+            exit 64
+          fi
+          echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pinned build environment
+        shell: bash
+        run: |
+          [[ "$(xcodebuild -version | head -n 1)" == "Xcode 26.6" ]]
+          xcodebuild -version
+          swift --version
+
+      - name: Run test suite
+        run: |
+          env \
+            SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
+            CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
+            swift test -Xswiftc -warnings-as-errors
+
+      - name: Build application bundle
+        env:
+          STORYPOINTLESS_VERSION: ${{ steps.version.outputs.value }}
+          STORYPOINTLESS_BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/build_app.sh release
+
+      - name: Verify application signature
+        run: codesign --verify --deep --strict .build/app/release/StoryPointless.app
+
+      - name: Build installation disk image and checksum
+        id: artifact
+        shell: bash
+        run: |
+          dmg="StoryPointless-${{ steps.version.outputs.value }}-macOS-Apple-Silicon.dmg"
+          checksum="StoryPointless-${{ steps.version.outputs.value }}-SHA256.txt"
+          ./scripts/build_dmg.sh \
+            .build/app/release/StoryPointless.app \
+            "$dmg"
+          ./scripts/verify_dmg.sh "$dmg"
+          shasum -a 256 "$dmg" > "$checksum"
+          echo "dmg=$dmg" >> "$GITHUB_OUTPUT"
+          echo "checksum=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.artifact.outputs.dmg }}" \
+            "${{ steps.artifact.outputs.checksum }}" \
+            --verify-tag \
+            --latest \
+            --title "StoryPointless $GITHUB_REF_NAME — early preview" \
+            --notes "Early preview: open the DMG and drag StoryPointless to Applications. This Apple Silicon build is ad-hoc signed, not notarized, and provided without warranty. Back up important repositories and review the README before use." \
+            --generate-notes
