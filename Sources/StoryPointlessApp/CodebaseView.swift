@@ -103,8 +103,8 @@ struct CodebaseView: View {
   }
 
   private var header: some View {
-    HStack(alignment: .center, spacing: 14) {
-      VStack(alignment: .leading, spacing: 3) {
+    HStack(alignment: .center) {
+      VStack(alignment: .leading, spacing: 4) {
         Text("Codebase")
           .font(.largeTitle.bold())
         Text("Accepted history, in-flight work, and the exact changes behind each commit.")
@@ -112,8 +112,7 @@ struct CodebaseView: View {
       }
       Spacer()
     }
-    .padding(.horizontal, 28)
-    .padding(.vertical, 20)
+    .padding(24)
   }
 
   private var commitTimeline: some View {

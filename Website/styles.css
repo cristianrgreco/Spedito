@@ -4415,15 +4415,6 @@ h3 {
   font-size: 10px;
 }
 
-.final-cta > small a {
-  color: inherit;
-  text-underline-offset: 3px;
-}
-
-.final-cta > small a:hover {
-  color: rgba(255, 255, 255, 0.78);
-}
-
 footer {
   width: var(--page);
   min-height: 90px;

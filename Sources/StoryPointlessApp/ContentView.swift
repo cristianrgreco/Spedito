@@ -765,27 +765,39 @@ private struct ProductConversationView: View {
   }
 
   var body: some View {
-    HSplitView {
-      threadList
-        .frame(idealWidth: 290, maxWidth: 360)
-        .frame(maxHeight: .infinity)
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Chat")
+          .font(.largeTitle.bold())
+        Text("Ask your team about the product, delivery, and what needs your attention.")
+          .foregroundStyle(.secondary)
+      }
+      .padding(24)
 
-      VStack(spacing: 0) {
-        conversationHeader
-        Divider()
-        conversationTimeline
-        Divider()
-        conversationStatus
-        if selectedThread?.isArchived == true {
-          archivedThreadFooter
-        } else {
-          composer
+      Divider()
+
+      HSplitView {
+        threadList
+          .frame(idealWidth: 290, maxWidth: 360)
+          .frame(maxHeight: .infinity)
+
+        VStack(spacing: 0) {
+          conversationHeader
+          Divider()
+          conversationTimeline
+          Divider()
+          conversationStatus
+          if selectedThread?.isArchived == true {
+            archivedThreadFooter
+          } else {
+            composer
+          }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .navigationTitle("Chat")
     .onAppear {
       if selectedThreadID == nil, let firstThread = activeThreads.first {
         selectedThreadID = firstThread.id
