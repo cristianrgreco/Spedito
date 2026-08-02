@@ -8,6 +8,7 @@ app_path=${1:-"$project_root/.build/app/release/Spedito.app"}
 output_path=${2:-"$project_root/.build/app/release/Spedito.dmg"}
 volume_name=${SPEDITO_DMG_VOLUME_NAME:-Spedito}
 background_path="$project_root/Distribution/DMGBackground.png"
+volume_icon_path="$project_root/Sources/SpeditoApp/Resources/AppIcon.icns"
 layout_script="$script_dir/layout_dmg.applescript"
 
 if [[ ! -d "$app_path" ]]; then
@@ -17,6 +18,11 @@ fi
 
 if [[ ! -f "$background_path" ]]; then
   echo "DMG background does not exist: $background_path" >&2
+  exit 66
+fi
+
+if [[ ! -f "$volume_icon_path" ]]; then
+  echo "DMG volume icon does not exist: $volume_icon_path" >&2
   exit 66
 fi
 
@@ -51,9 +57,6 @@ mkdir -p "$staging_dir/.background"
 ditto "$app_path" "$staging_dir/Spedito.app"
 ln -s /Applications "$staging_dir/Applications"
 install -m 644 "$background_path" "$staging_dir/.background/background.png"
-install -m 644 \
-  "$project_root/Sources/SpeditoApp/Resources/AppIcon.icns" \
-  "$staging_dir/.VolumeIcon.icns"
 
 hdiutil create \
   -volname "$volume_name" \
@@ -62,6 +65,7 @@ hdiutil create \
   -format UDRW \
   -ov \
   "$read_write_dmg" >/dev/null
+hdiutil resize -size +5m "$read_write_dmg" >/dev/null
 
 attach_output=$(
   hdiutil attach \
@@ -92,6 +96,11 @@ fi
 mounted=true
 finder_disk_name=${mount_dir:t}
 
+install -m 644 "$volume_icon_path" "$mount_dir/.VolumeIcon.icns"
+xcrun SetFile -c icnC "$mount_dir/.VolumeIcon.icns"
+xcrun SetFile -a V "$mount_dir/.VolumeIcon.icns"
+xcrun SetFile -a C "$mount_dir"
+
 # Finder learns about newly attached volumes asynchronously on hosted runners.
 sleep 5
 
@@ -106,8 +115,6 @@ until osascript "$layout_script" "$finder_disk_name"; do
 done
 
 xcrun SetFile -a V "$mount_dir/.background"
-xcrun SetFile -a V "$mount_dir/.VolumeIcon.icns"
-xcrun SetFile -a C "$mount_dir"
 sync
 
 hdiutil detach "$attached_device" >/dev/null
