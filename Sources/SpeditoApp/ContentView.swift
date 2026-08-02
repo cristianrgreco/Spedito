@@ -64,19 +64,23 @@ private struct ProductOnboardingView: View {
   @State private var showingProductLibrary = false
 
   var body: some View {
-    ContentUnavailableView {
-      Label("No active products", systemImage: "shippingbox")
-    } description: {
-      Text("Create a local product workspace or restore one from the archive.")
-    } actions: {
-      HStack {
-        Button("New product") {
-          showingNewProduct = true
-        }
-        .buttonStyle(.borderedProminent)
-        if !model.archivedProducts.isEmpty {
-          Button("View archived products") {
-            showingProductLibrary = true
+    ZStack {
+      ProductOnboardingBackdrop()
+
+      ContentUnavailableView {
+        Label("No active products", systemImage: "shippingbox")
+      } description: {
+        Text("Create a local product workspace or restore one from the archive.")
+      } actions: {
+        HStack {
+          Button("New product") {
+            showingNewProduct = true
+          }
+          .buttonStyle(.borderedProminent)
+          if !model.archivedProducts.isEmpty {
+            Button("View archived products") {
+              showingProductLibrary = true
+            }
           }
         }
       }
@@ -97,6 +101,100 @@ private struct ProductOnboardingView: View {
         onOpenProduct: {}
       )
     }
+  }
+}
+
+private struct ProductOnboardingBackdrop: View {
+  @Environment(\.colorScheme) private var colorScheme
+
+  var body: some View {
+    ZStack {
+      Color(nsColor: .windowBackgroundColor)
+
+      LinearGradient(
+        colors: [
+          Color.accentColor.opacity(colorScheme == .dark ? 0.13 : 0.09),
+          Color.purple.opacity(colorScheme == .dark ? 0.08 : 0.045),
+          Color.clear,
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+      )
+
+      Circle()
+        .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.1 : 0.065))
+        .frame(width: 520, height: 520)
+        .blur(radius: 90)
+        .offset(x: 430, y: -280)
+
+      Circle()
+        .fill(Color.purple.opacity(colorScheme == .dark ? 0.08 : 0.045))
+        .frame(width: 460, height: 460)
+        .blur(radius: 100)
+        .offset(x: -480, y: 320)
+
+      VStack(spacing: 0) {
+        HStack(spacing: 11) {
+          Image(systemName: "shippingbox.fill")
+            .font(.title2.weight(.semibold))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: 38, height: 38)
+            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+
+          VStack(alignment: .leading, spacing: 1) {
+            Text("Spedito")
+              .font(.headline)
+            Text("Product delivery, kept in your control")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+
+          Spacer()
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 28)
+
+        Spacer()
+
+        HStack(spacing: 26) {
+          onboardingPromise(
+            symbol: "internaldrive",
+            title: "Local-first",
+            detail: "Your product stays on this Mac"
+          )
+          onboardingPromise(
+            symbol: "person.crop.circle",
+            title: "Made for Product Owners",
+            detail: "Describe outcomes in product language"
+          )
+          onboardingPromise(
+            symbol: "checkmark.shield",
+            title: "Review before delivery",
+            detail: "You approve the work that ships"
+          )
+        }
+        .padding(.horizontal, 32)
+        .padding(.bottom, 28)
+      }
+    }
+    .clipped()
+  }
+
+  private func onboardingPromise(symbol: String, title: String, detail: String) -> some View {
+    HStack(spacing: 9) {
+      Image(systemName: symbol)
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(Color.accentColor)
+
+      VStack(alignment: .leading, spacing: 1) {
+        Text(title)
+          .font(.caption.weight(.semibold))
+        Text(detail)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
