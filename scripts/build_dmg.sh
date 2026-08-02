@@ -34,19 +34,20 @@ mkdir -p "$output_parent"
 
 dmg_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/spedito-dmg.XXXXXX")
 staging_dir="$dmg_work_dir/staging"
-mount_dir="$dmg_work_dir/mount"
 read_write_dmg="$dmg_work_dir/Spedito-read-write.dmg"
+attached_device=""
+mount_dir=""
 mounted=false
 
 cleanup() {
   if [[ "$mounted" == true ]]; then
-    hdiutil detach "$mount_dir" -force >/dev/null 2>&1 || true
+    hdiutil detach "$attached_device" -force >/dev/null 2>&1 || true
   fi
   rm -rf "$dmg_work_dir"
 }
 trap cleanup EXIT
 
-mkdir -p "$staging_dir/.background" "$mount_dir"
+mkdir -p "$staging_dir/.background"
 ditto "$app_path" "$staging_dir/Spedito.app"
 ln -s /Applications "$staging_dir/Applications"
 install -m 644 "$background_path" "$staging_dir/.background/background.png"
@@ -62,17 +63,40 @@ hdiutil create \
   -ov \
   "$read_write_dmg" >/dev/null
 
-hdiutil attach \
-  "$read_write_dmg" \
-  -readwrite \
-  -noverify \
-  -noautoopen \
-  -owners off \
-  -mountpoint "$mount_dir" >/dev/null
+attach_output=$(
+  hdiutil attach \
+    "$read_write_dmg" \
+    -readwrite \
+    -noverify \
+    -noautoopen \
+    -nobrowse \
+    -owners off \
+    -mountrandom /Volumes
+)
+attached_device=$(
+  print -r -- "$attach_output" |
+    awk '$1 ~ /^\/dev\// { device = $1 } END { print device }'
+)
+mount_dir=$(
+  print -r -- "$attach_output" |
+    awk '$1 ~ /^\/dev\// && $NF ~ /^\/Volumes\// { print $NF; exit }'
+)
+
+if [[ -z "$attached_device" || -z "$mount_dir" || ! -d "$mount_dir" ]]; then
+  echo "Could not identify the mounted DMG device and volume." >&2
+  if [[ -n "$attached_device" ]]; then
+    hdiutil detach "$attached_device" -force >/dev/null 2>&1 || true
+  fi
+  exit 70
+fi
 mounted=true
+finder_disk_name=${mount_dir:t}
+
+# Finder learns about newly attached volumes asynchronously on hosted runners.
+sleep 5
 
 layout_attempt=1
-until osascript "$layout_script" "$volume_name"; do
+until osascript "$layout_script" "$finder_disk_name"; do
   if (( layout_attempt >= 3 )); then
     echo "Finder could not persist the DMG layout after $layout_attempt attempts." >&2
     exit 70
@@ -86,7 +110,7 @@ xcrun SetFile -a V "$mount_dir/.VolumeIcon.icns"
 xcrun SetFile -a C "$mount_dir"
 sync
 
-hdiutil detach "$mount_dir" >/dev/null
+hdiutil detach "$attached_device" >/dev/null
 mounted=false
 
 rm -f "$output_path"

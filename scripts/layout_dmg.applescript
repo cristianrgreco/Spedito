@@ -1,10 +1,10 @@
 on run arguments
-  if (count of arguments) is not 1 then error "Expected the mounted volume name."
+  if (count of arguments) is not 1 then error "Expected the mounted disk name."
 
-  set volumeName to item 1 of arguments
+  set mountedDiskName to item 1 of arguments
 
   tell application "Finder"
-    tell disk (volumeName as text)
+    tell disk (mountedDiskName as text)
       open
 
       set current view of container window to icon view
