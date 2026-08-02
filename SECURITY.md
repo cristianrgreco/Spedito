@@ -20,7 +20,7 @@ work.
 
 Do not open a public issue for a suspected vulnerability.
 
-Use [GitHub private vulnerability reporting](https://github.com/cristianrgreco/spedito/security/advisories/new)
+Use [GitHub private vulnerability reporting](https://github.com/cristianrgreco/Spedito/security/advisories/new)
 when it is available. If that channel is unavailable, email
 [cristianrgreco@gmail.com](mailto:cristianrgreco@gmail.com) with the subject
 `Spedito security report`.

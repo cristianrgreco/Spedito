@@ -52,8 +52,8 @@ You need:
 Clone the repository and run the full test suite:
 
 ```sh
-git clone https://github.com/cristianrgreco/spedito.git
-cd spedito
+git clone https://github.com/cristianrgreco/Spedito.git
+cd Spedito
 env \
   SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
   CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \

@@ -65,7 +65,16 @@ hdiutil create \
   -format UDRW \
   -ov \
   "$read_write_dmg" >/dev/null
-hdiutil resize -size +5m "$read_write_dmg" >/dev/null
+current_sectors=$(
+  hdiutil resize -limits "$read_write_dmg" |
+    awk 'NR == 1 && $2 ~ /^[0-9]+$/ { print $2 }'
+)
+if [[ -z "$current_sectors" ]]; then
+  echo "Could not determine the writable DMG size." >&2
+  exit 70
+fi
+expanded_sectors=$((current_sectors + 10240))
+hdiutil resize -sectors "$expanded_sectors" "$read_write_dmg" >/dev/null
 
 attach_output=$(
   hdiutil attach \

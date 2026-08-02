@@ -7,15 +7,19 @@ control of scope, permissions, demos, and acceptance.
 
 Learn more at [spedito.io](https://spedito.io/).
 
-_Early access: Spedito is under active development, so expect bugs and
-breaking changes._
+> [!NOTE]
+> **Early access**
+>
+> Spedito is under active development, so expect bugs and breaking changes.
+> For now, it supports macOS and Codex only. Contributions, bug reports, design
+> feedback, and documentation improvements are welcome.
 
 ![Spedito sprint board](Website/screenshots/1.webp)
 
 ## Install
 
 Download the latest Apple Silicon DMG from
-[GitHub Releases](https://github.com/cristianrgreco/spedito/releases),
+[GitHub Releases](https://github.com/cristianrgreco/Spedito/releases),
 open it, and drag **Spedito** into **Applications**.
 
 The app is not yet signed with an Apple Developer ID. On first launch, macOS may
@@ -39,8 +43,8 @@ a compatible Codex app or `codex` installation.
 ## Build from source
 
 ```sh
-git clone https://github.com/cristianrgreco/spedito.git
-cd spedito
+git clone https://github.com/cristianrgreco/Spedito.git
+cd Spedito
 swift test
 swift run Spedito
 ```
@@ -49,8 +53,7 @@ See the [product specification](docs/product-spec.md),
 [technical design](docs/technical-design.md), and
 [release guide](docs/releasing.md) for more detail.
 
-The static product website lives in [`Website`](Website). See the
-[website publishing guide](docs/website.md) for its Cloudflare Pages setup.
+The static product website lives in [`Website`](Website).
 
 ## Privacy
 
@@ -61,7 +64,6 @@ Tickets, Product knowledge, screenshots, issues, or bug reports.
 
 ## Contributing
 
-Contributions, bug reports, design feedback, and documentation improvements are
-welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md), the
+Please read [CONTRIBUTING.md](CONTRIBUTING.md), the
 [Code of Conduct](CODE_OF_CONDUCT.md), and [SECURITY.md](SECURITY.md) before
 participating.

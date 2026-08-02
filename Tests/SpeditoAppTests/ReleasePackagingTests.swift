@@ -21,8 +21,13 @@ struct ReleasePackagingTests {
   @Test("The volume icon is prepared on the mounted DMG before Finder")
   func dmgVolumeIconContract() throws {
     let script = try buildDMGScript()
+    let resizeLimits = try #require(
+      script.range(of: "hdiutil resize -limits \"$read_write_dmg\"")
+    )
     let resize = try #require(
-      script.range(of: "hdiutil resize -size +5m \"$read_write_dmg\"")
+      script.range(
+        of: "hdiutil resize -sectors \"$expanded_sectors\" \"$read_write_dmg\""
+      )
     )
     let iconInstall = try #require(
       script.range(
@@ -40,9 +45,12 @@ struct ReleasePackagingTests {
       )
     )
 
+    #expect(resizeLimits.lowerBound < resize.lowerBound)
     #expect(resize.lowerBound < iconInstall.lowerBound)
     #expect(iconInstall.lowerBound < iconMetadata.lowerBound)
     #expect(iconMetadata.lowerBound < finderLayout.lowerBound)
+    #expect(script.contains("expanded_sectors=$((current_sectors + 10240))"))
+    #expect(!script.contains("-size +5m"))
     #expect(!script.contains("$staging_dir/.VolumeIcon.icns"))
   }
 

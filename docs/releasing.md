@@ -16,7 +16,7 @@ release.
 - Published as a normal GitHub release so the website's `releases/latest` link
   resolves
 - The static website is published independently from `Website/` by Cloudflare
-  Pages as described in [the website publishing guide](website.md)
+  Pages
 - Clearly labelled as an early preview and provided without warranty
 
 Do not describe these artifacts as trusted, notarized, or production-ready.

@@ -5,38 +5,38 @@ const showcaseSlides = [
     title: "See your AI team at work.",
     caption:
       "See what’s moving, blocked, under review, and ready to demo—without asking agents for updates.",
-    alt: "Spedito Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
+    alt: "Spedito sprint board showing tickets across ready to pick, in progress, in review, ready for demo, and done.",
   },
   {
     file: "2.webp",
     phase: "Define",
-    title: "Refine an Epic",
+    title: "Refine an epic",
     caption:
       "Focused questions resolve the outcome, scope, constraints, and acceptance before delivery starts.",
-    alt: "Spedito refining a rough Epic through focused Business Analyst questions.",
+    alt: "Spedito refining a rough epic through focused business analyst questions.",
   },
   {
     file: "3.webp",
     phase: "Define",
-    title: "Review the refined Epic",
+    title: "Review the refined epic",
     caption:
-      "The agreed outcome becomes a reviewable Epic before it creates Backlog work.",
-    alt: "A refined Spedito Epic ready for the Product Owner to review.",
+      "The agreed outcome becomes a reviewable epic before it creates backlog work.",
+    alt: "A refined Spedito epic ready for the product owner to review.",
   },
   {
     file: "4.webp",
     phase: "Plan",
-    title: "Build the Backlog",
+    title: "Build the backlog",
     caption:
-      "Turn the approved Epic into a prioritised Backlog with clear dependencies.",
-    alt: "A Spedito Backlog with three proposed Tickets and their dependencies.",
+      "Turn the approved epic into a prioritised backlog with clear dependencies.",
+    alt: "A Spedito backlog with three proposed tickets and their dependencies.",
   },
   {
     file: "5.webp",
     phase: "Plan",
-    title: "Plan the Sprint",
-    caption: "Let dependencies and readiness shape a realistic Sprint.",
-    alt: "Spedito proposing a Sprint plan from ready Backlog Tickets.",
+    title: "Plan the sprint",
+    caption: "Let dependencies and readiness shape a realistic sprint.",
+    alt: "Spedito proposing a sprint plan from ready backlog tickets.",
   },
   {
     file: "6.webp",
@@ -44,7 +44,7 @@ const showcaseSlides = [
     title: "Follow the work",
     caption:
       "Open any run to understand useful activity without living in a terminal.",
-    alt: "A Spedito Ticket showing concise live agent activity and run details.",
+    alt: "A Spedito ticket showing concise live agent activity and run details.",
   },
   {
     file: "7.webp",
@@ -59,8 +59,8 @@ const showcaseSlides = [
     phase: "Deliver",
     title: "Resolve product questions",
     caption:
-      "Answer consequential questions inside the Ticket Work log while delivery continues.",
-    alt: "A Spedito Ticket asking the Product Owner a delivery question.",
+      "Answer consequential questions inside the ticket work log while delivery continues.",
+    alt: "A Spedito ticket asking the product owner a delivery question.",
   },
   {
     file: "9.webp",
@@ -68,7 +68,7 @@ const showcaseSlides = [
     title: "Chat with the team",
     caption:
       "Talk to the whole AI team without juggling separate chat threads.",
-    alt: "The Spedito team Conversation with several AI team members.",
+    alt: "The Spedito team conversation with several AI team members.",
   },
   {
     file: "10.webp",
@@ -83,32 +83,32 @@ const showcaseSlides = [
     phase: "Review",
     title: "Review independently",
     caption:
-      "A Tech Lead reviews the exact delivery candidate independently.",
-    alt: "A Tech Lead review running against a Spedito Ticket candidate.",
+      "A tech lead reviews the exact delivery candidate independently.",
+    alt: "A tech lead review running against a Spedito ticket candidate.",
   },
   {
     file: "12.webp",
     phase: "Review",
     title: "Fix review findings",
     caption:
-      "Findings return to the Ticket instead of disappearing into chat context.",
-    alt: "Tech Lead review findings recorded in a Spedito Ticket Work log.",
+      "Findings return to the ticket instead of disappearing into chat context.",
+    alt: "Tech lead review findings recorded in a Spedito ticket work log.",
   },
   {
     file: "13.webp",
     phase: "Context",
     title: "Give agents context",
     caption:
-      "Each agent receives its Ticket, direct handoffs, and relevant Product knowledge.",
+      "Each agent receives its ticket, direct handoffs, and relevant product knowledge.",
     alt: "Spedito showing the focused context supplied to a delivery agent.",
   },
   {
     file: "14.webp",
     phase: "Learn",
-    title: "Build Product knowledge",
+    title: "Build product knowledge",
     caption:
-      "Useful decisions become verified Product knowledge while the team works.",
-    alt: "Spedito Product knowledge growing from verified delivery decisions.",
+      "Useful decisions become verified product knowledge while the team works.",
+    alt: "Spedito product knowledge growing from verified delivery decisions.",
   },
   {
     file: "15.webp",
@@ -121,31 +121,31 @@ const showcaseSlides = [
   {
     file: "16.webp",
     phase: "Demo",
-    title: "Prepare the Demo",
-    caption: "Launch the exact reviewed result directly from the Ticket.",
-    alt: "A reviewed Spedito Ticket with its working Demo ready to launch.",
+    title: "Prepare the demo",
+    caption: "Launch the exact reviewed result directly from the ticket.",
+    alt: "A reviewed Spedito ticket with its working demo ready to launch.",
   },
   {
     file: "17.webp",
     phase: "Demo",
     title: "Try the result",
     caption: "Use the working product before deciding whether to accept it.",
-    alt: "The working result launched from a Spedito Demo.",
+    alt: "The working result launched from a Spedito demo.",
   },
   {
     file: "18.webp",
     phase: "Improve",
-    title: "Run the Retrospective",
+    title: "Run the retrospective",
     caption:
-      "Turn Sprint evidence into strengths, improvements, and reviewable actions.",
-    alt: "A Spedito Retrospective with evidence and proposed actions.",
+      "Turn sprint evidence into strengths, improvements, and reviewable actions.",
+    alt: "A Spedito retrospective with evidence and proposed actions.",
   },
   {
     file: "19.webp",
     phase: "Learn",
     title: "Learn from reports",
-    caption: "Make delivery patterns visible across Sprints.",
-    alt: "Spedito Reports showing delivery patterns and team performance.",
+    caption: "Make delivery patterns visible across sprints.",
+    alt: "Spedito reports showing delivery patterns and team performance.",
   },
 ];
 
