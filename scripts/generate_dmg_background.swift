@@ -111,7 +111,7 @@ drawCenteredText(
 )
 
 drawCenteredText(
-  "StoryPointless",
+  "Spedito",
   in: NSRect(x: 40, y: 337, width: 580, height: 40),
   font: .systemFont(ofSize: 29, weight: .bold),
   foregroundColor: color(23, 38, 48),

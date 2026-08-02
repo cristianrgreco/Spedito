@@ -1,13 +1,13 @@
 # Security policy
 
-StoryPointless coordinates coding agents, local repositories, filesystem access,
+Spedito coordinates coding agents, local repositories, filesystem access,
 processes, and permission requests. A flaw can therefore have a larger impact
 than an ordinary desktop-app bug. Please report suspected vulnerabilities
 privately.
 
 ## Supported versions
 
-StoryPointless is currently an early preview with no stable or commercially
+Spedito is currently an early preview with no stable or commercially
 supported release line. Security fixes are made on the latest development
 version and may be included in a replacement prerelease. Older builds should be
 considered unsupported.
@@ -20,10 +20,10 @@ work.
 
 Do not open a public issue for a suspected vulnerability.
 
-Use [GitHub private vulnerability reporting](https://github.com/cristianrgreco/storypointless/security/advisories/new)
+Use [GitHub private vulnerability reporting](https://github.com/cristianrgreco/spedito/security/advisories/new)
 when it is available. If that channel is unavailable, email
 [cristianrgreco@gmail.com](mailto:cristianrgreco@gmail.com) with the subject
-`StoryPointless security report`.
+`Spedito security report`.
 
 Include, where possible:
 
@@ -55,5 +55,5 @@ Reports are especially useful when they concern:
 
 Issues in Codex, OpenAI services, macOS, Git, or another third-party component
 may ultimately need to be reported to that project's security team. Please still
-report a StoryPointless integration flaw when its handling or assumptions make
-the third-party issue exploitable through StoryPointless.
+report a Spedito integration flaw when its handling or assumptions make
+the third-party issue exploitable through Spedito.

@@ -11,7 +11,7 @@ fail() {
 }
 
 if (( $# != 1 )); then
-  echo "Usage: $0 <StoryPointless.dmg>" >&2
+  echo "Usage: $0 <Spedito.dmg>" >&2
   exit 64
 fi
 
@@ -21,7 +21,7 @@ if [[ ! -f "$dmg_path" ]]; then
   exit 66
 fi
 
-verify_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/storypointless-dmg-verify.XXXXXX")
+verify_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/spedito-dmg-verify.XXXXXX")
 mount_dir="$verify_work_dir/mount"
 mounted=false
 
@@ -43,8 +43,8 @@ hdiutil attach \
   -mountpoint "$mount_dir" >/dev/null
 mounted=true
 
-[[ -d "$mount_dir/StoryPointless.app" ]] ||
-  fail "The DMG does not contain StoryPointless.app."
+[[ -d "$mount_dir/Spedito.app" ]] ||
+  fail "The DMG does not contain Spedito.app."
 [[ -L "$mount_dir/Applications" ]] ||
   fail "The DMG does not contain the Applications shortcut."
 [[ "$(readlink "$mount_dir/Applications")" == "/Applications" ]] ||
@@ -59,17 +59,17 @@ cmp -s \
   fail "The Finder drag-and-drop layout was not persisted."
 [[ -f "$mount_dir/.VolumeIcon.icns" ]] ||
   fail "The DMG volume icon is missing."
-[[ -f "$mount_dir/StoryPointless.app/Contents/Resources/LICENSE.txt" ]] ||
+[[ -f "$mount_dir/Spedito.app/Contents/Resources/LICENSE.txt" ]] ||
   fail "The application does not contain its licence."
 cmp -s \
   "$project_root/LICENSE" \
-  "$mount_dir/StoryPointless.app/Contents/Resources/LICENSE.txt" ||
+  "$mount_dir/Spedito.app/Contents/Resources/LICENSE.txt" ||
   fail "The bundled licence does not match the repository licence."
 
-codesign --verify --deep --strict "$mount_dir/StoryPointless.app"
+codesign --verify --deep --strict "$mount_dir/Spedito.app"
 
 binary_architectures=$(
-  lipo -archs "$mount_dir/StoryPointless.app/Contents/MacOS/StoryPointless"
+  lipo -archs "$mount_dir/Spedito.app/Contents/MacOS/Spedito"
 )
 if [[ " $binary_architectures " != *" arm64 "* ]]; then
   echo "The DMG does not contain an Apple Silicon application." >&2

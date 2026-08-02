@@ -1,6 +1,6 @@
-# Contributing to StoryPointless
+# Contributing to Spedito
 
-Thank you for helping improve StoryPointless. The project is at an early stage,
+Thank you for helping improve Spedito. The project is at an early stage,
 so bug reports, documentation, accessibility feedback, tests, design critique,
 and focused code contributions are all valuable.
 
@@ -23,7 +23,7 @@ should normally solve one problem rather than combine unrelated cleanup.
 
 ## Product language
 
-StoryPointless is designed for a Product Owner who may not be a software
+Spedito is designed for a Product Owner who may not be a software
 engineer. Use the established owner-facing terms consistently:
 
 - Product Owner and Team member;
@@ -52,8 +52,8 @@ You need:
 Clone the repository and run the full test suite:
 
 ```sh
-git clone https://github.com/cristianrgreco/storypointless.git
-cd storypointless
+git clone https://github.com/cristianrgreco/spedito.git
+cd spedito
 env \
   SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
   CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
@@ -72,9 +72,9 @@ active agent turn needs to be preserved.
 ## Architecture and code conventions
 
 - Put UI-independent domain policy, persistence, Git, and Codex adapter logic in
-  `Sources/StoryPointlessCore`.
+  `Sources/SpeditoCore`.
 - Put SwiftUI presentation and application coordination in
-  `Sources/StoryPointlessApp`.
+  `Sources/SpeditoApp`.
 - Keep Codex protocol details behind the adapter boundary.
 - Prefer extending existing models and reusable views over creating parallel
   representations of the same concept.
@@ -136,6 +136,6 @@ change. Do not submit unreviewed agent output or fabricated test results.
 ## Licence of contributions
 
 Unless you explicitly state otherwise, an intentional contribution submitted
-for inclusion in StoryPointless is provided under the
+for inclusion in Spedito is provided under the
 [Apache License 2.0](LICENSE), as described by section 5 of that licence. The
 project does not currently require a separate contributor licence agreement.

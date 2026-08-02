@@ -1,0 +1,16 @@
+{
+  "name": "Spedito",
+  "short_name": "Spedito",
+  "description": "A delivery process for AI-built software.",
+  "start_url": "/",
+  "display": "browser",
+  "background_color": "#f4f0e7",
+  "theme_color": "#f4f0e7",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png"
+    }
+  ]
+}

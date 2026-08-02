@@ -3,30 +3,30 @@
 import PackageDescription
 
 let package = Package(
-  name: "StoryPointless",
+  name: "Spedito",
   platforms: [
     .macOS(.v14)
   ],
   products: [
     .library(
-      name: "StoryPointlessCore",
-      targets: ["StoryPointlessCore"]
+      name: "SpeditoCore",
+      targets: ["SpeditoCore"]
     ),
     .executable(
-      name: "StoryPointless",
-      targets: ["StoryPointlessApp"]
+      name: "Spedito",
+      targets: ["SpeditoApp"]
     ),
   ],
   targets: [
     .target(
-      name: "StoryPointlessCore",
+      name: "SpeditoCore",
       linkerSettings: [
         .linkedLibrary("sqlite3")
       ]
     ),
     .executableTarget(
-      name: "StoryPointlessApp",
-      dependencies: ["StoryPointlessCore"],
+      name: "SpeditoApp",
+      dependencies: ["SpeditoCore"],
       resources: [
         .copy("Resources/AppIcon.icns"),
         .copy("Resources/AppIcon.png"),
@@ -34,12 +34,12 @@ let package = Package(
       ]
     ),
     .testTarget(
-      name: "StoryPointlessCoreTests",
-      dependencies: ["StoryPointlessCore"]
+      name: "SpeditoCoreTests",
+      dependencies: ["SpeditoCore"]
     ),
     .testTarget(
-      name: "StoryPointlessAppTests",
-      dependencies: ["StoryPointlessApp"]
+      name: "SpeditoAppTests",
+      dependencies: ["SpeditoApp"]
     ),
   ],
   swiftLanguageModes: [.v6]

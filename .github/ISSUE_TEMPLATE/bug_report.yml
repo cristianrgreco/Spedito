@@ -16,7 +16,7 @@ body:
           required: true
   - type: input
     attributes:
-      label: StoryPointless version
+      label: Spedito version
       description: Release tag or commit SHA
       placeholder: v0.1.0 or abc1234
     validations:

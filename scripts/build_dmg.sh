@@ -4,9 +4,9 @@ set -euo pipefail
 
 script_dir=${0:A:h}
 project_root=${script_dir:h}
-app_path=${1:-"$project_root/.build/app/release/StoryPointless.app"}
-output_path=${2:-"$project_root/.build/app/release/StoryPointless.dmg"}
-volume_name=${STORYPOINTLESS_DMG_VOLUME_NAME:-StoryPointless}
+app_path=${1:-"$project_root/.build/app/release/Spedito.app"}
+output_path=${2:-"$project_root/.build/app/release/Spedito.dmg"}
+volume_name=${SPEDITO_DMG_VOLUME_NAME:-Spedito}
 background_path="$project_root/Distribution/DMGBackground.png"
 layout_script="$script_dir/layout_dmg.applescript"
 
@@ -32,10 +32,10 @@ esac
 output_parent=${output_path:h}
 mkdir -p "$output_parent"
 
-dmg_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/storypointless-dmg.XXXXXX")
+dmg_work_dir=$(mktemp -d "${TMPDIR:-/tmp}/spedito-dmg.XXXXXX")
 staging_dir="$dmg_work_dir/staging"
 mount_dir="$dmg_work_dir/mount"
-read_write_dmg="$dmg_work_dir/StoryPointless-read-write.dmg"
+read_write_dmg="$dmg_work_dir/Spedito-read-write.dmg"
 mounted=false
 
 cleanup() {
@@ -47,11 +47,11 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$staging_dir/.background" "$mount_dir"
-ditto "$app_path" "$staging_dir/StoryPointless.app"
+ditto "$app_path" "$staging_dir/Spedito.app"
 ln -s /Applications "$staging_dir/Applications"
 install -m 644 "$background_path" "$staging_dir/.background/background.png"
 install -m 644 \
-  "$project_root/Sources/StoryPointlessApp/Resources/AppIcon.icns" \
+  "$project_root/Sources/SpeditoApp/Resources/AppIcon.icns" \
   "$staging_dir/.VolumeIcon.icns"
 
 hdiutil create \

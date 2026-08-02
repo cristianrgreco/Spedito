@@ -21,7 +21,7 @@ on run arguments
       set shows icon preview of viewOptions to true
       set background picture of viewOptions to file ".background:background.png"
 
-      set position of item "StoryPointless.app" to {180, 240}
+      set position of item "Spedito.app" to {180, 240}
       set position of item "Applications" to {480, 240}
 
       update without registering applications

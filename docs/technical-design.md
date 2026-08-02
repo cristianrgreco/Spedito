@@ -1,4 +1,4 @@
-# StoryPointless technical design
+# Spedito technical design
 
 - **Status:** Architecture baseline for the early implementation
 - **Date:** 1 August 2026
@@ -54,7 +54,7 @@ work.
 
 ## 3. Module boundaries
 
-### StoryPointlessCore
+### SpeditoCore
 
 - Domain records and identifiers.
 - Workflow transition policy.
@@ -66,7 +66,7 @@ work.
 - Conversation context boundaries and typed action-proposal validation.
 - Evidence, decision, ticket-documentation, and knowledge promotion rules.
 
-### StoryPointlessApp
+### SpeditoApp
 
 - Product, board, team-activity, ticket, acceptance, knowledge, retrospective,
   and longitudinal report views.
@@ -81,12 +81,21 @@ No UI type is allowed to become the authoritative workflow state machine.
 ## 4. Durable storage boundary
 
 Each product owns one authoritative database at
-`<product workspace>/.storypointless/product.sqlite`. SQLite contains normalized
+`<product workspace>/.spedito/product.sqlite`. SQLite contains normalized
 current state and an append-only audit/activity log for that product. There is
 no continuously maintained projection or second copy of product truth.
-The product workspace's root `.gitignore` contains `/.storypointless/` before
+The product workspace's root `.gitignore` contains `/.spedito/` before
 the repository's first snapshot, so the live database and its WAL/shared-memory
 files never become candidate or accepted Git content.
+
+The Spedito rename is a one-time compatibility boundary. On first launch, the
+app moves an existing `~/Library/Application Support/StoryPointless` directory
+to `~/Library/Application Support/Spedito` when the new directory does not yet
+exist. Each product's legacy `.storypointless` control directory is then moved
+to `.spedito` before its database opens. Preferences from the former
+`com.storypointless.app` bundle domain are copied only when Spedito has no value
+for the same key. The old names remain accepted only by these migration and
+sandbox-denial paths; new data, runtime profiles, and artifacts use Spedito.
 Initial tables cover:
 
 - products with an indexed active/archive lifecycle state and a durable
@@ -218,7 +227,7 @@ to merge a reviewed candidate without involving an agent. A clean merge advances
 directly to demo preparation. A conflict creates an **Integrator** system run with
 the reported unmerged paths, ticket context, and preserved conflicted worktree. The
 Integrator inspects only the affected files and nearby context, edits the unambiguous
-overlap, and returns without running a second review or test pass. StoryPointless
+overlap, and returns without running a second review or test pass. Spedito
 performs mechanical Git validation and owns the merge commit. The Integrator must
 return semantic or product conflicts to the relevant implementation ticket or
 Product Owner. It is not an independent product persona and it cannot approve its
@@ -227,6 +236,16 @@ this serial path, then reviews the final integrated candidate only when conflict
 resolution changed it. The board keeps this understandable as **In Review**, while
 the card and Work log distinguish **Tech Lead reviewing**, **Queued to integrate**,
 **Integrating changes**, and **Resolving a conflict**.
+
+The Tech Lead review is an evidence-only once-over, not a second verification run.
+The reviewer may read the ticket contract, dependency handoffs, exact candidate
+diff, directly relevant files, delivered artefacts, reported checks, knowledge
+proposals, and demo contract. It does not build or test, execute the candidate,
+launch a preview, revisit research sources, use the network, or request additional
+capabilities. Missing evidence blocks only when it is required by the contract or
+leaves a concrete material claim unreviewable; the reviewer reports that gap
+instead of producing the evidence. Review threads use the configured reviewer
+model and reasoning effort, preserving the Product Owner's Team settings.
 
 The Tech Lead may return a candidate only for a concrete material defect that
 justifies the full implementation, integration, and review loop. Cosmetic diff
@@ -250,9 +269,9 @@ presentations are a loopback browser preview, a reviewed macOS application, a
 workspace-relative artifact, or captured output from a bounded scenario. Recipes
 contain executable and argument arrays, never shell command strings. Working
 directories and artifacts resolve inside the reviewed checkout, browser URLs
-contain only a path, and StoryPointless allocates and injects the loopback port.
+contain only a path, and Spedito allocates and injects the loopback port.
 
-After Tech Lead approval, StoryPointless creates or reuses a detached preview
+After Tech Lead approval, Spedito creates or reuses a detached preview
 worktree pinned to the current integrated SHA and smoke-tests the recipe without
 opening its presentation. A candidate enters **Ready for Demo** only after that
 test succeeds. The Product Owner's **Demo** action prepares the same exact
@@ -262,7 +281,7 @@ opens the browser, app, artifact, or captured result.
 Ready for Demo is not part of the serialized integration lane. Multiple independently
 reviewed candidates may therefore be prepared for Product Owner evaluation. Promotion
 still requires the approved revision to contain current accepted trunk. When another
-approval advances trunk, StoryPointless stops and removes any now-stale preview,
+approval advances trunk, Spedito stops and removes any now-stale preview,
 returns its already reviewed candidate to the integration queue, and prepares a new
 exact demo revision. A clean re-integration retains the immutable candidate review;
 conflict resolution requires focused Tech Lead re-review.
@@ -279,7 +298,7 @@ instead of delegating Git repair to the agent.
 
 If review succeeds but smoke preparation reports a candidate-controlled failure,
 including an invalid recipe, failed or timed-out preparation command, service exit,
-readiness timeout, or missing presentation, StoryPointless records the actionable
+readiness timeout, or missing presentation, Spedito records the actionable
 error, adopts the integrated SHA into the preserved ticket workspace, marks the
 candidate as requiring changes, and queues the Implementer automatically. The
 correction creates a new immutable candidate and receives Tech Lead review again.
@@ -308,7 +327,7 @@ Demo commands use the selected App Server's standalone `command/exec` API; the a
 does not maintain a second `sandbox-exec` implementation. Each demo command gets
 a candidate-scoped App Server connection whose dynamically materialized
 permission profile names the exact preview root. Preview worktrees live under
-the app's cache directory, separate from the denied StoryPointless control plane
+the app's cache directory, separate from the denied Spedito control plane
 and ticket worktrees. The profile grants broad read access for normal macOS,
 Homebrew, compiler, SDK, and runtime dependencies without enumerating binaries
 or configuration files, while only the current candidate is writable and
@@ -340,8 +359,10 @@ closed. Read-only, schema-constrained threads
 power backlog suggestions, refinement, planning conversations, and ordinary
 single-recipient Ticket and Epic chat. Structured Business Analyst answers
 remain separate from ordinary messages and are the only inputs that advance
-their governed refinement turn. Delivery and independent Tech Lead review use
-`approvalPolicy: on-request`.
+their governed refinement turn. Delivery uses `approvalPolicy: on-request`.
+Independent Tech Lead review uses `approvalPolicy: never`: its detached candidate
+workspace and Product knowledge are read-only, network remains unavailable, and
+the review contract never requires capability escalation.
 
 Starter-backlog and epic-planning schemas make environment readiness explicit.
 The structured result classifies the plan as `sufficient`,
@@ -382,12 +403,12 @@ field starts empty and remains an owner-controlled overlay, so the Product Owner
 can redirect an agent's approach without making safety and lifecycle rules UI
 configuration.
 
-Delivery selects the named `storypointless-delivery` profile: Codex's minimal
+Delivery selects the named `spedito-delivery` profile: Codex's minimal
 platform/runtime reads, one writable ticket worktree, exact read-only access to
-the active product's Git metadata and `.storypointless` control directory,
+the active product's Git metadata and `.spedito` control directory,
 credential and other-product exclusions, and no network. The legacy shared
 database remains denied. The profile deliberately does not deny
-the ticket worktree's StoryPointless ancestor: the active macOS sandbox denies
+the ticket worktree's Spedito ancestor: the active macOS sandbox denies
 metadata traversal at that ancestor before a more specific runtime workspace
 root can take effect. Other products, sibling ticket worktrees, and the control
 plane instead remain inaccessible because delivery has no broad host read
@@ -396,11 +417,11 @@ outside the minimal runtime are requested through App Server approvals for the
 current turn. Delivery instructions prohibit copying or staging the workspace
 under `/tmp` or another root as a permission workaround. Each delivery thread
 overrides that named profile with read-only access to the exact active product's
-central `.git` and `.storypointless` directories. The assigned worktree remains
+central `.git` and `.spedito` directories. The assigned worktree remains
 read/write, but Git metadata and product control data are not writable. Delivery
 turns inherit the thread-scoped profile;
 they do not reselect the process-wide delivery profile at `turn/start`, because
-that would discard the product-specific Git rule. The StoryPointless-owned App
+that would discard the product-specific Git rule. The Spedito-owned App
 Server process supplies `GIT_OPTIONAL_LOCKS=0`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_PAGER=cat`, and the active developer directory reported by `xcode-select`.
 It also places that directory's Git-only `usr/libexec/git-core` directory first
@@ -418,7 +439,7 @@ product.
 When the App Server sends `item/commandExecution/requestApproval`,
 `item/fileChange/requestApproval`, or `item/permissions/requestApproval`, the
 adapter preserves the bidirectional JSON-RPC request instead of rejecting it.
-StoryPointless enables and capability-checks the selected runtime's
+Spedito enables and capability-checks the selected runtime's
 `request_permissions_tool`; it does not discover package managers, resolve
 project runtimes, or add runtime paths automatically. Delivery guidance tells
 the assigned agent to diagnose an `operation not permitted` or `permission
@@ -445,31 +466,43 @@ or runtime, conceal operations, or exist only to obtain broader approval. A serv
 entry point remains in the foreground, accepts the app-supplied port, and exposes typed
 readiness. Verified changes produce a complete Environments proposal describing the
 commands, working directory, prerequisites, readiness, required capabilities, and
-limitations. Read-only reviewers may use an existing entry point and verify the
-proposal but cannot create either. If the permissions tool is unavailable or a
-safe coherent capability cannot be established within the current boundary, the
-agent fails closed with the diagnostic and required access instead of silently
-substituting older verification evidence.
+limitations. Read-only reviewers inspect the declared entry point and reported
+evidence but do not invoke it or create a replacement. If the permissions tool is
+unavailable or a safe coherent capability cannot be established within the current
+boundary, a delivery agent fails closed with the diagnostic and required access
+instead of silently substituting older verification evidence.
 The permission Work log card presents the agent's plain-language purpose first
 and places the unchanged exact command and additional access in a disclosure.
-Persistence and matching continue to use the exact request, so this presentation
-change does not alter one-time or saved-product approval semantics.
+Persistence retains the unchanged request for audit and same-run decisions, so
+this presentation change does not alter one-time approval semantics.
 Application coordination maps its thread and turn to the durable AgentRun,
 projects **Needs your input**, and stores the exact scope, rationale, signature,
 and decision. **Allow once** accepts only the exact command or file change, or
 grants the requested capability for the current turn. For command and permission
 requests, **Always allow for this product** stores a durable product-scoped grant.
-Its normalized signature retains the exact command and requested capabilities
-but excludes the ticket worktree path only after confirming the requested
-working directory is within that run's assigned workspace, so the same
-capability can follow future ticket workspaces for that product. It does not become a binary-only or
-connection-wide App Server rule. Matching future requests are answered with a
-turn-scoped approval and recorded in the receiving ticket's Work log. The owner
-can inspect and revoke active grants in Product settings. File-change approvals
+Command grants retain the exact command and omit the ticket worktree path only
+after confirming the requested working directory is inside that run's assigned
+workspace. They never use prefix, fuzzy, or semantic command matching. Structured
+filesystem and network grants are canonicalized as order-independent capability
+sets. Matching accepts an equivalent or narrower structured request when the
+union of active product grants covers every requested rule; write does not imply
+read, restricted network scopes match exactly unless unrestricted network consent
+exists, and malformed or unknown structures fail back to exact matching. This
+allows one coherent runtime request to reuse earlier path and network consent
+without turning it into a binary-only or connection-wide App Server rule.
+
+Delivery developer instructions enumerate the product's effective saved
+structured consent while stating that consent is not active sandbox access and
+does not expand ticket scope. The assigned agent therefore knows which capability
+can be requested rather than rediscovering it through repeated failures. Matching
+future requests receive a turn-scoped approval and are recorded in the receiving
+ticket's Work log. Product settings present overlapping structured grants as one
+effective access group and revoke its underlying rows atomically; exact commands
+remain separate. Revoked rows remain available for audit. File-change approvals
 cannot be persisted. **Deny** declines without cancelling the turn so the agent
-can adapt. The turn timeout does not advance while a supported permission
-request is outstanding. StoryPointless may also transparently reapply an
-identical recorded decision within the same durable AgentRun. If the app
+can adapt. The turn timeout does not advance while a supported permission request
+is outstanding. Spedito may also transparently reapply an identical
+recorded decision within the same durable AgentRun. If the app
 restarts, a pending connection-scoped request becomes interrupted and the
 run remains in **Needs your input** rather than being admitted by the scheduler.
 The Product Owner can still Allow or Deny the durable interrupted request. That
@@ -490,7 +523,7 @@ and workspace path so an owner answer or review finding can resume the same
 implementation context. It also reads `model/list`; the UI uses each returned
 model's advertised effort options instead of maintaining a speculative catalog.
 For structured delivery turns, `item/completed` supplies a candidate final-answer
-payload but does not close the waiter. StoryPointless retains that payload until
+payload but does not close the waiter. Spedito retains that payload until
 the matching `turn/completed` notification or reconciled durable terminal state,
 then validates it and may start a repair turn. This prevents a repair submission
 from overlapping the turn whose response it is repairing.
@@ -530,7 +563,7 @@ The adapter owns:
 - termination and recovery normalization.
 
 Permission profiles are a beta App Server surface.
-StoryPointless therefore supplies its definitions as process-local config
+Spedito therefore supplies its definitions as process-local config
 overrides, enables the matching experimental capability explicitly, and covers
 the supported protocol behavior with adapter and local runtime contract tests. It never
 falls back to full access or the retired custom Seatbelt allow-list.
@@ -551,7 +584,7 @@ Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral
 Conversation, except when a live permission decision was outstanding; that run
 remains awaiting the Product Owner. A Product Owner stop also leaves the run
-interrupted until they resume it. On restart StoryPointless explicitly calls App
+interrupted until they resume it. On restart Spedito explicitly calls App
 Server `thread/resume` to load the persisted Conversation into the new server
 process, then first recovers a valid completed structured result when one exists.
 Otherwise it starts a focused continuation turn, telling the team member to use
@@ -560,11 +593,11 @@ completed work and checks. A live approval request cannot survive the old App
 Server connection, so its durable interrupted record remains an actionable
 **Needs your input** item. Allow or Deny stores the scoped decision and only then
 queues the run; if the resumed agent still needs the matching capability,
-StoryPointless applies that decision automatically. A missing Conversation is
+Spedito applies that decision automatically. A missing Conversation is
 established only when `thread/resume` reports it unavailable; the replacement
 receives the full ticket contract plus an explicit preserved-workspace
 continuation instruction.
-If the recorded ticket worktree is missing, StoryPointless does not claim that
+If the recorded ticket worktree is missing, Spedito does not claim that
 its uncaptured changes were preserved: it records the loss in the Work log and
 prepares a fresh isolated ticket workspace.
 
@@ -577,15 +610,14 @@ follow-up proposals or a demo. Those records require a completed immutable
 candidate revision and are produced only after the same run resumes with the
 Product Owner's answer.
 
-Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown,
-including one paused at a scoped permission request, retains its review run,
-non-ephemeral Conversation, detached path, and reviewed SHA. On restart
-StoryPointless verifies or reconstructs the detached checkout at that exact SHA,
+Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown
+retains its review run, non-ephemeral Conversation, detached path, and reviewed SHA. On restart
+Spedito verifies or reconstructs the detached checkout at that exact SHA,
 recovers a valid completed structured result when one exists, or starts a
-continuation turn after explicitly resuming the same Conversation. An expired
-live approval request keeps the review paused until the Product Owner decides;
-saved matching run or product grants apply normally once it resumes. A missing
-Conversation starts a replacement review against the same SHA only after
+continuation turn after explicitly resuming the same Conversation. Review uses
+`approvalPolicy: never`; an expired request created by an older review contract is
+retired and the run is queued to continue within the evidence-only boundary. A
+missing Conversation starts a replacement review against the same SHA only after
 `thread/resume` fails. A missing, mutated, or unverifiable candidate checkout
 returns the immutable candidate to review. An unverifiable post-conflict
 integrated revision returns it to integration and focused re-review, with an
@@ -599,6 +631,21 @@ projection. Background Implementer, Integrator, and Tech Lead turns therefore
 continue without interruption, while their telemetry, permission cards, demo
 preparation, and refreshes remain product-scoped. Product archival suspends only
 the archived product; app shutdown suspends every product.
+
+Sprint pause is a durable execution boundary rather than a UI-only flag. The
+store changes the sprint from `active` to `paused` before the application
+interrupts its product-scoped scheduler and active turns. Cancellation recovery
+queues preserved implementation work against the same run, Conversation, and
+ticket workspace, while permission decisions remain owner-controlled. Resume
+atomically restores `active` before waking the scheduler. A paused sprint counts
+as the product's in-progress sprint and prevents a later draft from starting.
+
+Stopping a sprint first reaches the same suspension boundary, then atomically
+marks the sprint `cancelled`, cancels non-terminal runs, supersedes unaccepted
+candidates and unpublished knowledge proposals, and returns unfinished tickets
+to `ready`. Released tickets and accepted candidates are immutable. Audit rows,
+Work logs, Conversations, and workspace references are retained; no stopped
+candidate is promoted to trunk.
 
 Owner-facing clarification records are durable independently of their Codex
 thread. When a persisted read-only thread is no longer available, the adapter

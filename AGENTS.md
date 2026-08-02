@@ -1,10 +1,10 @@
-# StoryPointless contributor instructions
+# Spedito contributor instructions
 
 These instructions apply to the whole repository.
 
 ## Product intent
 
-StoryPointless is a local-first, macOS-native product-delivery application for
+Spedito is a local-first, macOS-native product-delivery application for
 Product Owners who may not be software engineers. It preserves the useful parts
 of agile delivery while hiding terminals, Git commands, Codex threads, and other
 implementation machinery behind a clear owner-facing workflow.
@@ -51,9 +51,9 @@ The Product Owner remains in control:
 
 ## Architecture
 
-- `Sources/StoryPointlessCore` contains domain policy, persistence, Git
+- `Sources/SpeditoCore` contains domain policy, persistence, Git
   workspaces, Codex adapters, and other UI-independent behavior.
-- `Sources/StoryPointlessApp` contains SwiftUI presentation and application
+- `Sources/SpeditoApp` contains SwiftUI presentation and application
   coordination.
 - Keep workflow rules and validation in Core when they must remain true
   regardless of the presenting view.
@@ -90,7 +90,7 @@ recoverable owner-facing explanation.
 Agent permissions must remain least-privilege:
 
 - No secrets, credential stores, unrelated products, other ticket worktrees,
-  or the StoryPointless database in an agent context.
+  or the Spedito database in an agent context.
 - Network access is off unless the Product Owner explicitly permits it.
 - Do not discover package managers or runtime installations and pre-authorize
   their paths. Keep Codex's scoped permission-request tool available so the
@@ -162,6 +162,9 @@ macOS behavior unless a custom control materially improves clarity.
 - Use sentence case for every button and menu label across the app. Preserve
   capitalization only for proper nouns and established initialisms such as AI.
 - Write out "and" in button and menu labels; do not use ampersands.
+- Use `.borderedProminent` as the standard style for actionable buttons. Reserve
+  `.bordered`, `.plain`, `.borderless`, and `.link` for controls that genuinely
+  need lower visual weight or platform-specific presentation.
 - Keep primary actions visually clear; destructive actions use the destructive
   role and red text/icon treatment.
 - AI actions use the established purple treatment; ordinary primary workflow
@@ -231,7 +234,7 @@ suite cannot run, state exactly what was and was not validated.
 ## Relaunch the development app
 
 Use `./scripts/relaunch.sh`. It builds, kills any existing debug
-`StoryPointless` process, and `exec`s the new binary in the foreground. When
+`Spedito` process, and `exec`s the new binary in the foreground. When
 called from an agent command, keep the returned command session alive.
 
 After making and validating changes that affect the app, always relaunch it

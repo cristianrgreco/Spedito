@@ -5,17 +5,17 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>StoryPointless</string>
+  <string>Spedito</string>
   <key>CFBundleExecutable</key>
-  <string>StoryPointless</string>
+  <string>Spedito</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>com.storypointless.app</string>
+  <string>io.spedito.app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>StoryPointless</string>
+  <string>Spedito</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>

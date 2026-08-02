@@ -1,6 +1,6 @@
-# Releasing StoryPointless
+# Releasing Spedito
 
-StoryPointless early releases are built and published by GitHub Actions from an
+Spedito early releases are built and published by GitHub Actions from an
 explicit semantic version. A push to `main` runs CI but does not publish a
 release.
 
@@ -15,6 +15,8 @@ release.
   installation
 - Published as a normal GitHub release so the website's `releases/latest` link
   resolves
+- The static website is published independently from `Website/` by Cloudflare
+  Pages as described in [the website publishing guide](website.md)
 - Clearly labelled as an early preview and provided without warranty
 
 Do not describe these artifacts as trusted, notarized, or production-ready.
@@ -36,13 +38,18 @@ Do not describe these artifacts as trusted, notarized, or production-ready.
 6. Download the published assets on a separate machine or clean user account and
    verify the checksum, launch instructions, and first-run experience.
 
+For the first Spedito-branded build, quit any running StoryPointless build before
+launch. Spedito then moves the existing application-support directory and
+product control folders to their new names while preserving product data and
+preferences.
+
 The same release can be started from the command line by creating and pushing
 the version tag:
 
 ```sh
 git switch main
 git pull --ff-only
-git tag -a v0.1.0 -m "StoryPointless v0.1.0"
+git tag -a v0.1.0 -m "Spedito v0.1.0"
 git push origin v0.1.0
 ```
 
@@ -56,8 +63,8 @@ version and explain the superseded build in its release notes.
 After downloading both assets into one directory:
 
 ```sh
-shasum -a 256 -c StoryPointless-0.1.0-SHA256.txt
-./scripts/verify_dmg.sh StoryPointless-0.1.0-macOS-Apple-Silicon.dmg
+shasum -a 256 -c Spedito-0.1.0-SHA256.txt
+./scripts/verify_dmg.sh Spedito-0.1.0-macOS-Apple-Silicon.dmg
 ```
 
 The checksum verifies that the DMG matches the GitHub release asset. The

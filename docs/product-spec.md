@@ -1,8 +1,9 @@
-# StoryPointless: Product vision and specification
+# Spedito: Product vision and specification
 
 - **Status:** Public working draft
 - **Date:** 1 August 2026
-- **Working title:** StoryPointless
+- **Product name:** Spedito
+- **Website:** [spedito.io](https://spedito.io/)
 - **Audience:** Users, contributors, product, design, and engineering
 
 This document describes the intended product behaviour and durable product
@@ -14,12 +15,12 @@ Owner review and may change as the project learns from real use.
 
 ## 1. Executive summary
 
-StoryPointless is a local-first AI product-delivery system for people who have a
+Spedito is a local-first AI product-delivery system for people who have a
 product they want to build and want coding agents to operate through a governed,
 owner-facing workflow.
 
 The first release line is a macOS application. The Product Owner describes a
-product, connects a compatible Codex installation, and uses StoryPointless to
+product, connects a compatible Codex installation, and uses Spedito to
 manage product records, repositories, agent workspaces, local previews, and
 delivery history. It exposes product concepts—not terminals, CLIs, Git commands,
 or local runner configuration—as the normal workflow. Early builds may still
@@ -32,7 +33,7 @@ retrospectives—while AI agents perform much of the planning, implementation,
 review, testing, documentation, and operational work.
 
 The product is not merely an issue tracker with AI assignees. Existing tools can
-already delegate an issue to a coding agent. StoryPointless instead owns the
+already delegate an issue to a coding agent. Spedito instead owns the
 difficult local layer between an idea and an accepted increment:
 
 - turning product intent into an executable, testable work contract;
@@ -116,7 +117,7 @@ A founder can ask an agent to implement a feature, but still struggles to answer
 - Is it safe to release, and can it be rolled back?
 - What was learned, and will the next agent receive that context automatically?
 
-Existing trackers record work. Agent products execute work. StoryPointless is
+Existing trackers record work. Agent products execute work. Spedito is
 intended to connect planning, execution, verification, learning, and release
 into one governed loop.
 
@@ -129,7 +130,7 @@ traditional development team for every discipline.
 
 ### 3.3 Product promise
 
-StoryPointless converts a prioritized product backlog into a stream of
+Spedito converts a prioritized product backlog into a stream of
 observable, independently checked, releasable product increments while the
 human owner retains control of scope, spend, permissions, and release.
 
@@ -207,7 +208,7 @@ or experienced operator building a new product.
 
 ## 6. Product boundary
 
-StoryPointless is an **AI product-delivery system**, not a general-purpose issue
+Spedito is an **AI product-delivery system**, not a general-purpose issue
 tracker and not a wrapper that merely assigns a Ticket to an agent. It owns the
 local loop from readiness through implementation, independent review, Product
 Owner acceptance, and durable learning.
@@ -228,7 +229,7 @@ The defining capabilities are:
 
 The first releases deliberately exclude general project management, hosted
 execution, automatic production deployment, and multi-user collaboration.
-StoryPointless remains interoperable: product repositories and durable records
+Spedito remains interoperable: product repositories and durable records
 must not be held captive by a hosted service.
 
 ## 7. Product principles
@@ -303,7 +304,7 @@ An installed execution capability, not merely a model name. It records:
 - supported event and artifact types; and
 - whether credentials live locally, in a customer cloud, or in the hosted vault.
 
-Instructions are composed in explicit layers: immutable StoryPointless safety
+Instructions are composed in explicit layers: immutable Spedito safety
 and governance; editable product-wide guidance; the profile's versioned default
 or owner override; and the frozen ticket contract plus definition of done. Later
 layers cannot grant permissions or bypass earlier governance. The exact model,
@@ -462,7 +463,7 @@ subject to the normal scheduler and shared-usage constraints.
 
 For a product room, a new top-level thread receives at most the previous 100
 room messages as conversational history. A reply resumes only its own agent
-thread; if that underlying thread must be recovered, StoryPointless rebuilds it
+thread; if that underlying thread must be recovered, Spedito rebuilds it
 from the parent message and replies in that product conversation thread, not
 from unrelated room traffic. Durable product facts are discovered from the
 live product database and repository rather than copied into either history.
@@ -510,13 +511,13 @@ discussing after this happens, but stale actions are never auto-applied.
 1. The owner creates a product space and describes the product, target user,
    current stage, and risk tolerance, or chooses to import an existing Git
    repository.
-2. StoryPointless creates a local product directory and Git repository. It may
+2. Spedito creates a local product directory and Git repository. It may
    begin with an empty, agent-planned product, an approved starter template, or
    a managed clone whose existing history and default branch become the
    product's accepted starting point.
-3. StoryPointless discovers the signed-in official Codex app. The owner can
+3. Spedito discovers the signed-in official Codex app. The owner can
    confirm it or explicitly add and select another Codex installation.
-4. StoryPointless creates an opinionated starter team: business analyst, UX
+4. Spedito creates an opinionated starter team: business analyst, UX
    designer, lead/reviewer, and general implementer. The owner can add optional
    specialist team members such as frontend, backend, security, accessibility, or
    marketing when the product actually needs them. Profiles use Codex models,
@@ -529,7 +530,7 @@ discussing after this happens, but stale actions are never auto-applied.
    work, the owner is asked only for a material technology or hosting constraint
    in business terms; the team recommends the simplest suitable option when the
    owner has no preference.
-6. StoryPointless proposes the starter delivery policy and any required
+6. Spedito proposes the starter delivery policy and any required
    environment-foundation work. Executable product tickets are blocked by that
    foundation, while authorised research and genuinely environment-neutral
    design can proceed in parallel. The foundation verifies the repository,
@@ -572,11 +573,11 @@ proposed ticket declares whether it is independent of, establishes, or requires
 the product environment. When a foundation is required, the plan names exactly
 one proposed Implementer task or accepted active ticket as that foundation, and
 every ticket that needs an executable environment must depend on it directly or
-transitively. StoryPointless rejects a generated plan that omits or contradicts
+transitively. Spedito rejects a generated plan that omits or contradicts
 that dependency path.
 
 The assessment uses bounded accepted-ticket contracts plus relevant verified
-Product knowledge, including **Environments**. StoryPointless supplies this
+Product knowledge, including **Environments**. Spedito supplies this
 evidence in the planning prompt; the Business Analyst does not inspect
 repository source, manifests, scripts, CI, documentation, or Git history during
 planning. An incidental runtime installed on the Product Owner's Mac is not
@@ -643,7 +644,7 @@ requires the agreed product change, the initial epic plan also includes the
 downstream delivery tickets rather than waiting for research to rediscover them.
 
 Epic clarification is durable across application restarts. If its underlying
-Codex thread has expired, StoryPointless starts a replacement read-only thread,
+Codex thread has expired, Spedito starts a replacement read-only thread,
 supplies the preserved Business Analyst conversation and Product Owner answers,
 and continues without asking the owner to re-enter or discard resolved input.
 Epic details also keeps the ordinary team composer available before, during, and
@@ -718,7 +719,7 @@ parallel paths**. It does not render teammate-shaped cards that imply several
 agents are independently generating tickets. These placeholders
 are visually distinct from work items, do not count toward backlog totals or
 sprint scope, and can be cancelled or recovered after restart. On launch,
-StoryPointless automatically retries an interrupted epic suggestion session once,
+Spedito automatically retries an interrupted epic suggestion session once,
 first recovering any completed structured result from the saved Conversation and
 then continuing from the durable refinement transcript when another turn is
 needed. The animated ticket placeholders remain visible in the Backlog and epic
@@ -777,6 +778,10 @@ sprint board. Its primary information is product scope and planning confidence:
   between them changes sprint intent but never starts execution. A
   cross-section move preserves the ticket's authoritative backlog rank when the
   chosen destination does not express a different relative position;
+- the vertical boundary between **Epics** and **Backlog** and **Next sprint** is
+  draggable within usable minimum widths. Spedito remembers the chosen
+  proportion as a local display preference, and double-clicking the divider
+  restores the default balance;
 - rows have explicit multi-selection and section-wide select-all. Each section
   has a visible move button that acts on its selected tickets, or every ticket
   in that section when none are selected there. These buttons and dragging any
@@ -902,6 +907,40 @@ picker state as fact.
 Starting a sprint freezes its initial goal and plan, then enables the scheduler.
 It does **not** immediately launch every ticket.
 
+The Sprint Board header explains the board's purpose consistently. The selected
+sprint goal appears as quiet secondary text with a small flag beneath the sprint
+selector in the header's trailing area, rather than replacing that explanatory
+subtitle or occupying a full-width board row. Sprint lifecycle actions use compact,
+accessible transport controls: green Play to resume, orange Pause, and red Stop.
+Their full owner-facing labels remain available to assistive technology and as
+pointer help without competing visually with the selector and goal.
+
+An active sprint gives the Product Owner two explicit ways to regain control:
+
+- **Pause sprint** is reversible. The scheduler stops admitting work, active
+  turns are interrupted, and every Conversation, ticket workspace, candidate,
+  Work log, and queued ticket is preserved. **Resume sprint** continues the
+  preserved work rather than starting it again. A paused sprint remains the
+  current sprint, survives relaunch, and blocks another sprint from starting.
+- **Stop sprint** is an irreversible sprint decision with a destructive
+  confirmation. Already approved **Done** tickets remain Done and on accepted
+  trunk. Active turns stop, unaccepted candidates and their Product knowledge
+  proposals are superseded rather than promoted, and unfinished tickets return
+  to **Ready** for explicit replanning. Their Work logs, Conversations,
+  workspaces, and candidate history remain available for audit. Stopping a
+  sprint never silently cancels the underlying tickets or discards partial work.
+
+Workspace headers extend into the title-bar area while the sidebar is visible.
+When the sidebar is collapsed, they respect the native macOS title-bar safe area
+so the window controls and sidebar toggle never overlap header content.
+
+The macOS **Go** menu exposes keyboard navigation without requiring the owner to
+learn hidden shortcuts. Command-1 through Command-7 open Backlog, Sprint Board,
+Retrospectives, Reports, Product knowledge, Codebase, and Chat respectively.
+Command-comma opens Product settings, following the platform convention, and
+Option-Command-comma opens Team settings. These commands remain scoped to the
+selected product and use the same navigation state as the sidebar.
+
 The scheduler admits work when dependencies, internal safety limits,
 concurrency, environment, available account usage, and likely merge conflicts
 permit it. Each run receives a versioned contract and isolated workspace. The
@@ -925,19 +964,21 @@ main experience.
 
 ### 9.7 Team chat and conversations
 
-The product owner can talk to the team without leaving StoryPointless. A
+The product owner can talk to the team without leaving Spedito. A
 **Chat** destination at the top of the Team section opens a product room where
 each top-level question selects exactly one team member and becomes an
-independent Slack-style thread. Team settings and the configured member roster
-sit inside a separate nested **Team members** disclosure group beneath Chat,
-rather than presenting configuration as peer destinations. The disclosure
-animation stays clipped to that group; compact model and effort controls retain
-normal horizontal insets and place each caret immediately beside its label. Its quiet thread pane uses a light sidebar
-background and a pale accent selection rather than the strong system selection
-fill, with comfortable horizontal insets within each thread row. The split panes
-have no artificial minimum widths, and shared chat bubbles
-size to short content while allowing longer replies to use a comfortably wider
-measure. The thread header keeps
+independent Slack-style thread. The configured member roster sits inside a
+separate nested **Team members** disclosure group beneath Chat rather than
+presenting configuration as peer destinations. A trailing settings button in
+the disclosure row opens Team settings without expanding or collapsing the
+roster; the row does not show a fixed member-count badge. The disclosure
+animation stays clipped to that group. Each member is a compact, read-only
+three-line summary of name, capability, and full model name with reasoning
+effort. Its quiet thread pane uses a light sidebar background and a pale accent
+selection rather than the strong system selection fill, with comfortable
+horizontal insets within each thread row. The split panes have no artificial
+minimum widths, and shared chat bubbles size to short content while allowing
+longer replies to use a comfortably wider measure. The thread header keeps
 the subject, recipient, and actions without repeating a completed-status badge.
 Completed threads can be archived to remove them from the active list;
 the owner can show archived threads and restore one without losing its messages
@@ -1042,8 +1083,11 @@ merge at the end of the sprint:
 1. The implementer creates a candidate commit and runs fast deterministic checks
    in its ticket worktree.
 2. Independent Tech Lead reviews run in parallel against detached read-only
-   workspaces pinned to each immutable candidate commit.
-3. Approved candidates enter a StoryPointless-owned local merge queue, which
+   workspaces pinned to each immutable candidate commit. Each review is one
+   evidence-only pass over the contract, completion handoff, exact diff, directly
+   relevant files, reported checks, and demo contract. It does not repeat research,
+   execute the product, rerun checks, launch the demo, or request more access.
+3. Approved candidates enter a Spedito-owned local merge queue, which
    orders them by dependencies and replays each one onto the latest trunk in a
    separate integration worktree.
 4. A conflict becomes a visible **Resolving conflict** integration activity. An
@@ -1058,7 +1102,7 @@ merge at the end of the sprint:
    actionable error, returns the integrated revision to the Implementer
    automatically, and requires a new candidate and review. A host/runtime
    interruption preserves the reviewed candidate for a preparation-only retry.
-6. Human acceptance authorizes StoryPointless to advance local trunk to that
+6. Human acceptance authorizes Spedito to advance local trunk to that
    exact commit. Agents do not perform this promotion themselves.
 
 Implementation and immutable-candidate review remain parallel. The local MVP
@@ -1078,7 +1122,7 @@ revision. Accepted worktrees can be removed after a configurable recovery period
 because their commits and evidence are durable.
 
 Before resuming implementation after a post-conflict review return or Product
-Owner demo feedback, StoryPointless validates that the preserved ticket workspace
+Owner demo feedback, Spedito validates that the preserved ticket workspace
 is clean and still points to the immutable candidate, then fast-forwards its ticket
 branch to the exact reviewed integrated revision. This host-owned handoff preserves
 accepted trunk work and the Integrator's resolution as the baseline for the next
@@ -1089,9 +1133,14 @@ closed for recovery rather than asking an agent to infer or rewrite Git history.
 
 Implementation completion therefore triggers fast deterministic checks first.
 An independent review agent then receives the contract, exact immutable candidate
-diff, relevant decisions, and evidence—but not the implementer's unverified
-conclusions. Integration consumes only approved candidates. Conflict resolution
-creates a changed integrated revision and therefore requires focused re-review.
+diff, relevant decisions, completion handoff, and reported evidence. It inspects
+that evidence without reproducing delivery or verification. For research it reads
+the research artefact without performing new searches or visiting sources; for a
+product change it reviews the diff and demo contract without building, testing, or
+running the product. A concrete missing required evidence item may be a finding,
+but the reviewer does not produce that evidence itself. Integration consumes only
+approved candidates. Conflict resolution creates a changed integrated revision and
+therefore requires focused re-review.
 
 Review can request changes, reject the result, or attest that specified gates
 passed. High-risk items require a stronger independent review profile or human
@@ -1110,7 +1159,7 @@ rendering, valid syntax or structured data, an explicitly required acceptance
 gate, reviewability of a material change, or security. A focused re-review
 reassesses earlier feedback against this threshold rather than preserving its
 blocking classification automatically. A ticket may return from review to
-**In Progress** five times. On the fifth return, StoryPointless preserves the
+**In Progress** five times. On the fifth return, Spedito preserves the
 workspace and findings but pauses automatic revision for Product Owner direction.
 The Lead performs the ordinary review run automatically. A specialist reviewer can
 be introduced later by policy without restoring a required reviewer field to
@@ -1140,11 +1189,11 @@ owner comment addressed to its active assignee wakes that existing run and moves
 the item visibly back to **In Progress** unless the comment is explicitly marked
 as informational. The item normally resumes
 the same implementation thread and isolated workspace. When feedback follows an
-integrated review or demo, StoryPointless first advances that workspace to the
+integrated review or demo, Spedito first advances that workspace to the
 reviewed integrated result so accepted trunk work and conflict resolution are not
 lost or repeated. The replacement must pass checks and review again before a new
 preview version reaches acceptance. If context health
-is poor after repeated compaction, StoryPointless starts a fresh thread with a
+is poor after repeated compaction, Spedito starts a fresh thread with a
 structured handoff while retaining the same ticket workspace. Previous previews
 and feedback remain available in the item history.
 
@@ -1195,7 +1244,7 @@ such as “Deploy this product to a cloud service.” Codex investigates the opt
 asks product and cost questions, proposes the required accounts and permissions,
 and blocks at every credential or consequential-action boundary.
 
-When StoryPointless later introduces a dedicated release action, it must invoke
+When Spedito later introduces a dedicated release action, it must invoke
 an approved, repeatable deployment workflow rather than inventing shell commands
 at click time. The interface will show the target environment, included changes,
 migrations, risk tier, health checks, and rollback plan before approval.
@@ -1533,7 +1582,7 @@ the agent. Compaction summarizes older context and lets the thread continue, but
 can lose detail or weaken long-running performance. A useful run indicator is
 therefore **Context healthy · 1 compaction · Shared usage resets in 2h**, with
 the raw measurements available on inspection. Repeated compaction can trigger a
-fresh thread with a StoryPointless-generated handoff pack containing the
+fresh thread with a Spedito-generated handoff pack containing the
 contract, current commit, decisions, evidence, and remaining work.
 
 If a field is not exposed for the active authentication mode or Codex version,
@@ -1570,7 +1619,7 @@ Owner can open directly. Because the decision is not final, the paused result
 cannot also create candidate-bound Product knowledge proposals, follow-up ticket
 proposals, or a managed demo. After the answer, the continuing team member
 updates the artifact, records the decision, and returns the completed candidate
-with any final knowledge proposals and review recipe. If StoryPointless relaunches while that
+with any final knowledge proposals and review recipe. If Spedito relaunches while that
 run is active, it preserves and explicitly resumes the same Conversation and
 ticket workspace, then starts only a focused continuation turn; it does not
 brief the team member as though the ticket were new. If a live permission
@@ -1648,7 +1697,7 @@ reusable product truth.
 
 Unused canonical pages have empty stored bodies. Owner-facing guidance for an
 empty page is presentation text, not verified knowledge and not agent context.
-Before delivery, StoryPointless separates the small set of verified pages an
+Before delivery, Spedito separates the small set of verified pages an
 agent may read from a canonical destination directory. The directory explains
 where product, journey, architecture, component, integration, operational, and
 limitation knowledge belongs. Empty canonical pages and relevant populated pages
@@ -1672,7 +1721,7 @@ permission.
 
 ### 14.5 Context access
 
-Before a delivery run starts, StoryPointless supplies the exact assigned
+Before a delivery run starts, Spedito supplies the exact assigned
 contract, direct prerequisite handoffs, current conversation, permission scope,
 and writable knowledge destinations. The agent receives the active product's
 exact read-only database path and stable views plus read-only repository and Git
@@ -1681,6 +1730,18 @@ and verified knowledge live instead of receiving a copied whole-product
 projection. The agent and owner can still see which bounded ticket knowledge
 records were relied upon. Review runs receive the same required read-only
 product access but do not add repeated **Knowledge used** cards to the Work log.
+
+The delivery context also lists the product's effective saved filesystem and
+network consent. Saved consent does not pre-enable those capabilities or expand
+the ticket: the agent still uses the scoped permission tool for the smallest
+coherent capability needed by authorised work. Spedito automatically
+applies consent when the structured request is equivalent to or narrower than
+the saved effective access, including when several earlier grants jointly cover
+it, and records that use in the current ticket's Work log. Product settings group
+overlapping structured grants into one effective access summary and revoke that
+group together while retaining the underlying audit history. Saved commands are
+shown separately and always retain exact matching semantics. **Revoke all**
+withdraws every saved grant for the selected product in one confirmed action.
 
 Page selection prioritises direct provenance, canonical subject and title
 relevance, and prerequisite handoffs. Full-body term overlap is capped so a long
@@ -1771,7 +1832,7 @@ visually distinct.
 
 ### 16.2 Credential rules
 
-- StoryPointless never asks users to paste subscription session tokens into the
+- Spedito never asks users to paste subscription session tokens into the
   application.
 - The first release uses the selected Codex installation's existing ChatGPT or
   API authentication state. A future embedded login must use App Server's
@@ -1821,13 +1882,14 @@ bounded contract. Review still receives the contract and exact candidate in a
 separate Lead thread. A higher-risk ticket can route an additional pass to a
 separate specialist reviewer profile.
 
-StoryPointless supplies opinionated defaults but lets the owner change each
-profile's model and supported reasoning effort from the team sidebar. Options
-come from the signed-in account's live Codex model catalog so the UI does not
-offer unsupported combinations. Owners may also add shared product guidance and
-optional per-profile custom instructions. StoryPointless's versioned role and
-lifecycle guidance remains internal; the owner-visible custom field starts empty
-and its contents are appended last. Clearing it removes only the custom overlay.
+Spedito supplies opinionated defaults but lets the owner change each
+profile's model and supported reasoning effort in Team settings. The team
+sidebar presents those values as a read-only summary. Options come from the
+signed-in account's live Codex model catalog so the UI does not offer unsupported
+combinations. Owners may also add shared product guidance and optional
+per-profile custom instructions. Spedito's versioned role and lifecycle
+guidance remains internal; the owner-visible custom field starts empty and its
+contents are appended last. Clearing it removes only the custom overlay.
 Max and Ultra are not defaults because
 they materially increase usage and, for Ultra, change orchestration behaviour.
 
@@ -1837,7 +1899,7 @@ number of custom team members. A team member has a free-form name and optional
 custom instructions, but selects a governed capability archetype: analysis/research,
 experience design, leadership/planning, implementation, independent
 review/audit, QA, or knowledge/documentation. The instructions change how the member
-approaches authorised work; it cannot expand permissions. StoryPointless offers
+approaches authorised work; it cannot expand permissions. Spedito offers
 optional starting templates such as Security Auditor, Accessibility Auditor,
 Market Researcher, Customer Researcher, Product Marketing Expert, SEO Expert,
 DevOps/Platform Engineer, Performance Engineer, Privacy Reviewer, Technical
@@ -1847,7 +1909,7 @@ runs and decisions remain attributable.
 The first release reuses the selected Codex installation's authentication.
 Codex App Server also supports embedded ChatGPT sign-in and API-key access for a
 later onboarding flow. Credentials remain in the Codex harness or macOS
-Keychain rather than being copied into StoryPointless records.
+Keychain rather than being copied into Spedito records.
 
 ### 17.2 Runtime ownership and compatibility
 
@@ -1856,16 +1918,16 @@ the user's `PATH`. The first release instead discovers the signed-in official
 Codex macOS app through its bundle identifier and uses the Codex executable
 inside that installation. The Product Owner can explicitly add other Codex apps
 or executable files, choose among them from the Codex connection menu, remove
-custom entries, and retry a failed connection. StoryPointless remembers one
+custom entries, and retry a failed connection. Spedito remembers one
 application-wide choice. It never discovers package-manager installations or
 silently selects an arbitrary executable.
 
 The App Server protocol is currently experimental and its generated schemas are
 specific to the Codex version that produced them. Compatibility is therefore a
-layered capability check rather than exact version equality. StoryPointless must:
+layered capability check rather than exact version equality. Spedito must:
 
 - inspect the selected executable and expose its version for diagnostics;
-- require the permission-request feature used by StoryPointless;
+- require the permission-request feature used by Spedito;
 - complete App Server initialization with the required experimental capability;
 - confirm the server is running on supported macOS and load its live model
   catalog before reporting a connection;
@@ -1876,10 +1938,10 @@ layered capability check rather than exact version equality. StoryPointless must
 - refuse missing or incompatible behavior with a clear recovery path.
 
 Custom installations are an advanced, explicit trust decision because
-StoryPointless launches the selected executable with the same scoped access as
+Spedito launches the selected executable with the same scoped access as
 the official Codex runtime. Remote App Server and Docker Sandbox connections are
 deferred. Authentication, model availability, and service behavior still
-require compatibility monitoring and timely StoryPointless updates.
+require compatibility monitoring and timely Spedito updates.
 
 ### 17.3 Recommended execution topology
 
@@ -1891,7 +1953,7 @@ changing ticket or orchestration semantics.
 ```mermaid
 flowchart TB
     PO["Product owner"] --> UI
-    subgraph DESKTOP["StoryPointless macOS app"]
+    subgraph DESKTOP["Spedito macOS app"]
         UI["Board, acceptance, and knowledge UI"]
         DB["Product-scoped SQLite stores"]
         ORCH["Policy, budget, and dependency orchestrator"]
@@ -1937,7 +1999,7 @@ tool-installation events that do not belong to the model session.
 
 ### 17.5 MCP role
 
-Expose StoryPointless as a local MCP server so Codex can read assigned
+Expose Spedito as a local MCP server so Codex can read assigned
 contracts, retrieve approved context, post events and evidence, raise questions,
 and propose state changes. MCP is an integration surface, not the internal event
 model or the sole orchestration mechanism.
@@ -1950,11 +2012,11 @@ Recommended sequence:
    controlled through the App Server's bidirectional JSON-RPC protocol.
 2. Local repository and isolated worktree manager.
 3. Native Codex sandbox and permission bridge.
-4. StoryPointless MCP tools for ticket events, questions, and evidence.
+4. Spedito MCP tools for ticket events, questions, and evidence.
 5. Docker Sandboxes feasibility spike behind the execution-backend interface.
 
 The user installs the normal Codex app but never needs to use or separately
-install its CLI. StoryPointless launches the selected runtime as an internal
+install its CLI. Spedito launches the selected runtime as an internal
 agent engine without a terminal window and renders its
 sessions, streamed events, diffs, questions, and approvals through native
 product UI.
@@ -1963,7 +2025,7 @@ product UI.
 
 The early release requires the official Codex app or another explicitly selected
 compatible Codex installation as its agent engine. The target self-contained,
-signed StoryPointless application bundle contains:
+signed Spedito application bundle contains:
 
 - local Git support, either through a bundled self-contained distribution or an
   embedded Git library;
@@ -1979,7 +2041,7 @@ not redistributed in this phase.
 
 Two execution approaches remain credible:
 
-1. **Native managed tools.** StoryPointless ships a small baseline and, after
+1. **Native managed tools.** Spedito ships a small baseline and, after
    human approval, downloads verified toolchains into an app-managed directory.
    Codex never installs system-wide packages. This keeps product toolchains
    managed while using Codex's macOS filesystem and network sandbox.
@@ -1996,7 +2058,7 @@ native backend.
 
 ### 17.8 Docker Sandboxes spike criteria
 
-The spike succeeds only if StoryPointless can, without exposing a terminal:
+The spike succeeds only if Spedito can, without exposing a terminal:
 
 1. detect a supported `sbx` version and authenticated Docker account;
 2. create, inspect, stop, resume, and remove a named Codex sandbox headlessly;
@@ -2009,7 +2071,7 @@ The spike succeeds only if StoryPointless can, without exposing a terminal:
    silently broadening other sandbox policies;
 7. install a package such as a JDK inside the sandbox, persist it across stop and
    resume, and discard it when the sandbox is deleted;
-8. run a local product preview and publish its port to a StoryPointless web view;
+8. run a local product preview and publish its port to a Spedito web view;
 9. preserve or recover all intended source changes after an app or sandbox crash;
 10. run two ticket sandboxes against isolated workspaces without cross-access;
 11. normalize usage, tool, file, process, and lifecycle events into the same
@@ -2047,7 +2109,7 @@ coordination cost this product is meant to remove.
 ### 18.2 SQLite storage boundary
 
 Each product owns one SQLite database at
-`<product workspace>/.storypointless/product.sqlite`. It is that product's
+`<product workspace>/.spedito/product.sqlite`. It is that product's
 durable operational memory, not where generated source code lives. It stores
 structured records such as:
 
@@ -2060,7 +2122,7 @@ structured records such as:
 - decisions, knowledge provenance, product settings, conversation threads, and
   the current declarative schema version.
 
-Product bootstrap adds `/.storypointless/` to the workspace's root `.gitignore`
+Product bootstrap adds `/.spedito/` to the workspace's root `.gitignore`
 before the first Git snapshot. The database, WAL, shared-memory files, and future
 control-plane data therefore remain outside product Git history. Source code and
 worktrees remain in local Git repositories. Large logs,
@@ -2093,7 +2155,7 @@ shipping product schema contains no historical migration ledger.
 
 ### 18.4 App shutdown and crash recovery
 
-Closing StoryPointless suspends active work; it does not semantically cancel or
+Closing Spedito suspends active work; it does not semantically cancel or
 abandon the tickets. On a normal quit the application:
 
 1. stops admitting queued work;
@@ -2108,7 +2170,7 @@ abandon the tickets. On a normal quit the application:
 
 The final agent-authored comment is best effort: force quit, power loss, or a
 crash may prevent it. Progress events and filesystem changes are persisted
-throughout the run so StoryPointless can create a clearly labelled system
+throughout the run so Spedito can create a clearly labelled system
 recovery note from the last durable milestone, diff, and check result. On next
 launch it detects stale leases and reconciles worktrees and processes.
 Implementation runs suspended by the app are queued to continue automatically
@@ -2117,7 +2179,7 @@ decision. Those runs remain visibly paused for the Product Owner, as do runs
 deliberately stopped by the Product Owner until explicitly resumed. Neither
 becomes `Cancelled` merely because the app closed.
 
-Before starting another implementation turn, StoryPointless recovers a valid
+Before starting another implementation turn, Spedito recovers a valid
 completed structured result if the previous turn finished after the last
 durable run update. Otherwise it explicitly resumes the persisted Conversation
 in the new App Server process and sends a focused continuation instruction that
@@ -2128,20 +2190,20 @@ capability. If explicit Conversation resume reports it missing, a replacement
 receives the full ticket contract and the preserved workspace, with an explicit
 instruction not to restart completed work. If the ticket
 workspace itself is missing, uncaptured changes are not recoverable;
-StoryPointless explains that fallback in the Work log before preparing a fresh
+Spedito explains that fallback in the Work log before preparing a fresh
 isolated workspace.
 
 An interrupted Tech Lead review remains bound to its exact immutable revision.
-StoryPointless preserves the review run, Conversation, reviewed SHA, and
+Spedito preserves the review run, Conversation, reviewed SHA, and
 detached workspace. The revision is normally the ticket candidate, or the
 integrated SHA for focused review after conflict resolution. After relaunch it
 verifies or reconstructs that exact
 checkout, recovers a completed structured review result when available, and
-otherwise explicitly resumes and continues the same Conversation. A live
-permission request that expired with the old process keeps the review paused
-until the Product Owner decides, and that decision or an existing matching
-scoped grant applies to the continuing run. Relaunch alone never causes
-review to repeat. An immutable candidate review is reconstructed directly; a new
+otherwise explicitly resumes and continues the same Conversation. Review threads
+cannot request permission escalation. A request left by an older review contract
+is retired and the same review continues within the read-only evidence boundary.
+Relaunch alone never causes review to repeat. An immutable candidate review is
+reconstructed directly; a new
 integration and focused re-review are required only when an exact post-conflict
 revision is missing, changed, or cannot be verified, and that fallback is
 explained in the ticket Work log. **Ready for Demo**
@@ -2199,7 +2261,7 @@ current-release checklist; see the README for that boundary.
 ### 19.1 Target outcome
 
 A solo founder can install one macOS application, describe a product, allow
-StoryPointless to create its local repository, assign ready contracts to Codex
+Spedito to create its local repository, assign ready contracts to Codex
 profiles, observe trustworthy progress, receive an independently checked local
 preview, and accept the result—without using GitHub, hosting, or developer-facing
 tools.
@@ -2207,7 +2269,7 @@ tools.
 The product does not ask the owner to choose a predefined project type or
 framework. They describe what they want to build. During refinement, the team
 identifies the required tools, verification approach, and preview or equivalent
-acceptance artifact. StoryPointless may warn, request an approved managed tool,
+acceptance artifact. Spedito may warn, request an approved managed tool,
 or block when the current environment cannot safely deliver it; accepting an
 arbitrary goal is not the same as falsely guaranteeing every stack.
 
@@ -2218,7 +2280,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 ### 19.2 Golden path
 
 1. Install and open the signed macOS application.
-2. Describe the product; StoryPointless creates a local directory and repository
+2. Describe the product; Spedito creates a local directory and repository
    and lets the lead profile propose the initial structure.
 3. Confirm the discovered signed-in Codex app or select another explicitly
    added compatible installation.
@@ -2274,7 +2336,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 - Internal local execution service; no separate runner installation or UI.
 - Embedded Codex App Server adapter with ChatGPT sign-in.
 - Local commits, diffs, checkpoints, tests, and preview evidence.
-- Separate implementation worktrees and a StoryPointless-owned local merge queue
+- Separate implementation worktrees and a Spedito-owned local merge queue
   that promotes only the exact checked, reviewed, and accepted candidate.
 - Realtime run state and a per-ticket Work log combining comments with audit events.
 - Configuration-only Team sidebar plus ticket-level Sprint Board activity with
@@ -2314,7 +2376,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 
 The MVP ends at an accepted local increment. A request to deploy is a normal
 ticket whose implementation can ask questions and request scoped permissions,
-but StoryPointless must not imply that arbitrary agent-led deployment is already
+but Spedito must not imply that arbitrary agent-led deployment is already
 a safe, repeatable release capability. A dedicated release action comes only
 after a deployment path has been configured, verified, and made reversible.
 
@@ -2353,7 +2415,7 @@ explain its data path, and avoid silently uploading local product history.
 
 ## 21. Early-release boundary
 
-StoryPointless is currently free and open source. It has no StoryPointless cloud
+Spedito is currently free and open source. It has no Spedito cloud
 backend, paid tier, cross-customer dataset, or application analytics service.
 Users supply their own compatible Codex/OpenAI access and remain responsible for
 charges and data handling under those providers' terms.
@@ -2361,7 +2423,7 @@ charges and data handling under those providers' terms.
 The early release:
 
 - supports Apple Silicon on macOS 14 or later;
-- stores StoryPointless product state locally;
+- stores Spedito product state locally;
 - uses local Git repositories and local ticket worktrees;
 - requires a compatible installed Codex app or executable;
 - may require local developer components while packaging is completed;
@@ -2395,7 +2457,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for the development workflow and
 
 ## 23. One-sentence test
 
-If StoryPointless cannot make a Product Owner more confident about **what was
+If Spedito cannot make a Product Owner more confident about **what was
 built, why it is safe enough to accept, and what the team learned** than they
 would be with an issue tracker and a coding agent alone, it has not yet earned
 the right to replace either.

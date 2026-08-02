@@ -5,7 +5,7 @@ const showcaseSlides = [
     title: "See your AI team at work.",
     caption:
       "See what’s moving, blocked, under review, and ready to demo—without asking agents for updates.",
-    alt: "StoryPointless Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
+    alt: "Spedito Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
   },
   {
     file: "25-customize-your-team.webp",
@@ -13,7 +13,7 @@ const showcaseSlides = [
     title: "Customise the team",
     caption:
       "Tune team roles, models, effort, and instructions for the product.",
-    alt: "StoryPointless team settings for roles, models, effort, and instructions.",
+    alt: "Spedito team settings for roles, models, effort, and instructions.",
   },
   {
     file: "1-epic-ai-refinement.webp",
@@ -21,7 +21,7 @@ const showcaseSlides = [
     title: "Refine an Epic",
     caption:
       "Focused questions resolve the outcome, scope, constraints, and acceptance before delivery starts.",
-    alt: "StoryPointless refining a rough Epic through focused Business Analyst questions.",
+    alt: "Spedito refining a rough Epic through focused Business Analyst questions.",
   },
   {
     file: "2-epic-ai-refined.webp",
@@ -29,7 +29,7 @@ const showcaseSlides = [
     title: "Review the refined Epic",
     caption:
       "The agreed outcome becomes a reviewable Epic before it creates Backlog work.",
-    alt: "A refined StoryPointless Epic ready for the Product Owner to review.",
+    alt: "A refined Spedito Epic ready for the Product Owner to review.",
   },
   {
     file: "3-backlog-proposed.webp",
@@ -37,14 +37,14 @@ const showcaseSlides = [
     title: "Build the Backlog",
     caption:
       "Turn the approved Epic into a prioritised Backlog with clear dependencies.",
-    alt: "A StoryPointless Backlog with three proposed Tickets and their dependencies.",
+    alt: "A Spedito Backlog with three proposed Tickets and their dependencies.",
   },
   {
     file: "6-sprint-plan.webp",
     phase: "Plan",
     title: "Plan the Sprint",
     caption: "Let dependencies and readiness shape a realistic Sprint.",
-    alt: "StoryPointless proposing a Sprint plan from ready Backlog Tickets.",
+    alt: "Spedito proposing a Sprint plan from ready Backlog Tickets.",
   },
   {
     file: "9-sprint-agent-debug-info.webp",
@@ -52,7 +52,7 @@ const showcaseSlides = [
     title: "Follow the work",
     caption:
       "Open any run to understand useful activity without living in a terminal.",
-    alt: "A StoryPointless Ticket showing concise live agent activity and run details.",
+    alt: "A Spedito Ticket showing concise live agent activity and run details.",
   },
   {
     file: "10-access-request.webp",
@@ -60,7 +60,7 @@ const showcaseSlides = [
     title: "Keep access scoped",
     caption:
       "Approve the smallest exact capability when an agent needs more access.",
-    alt: "A scoped agent permission request inside StoryPointless.",
+    alt: "A scoped agent permission request inside Spedito.",
   },
   {
     file: "11-questions-during-ticket.webp",
@@ -68,7 +68,7 @@ const showcaseSlides = [
     title: "Resolve product questions",
     caption:
       "Answer consequential questions inside the Ticket Work log while delivery continues.",
-    alt: "A StoryPointless Ticket asking the Product Owner a delivery question.",
+    alt: "A Spedito Ticket asking the Product Owner a delivery question.",
   },
   {
     file: "12-chat-with-your-team.webp",
@@ -76,7 +76,7 @@ const showcaseSlides = [
     title: "Chat with the team",
     caption:
       "Talk to the whole AI team without juggling separate chat threads.",
-    alt: "The StoryPointless team Conversation with several AI team members.",
+    alt: "The Spedito team Conversation with several AI team members.",
   },
   {
     file: "13-tech-lead-review.webp",
@@ -84,7 +84,7 @@ const showcaseSlides = [
     title: "Review independently",
     caption:
       "A Tech Lead reviews the exact delivery candidate independently.",
-    alt: "A Tech Lead review running against a StoryPointless Ticket candidate.",
+    alt: "A Tech Lead review running against a Spedito Ticket candidate.",
   },
   {
     file: "14-tech-lead-review-issues-found.webp",
@@ -92,7 +92,7 @@ const showcaseSlides = [
     title: "Fix review findings",
     caption:
       "Findings return to the Ticket instead of disappearing into chat context.",
-    alt: "Tech Lead review findings recorded in a StoryPointless Ticket Work log.",
+    alt: "Tech Lead review findings recorded in a Spedito Ticket Work log.",
   },
   {
     file: "16-agents-have-appropriate-context.webp",
@@ -100,7 +100,7 @@ const showcaseSlides = [
     title: "Give agents context",
     caption:
       "Each agent receives its Ticket, direct handoffs, and relevant Product knowledge.",
-    alt: "StoryPointless showing the focused context supplied to a delivery agent.",
+    alt: "Spedito showing the focused context supplied to a delivery agent.",
   },
   {
     file: "17-product-knowledge-building.webp",
@@ -108,21 +108,21 @@ const showcaseSlides = [
     title: "Build Product knowledge",
     caption:
       "Useful decisions become verified Product knowledge while the team works.",
-    alt: "StoryPointless Product knowledge growing from verified delivery decisions.",
+    alt: "Spedito Product knowledge growing from verified delivery decisions.",
   },
   {
     file: "18-demo.webp",
     phase: "Demo",
     title: "Prepare the Demo",
     caption: "Launch the exact reviewed result directly from the Ticket.",
-    alt: "A reviewed StoryPointless Ticket with its working Demo ready to launch.",
+    alt: "A reviewed Spedito Ticket with its working Demo ready to launch.",
   },
   {
     file: "19-demo-result.webp",
     phase: "Demo",
     title: "Try the result",
     caption: "Use the working product before deciding whether to accept it.",
-    alt: "The working result launched from a StoryPointless Demo.",
+    alt: "The working result launched from a Spedito Demo.",
   },
   {
     file: "20-auto-conflict-resolution-with-review.webp",
@@ -130,7 +130,7 @@ const showcaseSlides = [
     title: "Automatic conflict resolution",
     caption:
       "Changes made during conflict resolution are reviewed before integration continues.",
-    alt: "StoryPointless coordinating conflict resolution and focused Tech Lead re-review.",
+    alt: "Spedito coordinating conflict resolution and focused Tech Lead re-review.",
   },
   {
     file: "22-code.webp",
@@ -138,7 +138,7 @@ const showcaseSlides = [
     title: "Inspect the code",
     caption:
       "Code stays available when you want it, without becoming the primary workflow.",
-    alt: "The optional code browser inside StoryPointless.",
+    alt: "The optional code browser inside Spedito.",
   },
   {
     file: "23-retrospective.webp",
@@ -146,14 +146,14 @@ const showcaseSlides = [
     title: "Run the Retrospective",
     caption:
       "Turn Sprint evidence into strengths, improvements, and reviewable actions.",
-    alt: "A StoryPointless Retrospective with evidence and proposed actions.",
+    alt: "A Spedito Retrospective with evidence and proposed actions.",
   },
   {
     file: "24-reports.webp",
     phase: "Learn",
     title: "Learn from reports",
     caption: "Make delivery patterns visible across Sprints.",
-    alt: "StoryPointless Reports showing delivery patterns and team performance.",
+    alt: "Spedito Reports showing delivery patterns and team performance.",
   },
 ];
 
