@@ -67,7 +67,7 @@ public final class ProductStoreRegistry {
     }
   }
 
-  public func createProduct(name: String, vision: String) async throws -> Product {
+  public func createProduct(name: String) async throws -> Product {
     let existingProducts =
       try await fetchProducts(status: .active)
       + fetchProducts(status: .archived)
@@ -76,7 +76,6 @@ public final class ProductStoreRegistry {
     do {
       let product = try await store.createProduct(
         name: name,
-        vision: vision,
         color: nextColor(existingProducts: existingProducts),
         id: productID
       )

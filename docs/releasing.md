@@ -73,6 +73,14 @@ application signature, bundled licence, and Apple Silicon executable. The code
 signature verifies bundle integrity, not developer identity. Gatekeeper may
 warn because the app is not notarized.
 
+Local DMG builds require the same `create-dmg` utility used by the release
+runner:
+
+```sh
+brew install create-dmg
+./scripts/build_dmg.sh .build/app/release/Spedito.app Spedito.dmg
+```
+
 ## Future Developer ID releases
 
 When an Apple Developer account is available, the release design must be updated

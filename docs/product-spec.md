@@ -1,4 +1,4 @@
-# Spedito: Product vision and specification
+# Spedito: Product specification
 
 - **Status:** Public working draft
 - **Date:** 1 August 2026
@@ -259,9 +259,8 @@ must not be held captive by a hosted service.
 
 ### 8.1 Product space
 
-A workspace containing the product vision, members, repositories,
-environments, knowledge, delivery policies, safety limits, and one or more
-delivery views.
+A workspace containing members, repositories, environments, knowledge,
+delivery policies, safety limits, and one or more delivery views.
 
 Each product has a durable identifying color used by its initial tile in the
 product library and current-product header. The first product uses the app accent
@@ -508,9 +507,10 @@ discussing after this happens, but stale actions are never auto-applied.
 
 ### 9.1 Onboarding
 
-1. The owner creates a product space and describes the product, target user,
-   current stage, and risk tolerance, or chooses to import an existing Git
-   repository.
+1. The owner names a product space or chooses to import an existing Git
+   repository. The first concrete outcome belongs in an Epic, while durable
+   cross-Epic context such as target users, constraints, and principles belongs
+   in Product knowledge.
 2. Spedito creates a local product directory and Git repository. It may
    begin with an empty, agent-planned product, an approved starter template, or
    a managed clone whose existing history and default branch become the
@@ -1649,7 +1649,7 @@ simply accumulate prose.
 
 ### 14.2 Knowledge types
 
-- Product vision, principles, vocabulary, and target users.
+- Product principles, vocabulary, and target users.
 - User journeys and externally visible behavior.
 - Architecture and service boundaries.
 - Versioned decisions and rejected alternatives.

@@ -287,9 +287,6 @@ public enum CodexTicketRefinementGenerator {
 
     return """
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Epic context:
       \(epicContext)
 

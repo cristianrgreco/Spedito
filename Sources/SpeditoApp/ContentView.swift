@@ -60,7 +60,8 @@ struct ContentView: View {
 
 private struct ProductOnboardingView: View {
   @EnvironmentObject private var model: AppModel
-  @State private var showingNewProduct = false
+  @State private var name = ""
+  @State private var isCreating = false
   @State private var showingProductLibrary = false
 
   var body: some View {
@@ -68,43 +69,70 @@ private struct ProductOnboardingView: View {
       ProductOnboardingBackdrop()
         .ignoresSafeArea(.container, edges: .top)
 
-      ContentUnavailableView {
-        Label("No active products", systemImage: "shippingbox")
-      } description: {
-        Text(
-          model.archivedProducts.isEmpty
-            ? "Create a new product workspace to get started."
-            : "Create a new product workspace or choose one from the archive."
+      VStack(spacing: 22) {
+        Image(systemName: "shippingbox.fill")
+          .font(.system(size: 30, weight: .semibold))
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 64, height: 64)
+          .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+
+        VStack(spacing: 8) {
+          Text("What are you building?")
+            .font(.largeTitle.bold())
+          Text("Choose a product name. You can change it later.")
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 460)
+        }
+
+        ProductNameEntryField(
+          text: $name,
+          isDisabled: isCreating,
+          onSubmit: createProduct
         )
-      } actions: {
-        HStack {
-          Button("New product") {
-            showingNewProduct = true
-          }
-          .buttonStyle(.borderedProminent)
+        .frame(width: 420)
+
+        HStack(spacing: 10) {
           if !model.archivedProducts.isEmpty {
             Button("View archived products") {
               showingProductLibrary = true
             }
+            .buttonStyle(.bordered)
+            .disabled(isCreating)
           }
+
+          Button(isCreating ? "Creating…" : "Create product") {
+            createProduct()
+          }
+          .buttonStyle(.borderedProminent)
+          .keyboardShortcut(.defaultAction)
+          .disabled(trimmedName.isEmpty || isCreating)
         }
+        .controlSize(.large)
       }
+      .padding(.horizontal, 32)
+      .padding(.vertical, 40)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .onAppear {
-      showingNewProduct = true
-    }
-    .sheet(isPresented: $showingNewProduct) {
-      NewProductView(
-        isPresented: $showingNewProduct,
-        onCreated: {}
-      )
-    }
     .sheet(isPresented: $showingProductLibrary) {
       ProductLibraryView(
         isPresented: $showingProductLibrary,
+        initiallyShowingArchived: true,
         onOpenProduct: {}
       )
+    }
+  }
+
+  private var trimmedName: String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func createProduct() {
+    guard !trimmedName.isEmpty, !isCreating else { return }
+    isCreating = true
+    Task {
+      _ = await model.createProductAndSelect(name: trimmedName)
+      isCreating = false
     }
   }
 }
@@ -140,11 +168,25 @@ private struct ProductOnboardingBackdrop: View {
 
       VStack(spacing: 0) {
         HStack(spacing: 11) {
-          Image(systemName: "shippingbox.fill")
-            .font(.title2.weight(.semibold))
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 38, height: 38)
-            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+          if
+            let iconURL = SpeditoResources.url(
+              forResource: "AppIcon",
+              withExtension: "png"
+            ),
+            let appIcon = NSImage(contentsOf: iconURL)
+          {
+            Image(nsImage: appIcon)
+              .resizable()
+              .interpolation(.high)
+              .frame(width: 48, height: 48)
+              .accessibilityHidden(true)
+          } else {
+            Image(systemName: "shippingbox.fill")
+              .font(.title2.weight(.semibold))
+              .foregroundStyle(Color.accentColor)
+              .frame(width: 38, height: 38)
+              .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+          }
 
           VStack(alignment: .leading, spacing: 1) {
             Text("Spedito")
@@ -157,7 +199,7 @@ private struct ProductOnboardingBackdrop: View {
           Spacer()
         }
         .padding(.horizontal, 32)
-        .padding(.top, 40)
+        .padding(.top, 56)
 
         Spacer()
 
@@ -537,11 +579,6 @@ private struct ProductWorkspaceView: View {
         showingProductLibrary = true
       }
     }
-    .task(id: model.selectedProductID) {
-      try? await Task.sleep(for: .milliseconds(350))
-      guard !Task.isCancelled else { return }
-      presentInitialEpicIfNeeded()
-    }
   }
 
   private func restoreDestination(for productID: UUID?) {
@@ -577,18 +614,6 @@ private struct ProductWorkspaceView: View {
     destination = .sprint
   }
 
-  private func presentInitialEpicIfNeeded() {
-    guard
-      let productID = model.selectedProductID,
-      model.openEpics.isEmpty,
-      model.workItems.isEmpty,
-      !showingProductLibrary
-    else { return }
-    let key = "initialEpicPrompt.\(productID.uuidString)"
-    guard !UserDefaults.standard.bool(forKey: key) else { return }
-    UserDefaults.standard.set(true, forKey: key)
-    showingNewEpic = true
-  }
 }
 
 private struct TeamSidebar: View {
@@ -1558,9 +1583,19 @@ private struct ProductLibraryView: View {
   @State private var searchText = ""
   @State private var selectedProductID: UUID?
   @State private var showingNewProduct = false
-  @State private var showingArchived = false
+  @State private var showingArchived: Bool
   @State private var isOpening = false
   @State private var restoringProductID: UUID?
+
+  init(
+    isPresented: Binding<Bool>,
+    initiallyShowingArchived: Bool = false,
+    onOpenProduct: @escaping () -> Void
+  ) {
+    _isPresented = isPresented
+    _showingArchived = State(initialValue: initiallyShowingArchived)
+    self.onOpenProduct = onOpenProduct
+  }
 
   private var visibleProducts: [Product] {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1568,7 +1603,6 @@ private struct ProductLibraryView: View {
       .filter { product in
         query.isEmpty
           || product.name.localizedCaseInsensitiveContains(query)
-          || product.vision.localizedCaseInsensitiveContains(query)
       }
       .sorted {
         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -1585,7 +1619,6 @@ private struct ProductLibraryView: View {
       .filter { product in
         query.isEmpty
           || product.name.localizedCaseInsensitiveContains(query)
-          || product.vision.localizedCaseInsensitiveContains(query)
       }
       .sorted {
         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
@@ -1822,10 +1855,6 @@ private struct ProductLibraryRow: View {
               .background(.green.opacity(0.1), in: Capsule())
           }
         }
-        Text(product.vision)
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
       }
 
       Spacer(minLength: 16)
@@ -1881,10 +1910,6 @@ private struct ArchivedProductLibraryRow: View {
       VStack(alignment: .leading, spacing: 5) {
         Text(product.name)
           .font(.headline)
-        Text(product.vision)
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
       }
 
       Spacer(minLength: 16)
@@ -1907,64 +1932,49 @@ private struct NewProductView: View {
   @Binding var isPresented: Bool
   let onCreated: () -> Void
   @State private var name = ""
-  @State private var vision = ""
   @State private var isCreating = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: 20) {
+      VStack(alignment: .leading, spacing: 5) {
         Text("New product")
-          .font(.title.bold())
-        Text("Create a new product workspace with its own backlog, team, and product knowledge.")
+          .font(.title2.bold())
+        Text("Choose a product name. You can change it later.")
           .foregroundStyle(.secondary)
       }
-      .padding(24)
 
-      Divider()
-
-      VStack(alignment: .leading, spacing: 18) {
-        EditableTextField(
-          title: "Product name",
-          prompt: "e.g. Weather Window",
-          text: $name
-        )
-        EditableTextArea(
-          title: "Product description",
-          prompt: "Describe who it is for, the problem it solves, and the outcome you want.",
-          text: $vision,
-          minHeight: 180
-        )
-      }
-      .padding(24)
-
-      Spacer()
-      Divider()
+      ProductNameEntryField(
+        text: $name,
+        isDisabled: isCreating,
+        onSubmit: createProduct
+      )
 
       HStack {
         Spacer()
         Button("Cancel") { isPresented = false }
+          .keyboardShortcut(.cancelAction)
+          .disabled(isCreating)
         Button(isCreating ? "Creating…" : "Create and open") {
           createProduct()
         }
         .buttonStyle(.borderedProminent)
-        .disabled(
-          name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || vision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || isCreating
-        )
+        .keyboardShortcut(.defaultAction)
+        .disabled(trimmedName.isEmpty || isCreating)
       }
-      .padding(20)
     }
-    .frame(width: 680, height: 560)
+    .padding(24)
+    .frame(width: 480)
+  }
+
+  private var trimmedName: String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   private func createProduct() {
+    guard !trimmedName.isEmpty, !isCreating else { return }
     isCreating = true
     Task {
-      let created = await model.createProductAndSelect(
-        name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-        vision: vision.trimmingCharacters(in: .whitespacesAndNewlines)
-      )
+      let created = await model.createProductAndSelect(name: trimmedName)
       isCreating = false
       if created {
         isPresented = false
@@ -1974,11 +1984,51 @@ private struct NewProductView: View {
   }
 }
 
+private struct ProductNameEntryField: View {
+  @Binding var text: String
+  let isDisabled: Bool
+  let onSubmit: () -> Void
+  @FocusState private var isFocused: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Text("Product name")
+        .font(.subheadline.weight(.semibold))
+      TextField(
+        "Product name",
+        text: $text,
+        prompt: Text("e.g. Weather App")
+      )
+      .textFieldStyle(.plain)
+      .padding(.horizontal, 11)
+      .frame(height: 40)
+      .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+      .overlay {
+        RoundedRectangle(cornerRadius: 8)
+          .stroke(
+            isFocused ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.7),
+            lineWidth: isFocused ? 2 : 1
+          )
+      }
+      .focused($isFocused)
+      .disabled(isDisabled)
+      .onSubmit(onSubmit)
+    }
+    .task {
+      isFocused = true
+    }
+    .onChange(of: isDisabled) { _, disabled in
+      if !disabled {
+        isFocused = true
+      }
+    }
+  }
+}
+
 private struct ProductContextView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   @State private var name = ""
-  @State private var description = ""
   @State private var isRevokingSavedAccess = false
   @State private var showingRevokeAllConfirmation = false
   @State private var showingArchiveConfirmation = false
@@ -1989,7 +2039,7 @@ private struct ProductContextView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("Product settings")
           .font(.title.bold())
-        Text("Manage durable context and saved agent access for this product.")
+        Text("Manage product details and saved agent access.")
           .foregroundStyle(.secondary)
       }
       .padding(24)
@@ -2003,20 +2053,6 @@ private struct ProductContextView: View {
             prompt: "Product name",
             text: $name
           )
-
-          EditableTextArea(
-            title: "Product description",
-            prompt: "Describe who it is for, the problem it solves, and the outcome you want.",
-            text: $description,
-            minHeight: 140
-          )
-
-          Label(
-            "Changes become context for future agent work. Active work keeps the context it started with.",
-            systemImage: "brain.head.profile"
-          )
-          .font(.caption)
-          .foregroundStyle(.secondary)
 
           Divider()
 
@@ -2113,13 +2149,12 @@ private struct ProductContextView: View {
         Spacer()
         Button("Cancel") { isPresented = false }
         Button("Save") {
-          model.updateProductDetails(name: name, vision: description)
+          model.updateProductDetails(name: name)
           isPresented = false
         }
         .buttonStyle(.borderedProminent)
         .disabled(
           name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || isArchiving
         )
       }
@@ -2129,7 +2164,6 @@ private struct ProductContextView: View {
     .frame(width: 680, height: 640)
     .onAppear {
       name = model.selectedProduct?.name ?? ""
-      description = model.selectedProduct?.vision ?? ""
     }
     .confirmationDialog(
       "Revoke all saved agent access?",
@@ -2359,7 +2393,7 @@ private struct TeamPromptsView: View {
           Text("Instructions")
             .font(.headline)
           Text(
-            "The product vision, ticket contract, and definition of done are supplied separately."
+            "Verified Product knowledge, the ticket contract, and the definition of done are supplied separately."
           )
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -19650,9 +19684,7 @@ private struct NewTicketView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("New ticket")
           .font(.title.bold())
-        Text(
-          "Describe the outcome. The Business Analyst will turn it into a delivery-ready ticket for your review."
-        )
+        Text("Describe the outcome. The Business Analyst will shape the ticket for your review.")
           .foregroundStyle(.secondary)
       }
       .padding(24)
@@ -19759,10 +19791,10 @@ private struct NewEpicView: View {
   private var captureView: some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 4) {
-        Text(model.openEpics.isEmpty ? "Plan your first outcome" : "New epic")
+        Text("New epic")
           .font(.title.bold())
         Text(
-          "Describe the product outcome. The Business Analyst will shape the epic and propose the tickets needed to deliver it."
+          "Describe the outcome. The Business Analyst will shape the epic and its tickets for your review."
         )
         .foregroundStyle(.secondary)
       }

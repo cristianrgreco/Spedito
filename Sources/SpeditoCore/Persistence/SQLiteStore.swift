@@ -75,14 +75,12 @@ public actor SQLiteStore {
 
   public func createProduct(
     name: String,
-    vision: String,
     color: ProductColor? = nil,
     id: UUID = UUID()
   ) throws -> Product {
     let product = Product(
       id: id,
       name: name,
-      vision: vision,
       color: try color ?? nextProductColor()
     )
 
@@ -90,18 +88,17 @@ public actor SQLiteStore {
       try withStatement(
         """
         INSERT INTO products (
-            id, name, vision, instructions, status, color, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            id, name, instructions, status, color, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(product.id.uuidString, to: 1, in: statement)
         try bind(product.name, to: 2, in: statement)
-        try bind(product.vision, to: 3, in: statement)
-        try bind(product.instructions, to: 4, in: statement)
-        try bind(product.status.rawValue, to: 5, in: statement)
-        try bind(product.color.rawValue, to: 6, in: statement)
-        try bind(product.createdAt.timeIntervalSince1970, to: 7, in: statement)
-        try bind(product.updatedAt.timeIntervalSince1970, to: 8, in: statement)
+        try bind(product.instructions, to: 3, in: statement)
+        try bind(product.status.rawValue, to: 4, in: statement)
+        try bind(product.color.rawValue, to: 5, in: statement)
+        try bind(product.createdAt.timeIntervalSince1970, to: 6, in: statement)
+        try bind(product.updatedAt.timeIntervalSince1970, to: 7, in: statement)
         try stepDone(statement)
       }
 
@@ -141,7 +138,7 @@ public actor SQLiteStore {
   public func fetchProducts(status: ProductStatus = .active) throws -> [Product] {
     try withStatement(
       """
-      SELECT id, name, vision, instructions, status, color, created_at,
+      SELECT id, name, instructions, status, color, created_at,
              COALESCE(
                (
                  SELECT created_at
@@ -225,23 +222,21 @@ public actor SQLiteStore {
     }
   }
 
-  public func updateProductDetails(productID: UUID, name: String, vision: String) throws {
+  public func updateProductDetails(productID: UUID, name: String) throws {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    let trimmedVision = vision.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedName.isEmpty, !trimmedVision.isEmpty else {
-      throw PersistenceError.corruptData("Product name and description cannot be empty")
+    guard !trimmedName.isEmpty else {
+      throw PersistenceError.corruptData("Product name cannot be empty")
     }
     let updatedAt = Date()
     try transaction {
       try withStatement(
         """
-        UPDATE products SET name = ?, vision = ?, updated_at = ? WHERE id = ?;
+        UPDATE products SET name = ?, updated_at = ? WHERE id = ?;
         """
       ) { statement in
         try bind(trimmedName, to: 1, in: statement)
-        try bind(trimmedVision, to: 2, in: statement)
-        try bind(updatedAt.timeIntervalSince1970, to: 3, in: statement)
-        try bind(productID.uuidString, to: 4, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(productID.uuidString, to: 3, in: statement)
         try stepDone(statement)
       }
       _ = try insertEvent(
@@ -5610,48 +5605,9 @@ public actor SQLiteStore {
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    if version == 1 || version == 2 {
-      try removeObsoleteConcurrencySettings(database: database)
-      return
-    }
     throw PersistenceError.corruptData(
       "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
     )
-  }
-
-  private static func removeObsoleteConcurrencySettings(
-    database: OpaquePointer
-  ) throws {
-    try execute("BEGIN IMMEDIATE;", database: database)
-    do {
-      let profileColumns = try columnNames(
-        table: "agent_profiles",
-        schema: "main",
-        database: database
-      )
-      if profileColumns.contains("parallelism_limit") {
-        try execute(
-          "ALTER TABLE agent_profiles DROP COLUMN parallelism_limit;",
-          database: database
-        )
-      }
-      let sprintColumns = try columnNames(
-        table: "sprints",
-        schema: "main",
-        database: database
-      )
-      if sprintColumns.contains("concurrency_limit") {
-        try execute(
-          "ALTER TABLE sprints DROP COLUMN concurrency_limit;",
-          database: database
-        )
-      }
-      try execute("PRAGMA user_version = 3;", database: database)
-      try execute("COMMIT;", database: database)
-    } catch {
-      try? execute("ROLLBACK;", database: database)
-      throw error
-    }
   }
 
   private static func integerPragma(
@@ -6950,31 +6906,30 @@ public actor SQLiteStore {
       throw PersistenceError.corruptData("Invalid product id")
     }
     guard
-      let status = ProductStatus(rawValue: try text(statement, column: 4))
+      let status = ProductStatus(rawValue: try text(statement, column: 3))
     else {
       throw PersistenceError.corruptData("Invalid product status")
     }
     guard
-      let color = ProductColor(rawValue: try text(statement, column: 5))
+      let color = ProductColor(rawValue: try text(statement, column: 4))
     else {
       throw PersistenceError.corruptData("Invalid product color")
     }
     return Product(
       id: id,
       name: try text(statement, column: 1),
-      vision: try text(statement, column: 2),
-      instructions: try text(statement, column: 3),
+      instructions: try text(statement, column: 2),
       status: status,
       color: color,
-      createdAt: date(statement, column: 6),
-      updatedAt: date(statement, column: 7)
+      createdAt: date(statement, column: 5),
+      updatedAt: date(statement, column: 6)
     )
   }
 
   private func fetchProduct(id: UUID) throws -> Product {
     try withStatement(
       """
-      SELECT id, name, vision, instructions, status, color, created_at, updated_at
+      SELECT id, name, instructions, status, color, created_at, updated_at
       FROM products
       WHERE id = ?;
       """

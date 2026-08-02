@@ -108,9 +108,6 @@ public enum CodexTicketConversation {
 
     return """
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Ticket: \(item.key) [\(item.type.title), \(item.priority.title), version \(item.version)]
       Title: \(item.title)
       Context:

@@ -1,13 +1,12 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 3
+  static let version: Int32 = 1
 
   static let sql = """
     CREATE TABLE products (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        vision TEXT NOT NULL,
         instructions TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active'
           CHECK (status IN ('active', 'archived')),
@@ -536,7 +535,7 @@ enum ProductDatabaseSchema {
       ON conversation_messages(thread_id, created_at);
 
     CREATE VIEW agent_product AS
-      SELECT id, name, vision, instructions, status, created_at, updated_at
+      SELECT id, name, instructions, status, created_at, updated_at
       FROM products;
 
     CREATE VIEW agent_team AS
@@ -691,7 +690,7 @@ enum ProductDatabaseSchema {
       JOIN sprints AS sprint ON sprint.id = note.sprint_id
       LEFT JOIN work_items AS item ON item.id = note.work_item_id;
 
-    PRAGMA user_version = 3;
+    PRAGMA user_version = 1;
     """
 
   static let legacyCopyTableOrder = [

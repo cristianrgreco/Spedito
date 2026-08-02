@@ -82,9 +82,6 @@ public enum CodexEpicConversation {
 
     return """
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Epic: \(epic.title) [\(epic.status.title)]
       Goal and customer value:
       \(epic.goal)

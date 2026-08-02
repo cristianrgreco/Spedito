@@ -234,8 +234,7 @@ struct PlanningDropPolicyTests {
       url: directory.appendingPathComponent("planning-drop.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Dependency planning",
-      vision: "Plan prerequisites without moving their rank"
+      name: "Dependency planning"
     )
     let prerequisite = try await store.createWorkItem(
       productID: product.id,
@@ -287,8 +286,7 @@ struct PlanningDropPolicyTests {
       url: directory.appendingPathComponent("planning-bulk-move.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Bulk planning",
-      vision: "Move a complete dependency branch together"
+      name: "Bulk planning"
     )
     let prerequisite = try await store.createWorkItem(
       productID: product.id,

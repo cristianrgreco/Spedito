@@ -11,8 +11,7 @@ struct ProductConversationTests {
     defer { fixture.remove() }
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Conversation product",
-      vision: "Give the Product Owner direct access to the team"
+      name: "Conversation product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
@@ -134,8 +133,7 @@ struct ProductConversationTests {
     defer { fixture.remove() }
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Handoff product",
-      vision: "Let the Product Owner consult the whole team"
+      name: "Handoff product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })

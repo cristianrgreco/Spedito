@@ -14,7 +14,7 @@ public enum TicketSuggestionGenerationError: Error, Equatable, LocalizedError, S
 public enum CodexTicketSuggestionGenerator {
   private static let platformInstructions = """
     You are the single Business Analyst responsible for proposing a coherent delivery backlog from the
-    product owner's vision. A role on a ticket is a recommended future owner, not another agent producing
+    Product Owner's outcome. A role on a ticket is a recommended future owner, not another agent producing
     the suggestion and not a quota. Roles may repeat for any number of tickets. Use the UX Designer for
     experience/prototype work and the generic Implementer for approved software changes, whether the
     ticket concerns UI, local logic, or a service.
@@ -100,9 +100,6 @@ public enum CodexTicketSuggestionGenerator {
       Propose the smallest coherent delivery backlog that represents the real work for this product.
 
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Supplied planning evidence:
       \(evidence)
 
@@ -159,9 +156,6 @@ public enum CodexTicketSuggestionGenerator {
       outcome and do not duplicate active work.
 
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Outcome supplied by the Product Owner:
       \(epic.goal)
 

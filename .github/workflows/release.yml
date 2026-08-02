@@ -77,6 +77,9 @@ jobs:
       - name: Verify application signature
         run: codesign --verify --deep --strict .build/app/release/Spedito.app
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Build installation disk image and checksum
         id: artifact
         shell: bash

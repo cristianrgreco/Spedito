@@ -120,7 +120,7 @@ public enum CodexSprintPlanningConversation {
     Write the message as a natural workplace-chat reply: direct, warm, and short. Prefer one to four
     concise sentences. Do not restate the supplied product or ticket context, write an essay, or add
     headings unless the Product Owner asks for detail. If essential information is missing, ask at most
-    one focused question. The prompt supplies the product vision, exact ticket version, dependencies,
+    one focused question. The prompt supplies the product name, exact ticket version, dependencies,
     proposed assignee, current sprint scope, and recent ticket conversation; use that context silently.
 
     If a ticket edit would materially improve the delivery contract, you may also propose one complete
@@ -173,9 +173,6 @@ public enum CodexSprintPlanningConversation {
 
     return """
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Exact owner-visible ticket snapshot (version \(snapshot.version)):
       Ticket: \(itemKey) [\(snapshot.type.title), \(snapshot.priority.title)]
       Title: \(snapshot.title)

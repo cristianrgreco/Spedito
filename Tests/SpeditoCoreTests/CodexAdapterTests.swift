@@ -1523,8 +1523,7 @@ struct CodexAdapterTests {
   @Test("Epic planning clarifies the outcome before proposing tickets")
   func epicPlanningClarification() throws {
     let product = Product(
-      name: "Weather",
-      vision: "Help customers understand the weather for a chosen location"
+      name: "Weather"
     )
     let epic = Epic(
       productID: product.id,
@@ -1584,8 +1583,7 @@ struct CodexAdapterTests {
   @Test("Expired epic planning threads resume from the durable owner conversation")
   func epicPlanningRecoveryPrompt() {
     let product = Product(
-      name: "Weather",
-      vision: "Help customers understand the weather for a chosen location"
+      name: "Weather"
     )
     let epic = Epic(
       productID: product.id,
@@ -1655,8 +1653,7 @@ struct CodexAdapterTests {
   @Test("Interrupted final epic planning reconstructs every durable owner answer")
   func finalEpicPlanRecoveryPrompt() {
     let product = Product(
-      name: "Weather",
-      vision: "Help customers return to forecasts they care about"
+      name: "Weather"
     )
     let epic = Epic(
       productID: product.id,
@@ -1701,8 +1698,7 @@ struct CodexAdapterTests {
   @Test("Epic planning does not turn unresolved owner decisions into discovery tickets")
   func epicPlanningDecisionGuardrails() {
     let product = Product(
-      name: "Weather",
-      vision: "Help customers understand the weather for a chosen location"
+      name: "Weather"
     )
     let epic = Epic(
       productID: product.id,
@@ -1796,7 +1792,7 @@ struct CodexAdapterTests {
 
   @Test("Epic planning uses supplied ticket contracts and verified Product knowledge")
   func epicPlanningUsesSuppliedEvidence() {
-    let product = Product(name: "Weather", vision: "Show useful forecasts")
+    let product = Product(name: "Weather")
     let epic = Epic(
       productID: product.id,
       title: "Saved places",
@@ -1852,7 +1848,7 @@ struct CodexAdapterTests {
 
   @Test("Repeated backlog analysis receives the previous rejected proposals")
   func rejectedSuggestionContext() {
-    let product = Product(name: "Weather", vision: "Show a forecast for a location")
+    let product = Product(name: "Weather")
     let archived = WorkItem(
       productID: product.id,
       key: "T-9",
@@ -1892,7 +1888,6 @@ struct CodexAdapterTests {
   func sprintPlanningConversation() throws {
     let product = Product(
       name: "Weather",
-      vision: "Show the current weather for a chosen location",
       instructions: "Use UK English."
     )
     let item = WorkItem(
@@ -1999,7 +1994,6 @@ struct CodexAdapterTests {
   func ticketRefinement() throws {
     let product = Product(
       name: "Weather",
-      vision: "Show weather for a location",
       instructions: "Use UK English."
     )
     let item = WorkItem(
@@ -2302,7 +2296,6 @@ struct CodexAdapterTests {
   func ticketConversation() throws {
     let product = Product(
       name: "Weather",
-      vision: "Show weather for a chosen location",
       instructions: "Use UK English."
     )
     let item = WorkItem(
@@ -2386,7 +2379,6 @@ struct CodexAdapterTests {
   func epicConversation() throws {
     let product = Product(
       name: "Weather",
-      vision: "Show weather for a chosen location",
       instructions: "Use UK English."
     )
     let epic = Epic(
@@ -2495,8 +2487,7 @@ struct CodexAdapterTests {
   @Test("Ticket execution receives direct prerequisite handoffs and planned dependant contracts")
   func ticketExecutionDependencyHandoffs() {
     let product = Product(
-      name: "Content search",
-      vision: "Return useful results with suitable supporting content"
+      name: "Content search"
     )
     let analyst = AgentProfile(
       productID: product.id,
@@ -2625,8 +2616,7 @@ struct CodexAdapterTests {
   @Test("Ticket execution separates verified context from canonical knowledge destinations")
   func ticketExecutionKnowledgeDirectory() {
     let product = Product(
-      name: "Connected product",
-      vision: "Use external services without losing durable context"
+      name: "Connected product"
     )
     let implementer = AgentProfile(
       productID: product.id,
@@ -2884,7 +2874,7 @@ struct CodexAdapterTests {
       )
     }
 
-    let product = Product(name: "Weather", vision: "Help people inspect the forecast.")
+    let product = Product(name: "Weather")
     let analyst = AgentProfile(
       productID: product.id,
       name: "Business Analyst",
@@ -3161,8 +3151,7 @@ struct CodexAdapterTests {
   @Test("Retrospective synthesis consolidates free-text evidence into at most five actions")
   func retrospectiveSynthesis() throws {
     let product = Product(
-      name: "Delivery product",
-      vision: "Make delivery friction visible"
+      name: "Delivery product"
     )
     let sprint = Sprint(
       productID: product.id,

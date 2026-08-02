@@ -125,8 +125,11 @@ Initial tables cover:
 - product-level conversation threads and messages.
 
 Fresh product databases are created directly from one declarative final schema
-and carry one `PRAGMA user_version`; they do not replay the application's
-development migration history. At the distribution cutover, a one-time,
+and the first distributed build establishes `PRAGMA user_version = 1` as the
+public persistence baseline; it does not carry the application's development
+migration history. Every schema change after that baseline increments the
+version and applies an ordered, restart-safe transactional migration before the
+database is used. At the distribution cutover, a one-time,
 restart-safe importer snapshots the former shared schema-53 database, isolates
 each product through its foreign-key relationships, copies common final-schema
 columns into a staged product database, verifies foreign keys and product

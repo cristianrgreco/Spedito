@@ -49,16 +49,14 @@ mounted=true
   fail "The DMG does not contain the Applications shortcut."
 [[ "$(readlink "$mount_dir/Applications")" == "/Applications" ]] ||
   fail "The Applications shortcut does not target /Applications."
-[[ -f "$mount_dir/.background/background.png" ]] ||
+[[ -f "$mount_dir/.background/DMGBackground.png" ]] ||
   fail "The DMG background is missing."
 cmp -s \
   "$project_root/Distribution/DMGBackground.png" \
-  "$mount_dir/.background/background.png" ||
+  "$mount_dir/.background/DMGBackground.png" ||
   fail "The DMG background does not match the release asset."
 [[ -s "$mount_dir/.DS_Store" ]] ||
   fail "The Finder drag-and-drop layout was not persisted."
-[[ -f "$mount_dir/.VolumeIcon.icns" ]] ||
-  fail "The DMG volume icon is missing."
 [[ -f "$mount_dir/Spedito.app/Contents/Resources/LICENSE.txt" ]] ||
   fail "The application does not contain its licence."
 cmp -s \

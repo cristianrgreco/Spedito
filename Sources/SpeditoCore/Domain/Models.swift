@@ -49,7 +49,6 @@ public enum ProductColor: String, Codable, CaseIterable, Hashable, Sendable {
 public struct Product: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public var name: String
-  public var vision: String
   public var instructions: String
   public var status: ProductStatus
   public var color: ProductColor
@@ -59,7 +58,6 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
   public init(
     id: UUID = UUID(),
     name: String,
-    vision: String,
     instructions: String = "",
     status: ProductStatus = .active,
     color: ProductColor = .accent,
@@ -68,7 +66,6 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
   ) {
     self.id = id
     self.name = name
-    self.vision = vision
     self.instructions = instructions
     self.status = status
     self.color = color
@@ -79,7 +76,6 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case id
     case name
-    case vision
     case instructions
     case status
     case color
@@ -91,7 +87,6 @@ public struct Product: Identifiable, Codable, Hashable, Sendable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(UUID.self, forKey: .id)
     name = try container.decode(String.self, forKey: .name)
-    vision = try container.decode(String.self, forKey: .vision)
     instructions = try container.decodeIfPresent(String.self, forKey: .instructions) ?? ""
     status = try container.decodeIfPresent(ProductStatus.self, forKey: .status) ?? .active
     color = try container.decodeIfPresent(ProductColor.self, forKey: .color) ?? .accent

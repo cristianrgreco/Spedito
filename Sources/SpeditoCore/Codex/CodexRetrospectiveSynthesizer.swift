@@ -122,9 +122,6 @@ public enum CodexRetrospectiveSynthesizer {
       Prepare the final reviewable actions for Sprint \(sprint.number).
 
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Frozen sprint evidence:
       \(evidence.isEmpty ? "No retrospective evidence was recorded." : evidence)
 

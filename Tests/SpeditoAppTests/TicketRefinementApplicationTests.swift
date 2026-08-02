@@ -22,8 +22,7 @@ struct TicketRefinementApplicationTests {
       url: directory.appendingPathComponent("ticket-refinement.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Refinement",
-      vision: "Keep ticket refinement coherent"
+      name: "Refinement"
     )
     let existingPrerequisite = try await store.createWorkItem(
       productID: product.id,
@@ -110,8 +109,7 @@ struct TicketRefinementApplicationTests {
       url: directory.appendingPathComponent("ticket-refinement-draft.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Draft refinement",
-      vision: "Keep AI assignment consistent with sprint planning"
+      name: "Draft refinement"
     )
     let item = try await store.createWorkItem(
       productID: product.id,
@@ -170,8 +168,7 @@ struct TicketRefinementApplicationTests {
       url: directory.appendingPathComponent("ticket-refinement-assigned.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Assigned refinement",
-      vision: "Preserve Product Owner assignment decisions"
+      name: "Assigned refinement"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -223,8 +220,7 @@ struct TicketRefinementApplicationTests {
       url: directory.appendingPathComponent("ticket-clarification.sqlite")
     )
     let product = try await store.createProduct(
-      name: "Clarification",
-      vision: "Keep Product Owner decisions explicit"
+      name: "Clarification"
     )
     let item = try await store.createWorkItem(
       productID: product.id,

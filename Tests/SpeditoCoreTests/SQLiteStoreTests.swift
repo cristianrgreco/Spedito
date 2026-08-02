@@ -16,8 +16,7 @@ struct SQLiteStoreTests {
     for index in 1...8 {
       products.append(
         try await store.createProduct(
-          name: "Product \(index)",
-          vision: "Stay recognizable"
+          name: "Product \(index)"
         )
       )
     }
@@ -47,8 +46,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Colorful planning",
-      vision: "Keep related delivery work easy to scan"
+      name: "Colorful planning"
     )
     let epics = try await [
       store.createEpic(productID: product.id, outcome: "First outcome"),
@@ -79,8 +77,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Tiny Browser Product",
-      vision: "Prove the local delivery loop"
+      name: "Tiny Browser Product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     #expect(
@@ -160,8 +157,7 @@ struct SQLiteStoreTests {
     )
     try await store.updateProductDetails(
       productID: product.id,
-      name: "Tiny Product",
-      vision: "Keep the editable context concise"
+      name: "Tiny Product"
     )
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
     _ = try await store.updateAgentProfileConfiguration(
@@ -182,7 +178,6 @@ struct SQLiteStoreTests {
 
     #expect(products.map(\.id) == [product.id])
     #expect(products.map(\.name) == ["Tiny Product"])
-    #expect(products.map(\.vision) == ["Keep the editable context concise"])
     #expect(products.map(\.instructions) == ["Prefer plain language and accessible defaults."])
     #expect(items.count == 1)
     #expect(items.first?.state == .refining)
@@ -221,12 +216,10 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let retained = try await store.createProduct(
-      name: "Retained product",
-      vision: "Keep this product active"
+      name: "Retained product"
     )
     let archived = try await store.createProduct(
-      name: "Historical product",
-      vision: "Preserve its delivery record"
+      name: "Historical product"
     )
     let item = try await store.createWorkItem(
       productID: archived.id,
@@ -285,8 +278,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Runner",
-      vision: "Execute one ticket with visible review"
+      name: "Runner"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -397,7 +389,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Atomicity", vision: "Stay consistent")
+    let product = try await store.createProduct(name: "Atomicity")
     let item = try await store.createWorkItem(productID: product.id, title: "Cannot skip gates")
 
     await #expect(throws: WorkflowError.invalidTransition(from: .backlog, to: .running)) {
@@ -422,7 +414,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Concurrent planning", vision: "Keep edits safe")
+    let product = try await store.createProduct(name: "Concurrent planning")
     let item = try await store.createWorkItem(productID: product.id, title: "Original title")
     let updated = try await store.updateWorkItem(
       id: item.id,
@@ -472,7 +464,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Sprint product", vision: "Ship together")
+    let product = try await store.createProduct(name: "Sprint product")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let reviewer = try #require(profiles.first { $0.role == .lead })
@@ -543,8 +535,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Pause control",
-      vision: "Keep delivery reversible"
+      name: "Pause control"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -613,8 +604,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Stop control",
-      vision: "Keep Product Owner control"
+      name: "Stop control"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -740,8 +730,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Elastic delivery",
-      vision: "Plan every eligible ticket"
+      name: "Elastic delivery"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -773,7 +762,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Guarded sprint", vision: "Do not guess done")
+    let product = try await store.createProduct(name: "Guarded sprint")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let item = try await store.createWorkItem(
@@ -832,8 +821,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Continuous planning",
-      vision: "Plan ahead without disturbing delivery"
+      name: "Continuous planning"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -919,8 +907,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Weather Window",
-      vision: "Show weather for a location"
+      name: "Weather Window"
     )
     let session = try await store.beginTicketSuggestionSession(productID: product.id)
     try await store.attachCodexTurn(sessionID: session.id, threadID: "thread-1", turnID: "turn-1")
@@ -1015,8 +1002,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Research follow-ups",
-      vision: "Turn approved evidence into reviewable delivery options"
+      name: "Research follow-ups"
     )
     let epic = try await store.createEpic(
       productID: product.id,
@@ -1136,8 +1122,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Cascade planning",
-      vision: "Keep rejected prerequisites from leaving unblocked dependent work"
+      name: "Cascade planning"
     )
     let session = try await store.beginTicketSuggestionSession(productID: product.id)
     let ready = try await store.completeTicketSuggestionSession(
@@ -1242,8 +1227,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Recoverable suggestions",
-      vision: "Never trap the owner in an error panel"
+      name: "Recoverable suggestions"
     )
     let session = try await store.beginTicketSuggestionSession(productID: product.id)
     try await store.failTicketSuggestionSession(
@@ -1276,8 +1260,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Restartable suggestions",
-      vision: "Continue planning after an interrupted launch"
+      name: "Restartable suggestions"
     )
     let epic = try await store.createEpic(
       productID: product.id,
@@ -1321,8 +1304,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Weather journeys",
-      vision: "Help customers understand local conditions"
+      name: "Weather journeys"
     )
     let initialEpic = try await store.createEpic(
       productID: product.id,
@@ -1382,8 +1364,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Epic lifecycle",
-      vision: "Keep delivery progress and owner confirmation distinct"
+      name: "Epic lifecycle"
     )
     let epic = try await store.createEpic(
       productID: product.id,
@@ -1490,8 +1471,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Epic conversation",
-      vision: "Keep refinement context available"
+      name: "Epic conversation"
     )
     let epic = try await store.createEpic(
       productID: product.id,
@@ -1559,8 +1539,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Epic planning",
-      vision: "Keep durable outcomes ordered"
+      name: "Epic planning"
     )
     let first = try await store.createEpic(productID: product.id, outcome: "First outcome")
     let second = try await store.createEpic(productID: product.id, outcome: "Second outcome")
@@ -1667,8 +1646,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Generating proposals",
-      vision: "Do not revive archived Epic work"
+      name: "Generating proposals"
     )
     let epic = try await store.createEpic(
       productID: product.id,
@@ -1707,8 +1685,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Active delivery",
-      vision: "Protect live ticket work"
+      name: "Active delivery"
     )
     let epic = try await store.createEpic(productID: product.id, outcome: "Deliver safely")
     let ticket = try await store.createWorkItem(
@@ -1748,8 +1725,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Incremental backlog",
-      vision: "Extend existing plans safely"
+      name: "Incremental backlog"
     )
     let existing = try await store.createWorkItem(
       productID: product.id,
@@ -1798,7 +1774,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Custom team", vision: "Choose specialists")
+    let product = try await store.createProduct(name: "Custom team")
     _ = try await store.seedDefaultProfiles(productID: product.id)
     let security = try await store.createCustomAgentProfile(
       productID: product.id,
@@ -1858,7 +1834,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Ticket details", vision: "Edit the source of truth")
+    let product = try await store.createProduct(name: "Ticket details")
     let item = try await store.createWorkItem(productID: product.id, title: "Draft title")
 
     let updated = try await store.updateWorkItem(
@@ -1893,7 +1869,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Safe rank", vision: "Keep prerequisites first")
+    let product = try await store.createProduct(name: "Safe rank")
     let session = try await store.beginTicketSuggestionSession(productID: product.id)
     let batch = try await store.completeTicketSuggestionSession(
       sessionID: session.id,
@@ -1958,7 +1934,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Planning intent", vision: "Scope without hidden status columns")
+    let product = try await store.createProduct(name: "Planning intent")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let item = try await store.createWorkItem(
@@ -2028,8 +2004,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Blocker safety",
-      vision: "Keep manual planning relationships valid"
+      name: "Blocker safety"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -2115,8 +2090,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Bulk archive",
-      vision: "Manage selected backlog work together"
+      name: "Bulk archive"
     )
     let prerequisite = try await store.createWorkItem(
       productID: product.id,
@@ -2149,7 +2123,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Knowledge product", vision: "Learn")
+    let product = try await store.createProduct(name: "Knowledge product")
     let pages = try await store.seedKnowledgeBase(productID: product.id)
     #expect(pages.contains { $0.slug == "home" })
     #expect(pages.contains { $0.slug == "architecture" })
@@ -2226,8 +2200,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Existing knowledge",
-      vision: "Preserve and complete an older knowledge tree"
+      name: "Existing knowledge"
     )
     let existingPage = try await store.createKnowledgePage(
       productID: product.id,
@@ -2260,8 +2233,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Knowledge provenance",
-      vision: "Keep ticket knowledge distinct"
+      name: "Knowledge provenance"
     )
     let pages = try await store.seedKnowledgeBase(productID: product.id)
     let technical = try #require(
@@ -2336,8 +2308,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Feedback product",
-      vision: "Remember learning while it is fresh"
+      name: "Feedback product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
@@ -2448,7 +2419,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Learning product", vision: "Improve")
+    let product = try await store.createProduct(name: "Learning product")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let item = try await readyItem(
@@ -2516,7 +2487,7 @@ struct SQLiteStoreTests {
     defer { fixture.remove() }
 
     let store = try SQLiteStore(url: fixture.databaseURL)
-    let product = try await store.createProduct(name: "Practice product", vision: "Improve")
+    let product = try await store.createProduct(name: "Practice product")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let item = try await readyItem(
@@ -2605,8 +2576,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Closure product",
-      vision: "Finish the learning loop"
+      name: "Closure product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -2757,8 +2727,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Learning product",
-      vision: "Turn repeated friction into one decision"
+      name: "Learning product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
@@ -2868,8 +2837,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Demo delivery",
-      vision: "Open reviewed outcomes without a terminal"
+      name: "Demo delivery"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -2943,8 +2911,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Permission-aware delivery",
-      vision: "Let the owner unblock an agent without opening a terminal"
+      name: "Permission-aware delivery"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
@@ -3074,8 +3041,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Versioned delivery",
-      vision: "Review code and durable knowledge together"
+      name: "Versioned delivery"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })

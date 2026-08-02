@@ -127,9 +127,6 @@ public enum CodexEpicClarificationGenerator {
       authorise production credentials, accounts, signing identities, or a deployment.
 
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Outcome captured from the Product Owner:
       \(epic.goal)
 
@@ -199,9 +196,6 @@ public enum CodexEpicClarificationGenerator {
       re-enter an answer.
 
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Outcome captured from the Product Owner:
       \(epic.goal)
 

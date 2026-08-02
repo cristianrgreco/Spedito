@@ -113,8 +113,6 @@ public enum CodexConflictIntegrator {
       : conflictedFiles.map { "- \($0)" }.joined(separator: "\n")
     return """
       Product: \(product.name)
-      Product vision: \(product.vision)
-
       Ticket: \(item.key) — \(item.title)
       Context: \(item.body)
       Acceptance criteria:

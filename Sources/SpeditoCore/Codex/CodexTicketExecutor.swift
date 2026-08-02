@@ -428,9 +428,6 @@ public enum CodexTicketExecutor {
 
     return """
       Product: \(product.name)
-      Product vision:
-      \(product.vision)
-
       Ticket: \(item.key) [\(item.type.title), \(item.priority.title)]
       Assigned to: \(assignee.name) — \(assignee.role.title)
       Title: \(item.title)
@@ -1438,8 +1435,6 @@ public enum CodexTechLeadReviewer {
       .joined(separator: "\n")
     return """
       Product: \(product.name)
-      Product vision: \(product.vision)
-
       Ticket: \(item.key) — \(item.title)
       Delivered by: \(assignee.name) — \(assignee.role.title)
       Context: \(item.body)

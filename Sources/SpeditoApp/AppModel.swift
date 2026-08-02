@@ -749,24 +749,24 @@ final class AppModel: ObservableObject {
     scheduleSprintExecutions()
   }
 
-  func createProduct(name: String, vision: String) {
+  func createProduct(name: String) {
     Task {
-      _ = await createProductAndSelect(name: name, vision: vision)
+      _ = await createProductAndSelect(name: name)
     }
   }
 
-  func createProductAndSelect(name: String, vision: String) async -> Bool {
+  func createProductAndSelect(name: String) async -> Bool {
     do {
       let product: Product
       let productStore: SQLiteStore
       if let storeRegistry {
-        product = try await storeRegistry.createProduct(name: name, vision: vision)
+        product = try await storeRegistry.createProduct(name: name)
         guard let createdStore = storeRegistry.store(for: product.id) else {
           throw PersistenceError.recordNotFound("product database \(product.id)")
         }
         productStore = createdStore
       } else if let injectedStore {
-        product = try await injectedStore.createProduct(name: name, vision: vision)
+        product = try await injectedStore.createProduct(name: name)
         productStore = injectedStore
       } else {
         return false
@@ -4519,14 +4519,13 @@ final class AppModel: ObservableObject {
     }
   }
 
-  func updateProductDetails(name: String, vision: String) {
+  func updateProductDetails(name: String) {
     guard let store, let productID = selectedProductID else { return }
     Task {
       do {
         try await store.updateProductDetails(
           productID: productID,
-          name: name,
-          vision: vision
+          name: name
         )
         await reload()
       } catch {

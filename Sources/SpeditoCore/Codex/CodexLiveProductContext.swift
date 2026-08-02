@@ -1,7 +1,7 @@
 public enum CodexLiveProductContext {
   public static let stableViewSchemas = """
     agent_product(
-      id, name, vision, instructions, status, created_at, updated_at
+      id, name, instructions, status, created_at, updated_at
     )
     agent_team(
       id, product_id, name, role, custom_instructions, is_active
