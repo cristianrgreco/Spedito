@@ -81,7 +81,7 @@ jobs:
         id: artifact
         shell: bash
         run: |
-          dmg="Spedito-${{ steps.version.outputs.value }}-macOS-Apple-Silicon.dmg"
+          dmg="Spedito.dmg"
           checksum="Spedito-${{ steps.version.outputs.value }}-SHA256.txt"
           ./scripts/build_dmg.sh \
             .build/app/release/Spedito.app \

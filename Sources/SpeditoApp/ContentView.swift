@@ -66,11 +66,16 @@ private struct ProductOnboardingView: View {
   var body: some View {
     ZStack {
       ProductOnboardingBackdrop()
+        .ignoresSafeArea(.container, edges: .top)
 
       ContentUnavailableView {
         Label("No active products", systemImage: "shippingbox")
       } description: {
-        Text("Create a local product workspace or restore one from the archive.")
+        Text(
+          model.archivedProducts.isEmpty
+            ? "Create a new product workspace to get started."
+            : "Create a new product workspace or choose one from the archive."
+        )
       } actions: {
         HStack {
           Button("New product") {
@@ -152,7 +157,7 @@ private struct ProductOnboardingBackdrop: View {
           Spacer()
         }
         .padding(.horizontal, 32)
-        .padding(.top, 28)
+        .padding(.top, 40)
 
         Spacer()
 
@@ -1910,7 +1915,7 @@ private struct NewProductView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("New product")
           .font(.title.bold())
-        Text("Create a separate local workspace with its own backlog, team, and knowledge.")
+        Text("Create a new product workspace with its own backlog, team, and product knowledge.")
           .foregroundStyle(.secondary)
       }
       .padding(24)

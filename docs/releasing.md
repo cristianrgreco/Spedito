@@ -13,8 +13,8 @@ release.
 - Not Developer ID signed or Apple notarized
 - Packaged in a branded DMG with an Applications shortcut for drag-and-drop
   installation
-- Published as a normal GitHub release so the website's `releases/latest` link
-  resolves
+- Published as a normal GitHub release with the stable `Spedito.dmg` asset name,
+  so the website can link directly to the latest download
 - The static website is published independently from `Website/` by Cloudflare
   Pages
 - Clearly labelled as an early preview and provided without warranty
@@ -64,7 +64,7 @@ After downloading both assets into one directory:
 
 ```sh
 shasum -a 256 -c Spedito-0.1.0-SHA256.txt
-./scripts/verify_dmg.sh Spedito-0.1.0-macOS-Apple-Silicon.dmg
+./scripts/verify_dmg.sh Spedito.dmg
 ```
 
 The checksum verifies that the DMG matches the GitHub release asset. The

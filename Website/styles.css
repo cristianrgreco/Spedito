@@ -1530,6 +1530,7 @@ h3 {
 .comparison {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -1539,6 +1540,9 @@ h3 {
 .side {
   min-width: 0;
   padding: 28px;
+  display: grid;
+  grid-row: 1 / span 3;
+  grid-template-rows: subgrid;
 }
 
 .side + .side {
@@ -4864,10 +4868,13 @@ footer > a:last-child {
 
   .comparison {
     grid-template-columns: 1fr;
+    grid-template-rows: none;
   }
 
   .side {
     padding: 18px;
+    display: block;
+    grid-row: auto;
   }
 
   .side + .side {

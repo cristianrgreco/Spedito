@@ -18,8 +18,8 @@ Learn more at [spedito.io](https://spedito.io/).
 
 ## Install
 
-Download the latest Apple Silicon DMG from
-[GitHub Releases](https://github.com/cristianrgreco/Spedito/releases),
+Download the latest Apple Silicon build as
+[Spedito.dmg](https://github.com/cristianrgreco/spedito/releases/latest/download/Spedito.dmg),
 open it, and drag **Spedito** into **Applications**.
 
 The app is not yet signed with an Apple Developer ID. On first launch, macOS may
