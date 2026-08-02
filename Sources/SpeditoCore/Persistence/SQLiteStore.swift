@@ -2203,7 +2203,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, name, role, model, reasoning_effort,
-             custom_instructions, parallelism_limit, is_builtin, created_at, updated_at
+             custom_instructions, is_builtin, created_at, updated_at
       FROM agent_profiles
       WHERE product_id = ? AND is_active = 1
       ORDER BY
@@ -2235,10 +2235,6 @@ public actor SQLiteStore {
         else {
           throw PersistenceError.corruptData("Invalid agent profile")
         }
-        let limit: Int? =
-          sqlite3_column_type(statement, 7) == SQLITE_NULL
-          ? nil
-          : Int(sqlite3_column_int64(statement, 7))
         profiles.append(
           AgentProfile(
             id: id,
@@ -2248,10 +2244,9 @@ public actor SQLiteStore {
             model: try text(statement, column: 4),
             reasoningEffort: try text(statement, column: 5),
             customInstructions: try optionalText(statement, column: 6),
-            parallelismLimit: limit,
-            isBuiltIn: sqlite3_column_int64(statement, 8) != 0,
-            createdAt: date(statement, column: 9),
-            updatedAt: date(statement, column: 10)
+            isBuiltIn: sqlite3_column_int64(statement, 7) != 0,
+            createdAt: date(statement, column: 8),
+            updatedAt: date(statement, column: 9)
           )
         )
       }
@@ -2405,14 +2400,10 @@ public actor SQLiteStore {
     productID: UUID,
     goal: String,
     tokenBudgetLimit: Int?,
-    concurrencyLimit: Int,
     items inputs: [SprintDraftItemInput]
   ) throws -> SprintPlan {
     guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw SprintPlanningError.notReady(["Add a sprint goal."])
-    }
-    guard concurrencyLimit > 0 else {
-      throw SprintPlanningError.invalidConcurrency
     }
     if let tokenBudgetLimit, tokenBudgetLimit <= 0 {
       throw SprintPlanningError.invalidTokenBudget
@@ -2450,7 +2441,6 @@ public actor SQLiteStore {
     if var draft = existingDraft {
       draft.goal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
       draft.tokenBudgetLimit = tokenBudgetLimit
-      draft.concurrencyLimit = concurrencyLimit
       draft.planVersion += 1
       draft.updatedAt = now
       sprint = draft
@@ -2460,7 +2450,6 @@ public actor SQLiteStore {
         number: try nextSprintNumber(productID: productID),
         goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
         tokenBudgetLimit: tokenBudgetLimit,
-        concurrencyLimit: concurrencyLimit,
         createdAt: now,
         updatedAt: now
       )
@@ -2509,7 +2498,7 @@ public actor SQLiteStore {
       let sprint = try withStatement(
         """
         SELECT id, product_id, sprint_number, goal, state, token_budget_limit,
-               concurrency_limit, plan_version, started_at, completed_at,
+               plan_version, started_at, completed_at,
                retrospective_concluded_at, created_at, updated_at
         FROM sprints
         WHERE product_id = ? AND state IN ('active', 'paused', 'draft')
@@ -2533,7 +2522,7 @@ public actor SQLiteStore {
     let sprints = try withStatement(
       """
       SELECT id, product_id, sprint_number, goal, state, token_budget_limit,
-             concurrency_limit, plan_version, started_at, completed_at,
+             plan_version, started_at, completed_at,
              retrospective_concluded_at, created_at, updated_at
       FROM sprints
       WHERE product_id = ?
@@ -2578,15 +2567,6 @@ public actor SQLiteStore {
     if items.isEmpty {
       issues.append(
         SprintReadinessIssue(id: "sprint.empty", message: "Select at least one ticket."))
-    }
-
-    if sprint.concurrencyLimit <= 0 {
-      issues.append(
-        SprintReadinessIssue(
-          id: "sprint.parallelism",
-          message: "Parallelism must be greater than zero."
-        )
-      )
     }
 
     for item in items {
@@ -5624,15 +5604,53 @@ public actor SQLiteStore {
     }
 
     let version = try integerPragma("user_version", database: database)
-    guard version == ProductDatabaseSchema.version else {
-      if try tableExists("schema_migrations", schema: "main", database: database) {
-        throw PersistenceError.corruptData(
-          "This is a legacy shared Spedito database. Open it through the product importer."
+    guard version != ProductDatabaseSchema.version else { return }
+    if try tableExists("schema_migrations", schema: "main", database: database) {
+      throw PersistenceError.corruptData(
+        "This is a legacy shared Spedito database. Open it through the product importer."
+      )
+    }
+    if version == 1 || version == 2 {
+      try removeObsoleteConcurrencySettings(database: database)
+      return
+    }
+    throw PersistenceError.corruptData(
+      "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+    )
+  }
+
+  private static func removeObsoleteConcurrencySettings(
+    database: OpaquePointer
+  ) throws {
+    try execute("BEGIN IMMEDIATE;", database: database)
+    do {
+      let profileColumns = try columnNames(
+        table: "agent_profiles",
+        schema: "main",
+        database: database
+      )
+      if profileColumns.contains("parallelism_limit") {
+        try execute(
+          "ALTER TABLE agent_profiles DROP COLUMN parallelism_limit;",
+          database: database
         )
       }
-      throw PersistenceError.corruptData(
-        "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+      let sprintColumns = try columnNames(
+        table: "sprints",
+        schema: "main",
+        database: database
       )
+      if sprintColumns.contains("concurrency_limit") {
+        try execute(
+          "ALTER TABLE sprints DROP COLUMN concurrency_limit;",
+          database: database
+        )
+      }
+      try execute("PRAGMA user_version = 3;", database: database)
+      try execute("COMMIT;", database: database)
+    } catch {
+      try? execute("ROLLBACK;", database: database)
+      throw error
     }
   }
 
@@ -5817,9 +5835,9 @@ public actor SQLiteStore {
       """
       INSERT INTO agent_profiles (
           id, product_id, name, role, model, reasoning_effort,
-          custom_instructions, parallelism_limit, is_builtin, is_active,
+          custom_instructions, is_builtin, is_active,
           created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(profile.id.uuidString, to: 1, in: statement)
@@ -5829,15 +5847,10 @@ public actor SQLiteStore {
       try bind(profile.model, to: 5, in: statement)
       try bind(profile.reasoningEffort, to: 6, in: statement)
       try bindOptionalString(profile.customInstructions, to: 7, in: statement)
-      if let parallelismLimit = profile.parallelismLimit {
-        try bind(Int64(parallelismLimit), to: 8, in: statement)
-      } else {
-        try bindNull(to: 8, in: statement)
-      }
-      try bind(profile.isBuiltIn ? Int64(1) : Int64(0), to: 9, in: statement)
-      try bind(Int64(1), to: 10, in: statement)
-      try bind(profile.createdAt.timeIntervalSince1970, to: 11, in: statement)
-      try bind(profile.updatedAt.timeIntervalSince1970, to: 12, in: statement)
+      try bind(profile.isBuiltIn ? Int64(1) : Int64(0), to: 8, in: statement)
+      try bind(Int64(1), to: 9, in: statement)
+      try bind(profile.createdAt.timeIntervalSince1970, to: 10, in: statement)
+      try bind(profile.updatedAt.timeIntervalSince1970, to: 11, in: statement)
       try stepDone(statement)
     }
   }
@@ -6129,7 +6142,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, name, role, model, reasoning_effort,
-             custom_instructions, parallelism_limit, is_builtin, created_at, updated_at
+             custom_instructions, is_builtin, created_at, updated_at
       FROM agent_profiles
       WHERE id = ?;
       """
@@ -6153,10 +6166,9 @@ public actor SQLiteStore {
         model: try text(statement, column: 4),
         reasoningEffort: try text(statement, column: 5),
         customInstructions: try optionalText(statement, column: 6),
-        parallelismLimit: optionalInt(statement, column: 7),
-        isBuiltIn: sqlite3_column_int64(statement, 8) != 0,
-        createdAt: date(statement, column: 9),
-        updatedAt: date(statement, column: 10)
+        isBuiltIn: sqlite3_column_int64(statement, 7) != 0,
+        createdAt: date(statement, column: 8),
+        updatedAt: date(statement, column: 9)
       )
     }
   }
@@ -6166,9 +6178,9 @@ public actor SQLiteStore {
       """
       INSERT INTO sprints (
           id, product_id, sprint_number, goal, state, token_budget_limit,
-          concurrency_limit, plan_version, started_at, completed_at,
+          plan_version, started_at, completed_at,
           retrospective_concluded_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(sprint.id.uuidString, to: 1, in: statement)
@@ -6177,13 +6189,12 @@ public actor SQLiteStore {
       try bind(sprint.goal, to: 4, in: statement)
       try bind(sprint.state.rawValue, to: 5, in: statement)
       try bindOptionalInt(sprint.tokenBudgetLimit, to: 6, in: statement)
-      try bind(Int64(sprint.concurrencyLimit), to: 7, in: statement)
-      try bind(Int64(sprint.planVersion), to: 8, in: statement)
-      try bindOptionalDate(sprint.startedAt, to: 9, in: statement)
-      try bindOptionalDate(sprint.completedAt, to: 10, in: statement)
-      try bindOptionalDate(sprint.retrospectiveConcludedAt, to: 11, in: statement)
-      try bind(sprint.createdAt.timeIntervalSince1970, to: 12, in: statement)
-      try bind(sprint.updatedAt.timeIntervalSince1970, to: 13, in: statement)
+      try bind(Int64(sprint.planVersion), to: 7, in: statement)
+      try bindOptionalDate(sprint.startedAt, to: 8, in: statement)
+      try bindOptionalDate(sprint.completedAt, to: 9, in: statement)
+      try bindOptionalDate(sprint.retrospectiveConcludedAt, to: 10, in: statement)
+      try bind(sprint.createdAt.timeIntervalSince1970, to: 11, in: statement)
+      try bind(sprint.updatedAt.timeIntervalSince1970, to: 12, in: statement)
       try stepDone(statement)
     }
   }
@@ -6192,17 +6203,15 @@ public actor SQLiteStore {
     try withStatement(
       """
       UPDATE sprints
-      SET goal = ?, token_budget_limit = ?, concurrency_limit = ?,
-          plan_version = ?, updated_at = ?
+      SET goal = ?, token_budget_limit = ?, plan_version = ?, updated_at = ?
       WHERE id = ? AND state = 'draft';
       """
     ) { statement in
       try bind(sprint.goal, to: 1, in: statement)
       try bindOptionalInt(sprint.tokenBudgetLimit, to: 2, in: statement)
-      try bind(Int64(sprint.concurrencyLimit), to: 3, in: statement)
-      try bind(Int64(sprint.planVersion), to: 4, in: statement)
-      try bind(sprint.updatedAt.timeIntervalSince1970, to: 5, in: statement)
-      try bind(sprint.id.uuidString, to: 6, in: statement)
+      try bind(Int64(sprint.planVersion), to: 3, in: statement)
+      try bind(sprint.updatedAt.timeIntervalSince1970, to: 4, in: statement)
+      try bind(sprint.id.uuidString, to: 5, in: statement)
       try stepDone(statement)
     }
   }
@@ -6278,7 +6287,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, sprint_number, goal, state, token_budget_limit,
-             concurrency_limit, plan_version, started_at, completed_at,
+             plan_version, started_at, completed_at,
              retrospective_concluded_at, created_at, updated_at
       FROM sprints WHERE id = ?;
       """
@@ -6295,7 +6304,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, sprint_number, goal, state, token_budget_limit,
-             concurrency_limit, plan_version, started_at, completed_at,
+             plan_version, started_at, completed_at,
              retrospective_concluded_at, created_at, updated_at
       FROM sprints
       WHERE product_id = ? AND state = ?
@@ -6313,7 +6322,7 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, sprint_number, goal, state, token_budget_limit,
-             concurrency_limit, plan_version, started_at, completed_at,
+             plan_version, started_at, completed_at,
              retrospective_concluded_at, created_at, updated_at
       FROM sprints
       WHERE product_id = ? AND state IN ('active', 'paused')
@@ -6398,13 +6407,12 @@ public actor SQLiteStore {
       goal: try text(statement, column: 3),
       state: state,
       tokenBudgetLimit: optionalInt(statement, column: 5),
-      concurrencyLimit: Int(sqlite3_column_int64(statement, 6)),
-      planVersion: Int(sqlite3_column_int64(statement, 7)),
-      startedAt: optionalDate(statement, column: 8),
-      completedAt: optionalDate(statement, column: 9),
-      retrospectiveConcludedAt: optionalDate(statement, column: 10),
-      createdAt: date(statement, column: 11),
-      updatedAt: date(statement, column: 12)
+      planVersion: Int(sqlite3_column_int64(statement, 6)),
+      startedAt: optionalDate(statement, column: 7),
+      completedAt: optionalDate(statement, column: 8),
+      retrospectiveConcludedAt: optionalDate(statement, column: 9),
+      createdAt: date(statement, column: 10),
+      updatedAt: date(statement, column: 11)
     )
   }
 

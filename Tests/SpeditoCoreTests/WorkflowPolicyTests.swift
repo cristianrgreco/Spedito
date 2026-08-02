@@ -255,8 +255,7 @@ struct WorkflowPolicyTests {
       productID: productID,
       number: 1,
       goal: "Deliver every independent outcome",
-      state: .active,
-      concurrencyLimit: 1
+      state: .active
     )
     let workItems = (1...65).map { index in
       WorkItem(
@@ -295,8 +294,8 @@ struct WorkflowPolicyTests {
     #expect(eligible.map(\.id) == runs.map(\.id))
   }
 
-  @Test("Candidate reviews run in parallel and only integrated work occupies the merge queue")
-  func candidateReviewAndIntegrationAdmissionAreIndependent() throws {
+  @Test("Every reviewed candidate can integrate while other integrations continue")
+  func candidateIntegrationsAreUncapped() throws {
     let productID = UUID()
     let sprintID = UUID()
     let first = WorkItem(
@@ -319,6 +318,13 @@ struct WorkflowPolicyTests {
       title: "Review another candidate",
       state: .verifying,
       rank: 3
+    )
+    let fourth = WorkItem(
+      productID: productID,
+      key: "T65",
+      title: "Integrate another approved candidate",
+      state: .verifying,
+      rank: 4
     )
 
     func candidate(
@@ -347,20 +353,20 @@ struct WorkflowPolicyTests {
     let changesRequested = candidate(for: first, status: .changesRequested)
     let approvedAndQueued = candidate(for: second, status: .queuedForIntegration)
     let parallelReview = candidate(for: third, status: .reviewing)
-    let candidates = [changesRequested, approvedAndQueued, parallelReview]
+    let secondApprovedAndQueued = candidate(for: fourth, status: .queuedForIntegration)
+    let candidates = [
+      changesRequested,
+      approvedAndQueued,
+      parallelReview,
+      secondApprovedAndQueued,
+    ]
 
     #expect(
-      !SprintCandidateAdmission.integrationQueueIsOccupied(
-        candidates: candidates,
-        sprintID: sprintID
-      )
-    )
-    #expect(
-      SprintCandidateAdmission.nextIntegrationCandidate(
+      SprintCandidateAdmission.integrationQueue(
         candidates: candidates,
         sprintID: sprintID,
-        workItems: [first, second, third]
-      )?.id == approvedAndQueued.id
+        workItems: [first, second, third, fourth]
+      ).map(\.id) == [approvedAndQueued.id, secondApprovedAndQueued.id]
     )
 
     let conflictReview = candidate(
@@ -369,18 +375,11 @@ struct WorkflowPolicyTests {
       integratedSHA: "resolved-merge"
     )
     #expect(
-      SprintCandidateAdmission.integrationQueueIsOccupied(
+      SprintCandidateAdmission.integrationQueue(
         candidates: candidates + [conflictReview],
-        sprintID: sprintID
-      )
-    )
-
-    let readyForDemo = candidate(for: first, status: .readyForDemo)
-    #expect(
-      !SprintCandidateAdmission.integrationQueueIsOccupied(
-        candidates: candidates + [readyForDemo],
-        sprintID: sprintID
-      )
+        sprintID: sprintID,
+        workItems: [first, second, third, fourth]
+      ).map(\.id) == [approvedAndQueued.id, secondApprovedAndQueued.id]
     )
   }
 

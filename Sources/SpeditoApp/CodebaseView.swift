@@ -116,7 +116,14 @@ struct CodebaseView: View {
   }
 
   private var commitTimeline: some View {
-    VStack(spacing: 0) {
+    let revisions = model.candidateRevisions.map {
+      CodebaseWorktreeRevision(baseSHA: $0.baseSHA, headSHA: $0.headSHA)
+    }
+    let origins = snapshot.map {
+      CodebaseCommitOriginResolver.origins(in: $0, worktreeRevisions: revisions)
+    } ?? [:]
+
+    return VStack(spacing: 0) {
       if commits.isEmpty {
         ContentUnavailableView(
           "No commits",
@@ -135,7 +142,7 @@ struct CodebaseView: View {
                   commit: commit,
                   subject: displaySubject(for: commit),
                   authorName: displayAuthor(for: commit),
-                  authorProfile: authorProfile(for: commit),
+                  origin: origins[commit.sha] ?? .branch,
                   ticket: ticket(for: commit),
                   isSelected: selectedCommitSHA == commit.sha
                 )
@@ -505,18 +512,90 @@ private struct CodebaseBranchCard: View {
   }
 }
 
+enum CodebaseCommitOrigin: Equatable {
+  case trunk
+  case worktree
+  case branch
+
+  var title: String {
+    switch self {
+    case .trunk: "Trunk"
+    case .worktree: "Worktree"
+    case .branch: "Branch"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .trunk: "checkmark.circle.fill"
+    case .worktree, .branch: "arrow.triangle.branch"
+    }
+  }
+
+  var tint: Color {
+    switch self {
+    case .trunk: .green
+    case .worktree: .blue
+    case .branch: .secondary
+    }
+  }
+}
+
+struct CodebaseWorktreeRevision: Equatable {
+  let baseSHA: String
+  let headSHA: String
+}
+
+enum CodebaseCommitOriginResolver {
+  static func origins(
+    in snapshot: GitRepositorySnapshot,
+    worktreeRevisions: [CodebaseWorktreeRevision]
+  ) -> [String: CodebaseCommitOrigin] {
+    var origins: [String: CodebaseCommitOrigin] = Dictionary(
+      uniqueKeysWithValues: snapshot.commits.map { commit in
+        (
+          commit.sha,
+          commit.isOnTrunk ? CodebaseCommitOrigin.trunk : CodebaseCommitOrigin.branch
+        )
+      }
+    )
+    let commitsBySHA = Dictionary(
+      uniqueKeysWithValues: snapshot.commits.map { ($0.sha, $0) }
+    )
+
+    for branch in snapshot.branches where branch.worktreePath != nil {
+      for sha in branch.commitSHAs {
+        origins[sha] = .worktree
+      }
+    }
+
+    for revision in worktreeRevisions {
+      var sha = revision.headSHA
+      var visited: Set<String> = []
+
+      while sha != revision.baseSHA, visited.insert(sha).inserted {
+        guard origins[sha] != nil else { break }
+        origins[sha] = .worktree
+        guard let parentSHA = commitsBySHA[sha]?.parentSHAs.first else { break }
+        sha = parentSHA
+      }
+    }
+    return origins
+  }
+}
+
 private struct CodebaseCommitRow: View {
   let commit: GitCommitSummary
   let subject: String
   let authorName: String
-  let authorProfile: AgentProfile?
+  let origin: CodebaseCommitOrigin
   let ticket: WorkItem?
   let isSelected: Bool
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      Image(systemName: authorProfile.map { roleSymbol($0.role) } ?? "point.3.connected.trianglepath.dotted")
-        .foregroundStyle(authorProfile.map { roleTint($0.role) } ?? .secondary)
+      Image(systemName: origin.symbol)
+        .foregroundStyle(origin.tint)
         .frame(width: 20)
       VStack(alignment: .leading, spacing: 5) {
         Text(subject)
@@ -524,6 +603,9 @@ private struct CodebaseCommitRow: View {
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
         HStack(spacing: 6) {
+          Text(origin.title)
+            .fontWeight(.semibold)
+            .foregroundStyle(origin.tint)
           Text(commit.shortSHA)
             .font(.caption2.monospaced())
           if let ticket {
@@ -531,6 +613,11 @@ private struct CodebaseCommitRow: View {
               .font(.caption2.monospaced().weight(.semibold))
               .foregroundStyle(.blue)
           }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        HStack(spacing: 6) {
           Text(authorName)
           Text("·")
           Text(commit.committedAt.formatted(date: .numeric, time: .omitted))

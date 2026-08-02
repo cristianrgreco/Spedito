@@ -10,7 +10,7 @@ Learn more at [spedito.io](https://spedito.io/).
 _Early access: Spedito is under active development, so expect bugs and
 breaking changes._
 
-![Spedito sprint board](Website/screenshots/0-sprint-board-overview.webp)
+![Spedito sprint board](Website/screenshots/1.webp)
 
 ## Install
 

@@ -22,29 +22,11 @@ public enum SprintCandidateAdmission {
       }
   }
 
-  public static func integrationQueueIsOccupied(
-    candidates: [CandidateRevision],
-    sprintID: UUID
-  ) -> Bool {
-    candidates.contains { candidate in
-      guard candidate.sprintID == sprintID else { return false }
-      switch candidate.status {
-      case .integrating, .resolvingConflict:
-        return true
-      case .reviewing:
-        return candidate.integratedSHA != nil
-      case .queuedForReview, .queuedForIntegration, .changesRequested,
-        .readyForDemo, .accepted, .superseded, .failed:
-        return false
-      }
-    }
-  }
-
-  public static func nextIntegrationCandidate(
+  public static func integrationQueue(
     candidates: [CandidateRevision],
     sprintID: UUID,
     workItems: [WorkItem]
-  ) -> CandidateRevision? {
+  ) -> [CandidateRevision] {
     let rankByWorkItemID = Dictionary(
       uniqueKeysWithValues: workItems.map { ($0.id, $0.rank) }
     )
@@ -59,7 +41,6 @@ public enum SprintCandidateAdmission {
           rankByWorkItemID: rankByWorkItemID
         )
       }
-      .first
   }
 
   private static func orderedBefore(

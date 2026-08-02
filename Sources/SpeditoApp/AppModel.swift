@@ -440,6 +440,7 @@ final class AppModel: ObservableObject {
   private var activeReviewTasks: [UUID: Task<Void, Never>] = [:]
   private var activeReviewProductIDs: [UUID: UUID] = [:]
   private var activeIntegrationTasks: [UUID: Task<Void, Never>] = [:]
+  private var activeIntegrationProductIDs: [UUID: UUID] = [:]
 
   private struct ActiveExecutionTurn: Sendable {
     let productID: UUID
@@ -1200,7 +1201,6 @@ final class AppModel: ObservableObject {
           productID: updated.productID,
           goal: draftPlan.sprint.goal,
           tokenBudgetLimit: draftPlan.sprint.tokenBudgetLimit,
-          concurrencyLimit: draftPlan.sprint.concurrencyLimit,
           items: draftPlan.items.map { sprintItem in
             SprintDraftItemInput(
               workItemID: sprintItem.workItemID,
@@ -3363,7 +3363,6 @@ final class AppModel: ObservableObject {
           productID: productID,
           goal: candidatePlan?.sprint.goal ?? "Next valuable increment",
           tokenBudgetLimit: nil,
-          concurrencyLimit: candidatePlan?.sprint.concurrencyLimit ?? 4,
           items: inputs
         )
         await reloadSelectedProduct()
@@ -3415,7 +3414,6 @@ final class AppModel: ObservableObject {
           productID: productID,
           goal: plan.sprint.goal,
           tokenBudgetLimit: nil,
-          concurrencyLimit: plan.sprint.concurrencyLimit,
           items: inputs
         )
         await reloadSelectedProduct()
@@ -3485,7 +3483,6 @@ final class AppModel: ObservableObject {
             productID: productID,
             goal: candidatePlan?.sprint.goal ?? "Next valuable increment",
             tokenBudgetLimit: nil,
-            concurrencyLimit: candidatePlan?.sprint.concurrencyLimit ?? 4,
             items: inputs
           )
         }
@@ -4616,7 +4613,6 @@ final class AppModel: ObservableObject {
 
   func saveSprintPlan(
     goal: String,
-    concurrencyLimit: Int,
     items: [SprintDraftItemInput]
   ) async -> Bool {
     guard let store, let productID = selectedProductID else { return false }
@@ -4635,7 +4631,6 @@ final class AppModel: ObservableObject {
         productID: productID,
         goal: goal,
         tokenBudgetLimit: nil,
-        concurrencyLimit: concurrencyLimit,
         items: items
       )
       if sprintPlan?.sprint.state.isInProgress != true {
@@ -4671,7 +4666,6 @@ final class AppModel: ObservableObject {
     }
     return await saveSprintPlan(
       goal: plan.sprint.goal,
-      concurrencyLimit: plan.sprint.concurrencyLimit,
       items: inputs
     )
   }
@@ -4896,10 +4890,10 @@ final class AppModel: ObservableObject {
         }
       }
 
-      let processedIntegration = await processNextIntegrationCandidate(context: context)
+      let startedIntegration = await processIntegrationCandidates(context: context)
       let hasActiveImplementation = activeImplementationProductIDs.values.contains(productID)
       let hasActiveReview = activeReviewProductIDs.values.contains(productID)
-      let hasActiveIntegration = activeIntegrationTasks[productID] != nil
+      let hasActiveIntegration = activeIntegrationProductIDs.values.contains(productID)
       if
         !hasActiveImplementation,
         !hasActiveReview,
@@ -4907,13 +4901,13 @@ final class AppModel: ObservableObject {
         eligibleRuns.isEmpty,
         reviewCandidates.isEmpty,
         resumableCandidateReviews.isEmpty,
-        !processedIntegration
+        !startedIntegration
       {
         return
       }
       if
         (hasActiveImplementation || hasActiveReview || hasActiveIntegration)
-          && !processedIntegration
+          && !startedIntegration
       {
         guard await wakeIterator.next() != nil else { return }
       }
@@ -5575,7 +5569,7 @@ final class AppModel: ObservableObject {
   }
 
   @discardableResult
-  private func processNextIntegrationCandidate(
+  private func processIntegrationCandidates(
     context: SprintExecutionContext
   ) async -> Bool {
     let plan = context.plan
@@ -5584,10 +5578,10 @@ final class AppModel: ObservableObject {
     let workItems = context.workItems
     let productID = plan.sprint.productID
     guard let store = store(for: productID) else { return false }
-    guard activeIntegrationTasks[productID] == nil else { return false }
     do {
       try await requeueStaleReadyCandidates(productID: productID)
       let candidates = try await store.fetchCandidateRevisions(productID: productID)
+      var startedTask = false
       let techLeadID = profiles.first(where: { $0.role == .lead })?.id
       let reviewerProfileIDs = Set(
         profiles
@@ -5601,20 +5595,24 @@ final class AppModel: ObservableObject {
             && $0.integratedSHA != nil
         }
         .sorted { $0.createdAt < $1.createdAt }
-      if let reviewingCandidate = reviewingCandidates.first,
-        let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
-          for: reviewingCandidate,
-          runs: runs,
-          reviewerProfileIDs: reviewerProfileIDs
-        ),
-        reviewRun.status == .queued
-          || reviewRun.status == .running
-          || reviewRun.status == .completed
-      {
-        activeIntegrationTasks[productID] = Task { [weak self] in
+      for reviewingCandidate in reviewingCandidates
+      where activeIntegrationTasks[reviewingCandidate.id] == nil {
+        guard
+          let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
+            for: reviewingCandidate,
+            runs: runs,
+            reviewerProfileIDs: reviewerProfileIDs
+          ),
+          reviewRun.status == .queued
+            || reviewRun.status == .running
+            || reviewRun.status == .completed
+        else { continue }
+        activeIntegrationProductIDs[reviewingCandidate.id] = productID
+        activeIntegrationTasks[reviewingCandidate.id] = Task { [weak self] in
           guard let self else { return }
           defer {
-            activeIntegrationTasks.removeValue(forKey: productID)
+            activeIntegrationTasks.removeValue(forKey: reviewingCandidate.id)
+            activeIntegrationProductIDs.removeValue(forKey: reviewingCandidate.id)
             sprintExecutionWakeContinuations[productID]?.yield()
           }
           await resumeTechLeadReview(
@@ -5623,14 +5621,15 @@ final class AppModel: ObservableObject {
             plan: plan
           )
         }
-        return true
+        startedTask = true
       }
-      let resolvingCandidates = candidates.filter {
-        $0.sprintID == plan.sprint.id && $0.status == .resolvingConflict
-      }
-      if let resolvingCandidate = resolvingCandidates.min(
-        by: { $0.createdAt < $1.createdAt }
-      ) {
+      let resolvingCandidates = candidates
+        .filter {
+          $0.sprintID == plan.sprint.id && $0.status == .resolvingConflict
+        }
+        .sorted { $0.createdAt < $1.createdAt }
+      for resolvingCandidate in resolvingCandidates
+      where activeIntegrationTasks[resolvingCandidate.id] == nil {
         let resolutionRuns = runs
           .filter {
             $0.workItemID == resolvingCandidate.workItemID
@@ -5647,10 +5646,12 @@ final class AppModel: ObservableObject {
             )
           )
         {
-          activeIntegrationTasks[productID] = Task { [weak self] in
+          activeIntegrationProductIDs[resolvingCandidate.id] = productID
+          activeIntegrationTasks[resolvingCandidate.id] = Task { [weak self] in
             guard let self else { return }
             defer {
-              activeIntegrationTasks.removeValue(forKey: productID)
+              activeIntegrationTasks.removeValue(forKey: resolvingCandidate.id)
+              activeIntegrationProductIDs.removeValue(forKey: resolvingCandidate.id)
               sprintExecutionWakeContinuations[productID]?.yield()
             }
             await completePreservedIntegrationConflict(
@@ -5659,17 +5660,20 @@ final class AppModel: ObservableObject {
               plan: plan
             )
           }
-          return true
+          startedTask = true
+          continue
         }
         if
           let resolutionRun = resolutionRuns
             .filter({ $0.status == .queued })
             .max(by: { $0.createdAt < $1.createdAt })
         {
-          activeIntegrationTasks[productID] = Task { [weak self] in
+          activeIntegrationProductIDs[resolvingCandidate.id] = productID
+          activeIntegrationTasks[resolvingCandidate.id] = Task { [weak self] in
             guard let self else { return }
             defer {
-              activeIntegrationTasks.removeValue(forKey: productID)
+              activeIntegrationTasks.removeValue(forKey: resolvingCandidate.id)
+              activeIntegrationProductIDs.removeValue(forKey: resolvingCandidate.id)
               sprintExecutionWakeContinuations[productID]?.yield()
             }
             await resumeIntegrationConflictResolution(
@@ -5678,36 +5682,36 @@ final class AppModel: ObservableObject {
               plan: plan
             )
           }
-          return true
+          startedTask = true
         }
       }
-      let integrationIsOccupied = SprintCandidateAdmission.integrationQueueIsOccupied(
+      let integrationCandidates = SprintCandidateAdmission.integrationQueue(
         candidates: candidates,
-        sprintID: plan.sprint.id
+        sprintID: plan.sprint.id,
+        workItems: workItems
       )
-      guard !integrationIsOccupied else { return false }
-
-      guard
-        let candidate = SprintCandidateAdmission.nextIntegrationCandidate(
-          candidates: candidates,
-          sprintID: plan.sprint.id,
-          workItems: workItems
+      for candidate in integrationCandidates
+      where activeIntegrationTasks[candidate.id] == nil {
+        _ = try await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .integrating
         )
-      else { return false }
-      _ = try await store.updateCandidateRevision(
-        id: candidate.id,
-        status: .integrating
-      )
-      await reloadSelectedProductIfCurrent(productID: context.product.id)
-      activeIntegrationTasks[productID] = Task { [weak self] in
-        guard let self else { return }
-        defer {
-          activeIntegrationTasks.removeValue(forKey: productID)
-          sprintExecutionWakeContinuations[productID]?.yield()
+        activeIntegrationProductIDs[candidate.id] = productID
+        activeIntegrationTasks[candidate.id] = Task { [weak self] in
+          guard let self else { return }
+          defer {
+            activeIntegrationTasks.removeValue(forKey: candidate.id)
+            activeIntegrationProductIDs.removeValue(forKey: candidate.id)
+            sprintExecutionWakeContinuations[productID]?.yield()
+          }
+          await integrateReviewedCandidate(candidate, plan: plan)
         }
-        await integrateReviewedCandidate(candidate, plan: plan)
+        startedTask = true
       }
-      return true
+      if !integrationCandidates.isEmpty {
+        await reloadSelectedProductIfCurrent(productID: context.product.id)
+      }
+      return startedTask
     } catch {
       presentExecutionError(error, productID: context.product.id)
       return false
@@ -7019,6 +7023,19 @@ final class AppModel: ObservableObject {
         implementationRun: implementationRun,
         workItem: workItem,
         error: error
+      )
+      return
+    }
+    let repositoryURL = try Self.productWorkspaceURL(productID: workItem.productID)
+    guard
+      try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+        repositoryURL: repositoryURL,
+        integratedSHA: integratedSHA
+      )
+    else {
+      try await requeueStaleReadyCandidate(
+        integratedCandidate,
+        reason: "Accepted trunk advanced while this demo revision was being prepared."
       )
       return
     }
@@ -8481,11 +8498,11 @@ final class AppModel: ObservableObject {
     for candidateID in reviewCandidateIDs {
       activeReviewTasks[candidateID]?.cancel()
     }
-    let integrationProductIDs = activeIntegrationTasks.keys.filter {
-      productID == nil || $0 == productID
+    let integrationCandidateIDs = activeIntegrationProductIDs.compactMap {
+      productID == nil || $0.value == productID ? $0.key : nil
     }
-    for integrationProductID in integrationProductIDs {
-      activeIntegrationTasks[integrationProductID]?.cancel()
+    for candidateID in integrationCandidateIDs {
+      activeIntegrationTasks[candidateID]?.cancel()
     }
     if let client = codexClient {
       let turns = activeExecutionTurns.values.filter {
@@ -8506,7 +8523,7 @@ final class AppModel: ObservableObject {
       !executionTasks.isEmpty
         || !implementationTaskIDs.isEmpty
         || !reviewCandidateIDs.isEmpty
-        || !integrationProductIDs.isEmpty
+        || !integrationCandidateIDs.isEmpty
     {
       for _ in 0..<100 {
         let hasScheduler =
@@ -8521,8 +8538,8 @@ final class AppModel: ObservableObject {
         let hasReview = activeReviewProductIDs.contains {
           productID == nil || $0.value == productID
         }
-        let hasIntegration = activeIntegrationTasks.keys.contains {
-          productID == nil || $0 == productID
+        let hasIntegration = activeIntegrationProductIDs.contains {
+          productID == nil || $0.value == productID
         }
         guard hasScheduler || hasImplementation || hasReview || hasIntegration
         else { break }
@@ -8541,7 +8558,10 @@ final class AppModel: ObservableObject {
         activeReviewTasks.removeValue(forKey: candidateID)
         activeReviewProductIDs.removeValue(forKey: candidateID)
       }
-      activeIntegrationTasks.removeValue(forKey: productID)
+      for candidateID in integrationCandidateIDs {
+        activeIntegrationTasks.removeValue(forKey: candidateID)
+        activeIntegrationProductIDs.removeValue(forKey: candidateID)
+      }
       activeExecutionTurns = activeExecutionTurns.filter {
         $0.value.productID != productID
       }
@@ -8557,6 +8577,7 @@ final class AppModel: ObservableObject {
       activeReviewTasks.removeAll()
       activeReviewProductIDs.removeAll()
       activeIntegrationTasks.removeAll()
+      activeIntegrationProductIDs.removeAll()
       activeExecutionTurns.removeAll()
     }
     let approvalRequestIDs = liveApprovalRequestProductIDs.compactMap {

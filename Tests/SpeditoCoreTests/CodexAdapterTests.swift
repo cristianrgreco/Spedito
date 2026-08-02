@@ -2445,6 +2445,27 @@ struct CodexAdapterTests {
     }
   }
 
+  @Test("Agent role defaults use Luna without changing their reasoning effort")
+  func agentRoleDefaults() {
+    let expected: [(AgentRole, String)] = [
+      (.businessAnalyst, "medium"),
+      (.uxDesigner, "medium"),
+      (.lead, "high"),
+      (.implementer, "low"),
+      (.frontendEngineer, "medium"),
+      (.backendEngineer, "high"),
+      (.reviewer, "high"),
+      (.qualityAssurance, "high"),
+      (.knowledgeCurator, "medium"),
+    ]
+
+    for (role, effort) in expected {
+      let configuration = AgentPersonaDefaults.configuration(for: role)
+      #expect(configuration.model == "gpt-5.6-terra")
+      #expect(configuration.effort == effort)
+    }
+  }
+
   @Test("Common persona templates have stable unique identities")
   func personaTemplates() {
     let templates = PersonaTemplate.common

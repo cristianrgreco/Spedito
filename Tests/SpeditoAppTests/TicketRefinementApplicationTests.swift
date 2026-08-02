@@ -121,7 +121,6 @@ struct TicketRefinementApplicationTests {
       productID: product.id,
       goal: "Deliver the refined outcome",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 2,
       items: [SprintDraftItemInput(workItemID: item.id)]
     )
     let model = AppModel(store: store, selectedProductID: product.id)

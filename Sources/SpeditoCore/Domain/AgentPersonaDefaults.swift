@@ -16,17 +16,17 @@ public enum AgentPersonaDefaults {
     case .businessAnalyst:
       Configuration(model: "gpt-5.6-terra", effort: "medium")
     case .uxDesigner:
-      Configuration(model: "gpt-5.6-sol", effort: "medium")
+      Configuration(model: "gpt-5.6-terra", effort: "medium")
     case .lead:
-      Configuration(model: "gpt-5.6-sol", effort: "high")
+      Configuration(model: "gpt-5.6-terra", effort: "high")
     case .implementer:
       Configuration(model: "gpt-5.6-terra", effort: "low")
     case .frontendEngineer:
       Configuration(model: "gpt-5.6-terra", effort: "medium")
     case .backendEngineer:
-      Configuration(model: "gpt-5.6-sol", effort: "high")
+      Configuration(model: "gpt-5.6-terra", effort: "high")
     case .reviewer, .qualityAssurance:
-      Configuration(model: "gpt-5.6-sol", effort: "high")
+      Configuration(model: "gpt-5.6-terra", effort: "high")
     case .knowledgeCurator:
       Configuration(model: "gpt-5.6-terra", effort: "medium")
     }

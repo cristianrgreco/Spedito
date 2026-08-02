@@ -114,7 +114,7 @@ Initial tables cover:
   active/archive state;
 - ticket-suggestion sessions, proposals, proposal dependencies, and accepted
   work-item dependency edges;
-- sprints, sprint assignments, forecast slots, concurrency policy, internal
+- sprints, sprint assignments, forecast slots, dependency admission, internal
   safety limits, and frozen ticket snapshots;
 - immutable retrospective notes and action candidates from team runs, Product
   Owner action ideas that remain owner-deletable only while their sprint is
@@ -212,8 +212,9 @@ headcount.
 3. Produce a candidate commit after fast checks.
 4. Run independent Lead reviews in parallel against detached workspaces pinned
    to the immutable candidate commits.
-5. Replay approved candidates in dependency order into an ephemeral integration
-   worktree based on the latest trunk.
+5. Replay each approved candidate into its own ephemeral integration worktree
+   based on the latest accepted trunk. All eligible candidates may proceed in
+   parallel.
 6. Surface conflicts as explicit Integrator work; resolve only unambiguous overlap
    and pause material choices for the Product Owner.
 7. Preserve the candidate review after a clean merge. If conflict resolution
@@ -231,8 +232,8 @@ overlap, and returns without running a second review or test pass. Spedito
 performs mechanical Git validation and owns the merge commit. The Integrator must
 return semantic or product conflicts to the relevant implementation ticket or
 Product Owner. It is not an independent product persona and it cannot approve its
-own resolution. The Tech Lead reviews the immutable ticket candidate before it joins
-this serial path, then reviews the final integrated candidate only when conflict
+own resolution. The Tech Lead reviews the immutable ticket candidate before
+integration, then reviews the final integrated candidate only when conflict
 resolution changed it. The board keeps this understandable as **In Review**, while
 the card and Work log distinguish **Tech Lead reviewing**, **Queued to integrate**,
 **Integrating changes**, and **Resolving a conflict**.
@@ -278,10 +279,11 @@ test succeeds. The Product Owner's **Demo** action prepares the same exact
 revision, starts or reuses the managed process, waits for typed readiness, and
 opens the browser, app, artifact, or captured result.
 
-Ready for Demo is not part of the serialized integration lane. Multiple independently
-reviewed candidates may therefore be prepared for Product Owner evaluation. Promotion
-still requires the approved revision to contain current accepted trunk. When another
-approval advances trunk, Spedito stops and removes any now-stale preview,
+Multiple independently reviewed candidates may integrate, receive any necessary
+conflict resolution and focused re-review, and prepare demos in parallel. Promotion
+still requires the approved revision to contain current accepted trunk and remains
+serialized. When another approval advances trunk, Spedito stops and removes any
+now-stale preview,
 returns its already reviewed candidate to the integration queue, and prepares a new
 exact demo revision. A clean re-integration retains the immutable candidate review;
 conflict resolution requires focused Tech Lead re-review.

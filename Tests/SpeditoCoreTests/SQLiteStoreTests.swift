@@ -89,9 +89,15 @@ struct SQLiteStoreTests {
       ])
     let reseededProfiles = try await store.seedDefaultProfiles(productID: product.id)
     #expect(reseededProfiles.map(\.id) == profiles.map(\.id))
+    let defaultAnalyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let defaultDesigner = try #require(profiles.first { $0.role == .uxDesigner })
     let lead = try #require(profiles.first { $0.role == .lead })
     let implementer = try #require(profiles.first { $0.role == .implementer })
-    #expect(lead.model == "gpt-5.6-sol")
+    #expect(defaultAnalyst.model == "gpt-5.6-terra")
+    #expect(defaultAnalyst.reasoningEffort == "medium")
+    #expect(defaultDesigner.model == "gpt-5.6-terra")
+    #expect(defaultDesigner.reasoningEffort == "medium")
+    #expect(lead.model == "gpt-5.6-terra")
     #expect(lead.reasoningEffort == "high")
     #expect(lead.name == "Tech Lead")
     #expect(lead.role.title == "Tech Lead")
@@ -290,7 +296,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Exercise the runner",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -487,7 +492,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Prove parallel delivery",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 2,
       items: [
         SprintDraftItemInput(
           workItemID: first.id,
@@ -553,7 +557,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Pause without losing work",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: first.id,
@@ -578,7 +581,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Start only after the pause is resolved",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: second.id,
@@ -630,7 +632,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Stop safely when priorities change",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 2,
       items: [
         SprintDraftItemInput(
           workItemID: doneItem.id,
@@ -719,7 +720,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Replan the unfinished outcome",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: unfinishedItem.id,
@@ -733,8 +733,8 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Sprint planning accepts parallelism above the legacy ceiling")
-  func sprintPlanningHasNoLegacyParallelismCeiling() async throws {
+  @Test("Sprint planning has no concurrency setting")
+  func sprintPlanningHasNoConcurrencySetting() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
@@ -755,7 +755,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Allow an elastic execution wave",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 65,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -764,7 +763,6 @@ struct SQLiteStoreTests {
       ]
     )
 
-    #expect(draft.sprint.concurrencyLimit == 65)
     #expect(try await store.sprintReadinessIssues(sprintID: draft.sprint.id).isEmpty)
     await store.close()
   }
@@ -799,7 +797,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Respect readiness",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: ready.id,
@@ -865,7 +862,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Current increment",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: currentItem.id,
@@ -878,7 +874,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Following increment",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: nextItem.id,
@@ -1829,7 +1824,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Use the specialist selected for the ticket artifact",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: audit.id,
@@ -1846,7 +1840,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Clear draft scope",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: []
     )
     try await store.archiveCustomAgentProfile(id: security.id)
@@ -1990,7 +1983,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Deliver the next valuable increment",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 2,
       items: [
         SprintDraftItemInput(workItemID: item.id)
       ]
@@ -2011,7 +2003,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: unassignedDraft.sprint.goal,
       tokenBudgetLimit: nil,
-      concurrencyLimit: unassignedDraft.sprint.concurrencyLimit,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2070,7 +2061,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Do not omit unfinished prerequisites",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: dependent.id,
@@ -2207,7 +2197,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Ship and document",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [SprintDraftItemInput(workItemID: item.id)]
     ).sprint
     let delivery = try await store.upsertDeliveryNote(
@@ -2286,7 +2275,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Keep the handoff accurate",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [SprintDraftItemInput(workItemID: item.id)]
     ).sprint
     let delivery = try await store.upsertDeliveryNote(
@@ -2363,7 +2351,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Capture feedback during delivery",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2473,7 +2460,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2542,7 +2528,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2634,7 +2619,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Learn from one delivery",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2788,7 +2772,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Learn from repeated validation friction",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -2899,7 +2882,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Review the real result",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,
@@ -3106,7 +3088,6 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Ship a traceable candidate",
       tokenBudgetLimit: nil,
-      concurrencyLimit: 1,
       items: [
         SprintDraftItemInput(
           workItemID: item.id,

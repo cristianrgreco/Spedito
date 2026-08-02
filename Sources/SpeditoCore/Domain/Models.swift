@@ -993,7 +993,6 @@ public struct AgentProfile: Identifiable, Codable, Hashable, Sendable {
   public var model: String
   public var reasoningEffort: String
   public var customInstructions: String?
-  public var parallelismLimit: Int?
   public var isBuiltIn: Bool
   public let createdAt: Date
   public var updatedAt: Date
@@ -1006,7 +1005,6 @@ public struct AgentProfile: Identifiable, Codable, Hashable, Sendable {
     model: String = "default",
     reasoningEffort: String = "medium",
     customInstructions: String? = nil,
-    parallelismLimit: Int? = nil,
     isBuiltIn: Bool = true,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -1018,7 +1016,6 @@ public struct AgentProfile: Identifiable, Codable, Hashable, Sendable {
     self.model = model
     self.reasoningEffort = reasoningEffort
     self.customInstructions = customInstructions
-    self.parallelismLimit = parallelismLimit
     self.isBuiltIn = isBuiltIn
     self.createdAt = createdAt
     self.updatedAt = updatedAt
@@ -1065,7 +1062,6 @@ public struct Sprint: Identifiable, Codable, Hashable, Sendable {
   public var goal: String
   public var state: SprintState
   public var tokenBudgetLimit: Int?
-  public var concurrencyLimit: Int
   public var planVersion: Int
   public var startedAt: Date?
   public var completedAt: Date?
@@ -1080,7 +1076,6 @@ public struct Sprint: Identifiable, Codable, Hashable, Sendable {
     goal: String,
     state: SprintState = .draft,
     tokenBudgetLimit: Int? = nil,
-    concurrencyLimit: Int = 4,
     planVersion: Int = 1,
     startedAt: Date? = nil,
     completedAt: Date? = nil,
@@ -1094,7 +1089,6 @@ public struct Sprint: Identifiable, Codable, Hashable, Sendable {
     self.goal = goal
     self.state = state
     self.tokenBudgetLimit = tokenBudgetLimit
-    self.concurrencyLimit = concurrencyLimit
     self.planVersion = planVersion
     self.startedAt = startedAt
     self.completedAt = completedAt
@@ -1196,7 +1190,6 @@ public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
   case activeSprintExists
   case sprintNotDraft
   case emptySprint
-  case invalidConcurrency
   case invalidTokenBudget
   case duplicateWorkItem
   case itemNotReady(String)
@@ -1212,8 +1205,6 @@ public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
       "Only a draft sprint can be edited or started."
     case .emptySprint:
       "Select at least one ready ticket."
-    case .invalidConcurrency:
-      "Sprint parallelism must be greater than zero."
     case .invalidTokenBudget:
       "The sprint token budget must be greater than zero."
     case .duplicateWorkItem:

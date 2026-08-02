@@ -76,7 +76,19 @@ struct ProductStoreRegistryTests {
 
     let database = try ProductRegistryFixture.openReadOnly(databaseURL)
     defer { sqlite3_close(database) }
-    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 1)
+    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 3)
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('sprints') WHERE name = 'concurrency_limit';",
+        in: database
+      ) == 0
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('agent_profiles') WHERE name = 'parallelism_limit';",
+        in: database
+      ) == 0
+    )
     #expect(
       try ProductRegistryFixture.scalarInt(
         "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'schema_migrations';",
@@ -103,6 +115,98 @@ struct ProductStoreRegistryTests {
         nil,
         nil
       ) == SQLITE_READONLY
+    )
+  }
+
+  @Test("Version 1 product databases remove obsolete concurrency settings")
+  func concurrencySettingMigration() async throws {
+    let fixture = try ProductRegistryFixture()
+    defer { fixture.remove() }
+    let databaseURL = fixture.directoryURL.appendingPathComponent("product.sqlite")
+    let originalStore = try SQLiteStore(url: databaseURL)
+    let product = try await originalStore.createProduct(
+      name: "Migrated product",
+      vision: "Keep existing sprint history"
+    )
+    await originalStore.close()
+    let sprintID = UUID()
+    try ProductRegistryFixture.execute(
+      """
+      ALTER TABLE sprints
+      ADD COLUMN concurrency_limit INTEGER NOT NULL DEFAULT 10;
+      ALTER TABLE agent_profiles
+      ADD COLUMN parallelism_limit INTEGER;
+      INSERT INTO sprints (
+          id, product_id, sprint_number, goal, state, concurrency_limit,
+          plan_version, created_at, updated_at
+      ) VALUES (
+          '\(sprintID.uuidString)', '\(product.id.uuidString)', 1,
+          'Keep the sprint', 'paused', 10, 1, 1, 1
+      );
+      PRAGMA user_version = 1;
+      """,
+      at: databaseURL
+    )
+
+    let store = try SQLiteStore(url: databaseURL)
+    let history = try await store.fetchSprintHistory(productID: product.id)
+    #expect(history.map(\.sprint.goal) == ["Keep the sprint"])
+    await store.close()
+
+    let database = try ProductRegistryFixture.openReadOnly(databaseURL)
+    defer { sqlite3_close(database) }
+    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 3)
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('sprints') WHERE name = 'concurrency_limit';",
+        in: database
+      ) == 0
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('agent_profiles') WHERE name = 'parallelism_limit';",
+        in: database
+      ) == 0
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM sprints WHERE goal = 'Keep the sprint';",
+        in: database
+      ) == 1
+    )
+  }
+
+  @Test("Version 2 product databases finish removing obsolete concurrency settings")
+  func partialConcurrencySettingMigration() async throws {
+    let fixture = try ProductRegistryFixture()
+    defer { fixture.remove() }
+    let databaseURL = fixture.directoryURL.appendingPathComponent("product.sqlite")
+    let originalStore = try SQLiteStore(url: databaseURL)
+    _ = try await originalStore.createProduct(
+      name: "Partially migrated product",
+      vision: "Finish the concurrency cleanup"
+    )
+    await originalStore.close()
+    try ProductRegistryFixture.execute(
+      """
+      ALTER TABLE agent_profiles
+      ADD COLUMN parallelism_limit INTEGER;
+      PRAGMA user_version = 2;
+      """,
+      at: databaseURL
+    )
+
+    let store = try SQLiteStore(url: databaseURL)
+    await store.close()
+
+    let database = try ProductRegistryFixture.openReadOnly(databaseURL)
+    defer { sqlite3_close(database) }
+    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 3)
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('agent_profiles') WHERE name = 'parallelism_limit';",
+        in: database
+      ) == 0
     )
   }
 

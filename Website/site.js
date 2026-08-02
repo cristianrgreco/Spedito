@@ -1,6 +1,6 @@
 const showcaseSlides = [
   {
-    file: "0-sprint-board-overview.webp",
+    file: "1.webp",
     phase: "Deliver",
     title: "See your AI team at work.",
     caption:
@@ -8,15 +8,7 @@ const showcaseSlides = [
     alt: "Spedito Sprint Board showing Tickets across Ready to Pick, In Progress, In Review, Ready for Demo, and Done.",
   },
   {
-    file: "25-customize-your-team.webp",
-    phase: "Adapt",
-    title: "Customise the team",
-    caption:
-      "Tune team roles, models, effort, and instructions for the product.",
-    alt: "Spedito team settings for roles, models, effort, and instructions.",
-  },
-  {
-    file: "1-epic-ai-refinement.webp",
+    file: "2.webp",
     phase: "Define",
     title: "Refine an Epic",
     caption:
@@ -24,7 +16,7 @@ const showcaseSlides = [
     alt: "Spedito refining a rough Epic through focused Business Analyst questions.",
   },
   {
-    file: "2-epic-ai-refined.webp",
+    file: "3.webp",
     phase: "Define",
     title: "Review the refined Epic",
     caption:
@@ -32,7 +24,7 @@ const showcaseSlides = [
     alt: "A refined Spedito Epic ready for the Product Owner to review.",
   },
   {
-    file: "3-backlog-proposed.webp",
+    file: "4.webp",
     phase: "Plan",
     title: "Build the Backlog",
     caption:
@@ -40,14 +32,14 @@ const showcaseSlides = [
     alt: "A Spedito Backlog with three proposed Tickets and their dependencies.",
   },
   {
-    file: "6-sprint-plan.webp",
+    file: "5.webp",
     phase: "Plan",
     title: "Plan the Sprint",
     caption: "Let dependencies and readiness shape a realistic Sprint.",
     alt: "Spedito proposing a Sprint plan from ready Backlog Tickets.",
   },
   {
-    file: "9-sprint-agent-debug-info.webp",
+    file: "6.webp",
     phase: "Deliver",
     title: "Follow the work",
     caption:
@@ -55,7 +47,7 @@ const showcaseSlides = [
     alt: "A Spedito Ticket showing concise live agent activity and run details.",
   },
   {
-    file: "10-access-request.webp",
+    file: "7.webp",
     phase: "Control",
     title: "Keep access scoped",
     caption:
@@ -63,7 +55,7 @@ const showcaseSlides = [
     alt: "A scoped agent permission request inside Spedito.",
   },
   {
-    file: "11-questions-during-ticket.webp",
+    file: "8.webp",
     phase: "Deliver",
     title: "Resolve product questions",
     caption:
@@ -71,7 +63,7 @@ const showcaseSlides = [
     alt: "A Spedito Ticket asking the Product Owner a delivery question.",
   },
   {
-    file: "12-chat-with-your-team.webp",
+    file: "9.webp",
     phase: "Collaborate",
     title: "Chat with the team",
     caption:
@@ -79,7 +71,15 @@ const showcaseSlides = [
     alt: "The Spedito team Conversation with several AI team members.",
   },
   {
-    file: "13-tech-lead-review.webp",
+    file: "10.webp",
+    phase: "Adapt",
+    title: "Customise the team",
+    caption:
+      "Tune team roles, models, effort, and instructions for the product.",
+    alt: "Spedito team settings for roles, models, effort, and instructions.",
+  },
+  {
+    file: "11.webp",
     phase: "Review",
     title: "Review independently",
     caption:
@@ -87,7 +87,7 @@ const showcaseSlides = [
     alt: "A Tech Lead review running against a Spedito Ticket candidate.",
   },
   {
-    file: "14-tech-lead-review-issues-found.webp",
+    file: "12.webp",
     phase: "Review",
     title: "Fix review findings",
     caption:
@@ -95,7 +95,7 @@ const showcaseSlides = [
     alt: "Tech Lead review findings recorded in a Spedito Ticket Work log.",
   },
   {
-    file: "16-agents-have-appropriate-context.webp",
+    file: "13.webp",
     phase: "Context",
     title: "Give agents context",
     caption:
@@ -103,7 +103,7 @@ const showcaseSlides = [
     alt: "Spedito showing the focused context supplied to a delivery agent.",
   },
   {
-    file: "17-product-knowledge-building.webp",
+    file: "14.webp",
     phase: "Learn",
     title: "Build Product knowledge",
     caption:
@@ -111,29 +111,7 @@ const showcaseSlides = [
     alt: "Spedito Product knowledge growing from verified delivery decisions.",
   },
   {
-    file: "18-demo.webp",
-    phase: "Demo",
-    title: "Prepare the Demo",
-    caption: "Launch the exact reviewed result directly from the Ticket.",
-    alt: "A reviewed Spedito Ticket with its working Demo ready to launch.",
-  },
-  {
-    file: "19-demo-result.webp",
-    phase: "Demo",
-    title: "Try the result",
-    caption: "Use the working product before deciding whether to accept it.",
-    alt: "The working result launched from a Spedito Demo.",
-  },
-  {
-    file: "20-auto-conflict-resolution-with-review.webp",
-    phase: "Review",
-    title: "Automatic conflict resolution",
-    caption:
-      "Changes made during conflict resolution are reviewed before integration continues.",
-    alt: "Spedito coordinating conflict resolution and focused Tech Lead re-review.",
-  },
-  {
-    file: "22-code.webp",
+    file: "15.webp",
     phase: "Inspect",
     title: "Inspect the code",
     caption:
@@ -141,7 +119,21 @@ const showcaseSlides = [
     alt: "The optional code browser inside Spedito.",
   },
   {
-    file: "23-retrospective.webp",
+    file: "16.webp",
+    phase: "Demo",
+    title: "Prepare the Demo",
+    caption: "Launch the exact reviewed result directly from the Ticket.",
+    alt: "A reviewed Spedito Ticket with its working Demo ready to launch.",
+  },
+  {
+    file: "17.webp",
+    phase: "Demo",
+    title: "Try the result",
+    caption: "Use the working product before deciding whether to accept it.",
+    alt: "The working result launched from a Spedito Demo.",
+  },
+  {
+    file: "18.webp",
     phase: "Improve",
     title: "Run the Retrospective",
     caption:
@@ -149,7 +141,7 @@ const showcaseSlides = [
     alt: "A Spedito Retrospective with evidence and proposed actions.",
   },
   {
-    file: "24-reports.webp",
+    file: "19.webp",
     phase: "Learn",
     title: "Learn from reports",
     caption: "Make delivery patterns visible across Sprints.",

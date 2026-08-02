@@ -15290,10 +15290,6 @@ private struct SprintPlanningView: View {
     lines.reduce(0) { $0 + $1.risks.count }
   }
 
-  private var concurrencyLimit: Int {
-    max(1, waves.map(\.count).max() ?? 1)
-  }
-
   private var canSave: Bool {
     !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !model.isGeneratingSprintGoal
@@ -15563,7 +15559,6 @@ private struct SprintPlanningView: View {
     Task {
       let saved = await model.saveSprintPlan(
         goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
-        concurrencyLimit: concurrencyLimit,
         items: inputs
       )
       isSaving = false
@@ -15827,10 +15822,6 @@ private struct LegacySprintPlanningView: View {
 
   private var implementers: [AgentProfile] {
     model.profiles.filter { $0.role.canImplement }
-  }
-
-  private var concurrencyLimit: Int {
-    max(1, readyItems.count)
   }
 
   private var defaultConversationRecipient: AgentProfile? {
@@ -16288,7 +16279,6 @@ private struct LegacySprintPlanningView: View {
     Task {
       if await model.saveSprintPlan(
         goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
-        concurrencyLimit: concurrencyLimit,
         items: draftInputs
       ) {
         isPresented = false

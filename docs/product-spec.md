@@ -298,7 +298,7 @@ An installed execution capability, not merely a model name. It records:
 - supported task types and tools;
 - role labels such as implementer, reviewer, QA, researcher, or lead;
 - repository and environment access;
-- concurrency and rate limits;
+- account rate information;
 - price signals and budget source;
 - observed success, rework, and intervention rates;
 - supported event and artifact types; and
@@ -436,8 +436,8 @@ support it, but they do not automatically become durable product knowledge.
 ### 8.12 Sprint
 
 The owner-facing unit that authorizes coordinated delivery. A sprint records its
-goal, selected contract versions, dependencies, assignments, forecast,
-parallelism policy, planned acceptance capacity, state, and actual outcome.
+goal, selected contract versions, dependencies, assignments, forecast, planned
+acceptance capacity, state, and actual outcome.
 
 **Start sprint** freezes the initial plan and enables scheduler admission. It can
 create many internal agent runs, but “run” remains execution terminology rather
@@ -521,8 +521,7 @@ discussing after this happens, but stale actions are never auto-applied.
    designer, lead/reviewer, and general implementer. The owner can add optional
    specialist team members such as frontend, backend, security, accessibility, or
    marketing when the product actually needs them. Profiles use Codex models,
-   reasoning effort, role instructions, permission policies, and concurrency
-   limits.
+   reasoning effort, role instructions, and permission policies.
 5. The Business Analyst assesses delivery-environment readiness from bounded
    accepted-ticket contracts and verified Product knowledge, especially
    **Environments**. Planning does not inspect repository source or Git history. If the product has
@@ -880,8 +879,8 @@ ticket by ticket through a focused planning room:
   redundant reviewer picker during MVP planning.
 
 After the last ticket, the owner reviews the sprint goal, dependency order,
-system-generated forecast range, remaining shared usage, concurrency policy,
-and acceptance load. When an uncustomized sprint plan opens, AI automatically
+system-generated forecast range, remaining shared usage, and acceptance load.
+When an uncustomized sprint plan opens, AI automatically
 proposes one concise outcome from the titles of the tickets in the sprint. The
 goal remains directly editable, and a small AI action beside it can generate
 another suggestion. A previously saved owner-written goal is never replaced
@@ -941,11 +940,11 @@ Command-comma opens Product settings, following the platform convention, and
 Option-Command-comma opens Team settings. These commands remain scoped to the
 selected product and use the same navigation state as the sidebar.
 
-The scheduler admits work when dependencies, internal safety limits,
-concurrency, environment, available account usage, and likely merge conflicts
-permit it. Each run receives a versioned contract and isolated workspace. The
-board updates from trusted events emitted by the local execution service and
-connected systems.
+The scheduler admits every dependency-eligible ticket. Environment failures,
+available account usage, and likely merge conflicts remain visible runtime
+conditions rather than admission caps. Each run receives a versioned contract
+and isolated workspace. The board updates from trusted events emitted by the
+local execution service and connected systems.
 
 ### 9.6 Active delivery
 
@@ -1087,9 +1086,9 @@ merge at the end of the sprint:
    evidence-only pass over the contract, completion handoff, exact diff, directly
    relevant files, reported checks, and demo contract. It does not repeat research,
    execute the product, rerun checks, launch the demo, or request more access.
-3. Approved candidates enter a Spedito-owned local merge queue, which
-   orders them by dependencies and replays each one onto the latest trunk in a
-   separate integration worktree.
+3. Approved candidates enter Spedito-owned isolated integration worktrees. Every
+   dependency-eligible candidate may replay onto the latest accepted trunk in
+   parallel.
 4. A conflict becomes a visible **Resolving conflict** integration activity. An
    internal Integrator may resolve mechanically or semantically unambiguous overlap
    inside that detached worktree. Material product ambiguity pauses with **Needs your
@@ -1105,12 +1104,11 @@ merge at the end of the sprint:
 6. Human acceptance authorizes Spedito to advance local trunk to that
    exact commit. Agents do not perform this promotion themselves.
 
-Implementation and immutable-candidate review remain parallel. The local MVP
-allows one reviewed candidate at a time to occupy integration, conflict resolution,
-or post-conflict re-review. Ready for Demo releases that serial lane, so other
-approved candidates continue integrating in backlog-rank and completion order.
-Multiple demo candidates may therefore be prepared from the accepted trunk current
-at their integration time.
+Implementation, immutable-candidate review, integration, conflict resolution,
+post-conflict re-review, and demo preparation may proceed in parallel in isolated
+worktrees. Multiple demo candidates may therefore be prepared from the accepted
+trunk current at their integration time. Product Owner acceptance and promotion to
+trunk remain serialized.
 
 If trunk advances before an integrated candidate is accepted, the queue must
 stop its stale preview, re-integrate it, and repeat demo preparation. A clean
@@ -1594,7 +1592,7 @@ The scheduler considers:
 
 - explicit work-item dependencies;
 - likely overlap in files, services, schemas, and infrastructure;
-- model/profile concurrency and account rate limits;
+- account rate limits;
 - available isolated workspaces;
 - internal execution safety limits and cost-to-complete changes;
 - required reviewers and independence policy;
@@ -2114,7 +2112,7 @@ durable operational memory, not where generated source code lives. It stores
 structured records such as:
 
 - products, work items, immutable contract versions, comments, and priorities;
-- workflow state, plans, dependencies, scheduler leases, and parallelism policy;
+- workflow state, plans, dependencies, and scheduler leases;
 - Codex thread/run identifiers, milestones, questions, approvals, and
   interruption reasons;
 - usage measurements, check results, review attestations, preview versions, and
@@ -2285,7 +2283,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 3. Confirm the discovered signed-in Codex app or select another explicitly
    added compatible installation.
 4. Review the proposed business analyst, lead, implementer, and reviewer
-   model/effort profiles and the global/profile parallelism policies.
+   model/effort profiles.
 5. Create a work item with AI-assisted acceptance criteria.
 6. Pass a simple definition-of-ready checklist.
 7. Groom the backlog interactively, then use **Start Sprint Planning** to review
@@ -2298,8 +2296,9 @@ the platform—it is not a permanent product-category restriction in the UI.
 11. Fast local deterministic checks run in the ticket worktree.
 12. Full checks and separate reviewer threads inspect immutable ticket
     candidates in parallel.
-13. The local merge queue integrates approved candidates against the latest
-    local trunk; conflict-resolved results receive focused re-review.
+13. Isolated integration worktrees integrate approved candidates in parallel
+    against the latest local trunk; conflict-resolved results receive focused
+    re-review.
 14. The owner opens a local preview link for the same commit, comments with
     changes if needed, sees
     the item return to active work, and then accepts a later preview revision.
@@ -2337,7 +2336,8 @@ the platform—it is not a permanent product-category restriction in the UI.
 - Embedded Codex App Server adapter with ChatGPT sign-in.
 - Local commits, diffs, checkpoints, tests, and preview evidence.
 - Separate implementation worktrees and a Spedito-owned local merge queue
-  that promotes only the exact checked, reviewed, and accepted candidate.
+  that integrates eligible candidates in parallel and promotes only the exact
+  checked, reviewed, and accepted candidate.
 - Realtime run state and a per-ticket Work log combining comments with audit events.
 - Configuration-only Team sidebar plus ticket-level Sprint Board activity with
   working, waiting, blocked, reviewing, and awaiting-owner runs and the reason

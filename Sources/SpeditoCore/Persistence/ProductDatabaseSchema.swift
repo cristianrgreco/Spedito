@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 1
+  static let version: Int32 = 3
 
   static let sql = """
     CREATE TABLE products (
@@ -27,7 +27,6 @@ enum ProductDatabaseSchema {
         model TEXT NOT NULL,
         reasoning_effort TEXT NOT NULL,
         custom_instructions TEXT,
-        parallelism_limit INTEGER,
         is_builtin INTEGER NOT NULL DEFAULT 1,
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at REAL NOT NULL,
@@ -127,7 +126,6 @@ enum ProductDatabaseSchema {
         goal TEXT NOT NULL,
         state TEXT NOT NULL,
         token_budget_limit INTEGER,
-        concurrency_limit INTEGER NOT NULL,
         plan_version INTEGER NOT NULL,
         started_at REAL,
         completed_at REAL,
@@ -693,7 +691,7 @@ enum ProductDatabaseSchema {
       JOIN sprints AS sprint ON sprint.id = note.sprint_id
       LEFT JOIN work_items AS item ON item.id = note.work_item_id;
 
-    PRAGMA user_version = 1;
+    PRAGMA user_version = 3;
     """
 
   static let legacyCopyTableOrder = [
