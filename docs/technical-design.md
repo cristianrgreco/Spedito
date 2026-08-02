@@ -265,6 +265,10 @@ the host's `/usr/bin/git`, so an early build may depend on an installed Apple
 developer toolchain. A later self-contained distribution must provide or embed a
 compatible Git implementation and must not trigger an unexpected Command Line
 Tools installation during the Product Owner workflow.
+Spedito-owned commits and merge commits explicitly skip Git signing so the
+non-interactive workflow never requests access to the Product Owner's personal
+signing key. This is scoped to each Spedito command and does not change the
+owner's global or repository Git configuration.
 
 ### 6.1 Managed candidate demos
 

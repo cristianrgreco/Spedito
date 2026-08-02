@@ -5,6 +5,82 @@ import Testing
 
 @Suite("Git workspace manager", .serialized)
 struct GitWorkspaceManagerTests {
+  @Test("Spedito-owned commits ignore inherited signing settings")
+  func managedCommitsIgnoreSigningSettings() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "spedito-git-signing-\(UUID().uuidString)",
+        isDirectory: true
+      )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    let gitWrapper = root.appendingPathComponent("git-with-signing-enabled")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data(
+      """
+      #!/bin/sh
+      exec /usr/bin/git -c commit.gpgSign=true -c gpg.format=ssh -c gpg.ssh.program=/usr/bin/false -c user.signingKey=unavailable-test-key "$@"
+
+      """.utf8
+    ).write(to: gitWrapper)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: gitWrapper.path
+    )
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("README.md")
+    )
+
+    let manager = GitWorkspaceManager(executableURL: gitWrapper)
+    let initialSHA = try await manager.ensureRepository(at: repository)
+    try Data("accepted change\n".utf8).write(
+      to: repository.appendingPathComponent("accepted.txt")
+    )
+    let checkpointSHA = try await manager.checkpointTrunk(at: repository)
+    let workspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T9",
+      runID: UUID(),
+      authorName: "Implementer"
+    )
+    try Data("first ticket change\n".utf8).write(
+      to: workspace.url.appendingPathComponent("first.txt")
+    )
+    let workspaceCheckpointSHA = try await manager.checkpointWorkspace(
+      at: workspace.url,
+      message: "Capture ticket progress"
+    )
+    try Data("candidate change\n".utf8).write(
+      to: workspace.url.appendingPathComponent("candidate.txt")
+    )
+    let candidate = try await manager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: "T9",
+      version: 1,
+      authorName: "Implementer"
+    )
+    let integration = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: candidate.headSHA
+    )
+
+    for sha in [
+      initialSHA,
+      checkpointSHA,
+      workspaceCheckpointSHA,
+      candidate.headSHA,
+      integration.integratedSHA,
+    ] {
+      #expect(try runGit(["show", "-s", "--format=%G?", sha], at: repository) == "N")
+    }
+  }
+
   @Test("Product bootstrap ignores local control data before the first snapshot")
   func productBootstrapIgnoresControlData() async throws {
     let root = FileManager.default.temporaryDirectory

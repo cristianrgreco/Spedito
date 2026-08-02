@@ -229,7 +229,7 @@ public actor GitWorkspaceManager {
       try configureIdentity(at: repositoryURL)
       _ = try run(["add", "-A"], at: repositoryURL)
       _ = try run(
-        ["commit", "--allow-empty", "-m", "Initialize product workspace"],
+        ["commit", "--no-gpg-sign", "--allow-empty", "-m", "Initialize product workspace"],
         at: repositoryURL
       )
     } else {
@@ -289,7 +289,7 @@ public actor GitWorkspaceManager {
       at: repositoryURL
     )
     if staged.status != 0 {
-      _ = try run(["commit", "-m", message], at: repositoryURL)
+      _ = try run(["commit", "--no-gpg-sign", "-m", message], at: repositoryURL)
     }
     return try run(["rev-parse", "trunk"], at: repositoryURL)
   }
@@ -352,7 +352,7 @@ public actor GitWorkspaceManager {
     }
     _ = try run(
       [
-        "commit", "--allow-empty", "-m", message,
+        "commit", "--no-gpg-sign", "--allow-empty", "-m", message,
       ],
       at: ticketWorkspaceURL,
       authorName: authorName
@@ -435,7 +435,7 @@ public actor GitWorkspaceManager {
       at: repositoryURL
     )
     do {
-      var mergeArguments = ["merge", "--no-ff"]
+      var mergeArguments = ["merge", "--no-gpg-sign", "--no-ff"]
       if let commitMessage, !commitMessage.isEmpty {
         mergeArguments += ["-m", commitMessage]
       } else {
@@ -611,7 +611,7 @@ public actor GitWorkspaceManager {
       at: integrationWorkspaceURL
     )
     if mergeHead.status == 0 {
-      _ = try run(["commit", "--no-edit"], at: integrationWorkspaceURL)
+      _ = try run(["commit", "--no-gpg-sign", "--no-edit"], at: integrationWorkspaceURL)
     }
     let integratedSHA = try run(["rev-parse", "HEAD"], at: integrationWorkspaceURL)
     if let candidateHeadSHA {
@@ -776,7 +776,7 @@ public actor GitWorkspaceManager {
       at: workspaceURL
     )
     if staged.status != 0 {
-      _ = try run(["commit", "-m", message], at: workspaceURL)
+      _ = try run(["commit", "--no-gpg-sign", "-m", message], at: workspaceURL)
     }
     return try run(["rev-parse", "HEAD"], at: workspaceURL)
   }
