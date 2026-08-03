@@ -327,6 +327,62 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(presentation.detailTitle == "Exact access")
   }
 
+  @Test("Existing access is non-actionable and says that permissions did not change")
+  func existingAccessPresentation() {
+    let request = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-existing-access",
+      turnID: "turn-existing-access",
+      serverRequestID: "request-existing-access",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read .run-private",
+      signature: "existing-access-signature",
+      status: .existingAccess
+    )
+
+    #expect(request.status.needsOwnerDecision == false)
+    #expect(
+      SprintPermissionRequestPresentation.existingAccessTitle
+        == "Existing access used"
+    )
+    #expect(
+      SprintPermissionRequestPresentation.existingAccessSummary
+        == "Spedito continued using access already available to this run. No permissions changed."
+    )
+  }
+
+  @Test("Protected Spedito storage is non-actionable and explains the policy decision")
+  func protectedStoragePresentation() {
+    let request = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-protected-storage",
+      turnID: "turn-protected-storage",
+      serverRequestID: "request-protected-storage",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Write PreviewWorktrees/product",
+      signature: "protected-storage-signature",
+      status: .policyDenied
+    )
+
+    #expect(request.status.needsOwnerDecision == false)
+    #expect(
+      SprintPermissionRequestPresentation.protectedStorageTitle
+        == "Protected Spedito storage"
+    )
+    #expect(
+      SprintPermissionRequestPresentation.protectedStorageSummary
+        == "Spedito kept this delivery run out of storage owned by another execution. No Product Owner decision was needed."
+    )
+  }
+
   @Test("Structured ticket artifacts are ordered with comments and events by occurrence")
   func structuredArtifactsAreChronological() {
     let productID = UUID()

@@ -2117,6 +2117,31 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
+  @Test("Knowledge pages cannot use a parent from another product")
+  func knowledgePageParentMustShareProduct() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let first = try await store.createProduct(name: "First product")
+    let second = try await store.createProduct(name: "Second product")
+    let parent = try await store.createKnowledgePage(
+      productID: first.id,
+      parentID: nil,
+      title: "First product parent"
+    )
+
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.createKnowledgePage(
+        productID: second.id,
+        parentID: parent.id,
+        title: "Invalid child"
+      )
+    }
+    #expect(try await store.fetchKnowledgePages(productID: second.id).isEmpty)
+    await store.close()
+  }
+
   @Test("Knowledge pages are seeded, versioned, and delivery notes are verified")
   func knowledgeBaseLifecycle() async throws {
     let fixture = try DatabaseFixture()
@@ -2964,6 +2989,44 @@ struct SQLiteStoreTests {
       status: .allowed
     )
     #expect(allowed.status == .allowed)
+
+    let existingAccess = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: item.id,
+      agentRunID: run.id,
+      threadID: "thread-permission",
+      turnID: "turn-permission",
+      serverRequestID: "42",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read /tmp/ticket/.run-private",
+      signature: "permissions|run-private",
+      status: .existingAccess
+    )
+    _ = try await reopened.saveAgentPermissionRequest(existingAccess)
+    requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
+    #expect(requests.last?.status == .existingAccess)
+    #expect(requests.last?.status.needsOwnerDecision == false)
+
+    let policyDenied = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: item.id,
+      agentRunID: run.id,
+      threadID: "thread-permission",
+      turnID: "turn-permission",
+      serverRequestID: "43",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Write PreviewWorktrees/product",
+      signature: "permissions|protected-preview",
+      status: .policyDenied
+    )
+    _ = try await reopened.saveAgentPermissionRequest(policyDenied)
+    requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
+    #expect(requests.last?.status == .policyDenied)
+    #expect(requests.last?.status.needsOwnerDecision == false)
 
     let grant = try await reopened.saveAgentPermissionGrant(
       AgentPermissionGrant(

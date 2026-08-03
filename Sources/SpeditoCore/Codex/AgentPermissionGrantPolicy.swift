@@ -66,6 +66,77 @@ public enum AgentPermissionGrantPolicy {
     return capabilities.canonicalValue
   }
 
+  public static func coversActiveRunRequest(
+    productGrantSignature signature: String,
+    kind: CodexApprovalRequestKind,
+    turnID: String,
+    ticketWorkspaceRoot: URL?,
+    writableTransientStorageRoots: [URL] = [],
+    requests: [AgentPermissionRequest]
+  ) -> Bool {
+    guard
+      kind == .permissions,
+      let requested = capabilities(fromSignature: signature)
+    else {
+      return false
+    }
+
+    let active = requests
+      .filter {
+        $0.turnID == turnID
+          && $0.kind == .permissions
+          && ($0.status == .allowed || $0.status == .existingAccess)
+      }
+      .compactMap(\.productGrantSignature)
+      .compactMap { capabilities(fromSignature: $0) }
+      .reduce(into: Capabilities()) { result, capability in
+        result.formUnion(capability)
+      }
+    return active.covers(
+      requested,
+      ticketWorkspaceRoot: ticketWorkspaceRoot,
+      writableFileSystemRoots: writableTransientStorageRoots
+    )
+  }
+
+  public static func requestsProtectedSpeditoStorage(
+    productGrantSignature signature: String,
+    kind: CodexApprovalRequestKind,
+    ticketWorkspaceRoot: URL?,
+    protectedStorageRoots: [URL]
+  ) -> Bool {
+    guard
+      kind == .permissions,
+      let requested = capabilities(fromSignature: signature)
+    else {
+      return false
+    }
+
+    let workspacePath = ticketWorkspaceRoot.map(Self.canonicalPath)
+    let protectedPaths = protectedStorageRoots.map(Self.canonicalPath)
+    for rule in requested.fileSystemRules {
+      guard
+        (rule.access == "read" || rule.access == "write"),
+        rule.selector == "path:\(rule.displayLocation)",
+        rule.displayLocation.hasPrefix("/")
+      else {
+        continue
+      }
+      let requestedPath = Self.canonicalPath(
+        URL(fileURLWithPath: rule.displayLocation)
+      )
+      if let workspacePath, Self.path(requestedPath, isWithin: workspacePath) {
+        continue
+      }
+      if protectedPaths.contains(where: {
+        Self.path(requestedPath, overlaps: $0)
+      }) {
+        return true
+      }
+    }
+    return false
+  }
+
   public static func savedAccessGroups(
     for grants: [AgentPermissionGrant]
   ) -> [AgentSavedAccessGroup] {
@@ -173,9 +244,17 @@ public enum AgentPermissionGrantPolicy {
       networkScopes.formUnion(other.networkScopes)
     }
 
-    func covers(_ requested: Capabilities) -> Bool {
-      guard fileSystemRules.isSuperset(of: requested.fileSystemRules) else {
-        return false
+    func covers(
+      _ requested: Capabilities,
+      ticketWorkspaceRoot: URL? = nil,
+      writableFileSystemRoots: [URL] = []
+    ) -> Bool {
+      let writableRoots = writableFileSystemRoots
+        + (ticketWorkspaceRoot.map { [$0] } ?? [])
+      for rule in requested.fileSystemRules where !fileSystemRules.contains(rule) {
+        guard writableRoots.contains(where: { Self.writableRoot($0, covers: rule) }) else {
+          return false
+        }
       }
       guard !requested.networkScopes.isEmpty else { return true }
       let unrestricted = Self.canonicalJSON(.object(["enabled": .bool(true)]))
@@ -229,6 +308,26 @@ public enum AgentPermissionGrantPolicy {
       encoder.outputFormatting = [.sortedKeys]
       let data = (try? encoder.encode(value)) ?? Data()
       return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func writableRoot(
+      _ rootURL: URL,
+      covers rule: FileSystemRule
+    ) -> Bool {
+      guard
+        rule.access == "read" || rule.access == "write",
+        rule.selector == "path:\(rule.displayLocation)",
+        rule.displayLocation.hasPrefix("/")
+      else {
+        return false
+      }
+
+      let root = rootURL.standardizedFileURL.resolvingSymlinksInPath().path
+      let requested = URL(fileURLWithPath: rule.displayLocation)
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+        .path
+      return requested == root || requested.hasPrefix(root + "/")
     }
   }
 
@@ -360,5 +459,17 @@ public enum AgentPermissionGrantPolicy {
       return ("kind:\(kind)", kind)
     }
     return nil
+  }
+
+  private static func canonicalPath(_ url: URL) -> String {
+    url.standardizedFileURL.resolvingSymlinksInPath().path
+  }
+
+  private static func path(_ candidate: String, isWithin root: String) -> Bool {
+    candidate == root || candidate.hasPrefix(root + "/")
+  }
+
+  private static func path(_ lhs: String, overlaps rhs: String) -> Bool {
+    path(lhs, isWithin: rhs) || path(rhs, isWithin: lhs)
   }
 }

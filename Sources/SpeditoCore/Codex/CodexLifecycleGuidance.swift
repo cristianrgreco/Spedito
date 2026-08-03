@@ -66,6 +66,21 @@ enum CodexLifecycleGuidance {
     integration, and promotion. Product Git reads and their noninteractive environment are already
     available; run them normally without permission requests or environment prefixes. Never copy,
     mirror, archive, or stage the workspace in /tmp or another location to evade isolation.
+    The supplied ticket workspace and every descendant are already read/write, including ignored
+    run-private build, cache, and temporary locations. Never request additional access to a path
+    inside that workspace. Use workspace-relative paths for every repository file edit and patch
+    target; never repeat the absolute ticket-workspace prefix in an edit. Native file-change
+    approvals are not a permission path in Spedito and are declined automatically. If authorised
+    work genuinely requires changing a file outside the ticket workspace, first use
+    `request_permissions` to request write access to the smallest exact path and explain the ticket
+    purpose, then retry the edit after access is granted. A capability allowed once remains active
+    for the current turn; do not request it again during that turn. Spedito also supplies read/write
+    access to the current macOS user's system temporary directory, Darwin cache directory, and
+    Library/Caches directory. These locations are available for tool-managed transient files only:
+    do not inspect, alter, or report unrelated contents, and do not request them again.
+    Spedito-managed Product, integration, preview, and other ticket workspaces remain protected.
+    Never request those paths; a managed demo or integration failure is an execution-environment
+    problem, not permission to modify its workspace from this delivery run.
 
     CHECKS AND CAPABILITIES
 
@@ -78,7 +93,9 @@ enum CodexLifecycleGuidance {
     external network access. When authorised work needs a remote source and a command fails with DNS
     resolution, host lookup, connection, sandbox, or network-disabled symptoms, use
     `request_permissions` to request the smallest required network capability and explain the exact
-    ticket purpose. The permission request is itself the Product Owner's review point. Do not return
+    ticket purpose. A genuinely additional permission request is the Product Owner's review point.
+    A request already covered by the ticket workspace or current turn continues automatically and
+    is recorded as existing access rather than a new approval. Do not return
     awaiting_owner to ask the Product Owner to restore, enable, add, or confirm network or filesystem
     access, and do not ask them to make a sandbox capability available some other way. A Product
     Owner direction to retrieve an already-approved source does not grant access by itself; issue
@@ -173,6 +190,16 @@ enum CodexLifecycleGuidance {
     accepts the app-supplied port, and exposes a documented readiness check.
 
     DEMO AND OWNER REVIEW
+
+    The delivery turn is deliberately non-interactive and does not own the Product Owner's desktop
+    session. Do not invoke macOS GUI launchers such as `open` or `osascript`, run a graphical app to
+    prove that its window appears, or automate desktop interaction. Launch Services, appearance,
+    window-server, activation, and similar failures inside the delivery sandbox are expected
+    isolation, not product limitations, missing permissions, or Product Owner decisions. For a GUI
+    product, verify the build, tests, package or app bundle, and non-interactive readiness evidence,
+    then return the appropriate typed demo recipe. Spedito alone prepares and opens that reviewed
+    presentation through the managed Demo workflow. A failure from that later managed workflow is
+    the relevant launch evidence and follows its candidate-correction or host-retry policy.
 
     Include one typed demo recipe for the most representative owner-facing result. Prefer an
     interactive prototype or working product surface over a Markdown contract, test report, or
@@ -363,6 +390,20 @@ enum CodexLifecycleGuidance {
       \(coherentCapability)
       Reissue a non-command capability only if it is still needed and already represents the complete
       coherent boundary; Spedito will apply the saved scoped decision.
+      """
+    case .existingAccess:
+      """
+      Spedito continued this \(subject) using access that was already available:
+      \(request.detail)
+      Do not request that access again. Continue within the existing permission boundary.
+      """
+    case .policyDenied:
+      """
+      Spedito rejected this matching request because it crosses into storage owned by another
+      execution:
+      \(request.detail)
+      Do not request that path again. Continue in the assigned ticket workspace and use the macOS
+      temporary and cache storage already supplied to this run for transient tool data.
       """
     case .interrupted:
       """

@@ -45,6 +45,15 @@ struct CodexLifecycleGuidanceTests {
     #expect(instructions.contains("DELIVERY MODE: PRODUCT CHANGE"))
     #expect(instructions.contains("interactive prototype or working product surface"))
     #expect(instructions.contains("Implement the approved ticket contract"))
+    #expect(instructions.contains("delivery turn is deliberately non-interactive"))
+    #expect(instructions.contains("does not own the Product Owner's desktop"))
+    #expect(instructions.contains("Do not invoke macOS GUI launchers"))
+    #expect(instructions.contains("run a graphical app to"))
+    #expect(instructions.contains("prove that its window appears"))
+    #expect(instructions.contains("expected\nisolation"))
+    #expect(instructions.contains("not product limitations"))
+    #expect(instructions.contains("Spedito alone prepares and opens"))
+    #expect(instructions.contains("managed Demo workflow"))
     #expect(!instructions.contains("DELIVERY MODE: RESEARCH AND DECISION SUPPORT"))
     #expect(!instructions.contains("Do not invoke Node"))
   }
@@ -69,7 +78,28 @@ struct CodexLifecycleGuidanceTests {
     #expect(instructions.contains("external network access"))
     #expect(instructions.contains("command fails with DNS"))
     #expect(instructions.contains("resolution, host lookup, connection"))
-    #expect(instructions.contains("permission request is itself the Product Owner's review point"))
+    #expect(
+      instructions.contains(
+        "genuinely additional permission request is the Product Owner's review point"
+      )
+    )
+    #expect(instructions.contains("ticket workspace and every descendant are already read/write"))
+    #expect(instructions.contains("Never request additional access"))
+    #expect(instructions.contains("inside that workspace"))
+    #expect(instructions.contains("workspace-relative paths for every repository file edit"))
+    #expect(instructions.contains("never repeat the absolute ticket-workspace prefix"))
+    #expect(instructions.contains("Native file-change"))
+    #expect(instructions.contains("approvals are not a permission path in Spedito"))
+    #expect(instructions.contains("declined automatically"))
+    #expect(instructions.contains("changing a file outside the ticket workspace"))
+    #expect(instructions.contains("request write access to the smallest exact path"))
+    #expect(instructions.contains("retry the edit after access is granted"))
+    #expect(instructions.contains("allowed once remains active"))
+    #expect(instructions.contains("system temporary directory, Darwin cache directory"))
+    #expect(instructions.contains("Library/Caches directory"))
+    #expect(instructions.contains("tool-managed transient files only"))
+    #expect(instructions.contains("preview, and other ticket workspaces remain protected"))
+    #expect(instructions.contains("recorded as existing access rather than a new approval"))
     #expect(
       instructions.contains(
         "awaiting_owner to ask the Product Owner to restore, enable, add, or confirm"

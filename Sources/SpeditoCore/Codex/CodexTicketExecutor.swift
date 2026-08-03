@@ -1352,6 +1352,7 @@ public enum CodexTechLeadReviewer {
     product: Product,
     item: WorkItem,
     implementation: TicketExecutionResult,
+    knowledgePageProposals: [KnowledgePageProposal],
     assignee: AgentProfile,
     reviewCycle: Int = 0,
     priorReviewFeedback: String? = nil,
@@ -1380,19 +1381,67 @@ public enum CodexTechLeadReviewer {
     } else {
       "No immutable revision metadata was supplied."
     }
-    let knowledgeProposals = implementation.knowledgePageProposals.isEmpty
+    let knowledgeProposals = knowledgePageProposals.isEmpty
       ? "No canonical knowledge-page changes were proposed."
-      : implementation.knowledgePageProposals.map { proposal in
+      : knowledgePageProposals.enumerated().map { index, proposal in
+        let destination = if let targetPageID = proposal.targetPageID {
+          "Existing page ID: \(targetPageID.uuidString)"
+        } else if let parentPageID = proposal.parentPageID {
+          "Parent section ID: \(parentPageID.uuidString)"
+        } else {
+          "No valid destination was recorded."
+        }
+        let baseSnapshot: String
+        if proposal.operation == .update {
+          let body = proposal.basePageBodyMarkdown.flatMap { body in
+            body.isEmpty ? nil : body
+          } ?? "[The candidate-captured page body was empty.]"
+          baseSnapshot = """
+            Candidate-captured base title: \(proposal.basePageTitle ?? proposal.title)
+            Candidate-captured base Markdown:
+            ----- BEGIN BASE MARKDOWN -----
+            \(body)
+            ----- END BASE MARKDOWN -----
+            """
+        } else {
+          baseSnapshot = "This proposal creates a child page, so there is no base page body."
+        }
+        return """
+        Proposal \(index + 1):
+        - Proposal ID: \(proposal.id.uuidString)
+        - Candidate revision ID: \(proposal.candidateRevisionID.uuidString)
+        - Operation: \(proposal.operation.rawValue)
+        - Title: \(proposal.title)
+        - Destination: \(destination)
+        - Candidate-bound status: \(proposal.status.rawValue)
+        - Rationale: \(proposal.rationale)
+
+        \(baseSnapshot)
+
+        Proposed complete Markdown:
+        ----- BEGIN PROPOSED MARKDOWN -----
+        \(proposal.proposedBodyMarkdown)
+        ----- END PROPOSED MARKDOWN -----
         """
-        - \(proposal.operation.rawValue.capitalized): \(proposal.title)
-          Rationale: \(proposal.rationale)
-        """
-      }.joined(separator: "\n")
+      }.joined(separator: "\n\n")
     let followUpProposals = implementation.followUpTicketProposals.isEmpty
       ? "No follow-up tickets were proposed."
       : implementation.followUpTicketProposals.map { proposal in
-        """
-        - \(proposal.reference): \(proposal.title) [\(proposal.type.title), \(proposal.suggestedRole.title)]
+        let acceptanceCriteria = proposal.acceptanceCriteria.isEmpty
+          ? "- No acceptance criteria supplied."
+          : proposal.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
+        let dependencies = proposal.dependsOnReferences.isEmpty
+          ? "None"
+          : proposal.dependsOnReferences.joined(separator: ", ")
+        return """
+        - \(proposal.reference): \(proposal.title)
+          Type: \(proposal.type.title)
+          Suggested team member: \(proposal.suggestedRole.title)
+          Priority: \(proposal.priority.title)
+          Body: \(proposal.body)
+          Acceptance criteria:
+        \(acceptanceCriteria)
+          Depends on proposed references: \(dependencies)
           Rationale: \(proposal.rationale)
         """
       }.joined(separator: "\n")
@@ -1445,7 +1494,10 @@ public enum CodexTechLeadReviewer {
 
       \(revision)
 
-      Implementer's summary:
+      Implementer's candidate-bound completion comment:
+      \(implementation.comment)
+
+      Implementer's completion handoff:
       \(implementation.summary)
 
       Reported changed files:
@@ -1465,6 +1517,16 @@ public enum CodexTechLeadReviewer {
 
       Proposed canonical knowledge changes:
       \(knowledgeProposals)
+
+      Candidate-bound Product knowledge lifecycle:
+      - The proposal records above belong to the exact candidate revision under review. Review their
+        complete proposed Markdown and candidate-captured base snapshots as delivery evidence.
+      - `agent_verified_knowledge` contains accepted canonical knowledge only. It is expected to remain
+        unchanged while these proposals are under review. Do not require a pending proposal to be
+        published there, or duplicated in an ordinary repository document, before approval.
+      - Tech Lead approval makes an accurate proposal eligible for candidate materialization. The
+        reviewed Markdown becomes canonical Product knowledge only when the Product Owner accepts the
+        ticket. A missing, materially inaccurate, or destructive proposal may still block approval.
 
       Proposed follow-up tickets:
       \(followUpProposals)

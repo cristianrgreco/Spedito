@@ -199,7 +199,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     allowsApprovals: Bool = false,
-    readOnlyProductDirectory: URL? = nil
+    readOnlyProductDirectory: URL? = nil,
+    responseTimeout: Duration? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     var params: [String: JSONValue] = [
@@ -219,7 +220,16 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       params["model"] = .string(model)
     }
 
-    let response = try await transport.request(method: "thread/start", params: .object(params))
+    let response: JSONValue
+    if let responseTimeout {
+      response = try await transport.request(
+        method: "thread/start",
+        params: .object(params),
+        responseTimeout: responseTimeout
+      )
+    } else {
+      response = try await transport.request(method: "thread/start", params: .object(params))
+    }
     guard let threadID = response["thread"]?["id"]?.stringValue else {
       throw CodexClientError.invalidThreadResponse
     }
@@ -231,7 +241,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil
+    readOnlyProductDirectory: URL? = nil,
+    writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let productDirectory =
@@ -254,12 +265,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       ]),
       "serviceName": .string("Spedito"),
     ]
-    if let readOnlyGitDirectory {
-      params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
-        readOnlyGitDirectory: readOnlyGitDirectory,
-        readOnlyProductDirectory: productDirectory
-      )
-    }
+    params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
+      readOnlyGitDirectory: readOnlyGitDirectory,
+      readOnlyProductDirectory: productDirectory,
+      writableTransientStorageRoots: writableTransientStorageRoots
+    )
     if let model, model != "default" {
       params["model"] = .string(model)
     }
@@ -303,7 +313,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil
+    readOnlyProductDirectory: URL? = nil,
+    writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
     let productDirectory =
       readOnlyProductDirectory
@@ -324,12 +335,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       ]),
       "threadId": .string(threadID),
     ]
-    if let readOnlyGitDirectory {
-      params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
-        readOnlyGitDirectory: readOnlyGitDirectory,
-        readOnlyProductDirectory: productDirectory
-      )
-    }
+    params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
+      readOnlyGitDirectory: readOnlyGitDirectory,
+      readOnlyProductDirectory: productDirectory,
+      writableTransientStorageRoots: writableTransientStorageRoots
+    )
     if let model, model != "default" {
       params["model"] = .string(model)
     }
@@ -353,7 +363,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     prompt: String,
     effort: String,
     outputSchema: JSONValue,
-    runtimeWorkspaceRoots: [URL] = []
+    runtimeWorkspaceRoots: [URL] = [],
+    responseTimeout: Duration? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     var params: [String: JSONValue] = [
@@ -378,10 +389,19 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         }
       )
     }
-    let response = try await transport.request(
-      method: "turn/start",
-      params: .object(params)
-    )
+    let response: JSONValue
+    if let responseTimeout {
+      response = try await transport.request(
+        method: "turn/start",
+        params: .object(params),
+        responseTimeout: responseTimeout
+      )
+    } else {
+      response = try await transport.request(
+        method: "turn/start",
+        params: .object(params)
+      )
+    }
     guard let turnID = response["turn"]?["id"]?.stringValue else {
       throw CodexClientError.invalidTurnResponse
     }
@@ -392,12 +412,16 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     threadID: String,
     turnID: String,
     timeout: Duration = .seconds(60),
-    reconciliationInterval: Duration = .seconds(2)
+    reconciliationInterval: Duration = .seconds(2),
+    totalTimeout: Duration? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let messages = subscribeToInboundMessages(replayRecent: true)
     let activity = CodexTurnActivity()
     let timeoutSeconds = max(1, Int(timeout.components.seconds))
+    let totalTimeoutSeconds = totalTimeout.map {
+      max(1, Int(ceil(Self.seconds(in: $0))))
+    }
     // The durable turn timestamp can precede the turn/start response by several
     // seconds while the App Server persists the turn. Keep a narrow allowance so
     // reconciliation accepts that turn without replaying an older conversation turn.
@@ -506,6 +530,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
             }
           }
           throw CodexClientError.turnTimedOut(seconds: timeoutSeconds)
+        }
+        if let totalTimeout, let totalTimeoutSeconds {
+          group.addTask {
+            try await Task.sleep(for: totalTimeout)
+            throw CodexClientError.turnTimedOut(seconds: totalTimeoutSeconds)
+          }
         }
         guard let result = try await group.next() else {
           throw CodexClientError.turnEndedWithoutOutput
@@ -848,7 +878,17 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     recentInboundMessages.removeAll()
   }
 
-  private func routeInboundMessage(_ message: CodexInboundMessage) {
+  private func routeInboundMessage(_ message: CodexInboundMessage) async {
+    if case .request(let request) = message,
+      request.method == "item/fileChange/requestApproval"
+    {
+      do {
+        try await resolveApprovalRequest(request, allow: false)
+      } catch {
+        await rejectUnsupportedServerRequest(request)
+      }
+      return
+    }
     if case .request(let request) = message, Self.isApprovalMethod(request.method) {
       let key = Self.approvalTurnKey(params: request.params)
       pendingApprovalTurns[key, default: []].insert(Self.requestKey(request.id))

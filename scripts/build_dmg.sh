@@ -7,7 +7,7 @@ project_root="$(cd "$script_dir/.." && pwd)"
 app_path="${1:-$project_root/.build/app/release/Spedito.app}"
 output_path="${2:-$project_root/.build/app/release/Spedito.dmg}"
 volume_name="${SPEDITO_DMG_VOLUME_NAME:-Spedito}"
-background_path="$project_root/Distribution/DMGBackground.png"
+background_path="$project_root/Distribution/DMGBackground.tiff"
 
 if [[ ! -d "$app_path" ]]; then
   echo "Application bundle does not exist: $app_path" >&2
@@ -54,7 +54,7 @@ create-dmg \
   --volname "$volume_name" \
   --background "$background_path" \
   --window-pos 180 140 \
-  --window-size 660 440 \
+  --window-size 660 468 \
   --icon-size 112 \
   --text-size 13 \
   --icon "Spedito.app" 180 240 \

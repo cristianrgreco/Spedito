@@ -277,6 +277,13 @@ enum SprintBoardSelectionDefaults {
 }
 
 struct SprintPermissionRequestPresentation: Equatable {
+  static let existingAccessTitle = "Existing access used"
+  static let existingAccessSummary =
+    "Spedito continued using access already available to this run. No permissions changed."
+  static let protectedStorageTitle = "Protected Spedito storage"
+  static let protectedStorageSummary =
+    "Spedito kept this delivery run out of storage owned by another execution. No Product Owner decision was needed."
+
   let context: String
   let purpose: String
   let detailTitle: String
@@ -503,6 +510,7 @@ private struct ProductWorkspaceView: View {
           )
         }
       }
+      .id(model.selectedProductID)
       .ignoresSafeArea(
         .container,
         edges: columnVisibility == .detailOnly ? [] : .top
@@ -510,6 +518,15 @@ private struct ProductWorkspaceView: View {
     }
     .onAppear {
       restoreDestination(for: model.selectedProductID)
+    }
+    .onChange(of: model.selectedProductID) { _, productID in
+      showingNewTicket = false
+      showingNewEpic = false
+      newTicketEpicID = nil
+      showingSprintPlanning = false
+      ticketDetailPresentation = nil
+      selectedSprintID = nil
+      restoreDestination(for: productID)
     }
     .onChange(of: destination) { _, destination in
       persist(destination, for: model.selectedProductID)
@@ -532,7 +549,10 @@ private struct ProductWorkspaceView: View {
           showingNewTicket = false
           Task {
             try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else { return }
+            guard
+              !Task.isCancelled,
+              model.selectedProductID == item.productID
+            else { return }
             ticketDetailPresentation = TicketDetailPresentation(
               item: item,
               startRefinementOnAppear: shouldRefine,
@@ -1689,8 +1709,7 @@ private struct ProductLibraryView: View {
             ForEach(visibleProducts) { product in
               ProductLibraryRow(
                 product: product,
-                isSelected: selectedProductID == product.id,
-                isCurrent: model.selectedProductID == product.id
+                isSelected: selectedProductID == product.id
               )
               .onTapGesture {
                 selectedProductID = product.id
@@ -1725,18 +1744,12 @@ private struct ProductLibraryView: View {
             }
           }
         }
-        .padding(20)
+        .padding(16)
       }
 
       Divider()
 
       HStack {
-        Text(
-          "\(model.products.count) active"
-            + (model.archivedProducts.isEmpty ? "" : ", \(model.archivedProducts.count) archived")
-        )
-          .font(.caption)
-          .foregroundStyle(.secondary)
         Spacer()
         Button("Cancel") { isPresented = false }
         Button(isOpening ? "Opening…" : "Open") {
@@ -1747,9 +1760,9 @@ private struct ProductLibraryView: View {
         .disabled(selectedProduct == nil || isOpening || restoringProductID != nil)
       }
       .padding(.horizontal, 20)
-      .frame(height: 62)
+      .frame(height: 58)
     }
-    .frame(width: 780, height: 640)
+    .frame(width: 640, height: 480)
     .onAppear {
       selectedProductID = model.selectedProductID ?? model.products.first?.id
     }
@@ -1836,60 +1849,42 @@ private struct ProductIcon: View {
 private struct ProductLibraryRow: View {
   let product: Product
   let isSelected: Bool
-  let isCurrent: Bool
 
   var body: some View {
-    HStack(spacing: 14) {
-      ProductIcon(product: product, size: 48)
+    HStack(spacing: 12) {
+      ProductIcon(product: product, size: 36)
 
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 8) {
-          Text(product.name)
-            .font(.headline)
-          if isCurrent {
-            Text("OPEN")
-              .font(.caption2.weight(.bold))
-              .foregroundStyle(.green)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .background(.green.opacity(0.1), in: Capsule())
-          }
-        }
-      }
+      Text(product.name)
+        .font(.body.weight(.semibold))
 
       Spacer(minLength: 16)
 
-      VStack(alignment: .trailing, spacing: 4) {
-        Text("Updated")
-          .font(.caption2)
-          .foregroundStyle(.tertiary)
-        Text(product.updatedAt, format: .dateTime.day().month(.abbreviated).year())
-          .font(.caption)
-          .foregroundStyle(.secondary)
+      if isSelected {
+        Image(systemName: "checkmark")
+          .font(.body.weight(.semibold))
+          .foregroundStyle(Color.accentColor)
+          .frame(width: 20)
+          .accessibilityHidden(true)
       }
-
-      Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-        .font(.title3)
-        .foregroundStyle(
-          isSelected ? Color.blue : Color(nsColor: .tertiaryLabelColor)
-        )
-        .frame(width: 24)
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
     .background(
-      isSelected ? Color.accentColor.opacity(0.1) : Color(nsColor: .controlBackgroundColor),
-      in: RoundedRectangle(cornerRadius: 12)
+      isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+      in: RoundedRectangle(cornerRadius: 9)
     )
     .overlay {
-      RoundedRectangle(cornerRadius: 12)
+      RoundedRectangle(cornerRadius: 9)
         .stroke(
           isSelected
-            ? Color.accentColor.opacity(0.7)
-            : Color(nsColor: .separatorColor).opacity(0.45)
+            ? Color.accentColor.opacity(0.65)
+            : Color.clear
         )
     }
     .contentShape(Rectangle())
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
   }
 }
 
@@ -1900,30 +1895,24 @@ private struct ArchivedProductLibraryRow: View {
   let onRestore: () -> Void
 
   var body: some View {
-    HStack(spacing: 14) {
+    HStack(spacing: 12) {
       Image(systemName: "archivebox.fill")
-        .font(.title3)
+        .font(.body)
         .foregroundStyle(.secondary)
-        .frame(width: 48, height: 48)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 11))
+        .frame(width: 36, height: 36)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
 
-      VStack(alignment: .leading, spacing: 5) {
-        Text(product.name)
-          .font(.headline)
-      }
+      Text(product.name)
+        .font(.body.weight(.semibold))
 
       Spacer(minLength: 16)
 
       Button(isRestoring ? "Restoring…" : "Restore and open", action: onRestore)
         .disabled(isDisabled)
     }
-    .padding(14)
-    .frame(maxWidth: .infinity, minHeight: 82, alignment: .leading)
-    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-    .overlay {
-      RoundedRectangle(cornerRadius: 12)
-        .stroke(Color(nsColor: .separatorColor).opacity(0.45))
-    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
   }
 }
 
@@ -5769,6 +5758,7 @@ private struct InlineBacklogSuggestions: View {
       ForEach(orderedSuggestions) { suggestion in
         InlineTicketSuggestionRow(
           suggestion: suggestion,
+          epicID: batch.session.epicID,
           dependencies: relatedSuggestions(for: suggestion.dependencyIDs),
           existingDependencies: suggestion.existingDependencyWorkItemIDs.compactMap { id in
             model.workItems.first { $0.id == id }
@@ -5852,6 +5842,7 @@ private struct TicketSuggestionPlaceholderLines: View {
 private struct InlineTicketSuggestionRow: View {
   @EnvironmentObject private var model: AppModel
   let suggestion: TicketSuggestion
+  let epicID: UUID?
   let dependencies: [TicketSuggestion]
   let existingDependencies: [WorkItem]
   let cascadeDependents: [TicketSuggestion]
@@ -5873,6 +5864,11 @@ private struct InlineTicketSuggestionRow: View {
       suggestion: suggestion,
       dependents: cascadeDependents
     )
+  }
+
+  private var epicColor: Color? {
+    guard let epicID else { return nil }
+    return model.epics.first { $0.id == epicID }?.color.displayColor
   }
 
   private var rejectMenuTitle: AttributedString {
@@ -5959,6 +5955,14 @@ private struct InlineTicketSuggestionRow: View {
     )
     .overlay(alignment: .bottom) {
       Divider()
+    }
+    .overlay(alignment: .leading) {
+      if let epicColor {
+        Rectangle()
+          .fill(epicColor)
+          .frame(width: 4)
+          .accessibilityHidden(true)
+      }
     }
     .contentShape(Rectangle())
     .onTapGesture(perform: onOpen)
@@ -7699,6 +7703,7 @@ private struct RetrospectivesView: View {
           isConcluding = true
           Task {
             let didConclude = await model.concludeRetrospective(
+              productID: plan.sprint.productID,
               sprintID: plan.sprint.id
             )
             isConcluding = false
@@ -7976,6 +7981,7 @@ private struct RetrospectiveActionPanel: View {
     .sheet(isPresented: $showingProposal) {
       if let sprint {
         RetrospectiveProposalView(
+          productID: sprint.productID,
           sprintID: sprint.id,
           isPresented: $showingProposal
         )
@@ -7984,6 +7990,7 @@ private struct RetrospectiveActionPanel: View {
     .sheet(isPresented: $showingActionIdea) {
       if let sprint {
         RetrospectiveActionIdeaView(
+          productID: sprint.productID,
           sprintID: sprint.id,
           isPresented: $showingActionIdea
         )
@@ -8223,6 +8230,7 @@ private struct RetrospectiveActionCandidateRow: View {
 
 private struct RetrospectiveActionIdeaView: View {
   @EnvironmentObject private var model: AppModel
+  let productID: UUID
   let sprintID: UUID
   @Binding var isPresented: Bool
   @State private var actionIdea = ""
@@ -8294,6 +8302,7 @@ private struct RetrospectiveActionIdeaView: View {
     isSubmitting = true
     Task {
       let note = await model.captureRetrospectiveActionIdea(
+        productID: productID,
         sprintID: sprintID,
         body: actionIdea
       )
@@ -8307,6 +8316,7 @@ private struct RetrospectiveActionIdeaView: View {
 
 private struct RetrospectiveProposalView: View {
   @EnvironmentObject private var model: AppModel
+  let productID: UUID
   let sprintID: UUID
   @Binding var isPresented: Bool
   @State private var destination = RetrospectiveActionDestination.teamPractice
@@ -8415,6 +8425,7 @@ private struct RetrospectiveProposalView: View {
     isSubmitting = true
     Task {
       let note = await model.proposeRetrospectiveAction(
+        productID: productID,
         sprintID: sprintID,
         body: proposal,
         destination: destination
@@ -11393,6 +11404,10 @@ enum SprintTicketWorkLogHistory {
           case .allowed:
             body == "Allowed once: \(request.detail)"
               || body == "Always allowed for this product: \(request.detail)"
+          case .existingAccess:
+            false
+          case .policyDenied:
+            false
           case .denied:
             body == "Denied: \(request.detail)"
           case .pending, .interrupted:
@@ -12273,13 +12288,91 @@ private struct SprintTicketDetailView: View {
     }
     let isActionable = pendingPermissionRequest?.id == request.id
     let presentation = SprintPermissionRequestPresentation(request: request)
+    let isSpeditoDecision = request.status == .existingAccess
+      || request.status == .policyDenied
     return workLogArtifactRow(
-      actorName: requestProfile?.name ?? "Spedito",
-      profile: requestProfile,
+      actorName: isSpeditoDecision
+        ? "Spedito"
+        : requestProfile?.name ?? "Spedito",
+      profile: isSpeditoDecision ? nil : requestProfile,
       createdAt: request.createdAt,
       showsBottomSeparator: showsBottomSeparator
     ) {
-      VStack(alignment: .leading, spacing: 13) {
+      if request.status == .existingAccess {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(alignment: .top, spacing: 11) {
+            Image(systemName: "lock.open.fill")
+              .font(.title3)
+              .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(SprintPermissionRequestPresentation.existingAccessTitle)
+                .font(.headline)
+              Text(SprintPermissionRequestPresentation.existingAccessSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+
+          WorkLogDisclosure(
+            collapsedTitle: "Requested access",
+            tint: .green,
+            labelFont: .caption.weight(.semibold)
+          ) {
+            Text(request.detail)
+              .font(.callout)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(15)
+        .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
+        .overlay {
+          RoundedRectangle(cornerRadius: 13)
+            .stroke(Color.green.opacity(0.3), lineWidth: 1)
+        }
+      } else if request.status == .policyDenied {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack(alignment: .top, spacing: 11) {
+            Image(systemName: "lock.shield.fill")
+              .font(.title3)
+              .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+              Text(SprintPermissionRequestPresentation.protectedStorageTitle)
+                .font(.headline)
+              Text(SprintPermissionRequestPresentation.protectedStorageSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+          }
+
+          if let reason = request.reason {
+            TicketMarkdownDocument(source: reason, baseFont: .callout)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+
+          WorkLogDisclosure(
+            collapsedTitle: "Requested access",
+            tint: .orange,
+            labelFont: .caption.weight(.semibold)
+          ) {
+            Text(request.detail)
+              .font(.callout)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(15)
+        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
+        .overlay {
+          RoundedRectangle(cornerRadius: 13)
+            .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        }
+      } else {
         VStack(alignment: .leading, spacing: 13) {
           HStack(alignment: .top, spacing: 11) {
             Image(systemName: "lock.shield.fill")
@@ -12395,6 +12488,8 @@ private struct SprintTicketDetailView: View {
     switch status {
     case .pending: "Needs your input"
     case .allowed: "Allowed"
+    case .existingAccess: "Existing access"
+    case .policyDenied: "Protected"
     case .denied: "Denied"
     case .interrupted: isActionable ? "Needs your input" : "Interrupted"
     }
@@ -12407,6 +12502,8 @@ private struct SprintTicketDetailView: View {
     switch status {
     case .pending: .orange
     case .allowed: .green
+    case .existingAccess: .green
+    case .policyDenied: .orange
     case .denied: .secondary
     case .interrupted: isActionable ? .orange : .secondary
     }
@@ -12420,7 +12517,7 @@ private struct SprintTicketDetailView: View {
       } else {
         nil
       }
-    case .allowed, .denied, .interrupted:
+    case .allowed, .existingAccess, .policyDenied, .denied, .interrupted:
       nil
     }
   }
@@ -12826,7 +12923,7 @@ private struct SprintTicketDetailView: View {
       return "Reviewing"
     }
     if proposals.contains(where: { $0.status == .reviewed }) {
-      return model.requiresKnowledgeApproval ? "Your approval required" : "Publishing"
+      return model.requiresKnowledgeApproval ? "Your approval required" : "Ready to publish"
     }
     if proposals.allSatisfy({ $0.status == .accepted }) {
       return "Published"
@@ -12855,7 +12952,7 @@ private struct SprintTicketDetailView: View {
     if proposals.contains(where: { $0.status == .reviewed }) {
       return model.requiresKnowledgeApproval
         ? "The Tech Lead reviewed these durable wiki changes. Accept or reject each change before completing the ticket."
-        : "The Tech Lead reviewed these durable wiki changes. Spedito is publishing them automatically."
+        : "The Tech Lead reviewed these Product knowledge changes. They’ll be published automatically when you approve this ticket."
     }
     if proposals.allSatisfy({ $0.status == .accepted }) {
       return "Published after Tech Lead review. Open a page below to read the canonical result in the Knowledge Base."
@@ -13106,8 +13203,11 @@ private struct SprintTicketDetailView: View {
       while !Task.isCancelled {
         let isFirstLoad = !hasLoadedWorkLog
         let previousLastEntryID = workLogEntries.last?.id
-        let latestComments = await model.comments(for: item.id)
-        let latestActivityEvents = await model.activityEvents(for: item.id)
+        let latestComments = await model.comments(for: item.id, productID: item.productID)
+        let latestActivityEvents = await model.activityEvents(
+          for: item.id,
+          productID: item.productID
+        )
         if latestComments != comments {
           comments = latestComments
         }
@@ -13201,6 +13301,7 @@ private struct SprintTicketDetailView: View {
 
     if let comment = await model.appendSprintWorkLogComment(
       workItemID: item.id,
+      productID: item.productID,
       body: body
     ) {
       if !comments.contains(where: { $0.id == comment.id }) {
@@ -13239,6 +13340,7 @@ private struct SprintTicketDetailView: View {
     guard
       let comment = await model.appendOwnerComment(
         workItemID: item.id,
+        productID: item.productID,
         body: attributedBody
       )
     else {
@@ -13256,7 +13358,7 @@ private struct SprintTicketDetailView: View {
         ownerMessage: body,
         allowsProposal: false
       )
-      let latestComments = await model.comments(for: item.id)
+      let latestComments = await model.comments(for: item.id, productID: item.productID)
       if latestComments != comments {
         comments = latestComments
       }
@@ -13279,8 +13381,11 @@ private struct SprintTicketDetailView: View {
       if !didRetry {
         commentError = "Demo preparation couldn't be retried. Try again."
       }
-      let latestComments = await model.comments(for: item.id)
-      let latestActivityEvents = await model.activityEvents(for: item.id)
+      let latestComments = await model.comments(for: item.id, productID: item.productID)
+      let latestActivityEvents = await model.activityEvents(
+        for: item.id,
+        productID: item.productID
+      )
       if latestComments != comments {
         comments = latestComments
       }
@@ -13306,6 +13411,7 @@ private struct SprintTicketDetailView: View {
     isResumingWork = true
 
     if let comment = await model.resumeSprintWork(
+      productID: item.productID,
       workItemID: item.id,
       body: body,
       answeredQuestions: answeredQuestions
@@ -13343,7 +13449,7 @@ private struct SprintTicketDetailView: View {
         ownerMessage: comment.body,
         allowsProposal: false
       )
-      let latestComments = await model.comments(for: item.id)
+      let latestComments = await model.comments(for: item.id, productID: item.productID)
       if latestComments != comments {
         comments = latestComments
       }
@@ -13791,7 +13897,7 @@ private struct CanonicalKnowledgeProposalCard: View {
   private var statusTitle: String {
     switch proposal.status {
     case .proposed: "Awaiting Tech Lead"
-    case .reviewed: requiresOwnerApproval ? "Decision required" : "Publishing"
+    case .reviewed: requiresOwnerApproval ? "Decision required" : "Ready to publish"
     case .accepted: "Published"
     case .rejected: "Rejected"
     case .superseded: "Superseded"
@@ -16074,7 +16180,11 @@ private struct LegacySprintPlanningView: View {
     .onAppear(perform: prepareOnce)
     .task(id: currentWorkItemID) {
       guard let currentWorkItemID else { return }
-      let comments = await model.comments(for: currentWorkItemID)
+      guard let item = readyItems.first(where: { $0.id == currentWorkItemID }) else { return }
+      let comments = await model.comments(
+        for: currentWorkItemID,
+        productID: item.productID
+      )
       guard sendingMessageItemID != currentWorkItemID else { return }
       commentsByItemID[currentWorkItemID] = comments
     }
@@ -16569,11 +16679,15 @@ private struct LegacySprintPlanningView: View {
       guard
         await model.appendOwnerComment(
           workItemID: item.id,
+          productID: item.productID,
           body: optimisticComment.body
         ) != nil
       else {
         conversationErrorsByItemID[item.id] = "Your message couldn't be saved. Try again."
-        commentsByItemID[item.id] = await model.comments(for: item.id)
+        commentsByItemID[item.id] = await model.comments(
+          for: item.id,
+          productID: item.productID
+        )
         if sendingMessageItemID == item.id {
           sendingMessageItemID = nil
         }
@@ -16598,7 +16712,10 @@ private struct LegacySprintPlanningView: View {
       } catch {
         conversationErrorsByItemID[item.id] = error.localizedDescription
       }
-      commentsByItemID[item.id] = await model.comments(for: item.id)
+      commentsByItemID[item.id] = await model.comments(
+        for: item.id,
+        productID: item.productID
+      )
       if sendingMessageItemID == item.id {
         sendingMessageItemID = nil
       }
@@ -16631,6 +16748,7 @@ private struct LegacySprintPlanningView: View {
     ticketSaveErrorsByItemID[item.id] = nil
     Task {
       let saved = await model.updateWorkItem(
+        productID: item.productID,
         id: item.id,
         title: pending.proposal.title,
         type: pending.proposal.type,
@@ -16646,9 +16764,13 @@ private struct LegacySprintPlanningView: View {
         pendingProposals[item.id] = nil
         _ = await model.appendOwnerComment(
           workItemID: item.id,
+          productID: item.productID,
           body: "Accepted \(pending.authorName)'s proposed ticket changes."
         )
-        commentsByItemID[item.id] = await model.comments(for: item.id)
+        commentsByItemID[item.id] = await model.comments(
+          for: item.id,
+          productID: item.productID
+        )
       } else {
         ticketSaveErrorsByItemID[item.id] =
           model.errorMessage ?? "The proposal could not be applied. Reload the ticket and review it again."
@@ -16664,9 +16786,13 @@ private struct LegacySprintPlanningView: View {
     Task {
       _ = await model.appendOwnerComment(
         workItemID: item.id,
+        productID: item.productID,
         body: "Rejected \(pending.authorName)'s proposed ticket changes."
       )
-      commentsByItemID[item.id] = await model.comments(for: item.id)
+      commentsByItemID[item.id] = await model.comments(
+        for: item.id,
+        productID: item.productID
+      )
     }
   }
 
@@ -16680,6 +16806,7 @@ private struct LegacySprintPlanningView: View {
     ticketSaveErrorsByItemID[item.id] = nil
     Task {
       let saved = await model.updateWorkItem(
+        productID: item.productID,
         id: item.id,
         title: draft.title,
         type: draft.type,
@@ -17393,6 +17520,7 @@ private struct TicketDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.workspaceContainerSize) private var workspaceContainerSize
   let itemID: UUID
+  let productID: UUID
   let startRefinementOnAppear: Bool
   @State private var title: String
   @State private var type: WorkItemType
@@ -17422,6 +17550,7 @@ private struct TicketDetailView: View {
     startRefinementOnAppear: Bool = false
   ) {
     itemID = item.id
+    productID = item.productID
     self.startRefinementOnAppear = startRefinementOnAppear
     _title = State(initialValue: item.title)
     _type = State(initialValue: item.type)
@@ -17661,6 +17790,7 @@ private struct TicketDetailView: View {
 
         TicketConversationView(
           workItemID: itemID,
+          productID: productID,
           ticketSnapshot: currentDraftSnapshot,
           refreshToken: conversationRefreshToken,
           showsReview:
@@ -17837,7 +17967,7 @@ private struct TicketDetailView: View {
       let analyst = model.profiles.first(where: { $0.role == .businessAnalyst })
     else { return }
 
-    let comments = await model.comments(for: item.id)
+    let comments = await model.comments(for: item.id, productID: item.productID)
     guard
       let latest = comments.last,
       latest.authorKind == .agent,
@@ -18514,6 +18644,7 @@ private struct TicketDetailView: View {
       var saved = true
       if shouldSaveTicketFields {
         saved = await model.updateWorkItem(
+          productID: productID,
           id: itemID,
           title: title,
           type: type,
@@ -18526,6 +18657,7 @@ private struct TicketDetailView: View {
       }
       if saved, shouldSaveAssignment {
         saved = await model.assignTicketOwner(
+          productID: productID,
           workItemID: itemID,
           to: selectedAssigneeID
         )
@@ -18855,6 +18987,7 @@ private struct ConversationRespondingStatus: View {
 private struct TicketConversationView<ReviewContent: View>: View {
   @EnvironmentObject private var model: AppModel
   let workItemID: UUID
+  let productID: UUID
   let ticketSnapshot: SprintPlanningTicketSnapshot?
   let refreshToken: Int
   let showsReview: Bool
@@ -19141,7 +19274,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
       )
     }
     .task(id: refreshToken) {
-      comments = await model.comments(for: workItemID)
+      comments = await model.comments(for: workItemID, productID: productID)
       if recipientID == nil {
         recipientID = defaultRecipient?.id
       }
@@ -19149,7 +19282,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
     .onChange(of: model.ticketConversationWorkItemID) { previousID, currentID in
       guard previousID == workItemID || currentID == workItemID else { return }
       Task {
-        comments = await model.comments(for: workItemID)
+        comments = await model.comments(for: workItemID, productID: productID)
       }
     }
     .onChange(of: refinementQuestions) { _, _ in
@@ -19397,12 +19530,13 @@ private struct TicketConversationView<ReviewContent: View>: View {
       let body = "@\(businessAnalyst.name) \(answer)"
       if let comment = await model.appendOwnerComment(
         workItemID: workItemID,
+        productID: productID,
         body: body,
         answeredQuestions: answeredQuestions
       ) {
         comments.append(comment)
         await onRefinementAnswer?(answer)
-        comments = await model.comments(for: workItemID)
+        comments = await model.comments(for: workItemID, productID: productID)
       } else {
         sendError = model.errorMessage ?? "Your answers couldn't be saved. Try again."
         hasSubmittedRefinementAnswers = false
@@ -19427,6 +19561,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
     Task {
       if let comment = await model.appendOwnerComment(
         workItemID: workItemID,
+        productID: productID,
         body: body
       ) {
         comments.append(comment)
@@ -19455,7 +19590,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
         } else {
           sendError = "This ticket is no longer available."
         }
-        comments = await model.comments(for: workItemID)
+        comments = await model.comments(for: workItemID, productID: productID)
       } else {
         sendError = model.errorMessage ?? "Your message couldn't be saved. Try again."
       }

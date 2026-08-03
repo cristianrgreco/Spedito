@@ -885,8 +885,10 @@ proposes one concise outcome from the titles of the tickets in the sprint. The
 goal remains directly editable, and a small AI action beside it can generate
 another suggestion. A previously saved owner-written goal is never replaced
 automatically. The proposal is not saved or treated as approved until the owner
-reviews the text and saves the plan. The owner does not guess token counts or set
-per-ticket token budgets. The planner proposes a sprint that:
+reviews the text and saves the plan. Goal generation stops after 15 seconds if it
+has not completed, leaving the owner able to retry or write the goal directly.
+The owner does not guess token counts or set per-ticket token budgets. The planner
+proposes a sprint that:
 
 - maximizes user value within the cost and risk envelope;
 - respects dependencies and repository conflict zones;
@@ -1080,7 +1082,10 @@ Integration happens continuously as candidates become ready, not in one risky
 merge at the end of the sprint:
 
 1. The implementer creates a candidate commit and runs fast deterministic checks
-   in its ticket worktree.
+   in its ticket worktree. Delivery execution is non-interactive: it builds,
+   tests, and packages GUI products but does not open applications, automate the
+   Product Owner's desktop, or treat unavailable desktop services as a product
+   limitation or owner decision. It supplies the managed demo recipe instead.
 2. Independent Tech Lead reviews run in parallel against detached read-only
    workspaces pinned to each immutable candidate commit. Each review is one
    evidence-only pass over the contract, completion handoff, exact diff, directly
@@ -1109,6 +1114,13 @@ post-conflict re-review, and demo preparation may proceed in parallel in isolate
 worktrees. Multiple demo candidates may therefore be prepared from the accepted
 trunk current at their integration time. Product Owner acceptance and promotion to
 trunk remain serialized.
+
+The Codebase view defaults to accepted trunk history. Its history selector offers
+each ticket with recorded changes as a logical stream, including that ticket's
+candidate and detached integration commits, plus an All activity audit view. Commit
+icons and labels describe delivery meaning such as candidate, integration, Product
+knowledge, and workspace update rather than exposing Git branch topology as the
+primary explanation.
 
 If trunk advances before an integrated candidate is accepted, the queue must
 stop its stale preview, re-integrate it, and repeat demo preparation. A clean
@@ -1740,6 +1752,50 @@ overlapping structured grants into one effective access summary and revoke that
 group together while retaining the underlying audit history. Saved commands are
 shown separately and always retain exact matching semantics. **Revoke all**
 withdraws every saved grant for the selected product in one confirmed action.
+
+The assigned ticket worktree and its descendants are already read/write. Before
+asking the Product Owner about a structured permission request, Spedito combines
+that workspace access, the run's baseline transient-storage access, and capabilities
+already active for the current turn. If the complete request is covered, work
+continues without **Needs your input** or a new approval. The exact request remains
+durable for audit and appears as a compact
+**Existing access used** Work log entry that states no permissions changed.
+Identical covered requests in the same turn do not add duplicate entries. Access
+to sibling worktrees or other products is never inferred this way. Patterned
+filesystem rules and network scopes must be covered by an exact active current-turn
+capability; malformed rules and permissions from expired turns remain reviewable.
+
+Delivery agents use workspace-relative paths for repository edits rather than
+repeating the generated absolute worktree prefix. A native Codex file-change approval
+does not carry the exact structured filesystem scope Spedito requires for an informed
+decision, so the adapter declines it before it reaches application state; it does not
+create **Needs your input** or a permission Work log entry. This does not prohibit an
+authorised global configuration change. The agent must first use the structured
+permission tool to name the smallest exact external path, requested access, and ticket
+purpose. Once that capability is approved, the agent retries the edit within the
+expanded boundary.
+
+Every new or resumed macOS delivery run also receives baseline read/write access
+to the current user's Darwin temporary directory, Darwin cache directory, and
+Foundation user cache directory (normally `~/Library/Caches`). Spedito resolves
+and canonicalises those operating-system locations when it creates or resumes the
+run; generated paths are never persisted as Product Owner grants. This deliberately
+favours predictable local-toolchain execution over isolation from other applications'
+temporary and cached data for the same macOS account. Agents are instructed to use
+the locations only for tool-managed transient data and not to inspect unrelated
+contents.
+
+Broad cache access does not cross Spedito's own execution boundaries. Product,
+integration, preview, and other ticket workspaces remain protected from a delivery
+agent. A request that overlaps those locations is declined by Spedito without
+**Needs your input** and appears as a compact, non-actionable **Protected Spedito
+storage** Work log entry. The agent is told to continue in its assigned ticket
+workspace. A managed demo receives its own exact PreviewWorktree automatically.
+It does not inherit the broad Foundation cache grant used by delivery agents;
+Spedito redirects its temporary and cache state into that assigned preview and
+checks nested writes there before executing reviewed candidate code. If this
+infrastructure check fails, the reviewed candidate is preserved for host retry
+instead of being returned to the Implementer.
 
 Page selection prioritises direct provenance, canonical subject and title
 relevance, and prerequisite handoffs. Full-body term overlap is capped so a long

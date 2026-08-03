@@ -4,6 +4,7 @@ public enum SprintGoalGenerationError: Error, Equatable, LocalizedError, Sendabl
   case invalidResponse(String)
   case anotherCodexTaskIsRunning
   case noTickets
+  case timedOut
 
   public var errorDescription: String? {
     switch self {
@@ -13,11 +14,15 @@ public enum SprintGoalGenerationError: Error, Equatable, LocalizedError, Sendabl
       "Another team response is already running. Wait for it to finish and try again."
     case .noTickets:
       "Add at least one ticket to the sprint before generating its goal."
+    case .timedOut:
+      "The sprint goal took longer than 15 seconds. Try again."
     }
   }
 }
 
 public enum CodexSprintGoalGenerator {
+  public static let totalTimeout: Duration = .seconds(15)
+
   private static let platformInstructions = """
     You are the Business Analyst helping a Product Owner name the outcome of one planned sprint.
     This is a read-only writing task. Use only the supplied ticket titles as evidence of sprint scope;
@@ -37,19 +42,28 @@ public enum CodexSprintGoalGenerator {
     JSON requested by the schema.
     """
 
-  public static func developerInstructions(
-    productInstructions: String,
-    customInstructions: String
-  ) -> String {
-    """
-    \(platformInstructions)
+  public static var developerInstructions: String {
+    platformInstructions
+  }
 
-    \(CodexLifecycleGuidance.configuredRoleGuidance(
-      role: .businessAnalyst,
-      productInstructions: productInstructions,
-      customInstructions: customInstructions
-    ))
-    """
+  public static func lightestReasoningEffort(
+    supportedEfforts: [String],
+    fallback: String
+  ) -> String {
+    let preferredOrder = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]
+    for effort in preferredOrder where supportedEfforts.contains(effort) {
+      return effort
+    }
+    return supportedEfforts.first ?? fallback
   }
 
   public static func prompt(

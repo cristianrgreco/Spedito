@@ -6,6 +6,7 @@ import SpeditoCore
 
 enum DemoLauncherError: Error, LocalizedError {
   case appServerUnavailable
+  case managedWorkspaceUnavailable(String)
   case commandFailed(String)
   case commandTimedOut(String)
   case serviceStopped(String)
@@ -18,6 +19,8 @@ enum DemoLauncherError: Error, LocalizedError {
     switch self {
     case .appServerUnavailable:
       "The managed Codex runtime is not connected. Reconnect it before opening this demo."
+    case .managedWorkspaceUnavailable(let detail):
+      "Spedito could not write inside the assigned managed demo workspace.\(detail.isEmpty ? "" : " \(detail)")"
     case .commandFailed(let detail):
       "The demo preparation did not finish successfully.\(detail.isEmpty ? "" : " \(detail)")"
     case .commandTimedOut(let name):
@@ -53,7 +56,8 @@ enum DemoPreparationFailurePolicy {
     case .commandFailed, .commandTimedOut, .serviceStopped,
       .readinessTimedOut, .missingPresentation:
       .correctCandidate
-    case .appServerUnavailable, .couldNotOpen, .couldNotAllocatePort:
+    case .appServerUnavailable, .managedWorkspaceUnavailable, .couldNotOpen,
+      .couldNotAllocatePort:
       .retryPreparation
     }
   }
@@ -65,10 +69,61 @@ struct DemoLaunchOutcome: Equatable {
 }
 
 @MainActor
+protocol DemoRunningApplication: AnyObject {
+  var isTerminated: Bool { get }
+
+  func activateForDemo()
+  func terminateForDemo()
+}
+
+extension NSRunningApplication: DemoRunningApplication {
+  func activateForDemo() {
+    activate()
+  }
+
+  func terminateForDemo() {
+    terminate()
+  }
+}
+
+@MainActor
+protocol DemoApplicationOpening {
+  func openApplication(at applicationURL: URL) async throws -> any DemoRunningApplication
+}
+
+@MainActor
+private final class WorkspaceDemoApplicationOpener: DemoApplicationOpening {
+  private let workspace: NSWorkspace
+
+  init(workspace: NSWorkspace) {
+    self.workspace = workspace
+  }
+
+  func openApplication(at applicationURL: URL) async throws -> any DemoRunningApplication {
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    configuration.createsNewApplicationInstance = true
+    return try await withCheckedThrowingContinuation { continuation in
+      workspace.openApplication(at: applicationURL, configuration: configuration) {
+        application,
+        error in
+        if let application {
+          continuation.resume(returning: application)
+        } else {
+          continuation.resume(
+            throwing: error ?? CocoaError(.executableNotLoadable)
+          )
+        }
+      }
+    }
+  }
+}
+
+@MainActor
 final class MacOSDemoLauncher {
   private struct Runtime {
     let processID: String?
-    let application: NSRunningApplication?
+    let application: (any DemoRunningApplication)?
     let presentationURL: URL?
     let output: String?
     let allocatedPort: Int?
@@ -78,17 +133,21 @@ final class MacOSDemoLauncher {
   private var executor: (any CodexManagedCommandExecuting)?
   private let fileManager: FileManager
   private let workspace: NSWorkspace
+  private let applicationOpener: any DemoApplicationOpening
   private let urlSession: URLSession
 
   init(
     executor: (any CodexManagedCommandExecuting)? = nil,
     fileManager: FileManager = .default,
     workspace: NSWorkspace = .shared,
+    applicationOpener: (any DemoApplicationOpening)? = nil,
     urlSession: URLSession? = nil
   ) {
     self.executor = executor
     self.fileManager = fileManager
     self.workspace = workspace
+    self.applicationOpener = applicationOpener
+      ?? WorkspaceDemoApplicationOpener(workspace: workspace)
     self.urlSession = urlSession ?? Self.makeReadinessURLSession()
   }
 
@@ -107,6 +166,7 @@ final class MacOSDemoLauncher {
   ) async throws -> String? {
     try DemoLaunchSpecificationValidator.validate(specification)
     await stop(candidateID: candidateID)
+    try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
     try await runPreparation(
       specification.preparationCommands,
       workspaceURL: workspaceURL
@@ -122,7 +182,7 @@ final class MacOSDemoLauncher {
       await stop(candidateID: candidateID)
       return nil
     case .macApplication:
-      _ = try applicationExecutable(
+      _ = try applicationURL(
         specification: specification,
         workspaceURL: workspaceURL
       )
@@ -148,23 +208,28 @@ final class MacOSDemoLauncher {
   ) async throws -> DemoLaunchOutcome {
     try DemoLaunchSpecificationValidator.validate(specification)
     if let existing = runtimes[candidateID] {
-      if let processID = existing.processID,
-        await isRunning(processID: processID)
-      {
-        if let presentationURL = existing.presentationURL {
-          _ = workspace.open(presentationURL)
-        } else {
-          existing.application?.activate()
-        }
-        return DemoLaunchOutcome(
-          output: existing.output,
-          allocatedPort: existing.allocatedPort
-        )
-      }
       if let processID = existing.processID {
+        if await isRunning(processID: processID) {
+          if let presentationURL = existing.presentationURL {
+            _ = workspace.open(presentationURL)
+          }
+          return DemoLaunchOutcome(
+            output: existing.output,
+            allocatedPort: existing.allocatedPort
+          )
+        }
         await executor?.terminateManagedCommand(processID: processID)
-      }
-      if existing.processID == nil {
+        runtimes.removeValue(forKey: candidateID)
+      } else if let application = existing.application {
+        if !application.isTerminated {
+          application.activateForDemo()
+          return DemoLaunchOutcome(
+            output: existing.output,
+            allocatedPort: existing.allocatedPort
+          )
+        }
+        runtimes.removeValue(forKey: candidateID)
+      } else {
         if let presentationURL = existing.presentationURL {
           _ = workspace.open(presentationURL)
         }
@@ -173,9 +238,9 @@ final class MacOSDemoLauncher {
           allocatedPort: existing.allocatedPort
         )
       }
-      runtimes.removeValue(forKey: candidateID)
     }
 
+    try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
     try await runPreparation(
       specification.preparationCommands,
       workspaceURL: workspaceURL
@@ -191,42 +256,19 @@ final class MacOSDemoLauncher {
       runtimes[candidateID] = runtime
       return DemoLaunchOutcome(output: nil, allocatedPort: runtime.allocatedPort)
     case .macApplication:
-      let executable = try applicationExecutable(
+      let applicationURL = try applicationURL(
         specification: specification,
         workspaceURL: workspaceURL
       )
-      let bundleIdentifier = Bundle(url: executable.deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent())?.bundleIdentifier
-      let existingApplicationIDs = Set(
-        bundleIdentifier.map {
-          NSRunningApplication.runningApplications(withBundleIdentifier: $0)
-            .map(\.processIdentifier)
-        } ?? []
-      )
-      let processID = try await startProcess(
-        DemoCommand(
-          executable: executable.path,
-          arguments: [],
-          workingDirectory: ".",
-          timeoutSeconds: 900
-        ),
-        workspaceURL: workspaceURL,
-        port: nil
-      )
-      try await Task.sleep(for: .milliseconds(500))
-      guard await isRunning(processID: processID) else {
-        let detail = await outputSummary(processID: processID)
-        await executor?.terminateManagedCommand(processID: processID)
-        throw DemoLauncherError.serviceStopped(detail)
+      let application: any DemoRunningApplication
+      do {
+        application = try await applicationOpener.openApplication(at: applicationURL)
+      } catch {
+        throw DemoLauncherError.couldNotOpen(specification.title)
       }
-      let application = bundleIdentifier.flatMap { identifier in
-        NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
-          .first { !existingApplicationIDs.contains($0.processIdentifier) }
-      }
-      application?.activate()
+      application.activateForDemo()
       runtimes[candidateID] = Runtime(
-        processID: processID,
+        processID: nil,
         application: application,
         presentationURL: nil,
         output: nil,
@@ -274,7 +316,7 @@ final class MacOSDemoLauncher {
       }
     }
     if runtime.application?.isTerminated == false {
-      runtime.application?.terminate()
+      runtime.application?.terminateForDemo()
     }
   }
 
@@ -338,6 +380,33 @@ final class MacOSDemoLauncher {
   ) async throws {
     for command in commands {
       _ = try await runToCompletion(command, workspaceURL: workspaceURL)
+    }
+  }
+
+  private func verifyManagedWorkspaceAccess(workspaceURL: URL) async throws {
+    guard let executor else { throw DemoLauncherError.appServerUnavailable }
+    let accessCheckRoot = workspaceURL
+      .appendingPathComponent(".spedito-demo-runtime", isDirectory: true)
+      .appendingPathComponent("access-check", isDirectory: true)
+    let nestedDirectory = accessCheckRoot
+      .appendingPathComponent("nested", isDirectory: true)
+    defer { try? fileManager.removeItem(at: accessCheckRoot) }
+    let request = try managedRequest(
+      DemoCommand(
+        executable: "/bin/mkdir",
+        arguments: ["-p", nestedDirectory.path],
+        workingDirectory: ".",
+        timeoutSeconds: 10
+      ),
+      workspaceURL: workspaceURL,
+      port: nil,
+      hasTimeout: true
+    )
+    let result = try await executor.runManagedCommand(request)
+    guard result.exitCode == 0 else {
+      throw DemoLauncherError.managedWorkspaceUnavailable(
+        ownerFacingLogSummary(result.combinedOutput)
+      )
     }
   }
 
@@ -532,7 +601,7 @@ final class MacOSDemoLauncher {
     return url
   }
 
-  private func applicationExecutable(
+  private func applicationURL(
     specification: DemoLaunchSpecification,
     workspaceURL: URL
   ) throws -> URL {
@@ -549,7 +618,7 @@ final class MacOSDemoLauncher {
         specification.presentation.path ?? "the reviewed app"
       )
     }
-    return executable
+    return applicationURL
   }
 
   private func allocateLoopbackPort() throws -> Int {

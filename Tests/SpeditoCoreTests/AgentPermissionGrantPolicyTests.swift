@@ -150,6 +150,195 @@ struct AgentPermissionGrantPolicyTests {
     )
   }
 
+  @Test("The writable ticket workspace and current-turn access jointly cover a request")
+  func activeRunCoverage() throws {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let turnID = "turn-current"
+    let workspace = URL(fileURLWithPath: "/private/tmp/spedito/ticket")
+    let hostTemporaryDirectory = "/private/var/folders/example/T"
+    let previouslyAllowed = permissionValue(
+      readPaths: ["/Applications/Xcode.app", hostTemporaryDirectory],
+      writePaths: [hostTemporaryDirectory]
+    )
+    let previousSignature = try #require(
+      try productSignature(for: previouslyAllowed)
+    )
+    let previousRequest = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: turnID,
+      serverRequestID: "request-1",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read Xcode and use its temporary cache",
+      signature: "request-1-signature",
+      productGrantSignature: previousSignature,
+      status: .allowed
+    )
+    let repeated = permissionValue(
+      readPaths: [
+        "/Applications/Xcode.app",
+        hostTemporaryDirectory,
+        workspace.appendingPathComponent(".run-private").path,
+      ],
+      writePaths: [hostTemporaryDirectory]
+    )
+    let repeatedSignature = try #require(try productSignature(for: repeated))
+
+    #expect(
+      AgentPermissionGrantPolicy.coversActiveRunRequest(
+        productGrantSignature: repeatedSignature,
+        kind: .permissions,
+        turnID: turnID,
+        ticketWorkspaceRoot: workspace,
+        requests: [previousRequest]
+      )
+    )
+    #expect(
+      !AgentPermissionGrantPolicy.coversActiveRunRequest(
+        productGrantSignature: repeatedSignature,
+        kind: .permissions,
+        turnID: "turn-later",
+        ticketWorkspaceRoot: workspace,
+        requests: [previousRequest]
+      )
+    )
+  }
+
+  @Test("Workspace coverage excludes siblings and standardized escape paths")
+  func ticketWorkspaceCoverageIsBounded() throws {
+    let workspace = URL(fileURLWithPath: "/private/tmp/spedito/ticket")
+    let inside = try #require(
+      try productSignature(
+        for: permissionValue(
+          paths: [workspace.appendingPathComponent(".run-private/cache").path]
+        )
+      )
+    )
+    let sibling = try #require(
+      try productSignature(
+        for: permissionValue(paths: ["/private/tmp/spedito/ticket-other/cache"])
+      )
+    )
+    let escaped = try #require(
+      try productSignature(
+        for: permissionValue(paths: ["/private/tmp/spedito/ticket/../other/cache"])
+      )
+    )
+    let transient = try #require(
+      try productSignature(
+        for: permissionValue(paths: ["/private/var/folders/example/T/tool/cache"])
+      )
+    )
+    let transientParent = try #require(
+      try productSignature(
+        for: permissionValue(paths: ["/private/var/folders/example"])
+      )
+    )
+
+    #expect(
+      AgentPermissionGrantPolicy.coversActiveRunRequest(
+        productGrantSignature: inside,
+        kind: .permissions,
+        turnID: "turn",
+        ticketWorkspaceRoot: workspace,
+        requests: []
+      )
+    )
+    #expect(
+      AgentPermissionGrantPolicy.coversActiveRunRequest(
+        productGrantSignature: transient,
+        kind: .permissions,
+        turnID: "turn",
+        ticketWorkspaceRoot: workspace,
+        writableTransientStorageRoots: [
+          URL(fileURLWithPath: "/private/var/folders/example/T")
+        ],
+        requests: []
+      )
+    )
+    #expect(
+      !AgentPermissionGrantPolicy.coversActiveRunRequest(
+        productGrantSignature: transientParent,
+        kind: .permissions,
+        turnID: "turn",
+        ticketWorkspaceRoot: workspace,
+        writableTransientStorageRoots: [
+          URL(fileURLWithPath: "/private/var/folders/example/T")
+        ],
+        requests: []
+      )
+    )
+    for signature in [sibling, escaped] {
+      #expect(
+        !AgentPermissionGrantPolicy.coversActiveRunRequest(
+          productGrantSignature: signature,
+          kind: .permissions,
+          turnID: "turn",
+          ticketWorkspaceRoot: workspace,
+          requests: []
+        )
+      )
+    }
+  }
+
+  @Test("Delivery requests cannot cross into Spedito-owned execution storage")
+  func protectedSpeditoStorageIsRejected() throws {
+    let workspace = URL(
+      fileURLWithPath: "/Users/example/Library/Application Support/Spedito/Run Worktrees/product/t2"
+    )
+    let runWorktrees = URL(
+      fileURLWithPath: "/Users/example/Library/Application Support/Spedito/Run Worktrees"
+    )
+    let previews = URL(
+      fileURLWithPath: "/Users/example/Library/Caches/Spedito/PreviewWorktrees"
+    )
+    let ownStorage = try #require(
+      try productSignature(
+        for: permissionValue(paths: [workspace.appendingPathComponent(".run-private").path])
+      )
+    )
+    let siblingStorage = try #require(
+      try productSignature(
+        for: permissionValue(paths: [runWorktrees.appendingPathComponent("product/t3").path])
+      )
+    )
+    let previewStorage = try #require(
+      try productSignature(
+        for: permissionValue(paths: [previews.appendingPathComponent("candidate").path])
+      )
+    )
+    let broadCacheStorage = try #require(
+      try productSignature(
+        for: permissionValue(paths: ["/Users/example/Library/Caches"])
+      )
+    )
+
+    #expect(
+      !AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
+        productGrantSignature: ownStorage,
+        kind: .permissions,
+        ticketWorkspaceRoot: workspace,
+        protectedStorageRoots: [runWorktrees, previews]
+      )
+    )
+    for signature in [siblingStorage, previewStorage, broadCacheStorage] {
+      #expect(
+        AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
+          productGrantSignature: signature,
+          kind: .permissions,
+          ticketWorkspaceRoot: workspace,
+          protectedStorageRoots: [runWorktrees, previews]
+        )
+      )
+    }
+  }
+
   @Test("Settings group effective capabilities while preserving exact commands")
   func effectiveAccessGroups() {
     let productID = UUID()
@@ -217,21 +406,42 @@ struct AgentPermissionGrantPolicyTests {
     paths: [String],
     includesNetwork: Bool = false
   ) -> JSONValue {
-    .object([
-      "fileSystem": paths.isEmpty
+    permissionValue(
+      readPaths: paths,
+      writePaths: [],
+      includesNetwork: includesNetwork
+    )
+  }
+
+  private func permissionValue(
+    readPaths: [String],
+    writePaths: [String],
+    includesNetwork: Bool = false
+  ) -> JSONValue {
+    let entries = readPaths.map { path in
+      JSONValue.object([
+        "access": .string("read"),
+        "path": .object([
+          "path": .string(path),
+          "type": .string("path"),
+        ]),
+      ])
+    } + writePaths.map { path in
+      JSONValue.object([
+        "access": .string("write"),
+        "path": .object([
+          "path": .string(path),
+          "type": .string("path"),
+        ]),
+      ])
+    }
+    return .object([
+      "fileSystem": entries.isEmpty
         ? .null
         : .object([
-          "entries": .array(paths.map { path in
-            .object([
-              "access": .string("read"),
-              "path": .object([
-                "path": .string(path),
-                "type": .string("path"),
-              ]),
-            ])
-          }),
-          "read": .array(paths.map(JSONValue.string)),
-          "write": .null,
+          "entries": .array(entries),
+          "read": .array(readPaths.map(JSONValue.string)),
+          "write": .array(writePaths.map(JSONValue.string)),
         ]),
       "network": includesNetwork
         ? .object(["enabled": .bool(true)])

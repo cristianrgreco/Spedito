@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public enum CodexPermissionProfiles {
@@ -39,31 +40,43 @@ public enum CodexPermissionProfiles {
     return environment
   }
 
-  public static let appServerArguments = [
-    "-c",
-    #"default_permissions=":read-only""#,
-    "-c",
-    requestPermissionsFeatureOverride,
-    "-c",
-    deliveryProfileOverride,
-    "-c",
-    demoProfileOverride(workspaceRootPath: nil),
-    "app-server",
-    "--listen",
-    "stdio://",
-  ]
+  public static var appServerArguments: [String] {
+    appServerArguments(
+      demoWorkspaceRoot: nil,
+      writableTransientStorageRoots: macOSUserTransientStorageRoots
+    )
+  }
 
   public static func appServerArguments(demoWorkspaceRoot: URL) -> [String] {
-    [
+    appServerArguments(
+      demoWorkspaceRoot: demoWorkspaceRoot,
+      writableTransientStorageRoots: macOSUserTransientStorageRoots
+    )
+  }
+
+  static func appServerArguments(
+    demoWorkspaceRoot: URL?,
+    writableTransientStorageRoots: [URL]
+  ) -> [String] {
+    let demoTransientStorageRoots = managedDemoTransientStorageRoots(
+      from: writableTransientStorageRoots,
+      demoWorkspaceRoot: demoWorkspaceRoot
+    )
+    return [
       "-c",
       #"default_permissions=":read-only""#,
       "-c",
       requestPermissionsFeatureOverride,
       "-c",
-      deliveryProfileOverride,
+      deliveryProfileOverrideValue(
+        readOnlyGitDirectory: nil,
+        readOnlyProductDirectory: nil,
+        writableTransientStorageRoots: writableTransientStorageRoots
+      ),
       "-c",
       demoProfileOverride(
-        workspaceRootPath: demoWorkspaceRoot.standardizedFileURL.path
+        workspaceRootPath: demoWorkspaceRoot?.standardizedFileURL.path,
+        writableTransientStorageRoots: demoTransientStorageRoots
       ),
       "app-server",
       "--listen",
@@ -87,9 +100,96 @@ public enum CodexPermissionProfiles {
     ":workspace_roots"={"."="write","**/.env"="deny","**/.env.*"="deny"}
     """#
 
+  public static var macOSUserTransientStorageRoots: [URL] {
+    normalizedStorageRoots(
+      darwinTemporaryDirectory: darwinUserDirectory(_CS_DARWIN_USER_TEMP_DIR),
+      darwinCacheDirectory: darwinUserDirectory(_CS_DARWIN_USER_CACHE_DIR),
+      foundationCacheDirectory: FileManager.default.urls(
+        for: .cachesDirectory,
+        in: .userDomainMask
+      ).first
+    )
+  }
+
+  static func normalizedStorageRoots(
+    darwinTemporaryDirectory: URL?,
+    darwinCacheDirectory: URL?,
+    foundationCacheDirectory: URL?
+  ) -> [URL] {
+    var seen: Set<String> = []
+    return [
+      darwinTemporaryDirectory,
+      darwinCacheDirectory,
+      foundationCacheDirectory,
+    ].compactMap { candidate in
+      guard let candidate else { return nil }
+      let normalized = canonicalStorageURL(candidate)
+      guard normalized.path.hasPrefix("/"), normalized.path != "/" else { return nil }
+      guard seen.insert(normalized.path).inserted else { return nil }
+      return normalized
+    }
+  }
+
+  private static func canonicalStorageURL(_ candidate: URL) -> URL {
+    let standardized = candidate.standardizedFileURL
+    let path: String
+    if standardized.path == "/var" {
+      path = "/private/var"
+    } else if standardized.path.hasPrefix("/var/") {
+      path = "/private" + standardized.path
+    } else {
+      path = standardized.path
+    }
+    return URL(fileURLWithPath: path, isDirectory: true)
+      .standardizedFileURL
+      .resolvingSymlinksInPath()
+  }
+
+  public static var protectedSpeditoDeliveryStorageRoots: [URL] {
+    let fileManager = FileManager.default
+    var roots: [URL] = []
+    if let applicationSupport = fileManager.urls(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask
+    ).first {
+      let spedito = applicationSupport.appendingPathComponent("Spedito", isDirectory: true)
+      roots.append(contentsOf: [
+        spedito.appendingPathComponent("Product Workspaces", isDirectory: true),
+        spedito.appendingPathComponent("Run Worktrees", isDirectory: true),
+        spedito.appendingPathComponent("Integration Worktrees", isDirectory: true),
+      ])
+    }
+    if let caches = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first {
+      roots.append(
+        caches
+          .appendingPathComponent("Spedito", isDirectory: true)
+          .appendingPathComponent("PreviewWorktrees", isDirectory: true)
+      )
+    }
+    return roots.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+  }
+
+  static func managedDemoTransientStorageRoots(
+    from writableTransientStorageRoots: [URL],
+    demoWorkspaceRoot: URL? = nil,
+    protectedStorageRoots: [URL] = protectedSpeditoDeliveryStorageRoots
+  ) -> [URL] {
+    let protectedPaths = (protectedStorageRoots + [demoWorkspaceRoot].compactMap { $0 }).map {
+      $0.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+    return writableTransientStorageRoots.filter { candidate in
+      let path = candidate.standardizedFileURL.resolvingSymlinksInPath().path
+      let prefix = path.hasSuffix("/") ? path : "\(path)/"
+      return !protectedPaths.contains { protectedPath in
+        protectedPath == path || protectedPath.hasPrefix(prefix)
+      }
+    }
+  }
+
   private static func deliveryProtectedFilesystemEntries(
     readOnlyGitDirectory: URL?,
-    readOnlyProductDirectory: URL?
+    readOnlyProductDirectory: URL?,
+    writableTransientStorageRoots: [URL]
   ) -> String {
     let gitEntry = readOnlyGitDirectory.map {
       #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
@@ -97,6 +197,13 @@ public enum CodexPermissionProfiles {
     let productEntry = readOnlyProductDirectory.map {
       #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
     } ?? ""
+    let transientEntries = writableTransientStorageRoots.map {
+      #""\#(tomlEscaped($0.standardizedFileURL.path))"="write","#
+    }.joined()
+    let protectedPreviewEntries = protectedSpeditoDeliveryStorageRoots
+      .filter { $0.path.contains("/Library/Caches/Spedito/PreviewWorktrees") }
+      .map { #""\#(tomlEscaped($0.path))"="deny","# }
+      .joined()
     return normalizedFilesystemEntries(
       #"":minimal"="read","#
         + credentialDenyEntries + ","
@@ -109,21 +216,27 @@ public enum CodexPermissionProfiles {
         + #""~/Library/Application Support/StoryPointless/storypointless.sqlite"="deny","#
         + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-wal"="deny","#
         + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-shm"="deny","#
+        + transientEntries
+        + protectedPreviewEntries
         + gitEntry
         + productEntry
         + workspaceRootEntries
     )
   }
 
-  static let deliveryProfileOverride =
+  static var deliveryProfileOverride: String {
     deliveryProfileOverrideValue(
       readOnlyGitDirectory: nil,
-      readOnlyProductDirectory: nil
+      readOnlyProductDirectory: nil,
+      writableTransientStorageRoots: macOSUserTransientStorageRoots
     )
+  }
 
   static func deliveryThreadConfiguration(
-    readOnlyGitDirectory: URL,
-    readOnlyProductDirectory: URL? = nil
+    readOnlyGitDirectory: URL?,
+    readOnlyProductDirectory: URL? = nil,
+    writableTransientStorageRoots: [URL] = macOSUserTransientStorageRoots,
+    protectedStorageRoots: [URL] = protectedSpeditoDeliveryStorageRoots
   ) -> JSONValue {
     var filesystem: [String: JSONValue] = [
       ":minimal": .string("read"),
@@ -151,14 +264,24 @@ public enum CodexPermissionProfiles {
         "**/.env.*": .string("deny"),
       ]),
     ]
-    filesystem[readOnlyGitDirectory.standardizedFileURL.path] = .string("read")
+    for root in writableTransientStorageRoots {
+      filesystem[root.standardizedFileURL.resolvingSymlinksInPath().path] = .string("write")
+    }
+    for root in protectedStorageRoots where
+      root.path.contains("/Library/Caches/Spedito/PreviewWorktrees")
+    {
+      filesystem[root.standardizedFileURL.resolvingSymlinksInPath().path] = .string("deny")
+    }
+    if let readOnlyGitDirectory {
+      filesystem[readOnlyGitDirectory.standardizedFileURL.path] = .string("read")
+    }
     if let readOnlyProductDirectory {
       filesystem[readOnlyProductDirectory.standardizedFileURL.path] = .string("read")
     }
     return .object([
       "permissions.\(delivery)": .object([
         "description": .string(
-          "Ticket worktree writes with read-only product Git and scoped runtime opt-in"
+          "Ticket worktree and macOS transient storage writes with read-only product Git"
         ),
         "filesystem": .object(filesystem),
         "network": .object(["enabled": .bool(false)]),
@@ -168,24 +291,36 @@ public enum CodexPermissionProfiles {
 
   static func deliveryProfileOverrideValue(
     readOnlyGitDirectory: URL?,
-    readOnlyProductDirectory: URL? = nil
+    readOnlyProductDirectory: URL? = nil,
+    writableTransientStorageRoots: [URL] = macOSUserTransientStorageRoots
   ) -> String {
-    #"permissions.\#(delivery)={description="Ticket worktree writes with read-only product Git and product context",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory, readOnlyProductDirectory: readOnlyProductDirectory))},network={enabled=false}}"#
+    #"permissions.\#(delivery)={description="Ticket worktree and macOS transient storage writes with read-only product Git",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory, readOnlyProductDirectory: readOnlyProductDirectory, writableTransientStorageRoots: writableTransientStorageRoots))},network={enabled=false}}"#
   }
 
-  private static let demoProtectedFilesystemEntries = normalizedFilesystemEntries(
-    #"":root"="read","#
-      + credentialDenyEntries + ","
-      + #""~/Library/Application Support/Spedito"="deny","#
-      + #""~/Library/Application Support/StoryPointless"="deny","#
-      + workspaceRootEntries
-  )
+  private static func demoProtectedFilesystemEntries(
+    writableTransientStorageRoots: [URL]
+  ) -> String {
+    let transientEntries = writableTransientStorageRoots.map {
+      #""\#(tomlEscaped($0.standardizedFileURL.path))"="write","#
+    }.joined()
+    return normalizedFilesystemEntries(
+      #"":root"="read","#
+        + credentialDenyEntries + ","
+        + #""~/Library/Application Support/Spedito"="deny","#
+        + #""~/Library/Application Support/StoryPointless"="deny","#
+        + transientEntries
+        + workspaceRootEntries
+    )
+  }
 
-  private static func demoProfileOverride(workspaceRootPath: String?) -> String {
+  private static func demoProfileOverride(
+    workspaceRootPath: String?,
+    writableTransientStorageRoots: [URL]
+  ) -> String {
     let workspaceRoots = workspaceRootPath.map {
       #",workspace_roots={"\#(tomlEscaped($0))"=true}"#
     } ?? ""
-    return #"permissions.\#(demo)={description="Reviewed demo with loopback-only network",filesystem={\#(demoProtectedFilesystemEntries)},network={enabled=true,domains={"localhost"="allow","127.0.0.1"="allow"}}\#(workspaceRoots)}"#
+    return #"permissions.\#(demo)={description="Reviewed demo with macOS transient storage and loopback-only network",filesystem={\#(demoProtectedFilesystemEntries(writableTransientStorageRoots: writableTransientStorageRoots))},network={enabled=true,domains={"localhost"="allow","127.0.0.1"="allow"}}\#(workspaceRoots)}"#
   }
 
   private static func normalizedFilesystemEntries(_ value: String) -> String {
@@ -202,6 +337,18 @@ public enum CodexPermissionProfiles {
       .replacingOccurrences(of: #"""#, with: #"\""#)
       .replacingOccurrences(of: "\n", with: #"\n"#)
       .replacingOccurrences(of: "\r", with: #"\r"#)
+  }
+
+  private static func darwinUserDirectory(_ name: Int32) -> URL? {
+    let requiredSize = confstr(name, nil, 0)
+    guard requiredSize > 0 else { return nil }
+    var buffer = [CChar](repeating: 0, count: requiredSize)
+    guard confstr(name, &buffer, requiredSize) > 0 else { return nil }
+    let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+    return URL(
+      fileURLWithPath: String(decoding: bytes, as: UTF8.self),
+      isDirectory: true
+    )
   }
 
   private static func activeDeveloperDirectory() -> String? {
@@ -455,6 +602,8 @@ public enum CodexApprovalError: Error, Equatable, LocalizedError, Sendable {
 public enum AgentPermissionRequestStatus: String, Codable, Sendable {
   case pending
   case allowed
+  case existingAccess = "existing_access"
+  case policyDenied = "policy_denied"
   case denied
   case interrupted
 

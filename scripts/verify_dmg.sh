@@ -49,11 +49,11 @@ mounted=true
   fail "The DMG does not contain the Applications shortcut."
 [[ "$(readlink "$mount_dir/Applications")" == "/Applications" ]] ||
   fail "The Applications shortcut does not target /Applications."
-[[ -f "$mount_dir/.background/DMGBackground.png" ]] ||
+[[ -f "$mount_dir/.background/DMGBackground.tiff" ]] ||
   fail "The DMG background is missing."
 cmp -s \
-  "$project_root/Distribution/DMGBackground.png" \
-  "$mount_dir/.background/DMGBackground.png" ||
+  "$project_root/Distribution/DMGBackground.tiff" \
+  "$mount_dir/.background/DMGBackground.tiff" ||
   fail "The DMG background does not match the release asset."
 [[ -s "$mount_dir/.DS_Store" ]] ||
   fail "The Finder drag-and-drop layout was not persisted."

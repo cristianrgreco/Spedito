@@ -279,12 +279,26 @@ contain executable and argument arrays, never shell command strings. Working
 directories and artifacts resolve inside the reviewed checkout, browser URLs
 contain only a path, and Spedito allocates and injects the loopback port.
 
+The delivery sandbox is intentionally non-interactive and does not own the logged-in
+desktop session. An implementer does not call operating-system GUI launchers, run a
+graphical executable to prove that a window appears, or automate desktop interaction.
+Unavailable Launch Services, appearance, window-server, or activation facilities in
+that sandbox are expected isolation rather than a product limitation, missing
+permission, or Product Owner decision. The implementer verifies the build, tests,
+package, and non-interactive readiness evidence, then returns the typed recipe. Only
+Spedito's post-review managed demo path opens the presentation; failures there are
+classified as candidate-controlled correction or host/runtime retry.
+
 After Tech Lead approval, Spedito creates or reuses a detached preview
 worktree pinned to the current integrated SHA and smoke-tests the recipe without
 opening its presentation. A candidate enters **Ready for Demo** only after that
 test succeeds. The Product Owner's **Demo** action prepares the same exact
-revision, starts or reuses the managed process, waits for typed readiness, and
-opens the browser, app, artifact, or captured result.
+revision, starts or reuses a managed service where the recipe requires one, waits
+for typed readiness, and opens the browser, app, artifact, or captured result.
+Reviewed macOS application bundles are opened by Spedito through Launch Services
+in the logged-in desktop session; they are not started as non-interactive App
+Server commands. Spedito retains the returned application instance so **Demo**
+reactivates the same preview and **Stop demo** terminates only that owned instance.
 
 Multiple independently reviewed candidates may integrate, receive any necessary
 conflict resolution and focused re-review, and prepare demos in parallel. Promotion
@@ -373,6 +387,14 @@ Independent Tech Lead review uses `approvalPolicy: never`: its detached candidat
 workspace and Product knowledge are read-only, network remains unavailable, and
 the review contract never requires capability escalation.
 
+Sprint-goal generation is a bounded title-only writing turn rather than a normal
+Business Analyst lifecycle turn. It starts a fresh persistent read-only thread with
+only the focused goal contract, product name, sprint number, and ordered ticket
+titles; it does not append live database schemas, repository guidance, shared team
+guidance, or member instructions. The turn uses the selected model's lightest
+advertised reasoning effort. Thread start, turn start, and response waiting share
+one 15-second wall-clock budget, which activity cannot extend.
+
 Starter-backlog and epic-planning schemas make environment readiness explicit.
 The structured result classifies the plan as `sufficient`,
 `foundation_required`, or `not_required`; names the proposed or accepted
@@ -445,50 +467,100 @@ mutations and validates candidate ancestry.
 Git's object store is product-wide, so this explicitly chooses the product as
 the read boundary while retaining ticket-scoped writes and denying every other
 product.
-When the App Server sends `item/commandExecution/requestApproval`,
-`item/fileChange/requestApproval`, or `item/permissions/requestApproval`, the
-adapter preserves the bidirectional JSON-RPC request instead of rejecting it.
+When the App Server sends `item/commandExecution/requestApproval` or
+`item/permissions/requestApproval`, the adapter preserves the bidirectional JSON-RPC
+request for application policy and, when genuinely additional access remains, Product
+Owner review. A native `item/fileChange/requestApproval` does not contain the exact
+structured filesystem scope required for an informed decision. The Core adapter
+therefore returns `decline` before publishing that request to application subscribers;
+it cannot create a pending permission record or project **Needs your input**.
 Spedito enables and capability-checks the selected runtime's
 `request_permissions_tool`; it does not discover package managers, resolve
 project runtimes, or add runtime paths automatically. Delivery guidance tells
-the assigned agent to diagnose an `operation not permitted` or `permission
-denied` result with non-mutating executable, symlink-chain, and runtime-dependency
-inspection. The agent establishes the foreseeable boundary first and submits one
-batched request for the smallest coherent filesystem or network capability rather
-than discovering an executable, its parent directories, symlink targets, and shared
-libraries through sequential Product Owner approvals. For a Homebrew runtime, that
-may be one read request for `/opt/homebrew/bin`, `/opt/homebrew/opt`, and
-`/opt/homebrew/Cellar`; package-manager data, configuration, credentials, and unrelated
-user locations remain excluded. The agent then retries the original command without
-adding shell wrappers. An identical sandbox failure after command approval is treated
-as evidence that a different capability is missing, not as a reason to repeat the same
-approval. Recovery prompts label prior permission details as audit display only: the
-agent never pastes a displayed command back into the command tool, omits explicit
-`sh -c`, `bash -lc`, and `zsh -lc` launchers, and replaces an interrupted leaf
-permission with one consolidated runtime request instead of continuing a path-by-path
-cascade. It first consults verified Environments guidance, then prefers the repository's
-established native build system and shortest maintained, purpose-named entry point over
-a shell chain. When a recurring coherent workflow has no suitable entry point, an
-Implementer may add a version-controlled, non-interactive, workspace-relative task or
-script as normal product tooling; it must not substitute an unrelated package manager
-or runtime, conceal operations, or exist only to obtain broader approval. A service
-entry point remains in the foreground, accepts the app-supplied port, and exposes typed
-readiness. Verified changes produce a complete Environments proposal describing the
-commands, working directory, prerequisites, readiness, required capabilities, and
-limitations. Read-only reviewers inspect the declared entry point and reported
-evidence but do not invoke it or create a replacement. If the permissions tool is
-unavailable or a safe coherent capability cannot be established within the current
-boundary, a delivery agent fails closed with the diagnostic and required access
-instead of silently substituting older verification evidence.
+the assigned agent to use workspace-relative paths for repository file edits and never
+repeat the generated absolute worktree prefix in a patch target. If authorised work
+requires an external file change, the agent first requests the smallest exact write
+path through `request_permissions`, explains the ticket purpose, and retries the edit
+only after the capability is granted. The same guidance tells the agent to diagnose an
+`operation not permitted` or `permission denied` result with non-mutating executable,
+symlink-chain, and runtime-dependency inspection. The agent establishes the foreseeable
+boundary first and submits one batched request for the smallest coherent filesystem or
+network capability rather than discovering an executable, its parent directories,
+symlink targets, and shared libraries through sequential Product Owner approvals. For
+a Homebrew runtime, that may be one read request for `/opt/homebrew/bin`,
+`/opt/homebrew/opt`, and `/opt/homebrew/Cellar`; package-manager data, configuration,
+credentials, and unrelated user locations remain excluded. The agent then retries the
+original command without adding shell wrappers. An identical sandbox failure after
+command approval is treated as evidence that a different capability is missing, not as
+a reason to repeat the same approval. Recovery prompts label prior permission details
+as audit display only: the agent never pastes a displayed command back into the command
+tool, omits explicit `sh -c`, `bash -lc`, and `zsh -lc` launchers, and replaces an
+interrupted leaf permission with one consolidated runtime request instead of continuing
+a path-by-path cascade. It first consults verified Environments guidance, then prefers
+the repository's established native build system and shortest maintained,
+purpose-named entry point over a shell chain. When a recurring coherent workflow has
+no suitable entry point, an Implementer may add a version-controlled, non-interactive,
+workspace-relative task or script as normal product tooling; it must not substitute an
+unrelated package manager or runtime, conceal operations, or exist only to obtain
+broader approval. A service entry point remains in the foreground, accepts the
+app-supplied port, and exposes typed readiness. Verified changes produce a complete
+Environments proposal describing the commands, working directory, prerequisites,
+readiness, required capabilities, and limitations. Read-only reviewers inspect the
+declared entry point and reported evidence but do not invoke it or create a replacement.
+If the permissions tool is unavailable or a safe coherent capability cannot be
+established within the current boundary, a delivery agent fails closed with the
+diagnostic and required access instead of silently substituting older verification
+evidence.
 The permission Work log card presents the agent's plain-language purpose first
 and places the unchanged exact command and additional access in a disclosure.
 Persistence retains the unchanged request for audit and same-run decisions, so
 this presentation change does not alter one-time approval semantics.
-Application coordination maps its thread and turn to the durable AgentRun,
-projects **Needs your input**, and stores the exact scope, rationale, signature,
-and decision. **Allow once** accepts only the exact command or file change, or
-grants the requested capability for the current turn. For command and permission
-requests, **Always allow for this product** stores a durable product-scoped grant.
+Application coordination maps a routed request's thread and turn to the durable
+AgentRun, projects **Needs your input**, and stores the exact scope, rationale,
+signature, and decision. **Allow once** accepts only the exact command or grants the
+requested capability for the current turn. For command and permission requests,
+**Always allow for this product** stores a durable product-scoped grant.
+Before projecting a structured permission request to the Product Owner, the
+coordinator compares it with the assigned read/write ticket worktree, the resolved
+baseline transient-storage roots, and structured capabilities already active for
+that turn. When their union covers
+the complete request, Spedito returns the unchanged requested capability without
+changing the permission boundary or projecting **Needs your input**. It persists
+the exact request with an existing-access status and shows a compact, non-actionable
+**Existing access used** Work log entry stating that no permissions changed.
+An identical existing-access request in the same turn reuses that record rather
+than adding repeated Work log entries. Coverage is conservative: only canonical
+absolute paths at or below the ticket worktree or resolved transient roots, and exact
+current-turn capabilities, qualify. Sibling worktrees and traversal paths are never
+inferred from workspace access; patterns and network scopes qualify only when an exact
+active current-turn capability covers them; malformed rules and capabilities from
+expired turns remain outside this automatic path.
+
+When a delivery thread starts or resumes, the permission-profile coordinator calls
+macOS for `_CS_DARWIN_USER_TEMP_DIR`, `_CS_DARWIN_USER_CACHE_DIR`, and Foundation's
+user-domain caches directory. It canonicalises and de-duplicates the returned paths
+(including `/var` to `/private/var` resolution) and adds them as read/write roots to
+that thread's delivery profile. The resolved values are process inputs, not SQLite
+permission grants, so app restart and ticket recovery rebuild the profile from the
+current operating-system values. A managed demo uses a separate profile: Spedito
+removes any broad transient root that contains protected PreviewWorktrees, redirects
+its standard temporary and cache environment into its assigned preview, and grants
+write access to that exact preview workspace. The demo profile does not combine a
+parent PreviewWorktrees denial with a child exception because ordinary recursive
+directory creation must be able to traverse the existing parent.
+
+The broad Foundation cache root has a more-specific delivery deny for Spedito's
+PreviewWorktrees. Structured delivery requests are also checked against canonical
+Spedito Product, Run, Integration, and Preview workspace roots. Own-ticket descendants
+retain their assigned workspace access; overlapping parent, sibling, or managed
+execution paths are declined automatically and persisted with a policy-denied status.
+They render as a non-actionable **Protected Spedito storage** Work log item authored
+by Spedito. The lifecycle prompt explains that a delivery agent must not request
+those paths, while the demo command profile grants the exact candidate PreviewWorktree.
+Before running any candidate recipe, Spedito executes a bounded nested-directory
+write check through that same managed command profile. Failure is a host preparation
+error that preserves the reviewed candidate for retry; it is not implementation
+feedback or a reason to repeat Tech Lead review.
 Command grants retain the exact command and omit the ticket worktree path only
 after confirming the requested working directory is inside that run's assigned
 workspace. They never use prefix, fuzzy, or semantic command matching. Structured

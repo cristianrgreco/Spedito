@@ -31,7 +31,11 @@ struct MacOSDemoLauncherTests {
     )
 
     #expect(outcome.output == "A one-click result")
-    let request = try #require(await executor.completedRequests().first)
+    let request = try #require(
+      await executor.completedRequests().first {
+        $0.command.first?.hasSuffix("printf") == true
+      }
+    )
     #expect(request.command == ["/usr/bin/printf", "A one-click result\\n"])
     #expect(request.permissionProfile == CodexPermissionProfiles.demo)
     await launcher.stop(candidateID: candidateID)
@@ -100,6 +104,85 @@ struct MacOSDemoLauncherTests {
     #expect(outcome.output == "node ready")
   }
 
+  @Test("A macOS app is opened by Spedito instead of as a managed command")
+  func macApplicationPresentation() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let applicationURL = try makeApplication(at: workspace)
+    let executor = DemoCommandExecutorStub()
+    let application = DemoRunningApplicationStub()
+    let opener = DemoApplicationOpenerStub(application: application)
+    let launcher = MacOSDemoLauncher(
+      executor: executor,
+      applicationOpener: opener
+    )
+    let candidateID = UUID()
+    let specification = DemoLaunchSpecification(
+      title: "Native editor",
+      presentation: DemoPresentation(kind: .macApplication, path: "Demo.app")
+    )
+
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+
+    #expect(opener.openedApplicationURLs == [applicationURL])
+    #expect(application.activationCount == 2)
+    #expect(await executor.startedRequests().isEmpty)
+
+    await launcher.stop(candidateID: candidateID)
+    #expect(application.terminationCount == 1)
+  }
+
+  @Test("A closed macOS demo can be opened again")
+  func closedMacApplicationPresentation() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let applicationURL = try makeApplication(at: workspace)
+    let executor = DemoCommandExecutorStub()
+    let firstApplication = DemoRunningApplicationStub()
+    let replacementApplication = DemoRunningApplicationStub()
+    let opener = DemoApplicationOpenerStub(
+      applications: [firstApplication, replacementApplication]
+    )
+    let launcher = MacOSDemoLauncher(
+      executor: executor,
+      applicationOpener: opener
+    )
+    let candidateID = UUID()
+    let specification = DemoLaunchSpecification(
+      title: "Native editor",
+      presentation: DemoPresentation(kind: .macApplication, path: "Demo.app")
+    )
+
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    firstApplication.isTerminated = true
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+
+    #expect(opener.openedApplicationURLs == [applicationURL, applicationURL])
+    #expect(firstApplication.activationCount == 1)
+    #expect(replacementApplication.activationCount == 1)
+    #expect(await executor.startedRequests().isEmpty)
+
+    await launcher.stop(candidateID: candidateID)
+    #expect(replacementApplication.terminationCount == 1)
+  }
+
   @Test("Command failures preserve the actionable root error")
   func actionableCommandFailure() async throws {
     let workspace = try makeWorkspace()
@@ -122,6 +205,42 @@ struct MacOSDemoLauncherTests {
       #expect(error.localizedDescription.contains("EPERM: operation not permitted"))
       #expect(error.localizedDescription.contains("test failed"))
     }
+  }
+
+  @Test("An unusable assigned preview is a host failure before candidate execution")
+  func managedWorkspaceFailure() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let executor = DemoCommandExecutorStub(failsManagedWorkspaceCheck: true)
+    let launcher = MacOSDemoLauncher(executor: executor)
+    let specification = DemoLaunchSpecification(
+      title: "Candidate result",
+      launchCommand: DemoCommand(executable: "/usr/bin/printf", arguments: ["ready"]),
+      presentation: DemoPresentation(kind: .commandOutput)
+    )
+
+    do {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+      Issue.record("Expected the managed workspace check to fail")
+    } catch let error as DemoLauncherError {
+      guard case .managedWorkspaceUnavailable(let detail) = error else {
+        Issue.record("Expected a managed workspace failure, received \(error)")
+        return
+      }
+      #expect(detail.contains("Operation not permitted"))
+      #expect(
+        DemoPreparationFailurePolicy.disposition(for: error) == .retryPreparation
+      )
+    }
+    #expect(
+      await executor.completedRequests().allSatisfy {
+        $0.command.first == "/bin/mkdir"
+      }
+    )
   }
 
   @Test("Candidate-controlled demo failures return for correction")
@@ -162,6 +281,13 @@ struct MacOSDemoLauncherTests {
     )
     #expect(
       DemoPreparationFailurePolicy.disposition(
+        for: DemoLauncherError.managedWorkspaceUnavailable(
+          "mkdir: Operation not permitted"
+        )
+      ) == .retryPreparation
+    )
+    #expect(
+      DemoPreparationFailurePolicy.disposition(
         for: CocoaError(.fileReadUnknown)
       ) == .retryPreparation
     )
@@ -172,6 +298,72 @@ struct MacOSDemoLauncherTests {
       .appendingPathComponent("spedito-demo-launch-\(UUID())", isDirectory: true)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
     return workspace
+  }
+
+  private func makeApplication(at workspace: URL) throws -> URL {
+    let applicationURL = workspace.appendingPathComponent("Demo.app", isDirectory: true)
+    let contentsURL = applicationURL.appendingPathComponent("Contents", isDirectory: true)
+    let executableDirectoryURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+    let executableURL = executableDirectoryURL.appendingPathComponent("Demo")
+    try FileManager.default.createDirectory(
+      at: executableDirectoryURL,
+      withIntermediateDirectories: true
+    )
+    try Data("#!/bin/sh\n".utf8).write(to: executableURL)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: executableURL.path
+    )
+    let info: [String: Any] = [
+      "CFBundleExecutable": "Demo",
+      "CFBundleIdentifier": "local.spedito.demo-test",
+      "CFBundlePackageType": "APPL",
+    ]
+    let infoData = try PropertyListSerialization.data(
+      fromPropertyList: info,
+      format: .xml,
+      options: 0
+    )
+    try infoData.write(to: contentsURL.appendingPathComponent("Info.plist"))
+    return applicationURL
+  }
+}
+
+@MainActor
+private final class DemoRunningApplicationStub: DemoRunningApplication {
+  var isTerminated = false
+  private(set) var activationCount = 0
+  private(set) var terminationCount = 0
+
+  func activateForDemo() {
+    activationCount += 1
+  }
+
+  func terminateForDemo() {
+    isTerminated = true
+    terminationCount += 1
+  }
+}
+
+@MainActor
+private final class DemoApplicationOpenerStub: DemoApplicationOpening {
+  private var applications: [any DemoRunningApplication]
+  private(set) var openedApplicationURLs: [URL] = []
+
+  init(application: any DemoRunningApplication) {
+    applications = [application]
+  }
+
+  init(applications: [any DemoRunningApplication]) {
+    self.applications = applications
+  }
+
+  func openApplication(at applicationURL: URL) async throws -> any DemoRunningApplication {
+    openedApplicationURLs.append(applicationURL)
+    guard !applications.isEmpty else {
+      throw CocoaError(.executableNotLoadable)
+    }
+    return applications.removeFirst()
   }
 }
 
@@ -215,11 +407,23 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   private var completed: [CodexManagedCommandRequest] = []
   private var started: [CodexManagedCommandRequest] = []
   private var processes: [String: RunningProcess] = [:]
+  private let failsManagedWorkspaceCheck: Bool
+
+  init(failsManagedWorkspaceCheck: Bool = false) {
+    self.failsManagedWorkspaceCheck = failsManagedWorkspaceCheck
+  }
 
   func runManagedCommand(
     _ request: CodexManagedCommandRequest
   ) async throws -> CodexManagedCommandResult {
     completed.append(request)
+    if request.command.first == "/bin/mkdir", failsManagedWorkspaceCheck {
+      return CodexManagedCommandResult(
+        exitCode: 1,
+        standardOutput: "",
+        standardError: "mkdir: Operation not permitted"
+      )
+    }
     if request.command.first?.hasSuffix("printf") == true {
       return CodexManagedCommandResult(
         exitCode: 0,

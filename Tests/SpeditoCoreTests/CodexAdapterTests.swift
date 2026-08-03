@@ -320,7 +320,12 @@ struct CodexAdapterTests {
       model: "gpt-5.6-terra",
       readOnlyGitDirectory: URL(
         fileURLWithPath: "/private/tmp/spedito-canonical-product/.git"
-      )
+      ),
+      writableTransientStorageRoots: [
+        URL(fileURLWithPath: "/private/var/folders/example/T"),
+        URL(fileURLWithPath: "/private/var/folders/example/C"),
+        URL(fileURLWithPath: "/Users/example/Library/Caches"),
+      ]
     )
     let turnID = try await client.startStructuredTurn(
       threadID: threadID,
@@ -364,6 +369,18 @@ struct CodexAdapterTests {
       deliveryConfig?["filesystem"]?[":workspace_roots"]?["."]?.stringValue
         == "write"
     )
+    #expect(
+      deliveryConfig?["filesystem"]?["/private/var/folders/example/T"]?.stringValue
+        == "write"
+    )
+    #expect(
+      deliveryConfig?["filesystem"]?["/private/var/folders/example/C"]?.stringValue
+        == "write"
+    )
+    #expect(
+      deliveryConfig?["filesystem"]?["/Users/example/Library/Caches"]?.stringValue
+        == "write"
+    )
     #expect(requests[2].params["permissions"] == nil)
     #expect(
       requests[2].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
@@ -389,7 +406,11 @@ struct CodexAdapterTests {
       workingDirectory: URL(fileURLWithPath: "/private/tmp/ticket-workspace"),
       developerInstructions: "Continue the implementation",
       model: "gpt-5.6-terra",
-      readOnlyGitDirectory: URL(fileURLWithPath: "/private/tmp/product/.git")
+      readOnlyGitDirectory: URL(fileURLWithPath: "/private/tmp/product/.git"),
+      writableTransientStorageRoots: [
+        URL(fileURLWithPath: "/private/var/folders/resumed/T"),
+        URL(fileURLWithPath: "/Users/example/Library/Caches"),
+      ]
     )
     let requests = await transport.requests()
 
@@ -425,10 +446,52 @@ struct CodexAdapterTests {
         "filesystem"
       ]?["/private/tmp/product/.spedito"]?.stringValue == "read"
     )
+    #expect(
+      requests[2].params["config"]?["permissions.spedito-delivery"]?[
+        "filesystem"
+      ]?["/private/var/folders/resumed/T"]?.stringValue == "write"
+    )
+  }
+
+  @Test("macOS transient storage roots are canonical, bounded, and de-duplicated")
+  func macOSStorageRootNormalization() {
+    let roots = CodexPermissionProfiles.normalizedStorageRoots(
+      darwinTemporaryDirectory: URL(fileURLWithPath: "/var/folders/example/T/"),
+      darwinCacheDirectory: URL(fileURLWithPath: "/var/folders/example/C/"),
+      foundationCacheDirectory: URL(fileURLWithPath: "/Users/example/Library/Caches/")
+    ).map(\.path)
+
+    #expect(roots == [
+      "/private/var/folders/example/T",
+      "/private/var/folders/example/C",
+      "/Users/example/Library/Caches",
+    ])
+    #expect(
+      CodexPermissionProfiles.normalizedStorageRoots(
+        darwinTemporaryDirectory: URL(fileURLWithPath: "/"),
+        darwinCacheDirectory: URL(fileURLWithPath: "/private/tmp/cache"),
+        foundationCacheDirectory: URL(fileURLWithPath: "/private/tmp/cache/.")
+      ).map(\.path) == ["/private/tmp/cache"]
+    )
+    #expect(
+      CodexPermissionProfiles.managedDemoTransientStorageRoots(
+        from: roots.map { URL(fileURLWithPath: $0, isDirectory: true) },
+        protectedStorageRoots: [
+          URL(
+            fileURLWithPath:
+              "/Users/example/Library/Caches/Spedito/PreviewWorktrees",
+            isDirectory: true
+          )
+        ]
+      ).map(\.path) == [
+        "/private/var/folders/example/T",
+        "/private/var/folders/example/C",
+      ]
+    )
   }
 
   @Test("Delivery isolates the ticket while demos retain reviewed runtime reads")
-  func managedPermissionProfiles() {
+  func managedPermissionProfiles() throws {
     let arguments = CodexPermissionProfiles.appServerArguments.joined(separator: " ")
     #expect(
       arguments.contains(CodexPermissionProfiles.requestPermissionsFeatureOverride)
@@ -461,10 +524,55 @@ struct CodexAdapterTests {
       fileURLWithPath: "/Users/example/Library/Caches/Spedito/PreviewWorktrees/candidate"
     )
     let scopedArguments = CodexPermissionProfiles.appServerArguments(
-      demoWorkspaceRoot: demoWorkspace
-    ).joined(separator: " ")
-    #expect(scopedArguments.contains(#"workspace_roots={"/Users/example/Library/Caches/Spedito/PreviewWorktrees/candidate"=true}"#))
+      demoWorkspaceRoot: demoWorkspace,
+      writableTransientStorageRoots: [
+        URL(fileURLWithPath: "/private/var/folders/example/T"),
+        URL(fileURLWithPath: "/private/var/folders/example/C"),
+        URL(fileURLWithPath: "/Users/example/Library/Caches"),
+      ]
+    )
+    let demoOverride = try #require(
+      scopedArguments.first { $0.hasPrefix("permissions.spedito-demo=") }
+    )
+    let deliveryOverride = try #require(
+      scopedArguments.first { $0.hasPrefix("permissions.spedito-delivery=") }
+    )
+    #expect(demoOverride.contains(#"workspace_roots={"/Users/example/Library/Caches/Spedito/PreviewWorktrees/candidate"=true}"#))
+    #expect(demoOverride.contains(#""/private/var/folders/example/T"="write""#))
+    #expect(demoOverride.contains(#""/private/var/folders/example/C"="write""#))
+    #expect(!demoOverride.contains(#""/Users/example/Library/Caches"="write""#))
+    #expect(deliveryOverride.contains(#""/Users/example/Library/Caches"="write""#))
+    let protectedPreviewRoot =
+      CodexPermissionProfiles.protectedSpeditoDeliveryStorageRoots.first {
+        $0.path.contains("/Library/Caches/Spedito/PreviewWorktrees")
+      }
+    #expect(
+      protectedPreviewRoot.map {
+        !demoOverride.contains(#""\#($0.path)"="deny""#)
+          && deliveryOverride.contains(#""\#($0.path)"="deny""#)
+      } == true
+    )
     #expect(!arguments.contains(demoWorkspace.path))
+
+    let deliveryConfig = CodexPermissionProfiles.deliveryThreadConfiguration(
+      readOnlyGitDirectory: URL(fileURLWithPath: "/private/tmp/product/.git"),
+      writableTransientStorageRoots: [
+        URL(fileURLWithPath: "/Users/example/Library/Caches")
+      ],
+      protectedStorageRoots: [
+        URL(fileURLWithPath: "/Users/example/Library/Caches/Spedito/PreviewWorktrees")
+      ]
+    )
+    #expect(
+      deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[
+        "/Users/example/Library/Caches"
+      ]?.stringValue == "write"
+    )
+    #expect(
+      deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[
+        "/Users/example/Library/Caches/Spedito/PreviewWorktrees"
+      ]?.stringValue == "deny"
+    )
   }
 
   @Test("Delivery selects Apple developer tools without broadening Git access")
@@ -705,6 +813,118 @@ struct CodexAdapterTests {
     #expect(!outputText.contains("couldn't create cache file"), Comment(rawValue: outputText))
   }
 
+  @Test("Delivery can write transient roots without crossing into preview storage")
+  func deliveryTransientStorageBoundary() async throws {
+    let codexURL = URL(
+      fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
+    )
+    guard FileManager.default.isExecutableFile(atPath: codexURL.path) else {
+      return
+    }
+    let applicationSupport = try #require(
+      FileManager.default.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+      ).first
+    )
+    let workspace = applicationSupport.appendingPathComponent(
+      "SpeditoTransientBoundaryTests-\(UUID())",
+      isDirectory: true
+    )
+    let transientDirectories = CodexPermissionProfiles.macOSUserTransientStorageRoots
+      .enumerated()
+      .map { index, root in
+        root.appendingPathComponent(
+          "SpeditoTransientBoundaryTests-\(index)-\(UUID())",
+          isDirectory: true
+        )
+      }
+    let previewRoot = try #require(
+      CodexPermissionProfiles.protectedSpeditoDeliveryStorageRoots.first {
+        $0.path.contains("/Library/Caches/Spedito/PreviewWorktrees")
+      }
+    )
+    let protectedPreview = previewRoot.appendingPathComponent(
+      "SpeditoTransientBoundaryTests-\(UUID())",
+      isDirectory: true
+    )
+    defer {
+      try? FileManager.default.removeItem(at: workspace)
+      for directory in transientDirectories {
+        try? FileManager.default.removeItem(at: directory)
+      }
+      try? FileManager.default.removeItem(at: protectedPreview)
+    }
+    try FileManager.default.createDirectory(
+      at: workspace,
+      withIntermediateDirectories: true
+    )
+    for directory in transientDirectories {
+      try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+      )
+    }
+    try FileManager.default.createDirectory(
+      at: protectedPreview,
+      withIntermediateDirectories: true
+    )
+
+    let transientChecks = transientDirectories.indices.map { index in
+      #"printf ready > "$SPEDITO_TRANSIENT_\#(index)/proof.txt" || exit \#(10 + index)"#
+    }
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = codexURL
+    process.arguments = [
+      "-c",
+      #"default_permissions="\#(CodexPermissionProfiles.delivery)""#,
+      "-c",
+      CodexPermissionProfiles.deliveryProfileOverride,
+      "sandbox",
+      "-P",
+      CodexPermissionProfiles.delivery,
+      "-C",
+      workspace.path,
+      "/bin/zsh",
+      "-c",
+      (transientChecks + [
+        #"printf blocked > "$SPEDITO_PROTECTED_PREVIEW/proof.txt" 2>/dev/null && exit 30"#,
+        "exit 0",
+      ]).joined(separator: "\n"),
+    ]
+    process.currentDirectoryURL = workspace
+    var environment = ProcessInfo.processInfo.environment
+    for (index, directory) in transientDirectories.enumerated() {
+      environment["SPEDITO_TRANSIENT_\(index)"] = directory.path
+    }
+    environment["SPEDITO_PROTECTED_PREVIEW"] = protectedPreview.path
+    process.environment = environment
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    #expect(
+      process.terminationStatus == 0,
+      Comment(rawValue: String(decoding: data, as: UTF8.self))
+    )
+    for directory in transientDirectories {
+      #expect(
+        try String(
+          contentsOf: directory.appendingPathComponent("proof.txt"),
+          encoding: .utf8
+        ) == "ready"
+      )
+    }
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: protectedPreview.appendingPathComponent("proof.txt").path
+      )
+    )
+  }
+
   @Test("Candidate-scoped commands materialize the exact standalone workspace root")
   func candidateScopedManagedCommand() async throws {
     let codexURL = URL(
@@ -716,11 +936,15 @@ struct CodexAdapterTests {
     else {
       return
     }
-    let workspace = FileManager.default.temporaryDirectory
-      .appendingPathComponent(
-        "spedito-scoped-command-\(UUID())",
-        isDirectory: true
-      )
+    let previewRoot = try #require(
+      CodexPermissionProfiles.protectedSpeditoDeliveryStorageRoots.first {
+        $0.path.contains("/Library/Caches/Spedito/PreviewWorktrees")
+      }
+    )
+    let workspace = previewRoot.appendingPathComponent(
+      "spedito-scoped-command-\(UUID())",
+      isDirectory: true
+    )
     try FileManager.default.createDirectory(
       at: workspace,
       withIntermediateDirectories: true
@@ -728,12 +952,31 @@ struct CodexAdapterTests {
     defer { try? FileManager.default.removeItem(at: workspace) }
 
     let executor = CodexWorkspaceCommandExecutor(executableURL: codexURL)
+    let nestedBuildDirectory = workspace
+      .appendingPathComponent(".build", isDirectory: true)
+      .appendingPathComponent("tmp", isDirectory: true)
+    let mkdirResult = try await executor.runManagedCommand(
+      CodexManagedCommandRequest(
+        command: ["/bin/mkdir", "-p", nestedBuildDirectory.path],
+        workingDirectory: workspace,
+        workspaceRoot: workspace,
+        timeoutSeconds: 10
+      )
+    )
+    #expect(
+      mkdirResult.exitCode == 0,
+      Comment(rawValue: mkdirResult.combinedOutput)
+    )
+    #expect(
+      FileManager.default.fileExists(atPath: nestedBuildDirectory.path)
+    )
+
     let result = try await executor.runManagedCommand(
       CodexManagedCommandRequest(
         command: [
           "/opt/homebrew/bin/node",
           "--eval",
-          "const fs=require('node:fs');fs.readFileSync('/opt/homebrew/etc/openssl@3/openssl.cnf');fs.writeFileSync('proof.txt','ready');process.stdout.write('ready')",
+          "const fs=require('node:fs');fs.readFileSync('/opt/homebrew/etc/openssl@3/openssl.cnf');fs.writeFileSync('.build/tmp/proof.txt','ready');process.stdout.write('ready')",
         ],
         workingDirectory: workspace,
         workspaceRoot: workspace,
@@ -745,7 +988,7 @@ struct CodexAdapterTests {
     #expect(result.standardOutput == "ready")
     #expect(
       try String(
-        contentsOf: workspace.appendingPathComponent("proof.txt"),
+        contentsOf: nestedBuildDirectory.appendingPathComponent("proof.txt"),
         encoding: .utf8
       ) == "ready"
     )
@@ -937,6 +1180,64 @@ struct CodexAdapterTests {
     #expect(deniedResponse.result["decision"]?.stringValue == "decline")
   }
 
+  @Test("Native file-change approvals are declined before application routing")
+  func nativeFileChangeApprovalIsNotRouted() async throws {
+    let transport = ApprovalTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let messages = await client.inboundMessages(replayRecent: false)
+    let fileChangeRequest = CodexServerRequest(
+      id: .integer(96),
+      method: "item/fileChange/requestApproval",
+      params: .object([
+        "threadId": .string("thread-delivery"),
+        "turnId": .string("turn-delivery"),
+        "itemId": .string("item-file-change"),
+        "reason": .string("Change a file outside the ticket workspace"),
+      ])
+    )
+    let structuredPermissionRequest = CodexServerRequest(
+      id: .integer(97),
+      method: "item/permissions/requestApproval",
+      params: .object([
+        "threadId": .string("thread-delivery"),
+        "turnId": .string("turn-delivery"),
+        "itemId": .string("item-permission"),
+        "permissions": .object([
+          "fileSystem": .object([
+            "entries": .array([
+              .object([
+                "access": .string("write"),
+                "path": .object([
+                  "type": .string("path"),
+                  "path": .string("/Users/example/.config/example/settings.json"),
+                ]),
+              ])
+            ])
+          ])
+        ]),
+        "reason": .string("Apply the Product Owner's requested global setting"),
+      ])
+    )
+
+    await transport.send(fileChangeRequest)
+    await transport.send(structuredPermissionRequest)
+
+    let firstRoutedRequest = await messages.first { message in
+      if case .request = message { return true }
+      return false
+    }
+    guard case .request(let routedRequest) = firstRoutedRequest else {
+      Issue.record("Expected the structured permission request")
+      return
+    }
+    #expect(routedRequest.id == .integer(97))
+    #expect(routedRequest.method == "item/permissions/requestApproval")
+    let response = try #require(await transport.response())
+    #expect(response.id == .integer(96))
+    #expect(response.result["decision"]?.stringValue == "decline")
+  }
+
   @Test("An inactive turn times out and is interrupted")
   func hungTurnIsInterrupted() async throws {
     let transport = HangingTurnTransport()
@@ -988,6 +1289,33 @@ struct CodexAdapterTests {
       try await result
         == #"{"message":"Completed after more than the original timeout."}"#
     )
+  }
+
+  @Test("A total turn timeout is not extended by activity")
+  func totalTurnTimeoutIsNotExtended() async throws {
+    let transport = ConcurrentTurnTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    let result = Task {
+      try await client.waitForFinalAgentMessage(
+        threadID: "thread-total-timeout",
+        turnID: "turn-total-timeout",
+        timeout: .seconds(1),
+        totalTimeout: .milliseconds(50)
+      )
+    }
+
+    try await Task.sleep(for: .milliseconds(20))
+    await transport.comment(
+      threadID: "thread-total-timeout",
+      turnID: "turn-total-timeout",
+      text: "Still working."
+    )
+
+    await #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) {
+      _ = try await result.value
+    }
   }
 
   @Test("A missed completion notification is recovered from durable thread state")
@@ -1228,6 +1556,7 @@ struct CodexAdapterTests {
 
   @Test("Sprint goal generation uses ticket titles and validates a concise result")
   func sprintGoalGeneration() throws {
+    let developerInstructions = CodexSprintGoalGenerator.developerInstructions
     let prompt = CodexSprintGoalGenerator.prompt(
       productName: "Field Notes",
       sprintNumber: 4,
@@ -1240,6 +1569,28 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Save a draft note"))
     #expect(prompt.contains("Restore the latest draft after relaunch"))
     #expect(prompt.contains("Sprint: 4"))
+    #expect(developerInstructions.contains("Use only the supplied ticket titles"))
+    #expect(!developerInstructions.contains("INTERNAL ROLE GUIDANCE"))
+    #expect(!developerInstructions.contains("LIVE PRODUCT CONTEXT"))
+    #expect(CodexSprintGoalGenerator.totalTimeout == .seconds(15))
+    #expect(
+      CodexSprintGoalGenerator.lightestReasoningEffort(
+        supportedEfforts: ["medium", "high"],
+        fallback: "high"
+      ) == "medium"
+    )
+    #expect(
+      CodexSprintGoalGenerator.lightestReasoningEffort(
+        supportedEfforts: ["high", "low", "medium"],
+        fallback: "high"
+      ) == "low"
+    )
+    #expect(
+      CodexSprintGoalGenerator.lightestReasoningEffort(
+        supportedEfforts: [],
+        fallback: "high"
+      ) == "high"
+    )
     #expect(
       try CodexSprintGoalGenerator.decode(
         #"{"goal":"  Product Owners can preserve and resume draft notes.  "}"#
@@ -2985,6 +3336,7 @@ struct CodexAdapterTests {
       product: product,
       item: researchTicket,
       implementation: researchCompleted,
+      knowledgePageProposals: [],
       assignee: analyst,
       reviewCycle: 1,
       priorReviewFeedback: "Clarify the usage assumption.",
@@ -3008,6 +3360,7 @@ struct CodexAdapterTests {
       product: product,
       item: researchTicket,
       implementation: researchCompleted,
+      knowledgePageProposals: [],
       assignee: analyst,
       baseSHA: "candidate-base",
       candidateHeadSHA: "candidate-head"
@@ -3146,6 +3499,102 @@ struct CodexAdapterTests {
     )
     #expect(integration.status == .awaitingOwner)
     #expect(integration.workLogComment.contains("Question for you"))
+  }
+
+  @Test("Tech Lead review receives complete candidate-bound proposal contracts")
+  func techLeadReviewCandidateContext() {
+    let product = Product(name: "Weather")
+    let item = WorkItem(
+      productID: product.id,
+      key: "T1",
+      title: "Establish the delivery environment",
+      body: "Create and document the reusable local environment.",
+      acceptanceCriteria: ["Verified Environments Product knowledge is updated."]
+    )
+    let implementer = AgentProfile(
+      productID: product.id,
+      name: "Implementer",
+      role: .implementer
+    )
+    let candidateID = UUID()
+    let environmentsPageID = UUID()
+    let proposedBody = """
+      ## Supported toolchain
+
+      Run `swift test` from the repository root.
+      """
+    let proposalDraft = KnowledgePageProposalDraft(
+      operation: .update,
+      targetPageID: environmentsPageID,
+      title: "Environments",
+      proposedBodyMarkdown: proposedBody,
+      rationale: "Records the verified delivery environment."
+    )
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "I verified the environment and prepared its canonical guidance.",
+      question: nil,
+      options: [],
+      summary: "The reusable build, test, and demo environment is ready.",
+      changedFiles: ["Package.swift"],
+      tests: ["swift test — passed"],
+      knowledgeNotes: ["No production credentials are required."],
+      reviewInstructions: ["Open the managed demo and confirm the starter appears."],
+      retrospectiveWentWell: ["This retrospective detail must stay out of review context."],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: [],
+      knowledgePageProposals: [proposalDraft],
+      followUpTicketProposals: [
+        FollowUpTicketProposalDraft(
+          reference: "F1",
+          title: "Verify the unavailable state",
+          type: .task,
+          body: "Exercise the product when forecast data cannot be retrieved.",
+          acceptanceCriteria: ["The retry path is verified without losing the selected place."],
+          suggestedRole: .qualityAssurance,
+          priority: .high,
+          rationale: "The provider can be temporarily unavailable.",
+          dependsOnReferences: ["T3"]
+        )
+      ]
+    )
+    let proposal = KnowledgePageProposal(
+      productID: product.id,
+      sprintID: UUID(),
+      workItemID: item.id,
+      candidateRevisionID: candidateID,
+      operation: .update,
+      targetPageID: environmentsPageID,
+      basePageTitle: "Environments",
+      basePageBodyMarkdown: "Earlier verified environment guidance.",
+      title: "Environments",
+      proposedBodyMarkdown: proposedBody,
+      rationale: "Records the verified delivery environment."
+    )
+
+    let prompt = CodexTechLeadReviewer.prompt(
+      product: product,
+      item: item,
+      implementation: implementation,
+      knowledgePageProposals: [proposal],
+      assignee: implementer,
+      baseSHA: "candidate-base",
+      candidateHeadSHA: "candidate-head"
+    )
+
+    #expect(prompt.contains(implementation.comment))
+    #expect(prompt.contains(proposal.id.uuidString))
+    #expect(prompt.contains(candidateID.uuidString))
+    #expect(prompt.contains(environmentsPageID.uuidString))
+    #expect(prompt.contains("Earlier verified environment guidance."))
+    #expect(prompt.contains(proposedBody))
+    #expect(prompt.contains("`agent_verified_knowledge` contains accepted canonical knowledge only"))
+    #expect(prompt.contains("Do not require a pending proposal to be"))
+    #expect(prompt.contains("Exercise the product when forecast data cannot be retrieved."))
+    #expect(prompt.contains("The retry path is verified without losing the selected place."))
+    #expect(prompt.contains("Priority: High"))
+    #expect(prompt.contains("Depends on proposed references: T3"))
+    #expect(!prompt.contains("This retrospective detail must stay out of review context."))
   }
 
   @Test("Retrospective synthesis consolidates free-text evidence into at most five actions")

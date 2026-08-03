@@ -1564,6 +1564,25 @@ public actor SQLiteStore {
     return try fetchTicketSuggestionBatch(sessionID: session.id)
   }
 
+  public func fetchLatestEpicPlanningSuggestionSession(
+    epicID: UUID
+  ) throws -> SuggestionSession? {
+    try withStatement(
+      """
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
+             error_message, created_at, updated_at
+      FROM suggestion_sessions
+      WHERE epic_id = ? AND source_work_item_id IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(epicID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeSuggestionSession(statement)
+    }
+  }
+
   public func decideTicketSuggestion(
     id: UUID,
     decision: TicketSuggestionStatus
@@ -5309,6 +5328,14 @@ public actor SQLiteStore {
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedTitle.isEmpty else {
       throw PersistenceError.corruptData("A knowledge page needs a title")
+    }
+    if let parentID {
+      let parent = try fetchKnowledgePage(id: parentID)
+      guard parent.productID == productID else {
+        throw PersistenceError.corruptData(
+          "A Product knowledge page and its parent must belong to the same product"
+        )
+      }
     }
     let baseSlug = trimmedTitle
       .lowercased()

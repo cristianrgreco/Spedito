@@ -461,6 +461,7 @@ struct EpicPlanningPresentationTests {
       answer: "Hourly"
     )
     let conversation = EpicPlanningConversationState(
+      productID: UUID(),
       epicID: UUID(),
       messages: [
         EpicPlanningConversationMessage(
@@ -501,6 +502,7 @@ struct EpicPlanningPresentationTests {
       answer: "Hourly"
     )
     let conversation = EpicPlanningConversationState(
+      productID: UUID(),
       epicID: UUID(),
       messages: [
         EpicPlanningConversationMessage(

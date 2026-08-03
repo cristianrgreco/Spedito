@@ -12,6 +12,7 @@ struct CodebaseView: View {
   @State private var selectedCommitSHA: String?
   @State private var selectedCommitDetail: GitCommitDetail?
   @State private var selectedFilePath: String?
+  @State private var historyScope: CodebaseHistoryScope = .trunk
   @State private var isRefreshing = false
   @State private var isLoadingCommit = false
   @State private var isLoadingBranch = false
@@ -19,7 +20,49 @@ struct CodebaseView: View {
   @State private var detailErrorMessage: String?
 
   private var commits: [GitCommitSummary] {
-    snapshot?.commits ?? []
+    guard let snapshot else { return [] }
+    return CodebaseHistoryFilter.commits(
+      in: snapshot,
+      scope: historyScope,
+      revisions: ticketRevisions,
+      branchWorkItemIDs: branchWorkItemIDs
+    )
+  }
+
+  private var ticketRevisions: [CodebaseTicketRevision] {
+    model.candidateRevisions.map(CodebaseTicketRevision.init)
+  }
+
+  private var branchWorkItemIDs: [String: UUID] {
+    guard let snapshot else { return [:] }
+    return Dictionary(
+      uniqueKeysWithValues: snapshot.branches.compactMap { branch in
+        item(for: branch).map { (branch.name, $0.id) }
+      }
+    )
+  }
+
+  private var historyTickets: [WorkItem] {
+    guard let snapshot else { return [] }
+    let revisionWorkItemIDs = Set(ticketRevisions.map(\.workItemID))
+    let branchIDs = Set(branchWorkItemIDs.values)
+    let relevantIDs = revisionWorkItemIDs.union(branchIDs)
+    return model.workItems
+      .filter { item in
+        relevantIDs.contains(item.id)
+          && (
+            branchIDs.contains(item.id)
+              || !CodebaseHistoryFilter.commits(
+                in: snapshot,
+                scope: .ticket(item.id),
+                revisions: ticketRevisions,
+                branchWorkItemIDs: branchWorkItemIDs
+              ).isEmpty
+          )
+      }
+      .sorted { lhs, rhs in
+        lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+      }
   }
 
   var body: some View {
@@ -82,7 +125,17 @@ struct CodebaseView: View {
       }
     }
     .task(id: model.selectedProductID) {
+      historyScope = .trunk
+      snapshot = nil
+      selectedBranchName = nil
+      selectedBranchDetail = nil
+      selectedCommitSHA = nil
+      selectedCommitDetail = nil
+      selectedFilePath = nil
       await refresh(selectInitialCommit: true)
+    }
+    .onChange(of: historyScope) { _, _ in
+      selectInitialCommitForScope()
     }
     .task(id: selectedCommitSHA) {
       await loadSelectedCommit()
@@ -107,28 +160,35 @@ struct CodebaseView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("Codebase")
           .font(.largeTitle.bold())
-        Text("Accepted history, in-flight work, and the exact changes behind each commit.")
+        Text("Choose the accepted product or a ticket to inspect its changes.")
           .foregroundStyle(.secondary)
       }
       Spacer()
+      Picker("Codebase history", selection: $historyScope) {
+        CodebaseHistoryPickerLabel(option: .trunk)
+          .tag(CodebaseHistoryScope.trunk)
+        ForEach(historyTickets) { ticket in
+          let scope = CodebaseHistoryScope.ticket(ticket.id)
+          CodebaseHistoryPickerLabel(option: historyOption(for: ticket))
+            .tag(scope)
+        }
+        CodebaseHistoryPickerLabel(option: .allActivity)
+          .tag(CodebaseHistoryScope.allActivity)
+      }
+      .pickerStyle(.menu)
+      .labelsHidden()
+      .fixedSize()
     }
     .workspaceHeaderLayout()
   }
 
   private var commitTimeline: some View {
-    let revisions = model.candidateRevisions.map {
-      CodebaseWorktreeRevision(baseSHA: $0.baseSHA, headSHA: $0.headSHA)
-    }
-    let origins = snapshot.map {
-      CodebaseCommitOriginResolver.origins(in: $0, worktreeRevisions: revisions)
-    } ?? [:]
-
-    return VStack(spacing: 0) {
+    VStack(spacing: 0) {
       if commits.isEmpty {
         ContentUnavailableView(
-          "No commits",
+          emptyHistoryTitle,
           systemImage: "point.3.connected.trianglepath.dotted",
-          description: Text("The product repository has no commits.")
+          description: Text(emptyHistoryDescription)
         )
       } else {
         ScrollView {
@@ -142,8 +202,7 @@ struct CodebaseView: View {
                   commit: commit,
                   subject: displaySubject(for: commit),
                   authorName: displayAuthor(for: commit),
-                  origin: origins[commit.sha] ?? .branch,
-                  ticket: ticket(for: commit),
+                  presentation: commitPresentation(for: commit),
                   isSelected: selectedCommitSHA == commit.sha
                 )
               }
@@ -153,6 +212,29 @@ struct CodebaseView: View {
           }
         }
       }
+    }
+  }
+
+  private var emptyHistoryTitle: String {
+    switch historyScope {
+    case .trunk: "No accepted changes"
+    case .ticket: "No ticket changes"
+    case .allActivity: "No activity"
+    }
+  }
+
+  private func historyOption(for ticket: WorkItem) -> CodebaseHistoryOption {
+    CodebaseHistoryOption(
+      title: "\(ticket.key) — \(CodebaseTicketStateTitle.title(for: ticket.state))",
+      symbol: "ticket.fill"
+    )
+  }
+
+  private var emptyHistoryDescription: String {
+    switch historyScope {
+    case .trunk: "The accepted product has no recorded commits."
+    case .ticket: "This ticket has not recorded a codebase change yet."
+    case .allActivity: "The product repository has no commits."
     }
   }
 
@@ -242,13 +324,19 @@ struct CodebaseView: View {
         self.selectedBranchName = nil
         selectedBranchDetail = nil
       }
+      if
+        case .ticket(let workItemID) = historyScope,
+        !historyTickets.contains(where: { $0.id == workItemID })
+      {
+        historyScope = .trunk
+      }
       if (selectInitialCommit || selectedCommitSHA == nil) && selectedBranchName == nil {
-        selectedCommitSHA = newSnapshot.commits.first?.sha
+        selectedCommitSHA = commits.first?.sha
       } else if
         let selectedCommitSHA,
-        !newSnapshot.commits.contains(where: { $0.sha == selectedCommitSHA })
+        !commits.contains(where: { $0.sha == selectedCommitSHA })
       {
-        self.selectedCommitSHA = newSnapshot.commits.first?.sha
+        self.selectedCommitSHA = commits.first?.sha
       }
       if selectedBranchName != nil {
         await loadSelectedBranch()
@@ -257,6 +345,23 @@ struct CodebaseView: View {
       if snapshot == nil {
         errorMessage = error.localizedDescription
       }
+    }
+  }
+
+  private func selectInitialCommitForScope() {
+    selectedBranchName = nil
+    selectedBranchDetail = nil
+    selectedFilePath = nil
+    selectedCommitDetail = nil
+    if
+      commits.isEmpty,
+      case .ticket(let workItemID) = historyScope,
+      let branchName = branchWorkItemIDs.first(where: { $0.value == workItemID })?.key
+    {
+      selectedCommitSHA = nil
+      selectedBranchName = branchName
+    } else {
+      selectedCommitSHA = commits.first?.sha
     }
   }
 
@@ -322,22 +427,18 @@ struct CodebaseView: View {
     defer {
       model.consumeCodebaseFocus(workItemID: workItemID)
     }
-    guard let snapshot else { return }
+    guard snapshot != nil else { return }
     let candidate = model.candidateRevisions
       .filter { $0.workItemID == workItemID }
       .max(by: { $0.version < $1.version })
     guard let candidate else { return }
 
-    if let branch = snapshot.branches.first(where: { $0.name == candidate.branchName }) {
-      selectedCommitSHA = nil
-      selectedBranchName = branch.name
-      await loadSelectedBranch()
-      return
-    }
+    historyScope = .ticket(workItemID)
 
     let candidateSHAs = [candidate.integratedSHA, candidate.headSHA].compactMap { $0 }
     guard
-      let commit = snapshot.commits.first(where: { candidateSHAs.contains($0.sha) })
+      let commit = commits.first(where: { candidateSHAs.contains($0.sha) })
+        ?? commits.first
     else { return }
     selectedBranchName = nil
     selectedCommitSHA = commit.sha
@@ -368,17 +469,26 @@ struct CodebaseView: View {
   }
 
   private func candidate(for commit: GitCommitSummary) -> CandidateRevision? {
-    model.candidateRevisions
-      .filter {
-        $0.headSHA == commit.sha || $0.integratedSHA == commit.sha
-          || commit.parentSHAs.contains($0.headSHA)
-      }
-      .max { $0.version < $1.version }
+    guard
+      let snapshot,
+      let revision = CodebaseHistoryFilter.associatedRevision(
+        with: commit,
+        in: snapshot,
+        revisions: ticketRevisions
+      )
+    else { return nil }
+    return model.candidateRevisions.first { $0.id == revision.candidateID }
   }
 
   private func ticket(for commit: GitCommitSummary) -> WorkItem? {
     if let candidate = candidate(for: commit) {
       return model.workItems.first { $0.id == candidate.workItemID }
+    }
+    if
+      let branch = snapshot?.branches.first(where: { $0.commitSHAs.contains(commit.sha) }),
+      let workItemID = branchWorkItemIDs[branch.name]
+    {
+      return model.workItems.first { $0.id == workItemID }
     }
     return model.workItems.first { item in
       commit.subject.hasPrefix("\(item.key):")
@@ -411,9 +521,33 @@ struct CodebaseView: View {
     authorProfile(for: commit)?.name ?? commit.authorName
   }
 
+  private func commitPresentation(for commit: GitCommitSummary) -> CodebaseCommitPresentation {
+    let revision = snapshot.flatMap {
+      CodebaseHistoryFilter.associatedRevision(
+        with: commit,
+        in: $0,
+        revisions: ticketRevisions
+      )
+    }
+    return CodebaseCommitPresentationResolver.presentation(
+      for: commit,
+      revision: revision,
+      hasTicket: ticket(for: commit) != nil
+    )
+  }
+
   private func displaySubject(for commit: GitCommitSummary) -> String {
-    guard let ticket = ticket(for: commit) else { return commit.subject }
     let normalized = commit.subject.lowercased()
+    if normalized == "checkpoint before candidate integration" {
+      return "Prepared product workspace for integration"
+    }
+    if normalized == "checkpoint product workspace" {
+      return "Saved product workspace changes"
+    }
+    if normalized == "initialize product workspace" {
+      return "Created product workspace"
+    }
+    guard let ticket = ticket(for: commit) else { return commit.subject }
     if normalized.contains("candidate v") {
       return "\(ticket.key): \(ticket.title)"
     }
@@ -421,6 +555,33 @@ struct CodebaseView: View {
       return "Integrate \(ticket.key): \(ticket.title)"
     }
     return commit.subject
+  }
+}
+
+private struct CodebaseHistoryOption {
+  let title: String
+  let symbol: String
+
+  static let trunk = CodebaseHistoryOption(
+    title: "Trunk — Accepted product",
+    symbol: "checkmark.circle.fill"
+  )
+  static let allActivity = CodebaseHistoryOption(
+    title: "All activity",
+    symbol: "list.bullet.rectangle"
+  )
+}
+
+private struct CodebaseHistoryPickerLabel: View {
+  let option: CodebaseHistoryOption
+
+  var body: some View {
+    Label {
+      Text("\u{00A0}\(option.title)")
+    } icon: {
+      Image(systemName: option.symbol)
+    }
+    .accessibilityLabel(option.title)
   }
 }
 
@@ -512,75 +673,335 @@ private struct CodebaseBranchCard: View {
   }
 }
 
-enum CodebaseCommitOrigin: Equatable {
+enum CodebaseHistoryScope: Hashable {
   case trunk
-  case worktree
-  case branch
+  case ticket(UUID)
+  case allActivity
+}
+
+struct CodebaseTicketRevision: Equatable {
+  let candidateID: UUID
+  let workItemID: UUID
+  let version: Int
+  let branchName: String
+  let baseSHA: String
+  let headSHA: String
+  let integratedSHA: String?
+  let status: CandidateRevisionStatus
+
+  init(
+    candidateID: UUID,
+    workItemID: UUID,
+    version: Int,
+    branchName: String,
+    baseSHA: String,
+    headSHA: String,
+    integratedSHA: String?,
+    status: CandidateRevisionStatus
+  ) {
+    self.candidateID = candidateID
+    self.workItemID = workItemID
+    self.version = version
+    self.branchName = branchName
+    self.baseSHA = baseSHA
+    self.headSHA = headSHA
+    self.integratedSHA = integratedSHA
+    self.status = status
+  }
+
+  init(_ candidate: CandidateRevision) {
+    self.init(
+      candidateID: candidate.id,
+      workItemID: candidate.workItemID,
+      version: candidate.version,
+      branchName: candidate.branchName,
+      baseSHA: candidate.baseSHA,
+      headSHA: candidate.headSHA,
+      integratedSHA: candidate.integratedSHA,
+      status: candidate.status
+    )
+  }
+}
+
+enum CodebaseHistoryFilter {
+  static func commits(
+    in snapshot: GitRepositorySnapshot,
+    scope: CodebaseHistoryScope,
+    revisions: [CodebaseTicketRevision],
+    branchWorkItemIDs: [String: UUID]
+  ) -> [GitCommitSummary] {
+    switch scope {
+    case .trunk:
+      return snapshot.commits.filter(\.isOnTrunk)
+    case .allActivity:
+      return snapshot.commits
+    case .ticket(let workItemID):
+      let matchingRevisions = revisions.filter { $0.workItemID == workItemID }
+      var includedSHAs = Set<String>()
+      for revision in matchingRevisions {
+        includedSHAs.formUnion(
+          commitSHAs(for: revision, in: snapshot)
+        )
+      }
+      let branchNames = Set(matchingRevisions.map(\.branchName)).union(
+        branchWorkItemIDs.compactMap { name, branchWorkItemID in
+          branchWorkItemID == workItemID ? name : nil
+        }
+      )
+      for branch in snapshot.branches where branchNames.contains(branch.name) {
+        includedSHAs.formUnion(branch.commitSHAs)
+      }
+      return snapshot.commits.filter { includedSHAs.contains($0.sha) }
+    }
+  }
+
+  static func associatedRevision(
+    with commit: GitCommitSummary,
+    in snapshot: GitRepositorySnapshot,
+    revisions: [CodebaseTicketRevision]
+  ) -> CodebaseTicketRevision? {
+    revisions
+      .compactMap { revision -> (revision: CodebaseTicketRevision, score: Int)? in
+        let candidateSHAs = candidateCommitSHAs(for: revision, in: snapshot)
+        let integrationSHAs = integrationCommitSHAs(for: revision, in: snapshot)
+        let score: Int
+        if commit.sha == revision.headSHA || commit.sha == revision.integratedSHA {
+          score = 4
+        } else if commit.parentSHAs.contains(revision.headSHA) {
+          score = 3
+        } else if integrationSHAs.contains(commit.sha) {
+          score = 2
+        } else if candidateSHAs.contains(commit.sha) {
+          score = 1
+        } else {
+          return nil
+        }
+        return (revision, score)
+      }
+      .max { lhs, rhs in
+        lhs.score == rhs.score
+          ? lhs.revision.version < rhs.revision.version
+          : lhs.score < rhs.score
+      }?
+      .revision
+  }
+
+  private static func commitSHAs(
+    for revision: CodebaseTicketRevision,
+    in snapshot: GitRepositorySnapshot
+  ) -> Set<String> {
+    candidateCommitSHAs(for: revision, in: snapshot).union(
+      integrationCommitSHAs(for: revision, in: snapshot)
+    )
+  }
+
+  private static func candidateCommitSHAs(
+    for revision: CodebaseTicketRevision,
+    in snapshot: GitRepositorySnapshot
+  ) -> Set<String> {
+    firstParentPath(
+      from: revision.headSHA,
+      in: snapshot,
+      stopBefore: { $0 == revision.baseSHA }
+    )
+  }
+
+  private static func integrationCommitSHAs(
+    for revision: CodebaseTicketRevision,
+    in snapshot: GitRepositorySnapshot
+  ) -> Set<String> {
+    guard let integratedSHA = revision.integratedSHA else { return [] }
+    let commitsBySHA = Dictionary(
+      uniqueKeysWithValues: snapshot.commits.map { ($0.sha, $0) }
+    )
+    var includedSHAs = Set<String>()
+    var visitedSHAs = Set<String>()
+    var sha = integratedSHA
+    while visitedSHAs.insert(sha).inserted {
+      guard let commit = commitsBySHA[sha] else { break }
+      includedSHAs.insert(sha)
+      if commit.sha == revision.headSHA || commit.parentSHAs.contains(revision.headSHA) {
+        return includedSHAs
+      }
+      guard let parentSHA = commit.parentSHAs.first else { break }
+      sha = parentSHA
+    }
+    return commitsBySHA[integratedSHA] == nil ? [] : [integratedSHA]
+  }
+
+  private static func firstParentPath(
+    from startSHA: String,
+    in snapshot: GitRepositorySnapshot,
+    stopBefore: (String) -> Bool
+  ) -> Set<String> {
+    let commitsBySHA = Dictionary(
+      uniqueKeysWithValues: snapshot.commits.map { ($0.sha, $0) }
+    )
+    var includedSHAs = Set<String>()
+    var visitedSHAs = Set<String>()
+    var sha = startSHA
+    while !stopBefore(sha), visitedSHAs.insert(sha).inserted {
+      guard let commit = commitsBySHA[sha] else { break }
+      includedSHAs.insert(sha)
+      guard let parentSHA = commit.parentSHAs.first else { break }
+      sha = parentSHA
+    }
+    return includedSHAs
+  }
+}
+
+enum CodebaseCommitKind: Equatable {
+  case candidate
+  case integration
+  case productKnowledge
+  case workspaceUpdate
+  case workspaceSetup
+  case acceptedChange
+  case commit
 
   var title: String {
     switch self {
-    case .trunk: "Trunk"
-    case .worktree: "Worktree"
-    case .branch: "Branch"
+    case .candidate: "Candidate"
+    case .integration: "Integration"
+    case .productKnowledge: "Product knowledge"
+    case .workspaceUpdate: "Workspace update"
+    case .workspaceSetup: "Workspace setup"
+    case .acceptedChange: "Accepted change"
+    case .commit: "Commit"
     }
   }
 
   var symbol: String {
     switch self {
-    case .trunk: "checkmark.circle.fill"
-    case .worktree, .branch: "arrow.triangle.branch"
+    case .candidate: "doc.badge.plus"
+    case .integration: "arrow.triangle.merge"
+    case .productKnowledge: "books.vertical.fill"
+    case .workspaceUpdate: "gearshape.fill"
+    case .workspaceSetup: "folder.badge.plus"
+    case .acceptedChange: "checkmark.circle.fill"
+    case .commit: "doc.text"
     }
   }
 
   var tint: Color {
     switch self {
-    case .trunk: .green
-    case .worktree: .blue
-    case .branch: .secondary
+    case .candidate: .blue
+    case .integration: .teal
+    case .productKnowledge: .indigo
+    case .acceptedChange: .green
+    case .workspaceUpdate, .workspaceSetup, .commit: .secondary
     }
   }
 }
 
-struct CodebaseWorktreeRevision: Equatable {
-  let baseSHA: String
-  let headSHA: String
+enum CodebaseCommitState: Equatable {
+  case accepted
+  case onTrunk
+  case inReview
+  case integrating
+  case resolvingConflict
+  case changesRequested
+  case readyForDemo
+  case earlierVersion
+  case failed
+  case notAccepted
+
+  var title: String {
+    switch self {
+    case .accepted: "Accepted"
+    case .onTrunk: "On trunk"
+    case .inReview: "In review"
+    case .integrating: "Integrating"
+    case .resolvingConflict: "Resolving conflict"
+    case .changesRequested: "Changes requested"
+    case .readyForDemo: "Ready for demo"
+    case .earlierVersion: "Earlier version"
+    case .failed: "Failed"
+    case .notAccepted: "Not accepted"
+    }
+  }
+
+  var tint: Color {
+    switch self {
+    case .accepted, .onTrunk: .green
+    case .inReview, .integrating: .teal
+    case .resolvingConflict, .changesRequested, .readyForDemo: .orange
+    case .failed: .red
+    case .earlierVersion, .notAccepted: .secondary
+    }
+  }
 }
 
-enum CodebaseCommitOriginResolver {
-  static func origins(
-    in snapshot: GitRepositorySnapshot,
-    worktreeRevisions: [CodebaseWorktreeRevision]
-  ) -> [String: CodebaseCommitOrigin] {
-    var origins: [String: CodebaseCommitOrigin] = Dictionary(
-      uniqueKeysWithValues: snapshot.commits.map { commit in
-        (
-          commit.sha,
-          commit.isOnTrunk ? CodebaseCommitOrigin.trunk : CodebaseCommitOrigin.branch
-        )
-      }
-    )
-    let commitsBySHA = Dictionary(
-      uniqueKeysWithValues: snapshot.commits.map { ($0.sha, $0) }
-    )
+struct CodebaseCommitPresentation: Equatable {
+  let kind: CodebaseCommitKind
+  let state: CodebaseCommitState
+}
 
-    for branch in snapshot.branches where branch.worktreePath != nil {
-      for sha in branch.commitSHAs {
-        origins[sha] = .worktree
-      }
+enum CodebaseCommitPresentationResolver {
+  static func presentation(
+    for commit: GitCommitSummary,
+    revision: CodebaseTicketRevision?,
+    hasTicket: Bool
+  ) -> CodebaseCommitPresentation {
+    let normalizedSubject = commit.subject.lowercased()
+    let kind: CodebaseCommitKind
+    if normalizedSubject == "initialize product workspace" {
+      kind = .workspaceSetup
+    } else if normalizedSubject.hasPrefix("checkpoint") {
+      kind = .workspaceUpdate
+    } else if normalizedSubject.contains("product knowledge") {
+      kind = .productKnowledge
+    } else if
+      normalizedSubject.hasPrefix("integrate ")
+        || revision.map({ commit.sha == $0.integratedSHA }) == true
+        || revision.map({ commit.parentSHAs.contains($0.headSHA) }) == true
+    {
+      kind = .integration
+    } else if revision != nil || (hasTicket && !commit.isOnTrunk) {
+      kind = .candidate
+    } else if commit.isOnTrunk {
+      kind = .acceptedChange
+    } else {
+      kind = .commit
     }
 
-    for revision in worktreeRevisions {
-      var sha = revision.headSHA
-      var visited: Set<String> = []
-
-      while sha != revision.baseSHA, visited.insert(sha).inserted {
-        guard origins[sha] != nil else { break }
-        origins[sha] = .worktree
-        guard let parentSHA = commitsBySHA[sha]?.parentSHAs.first else { break }
-        sha = parentSHA
-      }
+    let state: CodebaseCommitState
+    if commit.isOnTrunk {
+      state = hasTicket ? .accepted : .onTrunk
+    } else if let revision {
+      state = stateForStatus(revision.status)
+    } else {
+      state = .notAccepted
     }
-    return origins
+    return CodebaseCommitPresentation(kind: kind, state: state)
+  }
+
+  private static func stateForStatus(
+    _ status: CandidateRevisionStatus
+  ) -> CodebaseCommitState {
+    switch status {
+    case .queuedForReview, .reviewing: .inReview
+    case .queuedForIntegration, .integrating: .integrating
+    case .resolvingConflict: .resolvingConflict
+    case .changesRequested: .changesRequested
+    case .readyForDemo: .readyForDemo
+    case .accepted: .accepted
+    case .superseded: .earlierVersion
+    case .failed: .failed
+    }
+  }
+}
+
+enum CodebaseTicketStateTitle {
+  static func title(for state: WorkItemState) -> String {
+    switch state {
+    case .queued: "Ready to pick"
+    case .running: "In progress"
+    case .integrating, .verifying, .readyToRelease: "In review"
+    case .acceptance: "Ready for demo"
+    case .released: "Done"
+    default: state.title
+    }
   }
 }
 
@@ -588,31 +1009,27 @@ private struct CodebaseCommitRow: View {
   let commit: GitCommitSummary
   let subject: String
   let authorName: String
-  let origin: CodebaseCommitOrigin
-  let ticket: WorkItem?
+  let presentation: CodebaseCommitPresentation
   let isSelected: Bool
 
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
-      Image(systemName: origin.symbol)
-        .foregroundStyle(origin.tint)
+      Image(systemName: presentation.kind.symbol)
+        .foregroundStyle(presentation.kind.tint)
         .frame(width: 20)
+        .help(presentation.kind.title)
+        .accessibilityLabel(presentation.kind.title)
       VStack(alignment: .leading, spacing: 5) {
         Text(subject)
           .font(.callout.weight(.medium))
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
         HStack(spacing: 6) {
-          Text(origin.title)
+          Text(presentation.state.title)
             .fontWeight(.semibold)
-            .foregroundStyle(origin.tint)
+            .foregroundStyle(presentation.state.tint)
           Text(commit.shortSHA)
             .font(.caption2.monospaced())
-          if let ticket {
-            Text(ticket.key)
-              .font(.caption2.monospaced().weight(.semibold))
-              .foregroundStyle(.blue)
-          }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -631,12 +1048,6 @@ private struct CodebaseCommitRow: View {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        if !commit.references.isEmpty {
-          Text(commit.references.joined(separator: " · "))
-            .font(.caption2.monospaced())
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-        }
       }
     }
     .padding(.horizontal, 14)

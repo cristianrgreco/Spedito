@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -14,10 +15,15 @@ struct ReleasePackagingTests {
       contentsOf: projectRoot().appendingPathComponent("scripts/verify_dmg.sh"),
       encoding: .utf8
     )
+    let backgroundGenerator = try String(
+      contentsOf: projectRoot().appendingPathComponent("scripts/generate_dmg_background.swift"),
+      encoding: .utf8
+    )
 
     #expect(script.contains("create-dmg \\"))
     #expect(script.contains("--background \"$background_path\""))
-    #expect(script.contains("--window-size 660 440"))
+    #expect(script.contains("DMGBackground.tiff"))
+    #expect(script.contains("--window-size 660 468"))
     #expect(script.contains("--icon \"Spedito.app\" 180 240"))
     #expect(script.contains("--app-drop-link 480 240"))
     #expect(script.contains("--no-internet-enable"))
@@ -26,6 +32,30 @@ struct ReleasePackagingTests {
     #expect(!script.contains("osascript"))
     #expect(!script.contains("--volicon"))
     #expect(!verification.contains(".VolumeIcon.icns"))
+    #expect(verification.contains("DMGBackground.tiff"))
+    #expect(backgroundGenerator.contains("private let scaleFactors = [1, 2]"))
+    #expect(backgroundGenerator.contains("image.tiffRepresentation"))
+    #expect(!backgroundGenerator.contains("EARLY PREVIEW"))
+  }
+
+  @Test("The DMG background includes standard and Retina artwork")
+  @MainActor
+  func backgroundResolutionContract() throws {
+    let backgroundURL = projectRoot()
+      .appendingPathComponent("Distribution/DMGBackground.tiff")
+    let image = try #require(NSImage(contentsOf: backgroundURL))
+
+    #expect(image.size == NSSize(width: 660, height: 440))
+    #expect(
+      image.representations.contains {
+        $0.pixelsWide == 660 && $0.pixelsHigh == 440
+      }
+    )
+    #expect(
+      image.representations.contains {
+        $0.pixelsWide == 1_320 && $0.pixelsHigh == 880
+      }
+    )
   }
 
   @Test("The release and website use a stable latest-download DMG")

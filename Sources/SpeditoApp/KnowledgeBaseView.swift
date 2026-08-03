@@ -65,8 +65,13 @@ struct KnowledgeBaseView: View {
       Button("Create") {
         let title = newPageTitle
         let parentID = newPageParentID
+        guard let productID = model.selectedProductID else { return }
         Task {
-          if let page = await model.createKnowledgePage(parentID: parentID, title: title) {
+          if let page = await model.createKnowledgePage(
+            productID: productID,
+            parentID: parentID,
+            title: title
+          ) {
             selectedPageID = page.id
             isEditing = true
           }
@@ -257,13 +262,17 @@ struct KnowledgeBaseView: View {
         Button("Save") {
           Task {
             if await model.saveKnowledgePage(
+              productID: page.productID,
               id: page.id,
               title: titleDraft,
               bodyMarkdown: bodyDraft,
               changeSummary: "Edited page"
             ) {
               isEditing = false
-              revisions = await model.knowledgeRevisions(for: page.id)
+              revisions = await model.knowledgeRevisions(
+                productID: page.productID,
+                for: page.id
+              )
             }
           }
         }
@@ -510,7 +519,10 @@ struct KnowledgeBaseView: View {
     bodyDraft = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown)
     isEditing = false
     Task {
-      revisions = await model.knowledgeRevisions(for: page.id)
+      revisions = await model.knowledgeRevisions(
+        productID: page.productID,
+        for: page.id
+      )
     }
   }
 
