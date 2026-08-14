@@ -37,16 +37,13 @@ struct RemoteRepositoryAppModelTests {
     let connectionTask = Task {
       await model.connectGitHub(productID: product.id)
     }
-    for _ in 0..<100 where !(await service.didPresentPrompt) {
-      try await Task.sleep(for: .milliseconds(10))
-    }
+    await service.waitForConnectionStart()
     #expect(model.githubDeviceAuthorizationPrompts[product.id]?.userCode == "ABCD-EFGH")
     #expect(model.githubRemoteRepositoryBusyProductIDs.contains(product.id))
 
     let queuedSelection = Task {
       await model.selectLocalGitHubRepository(productID: product.id, repositoryID: 91)
     }
-    try await Task.sleep(for: .milliseconds(10))
     await service.completeConnection()
     await connectionTask.value
     await queuedSelection.value
@@ -60,9 +57,7 @@ struct RemoteRepositoryAppModelTests {
     let initializationTask = Task {
       await model.initializeLocalGitHubRepository(productID: product.id)
     }
-    for _ in 0..<100 where !(await service.didStartInitialization) {
-      try await Task.sleep(for: .milliseconds(10))
-    }
+    await service.waitForInitializationStart()
     #expect(
       model.githubRepositorySetupActivities[product.id]
         == .inProgress(progress: .validatingProduct, publishesExistingHistory: false)
@@ -929,6 +924,7 @@ struct RemoteRepositoryAppModelTests {
 private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var currentState = GitHubRemoteRepositoryState(isConfigured: true)
   private var connectionContinuation: CheckedContinuation<Void, Never>?
+  private var connectionStartWaiters: [CheckedContinuation<Void, Never>] = []
   private var shouldFailChecks = false
   private(set) var checkCount = 0
   private(set) var prepareSafeSyncCount = 0
@@ -941,6 +937,7 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private(set) var recoveryCount = 0
   private var recoveryContinuation: CheckedContinuation<Void, Never>?
   private var initializationContinuation: CheckedContinuation<Void, Never>?
+  private var initializationStartWaiters: [CheckedContinuation<Void, Never>] = []
   private var shouldPauseInitialization = false
   private(set) var didStartInitialization = false
   private var nextImportError: ProductRepositoryImportError?
@@ -960,6 +957,20 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     if recoveryCount > 0 { return }
     await withCheckedContinuation { continuation in
       recoveryContinuation = continuation
+    }
+  }
+
+  func waitForConnectionStart() async {
+    if didPresentPrompt { return }
+    await withCheckedContinuation { continuation in
+      connectionStartWaiters.append(continuation)
+    }
+  }
+
+  func waitForInitializationStart() async {
+    if didStartInitialization { return }
+    await withCheckedContinuation { continuation in
+      initializationStartWaiters.append(continuation)
     }
   }
 
@@ -1056,9 +1067,14 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
         expiresAt: Date().addingTimeInterval(900)
       )
     )
-    didPresentPrompt = true
     await withCheckedContinuation { continuation in
       connectionContinuation = continuation
+      didPresentPrompt = true
+      let waiters = connectionStartWaiters
+      connectionStartWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
     }
     currentState = GitHubRemoteRepositoryState(
       isConfigured: true,
@@ -1183,13 +1199,25 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
         GitHubRemoteRepositoryInitializationProgress
       ) async -> Void
   ) async throws -> GitHubRemoteRepositoryState {
-    didStartInitialization = true
     await onProgress(.validatingProduct)
     if shouldPauseInitialization {
       await withCheckedContinuation { continuation in
         initializationContinuation = continuation
+        didStartInitialization = true
+        let waiters = initializationStartWaiters
+        initializationStartWaiters.removeAll()
+        for waiter in waiters {
+          waiter.resume()
+        }
       }
       shouldPauseInitialization = false
+    } else {
+      didStartInitialization = true
+      let waiters = initializationStartWaiters
+      initializationStartWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
     }
     await onProgress(.publishingBootstrap)
     return try await initializeLocalRepository(productID: productID)

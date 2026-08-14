@@ -11563,6 +11563,14 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func awaitRepositoryKnowledgeRecovery(productID: UUID) async {
+    if let task = repositoryKnowledgeTasks[productID] {
+      await task.value
+    } else {
+      await recoverOrRunRepositoryKnowledge(productID: productID)
+    }
+  }
+
   private func recoverOrRunRepositoryKnowledge(productID: UUID) async {
     defer { repositoryKnowledgeTasks[productID] = nil }
     guard !Task.isCancelled, let productStore = store(for: productID) else { return }

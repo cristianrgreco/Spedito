@@ -265,20 +265,14 @@ struct ProductScopedPersistenceTests {
       reviewerThreadID: "review-thread",
       reviewerTurnID: "review-turn"
     )
-    let model = AppModel(
-      storeRegistry: registry,
+    let relaunched = try await fixture.relaunch(
+      closing: registry,
       selectedProductID: product.id
     )
+    await relaunched.model.awaitRepositoryKnowledgeRecovery(productID: product.id)
+    let relaunchedStore = try #require(relaunched.registry.store(for: product.id))
 
-    await model.load()
-    for _ in 0..<100 {
-      if try await store.fetchRepositoryKnowledgeRun(id: run.id).status == .completed {
-        break
-      }
-      try await Task.sleep(for: .milliseconds(10))
-    }
-
-    let completed = try await store.fetchRepositoryKnowledgeRun(id: run.id)
+    let completed = try await relaunchedStore.fetchRepositoryKnowledgeRun(id: run.id)
     #expect(completed.status == .completed)
     #expect(try await git.acceptedTrunkSHA(at: workspace) == analyzedSHA)
     #expect(
@@ -287,15 +281,13 @@ struct ProductScopedPersistenceTests {
       )
     )
     let updatedOverview = try #require(
-      try await store.fetchKnowledgePages(productID: product.id).first {
+      try await relaunchedStore.fetchKnowledgePages(productID: product.id).first {
         $0.id == overview.id
       }
     )
     #expect(updatedOverview.bodyMarkdown.contains("Verified without changing the repository."))
 
-    for store in registry.allStores {
-      await store.close()
-    }
+    await relaunched.close()
   }
 
   @Test("Completed empty repository analysis waits for an explicit owner retry")
@@ -545,7 +537,45 @@ private struct ProductScopedPersistenceFixture {
     )
   }
 
+  @MainActor
+  func relaunch(
+    closing registry: ProductStoreRegistry,
+    selectedProductID: UUID,
+    githubRemoteService: (any GitHubRemoteRepositoryServing)? = nil
+  ) async throws -> ProductScopedAppInstance {
+    for store in registry.allStores {
+      await store.close()
+    }
+    let relaunchedRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: workspacesURL
+    )
+    try await relaunchedRegistry.prepare()
+    let model = AppModel(
+      storeRegistry: relaunchedRegistry,
+      selectedProductID: selectedProductID,
+      githubRemoteService: githubRemoteService
+    )
+    await model.reload()
+    return ProductScopedAppInstance(
+      registry: relaunchedRegistry,
+      model: model
+    )
+  }
+
   func remove() {
     try? FileManager.default.removeItem(at: directoryURL)
+  }
+}
+
+@MainActor
+private struct ProductScopedAppInstance {
+  let registry: ProductStoreRegistry
+  let model: AppModel
+
+  func close() async {
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
   }
 }
