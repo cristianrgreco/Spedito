@@ -900,18 +900,20 @@ struct RepositoryImportKnowledgeTests {
     var completed = base
     completed.status = .completed
     #expect(policy.action(for: completed) == .none)
+    for _ in 0..<3 {
+      #expect(policy.action(for: completed) == .none)
+    }
+    let overview = KnowledgePage(
+      productID: productID,
+      title: "Overview",
+      slug: "overview"
+    )
     #expect(
-      policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview"
-          )
-        ]
-      )
+        pages: [overview]
+      ) == .noPublishableKnowledge
     )
     let rejectedDraft = RepositoryKnowledgeDraft(
       runID: completed.id,
@@ -923,39 +925,30 @@ struct RepositoryImportKnowledgeTests {
       status: .rejected
     )
     #expect(
-      policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [rejectedDraft],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview"
-          )
-        ]
-      )
+        pages: [overview]
+      ) == .noPublishableKnowledge
+    )
+    let publishedOverview = KnowledgePage(
+      productID: productID,
+      title: "Overview",
+      slug: "overview",
+      sourceRepositoryKnowledgeRunID: completed.id
     )
     #expect(
-      !policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview",
-            sourceRepositoryKnowledgeRunID: UUID()
-          )
-        ]
-      )
+        pages: [publishedOverview]
+      ) == .publishedKnowledge
     )
     var legacyLaunchFailure = base
     legacyLaunchFailure.status = .failed
     legacyLaunchFailure.errorMessage =
       "The demo could not be prepared safely: demo paths must be relative to the reviewed preview."
-    #expect(policy.shouldRetryLegacyInvalidLaunchProposal(run: legacyLaunchFailure))
-    legacyLaunchFailure.errorMessage = "The repository analysis response was malformed."
-    #expect(!policy.shouldRetryLegacyInvalidLaunchProposal(run: legacyLaunchFailure))
+    #expect(policy.action(for: legacyLaunchFailure) == .none)
   }
 
   @Test("Repository analysis process environment is minimal and credential free")

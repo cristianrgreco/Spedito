@@ -114,6 +114,34 @@ public struct GitHubRemoteRepositoryState: Equatable, Sendable {
   }
 }
 
+public struct RemoteProductArchivePolicy: Sendable {
+  public init() {}
+
+  public func blockingReason(for state: GitHubRemoteRepositoryState) -> String? {
+    if state.connection?.status == .initializingRemote {
+      return
+        "Repository setup is currently publishing or verifying changes. Wait for it to finish before archiving this Product."
+    }
+    if state.safeSync?.status == .accepting {
+      return
+        "Incoming repository changes are currently being accepted. Wait for that operation to finish before archiving this Product."
+    }
+    if state.publications.contains(where: {
+      switch $0.status {
+      case .checking, .pushing, .branchPublished, .creatingPullRequest:
+        true
+      case .awaitingConfirmation, .open, .openOutdated, .openStale, .merged,
+        .closed, .cancelled, .stale, .failed:
+        false
+      }
+    }) {
+      return
+        "A reviewed repository change is currently being published. Wait for that operation to finish before archiving this Product."
+    }
+    return nil
+  }
+}
+
 public struct GitHubTicketIntegrationBase: Equatable, Sendable {
   public let observationRef: String
   public let remoteSHA: String
@@ -1870,8 +1898,10 @@ public actor GitHubRemoteRepositoryService: GitHubRemoteRepositoryServing {
 
   public func recover(productID: UUID) async {
     guard configuration.isConfigured, let store = await storeProvider(productID) else { return }
-    errors[productID] = nil
     do {
+      let activeProducts = try await store.fetchProducts(status: .active)
+      guard activeProducts.contains(where: { $0.id == productID }) else { return }
+      errors[productID] = nil
       try await credentialSession.cleanupOrphans()
       if let accepted = try await store.fetchLatestRemoteSafeSync(productID: productID),
         accepted.status == .accepted

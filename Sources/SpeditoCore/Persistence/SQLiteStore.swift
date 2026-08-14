@@ -2439,6 +2439,92 @@ public actor SQLiteStore {
     }
   }
 
+  public func updateTeamSettings(
+    productID: UUID,
+    productInstructions: String,
+    profiles updates: [TeamProfileSettingsUpdate]
+  ) throws -> TeamSettingsSnapshot {
+    let product = try fetchProduct(id: productID)
+    guard product.status == .active else {
+      throw PersistenceError.corruptData(
+        "Restore this product before changing its team settings"
+      )
+    }
+    let currentProfiles = try fetchAgentProfiles(productID: productID)
+    let updateIDs = updates.map(\.profileID)
+    let expectedIDs = Set(currentProfiles.map(\.id))
+    guard updateIDs.count == Set(updateIDs).count, Set(updateIDs) == expectedIDs else {
+      throw PersistenceError.corruptData(
+        "The product team changed while these settings were open. Review the current team and try again."
+      )
+    }
+
+    let normalizedUpdates = try Dictionary(
+      uniqueKeysWithValues: updates.map { update in
+        guard
+          !update.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          !update.reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+          throw PersistenceError.corruptData("Model and reasoning effort cannot be empty")
+        }
+        let trimmedInstructions =
+          update.customInstructions?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let storedInstructions = trimmedInstructions?.isEmpty == false ? trimmedInstructions : nil
+        return (
+          update.profileID,
+          TeamProfileSettingsUpdate(
+            profileID: update.profileID,
+            model: update.model,
+            reasoningEffort: update.reasoningEffort,
+            customInstructions: storedInstructions
+          )
+        )
+      }
+    )
+    let instructions = productInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    let updatedAt = Date()
+    try transaction {
+      try withStatement(
+        "UPDATE products SET instructions = ?, updated_at = ? WHERE id = ?;"
+      ) { statement in
+        try bind(instructions, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(productID.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      for profile in currentProfiles {
+        guard let update = normalizedUpdates[profile.id] else {
+          throw PersistenceError.corruptData("Team settings are incomplete")
+        }
+        try withStatement(
+          """
+          UPDATE agent_profiles
+          SET model = ?, reasoning_effort = ?, custom_instructions = ?, updated_at = ?
+          WHERE id = ? AND product_id = ? AND is_active = 1;
+          """
+        ) { statement in
+          try bind(update.model, to: 1, in: statement)
+          try bind(update.reasoningEffort, to: 2, in: statement)
+          try bindOptionalString(update.customInstructions, to: 3, in: statement)
+          try bind(updatedAt.timeIntervalSince1970, to: 4, in: statement)
+          try bind(profile.id.uuidString, to: 5, in: statement)
+          try bind(productID.uuidString, to: 6, in: statement)
+          try stepDone(statement)
+        }
+      }
+      _ = try insertEvent(
+        productID: productID,
+        kind: "team.settings_updated",
+        actor: "owner",
+        detail: "Shared guidance and \(currentProfiles.count) team members updated"
+      )
+    }
+    return TeamSettingsSnapshot(
+      product: try fetchProduct(id: productID),
+      profiles: try fetchAgentProfiles(productID: productID)
+    )
+  }
+
   public func updateAgentProfileConfiguration(
     id: UUID,
     model: String,
@@ -3807,6 +3893,30 @@ public actor SQLiteStore {
     }
   }
 
+  public func fetchAgentPermissionRequest(
+    agentRunID: UUID,
+    serverRequestID: String,
+    signature: String
+  ) throws -> AgentPermissionRequest? {
+    try withStatement(
+      """
+      SELECT id, product_id, work_item_id, agent_run_id, thread_id, turn_id,
+             server_request_id, method, kind, title, detail, reason, signature,
+             status, created_at, updated_at, product_grant_signature
+      FROM agent_permission_requests
+      WHERE agent_run_id = ? AND server_request_id = ? AND signature = ?
+      ORDER BY created_at DESC
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(agentRunID.uuidString, to: 1, in: statement)
+      try bind(serverRequestID, to: 2, in: statement)
+      try bind(signature, to: 3, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeAgentPermissionRequest(statement)
+    }
+  }
+
   public func updateAgentPermissionRequest(
     id: UUID,
     status: AgentPermissionRequestStatus
@@ -3824,6 +3934,110 @@ public actor SQLiteStore {
       try stepDone(statement)
     }
     return try fetchAgentPermissionRequest(id: id)
+  }
+
+  public func prepareAgentPermissionResolution(
+    requestID: UUID,
+    intent: AgentPermissionRequestStatus,
+    productGrant: AgentPermissionGrant?
+  ) throws -> AgentPermissionResolutionPreparation {
+    guard intent.isPendingDelivery, let acknowledgedStatus = intent.acknowledgedStatus else {
+      throw PersistenceError.corruptData(
+        "Permission resolution requires a pending-delivery intent"
+      )
+    }
+    guard (intent == .allowProductPendingDelivery) == (productGrant != nil) else {
+      throw PersistenceError.corruptData(
+        "Saved product access must match the permission decision intent"
+      )
+    }
+
+    var preparation: AgentPermissionResolutionPreparation?
+    try transaction {
+      let current = try fetchAgentPermissionRequest(id: requestID)
+      if current.status == acknowledgedStatus {
+        preparation = AgentPermissionResolutionPreparation(
+          request: current,
+          grant: nil,
+          createdGrantID: nil
+        )
+        return
+      }
+      guard current.status == .pending || current.status == .interrupted
+        || current.status == intent
+      else {
+        throw PersistenceError.corruptData(
+          "Permission request already has a different durable decision"
+        )
+      }
+
+      var savedGrant: AgentPermissionGrant?
+      var createdGrantID: UUID?
+      if let productGrant {
+        guard
+          productGrant.productID == current.productID,
+          productGrant.sourceRequestID == current.id,
+          productGrant.signature == current.productGrantSignature
+        else {
+          throw PersistenceError.corruptData(
+            "Saved product access does not match its permission request"
+          )
+        }
+        savedGrant = try saveAgentPermissionGrant(productGrant)
+        if savedGrant?.id == productGrant.id {
+          createdGrantID = productGrant.id
+        }
+      }
+
+      let prepared =
+        if current.status == intent {
+          current
+        } else {
+          try updateAgentPermissionRequest(id: requestID, status: intent)
+        }
+      preparation = AgentPermissionResolutionPreparation(
+        request: prepared,
+        grant: savedGrant,
+        createdGrantID: createdGrantID
+      )
+    }
+    guard let preparation else {
+      throw PersistenceError.corruptData("Permission resolution was not prepared")
+    }
+    return preparation
+  }
+
+  public func acknowledgeAgentPermissionResolution(
+    requestID: UUID,
+    intent: AgentPermissionRequestStatus
+  ) throws -> AgentPermissionRequest {
+    guard let acknowledgedStatus = intent.acknowledgedStatus else {
+      throw PersistenceError.corruptData(
+        "Permission acknowledgement requires a pending-delivery intent"
+      )
+    }
+
+    var acknowledged: AgentPermissionRequest?
+    try transaction {
+      let current = try fetchAgentPermissionRequest(id: requestID)
+      if current.status == acknowledgedStatus {
+        acknowledged = current
+        return
+      }
+      guard current.status == intent else {
+        throw PersistenceError.corruptData(
+          "Permission request no longer has the expected delivery intent"
+        )
+      }
+      acknowledged = try updateAgentPermissionRequest(
+        id: requestID,
+        status: acknowledgedStatus
+      )
+    }
+    guard let acknowledged else {
+      throw PersistenceError.corruptData("Permission response was not acknowledged")
+    }
+    return acknowledged
   }
 
   public func interruptPendingAgentPermissionRequests(

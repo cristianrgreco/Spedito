@@ -298,6 +298,231 @@ struct ProductScopedPersistenceTests {
     }
   }
 
+  @Test("Completed empty repository analysis waits for an explicit owner retry")
+  func completedEmptyRepositoryAnalysisIsTerminal() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Quiet repository")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyzer = try #require(profiles.first { $0.role == .businessAnalyst })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    let analyzedSHA = String(repeating: "a", count: 40)
+    try await store.createProductRepository(
+      ProductRepository(
+        productID: product.id,
+        originURL: try #require(URL(string: "https://github.com/example/quiet.git")),
+        sourceDefaultBranch: "main",
+        importedSHA: analyzedSHA
+      )
+    )
+    let completed = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      purpose: .importedAppLaunch,
+      analyzedSHA: analyzedSHA,
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id,
+      status: .completed,
+      analysisSummary: "No durable product knowledge found",
+      reviewSummary: "No proposals required publication"
+    )
+    try await store.createRepositoryKnowledgeRun(completed)
+
+    for _ in 0..<2 {
+      let relaunched = AppModel(
+        storeRegistry: registry,
+        selectedProductID: product.id
+      )
+      await relaunched.load()
+      #expect(
+        relaunched.repositoryKnowledgeCompletionOutcome == .noPublishableKnowledge
+      )
+      await relaunched.shutdown()
+      #expect(try await store.fetchRepositoryKnowledgeRuns(productID: product.id).count == 1)
+    }
+
+    let ownerModel = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+    await ownerModel.reload()
+    await ownerModel.retryRepositoryKnowledgeAnalysis()
+    await ownerModel.retryRepositoryKnowledgeAnalysis()
+    await ownerModel.shutdown()
+
+    let runs = try await store.fetchRepositoryKnowledgeRuns(productID: product.id)
+    #expect(runs.count == 2)
+    let explicitRetry = try #require(runs.first { $0.attempt == 2 })
+    #expect(explicitRetry.purpose == completed.purpose)
+    #expect(explicitRetry.analyzedSHA == completed.analyzedSHA)
+    #expect(try await store.fetchRepositoryKnowledgeRun(id: completed.id).status == .completed)
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("Completed rejected repository analysis stays terminal across launches")
+  func completedRejectedRepositoryAnalysisIsTerminal() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Rejected repository knowledge")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyzer = try #require(profiles.first { $0.role == .businessAnalyst })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    let knowledgePages = try await store.seedKnowledgeBase(productID: product.id)
+    let features = try #require(knowledgePages.first { $0.slug == "features" })
+    let analyzedSHA = String(repeating: "b", count: 40)
+    try await store.createProductRepository(
+      ProductRepository(
+        productID: product.id,
+        originURL: try #require(URL(string: "https://github.com/example/rejected.git")),
+        sourceDefaultBranch: "main",
+        importedSHA: analyzedSHA
+      )
+    )
+    let run = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      purpose: .knowledge,
+      analyzedSHA: analyzedSHA,
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id,
+      status: .analyzing
+    )
+    try await store.createRepositoryKnowledgeRun(run)
+    let draft = RepositoryKnowledgeDraft(
+      runID: run.id,
+      operation: .create,
+      parentPageID: features.id,
+      title: "Unsupported claim",
+      proposedBodyMarkdown: "The repository did not prove this.",
+      rationale: "Review must reject unsupported information.",
+      evidence: [.init(path: "README.md")]
+    )
+    _ = try await store.recordRepositoryKnowledgeAnalysis(
+      runID: run.id,
+      summary: "One proposal required review",
+      drafts: [draft],
+      analyzerThreadID: "analysis-thread",
+      analyzerTurnID: "analysis-turn"
+    )
+    _ = try await store.recordRepositoryKnowledgeReview(
+      runID: run.id,
+      summary: "The proposal was not supported",
+      decisions: [
+        .init(
+          draftID: draft.id,
+          approved: false,
+          explanation: "The evidence does not establish the claim."
+        )
+      ],
+      reviewerThreadID: "review-thread",
+      reviewerTurnID: "review-turn"
+    )
+    _ = try await store.updateRepositoryKnowledgeRun(id: run.id, status: .completed)
+
+    for _ in 0..<2 {
+      let relaunched = AppModel(
+        storeRegistry: registry,
+        selectedProductID: product.id
+      )
+      await relaunched.load()
+      #expect(
+        relaunched.repositoryKnowledgeCompletionOutcome == .noPublishableKnowledge
+      )
+      await relaunched.shutdown()
+      #expect(try await store.fetchRepositoryKnowledgeRuns(productID: product.id).count == 1)
+      #expect(try await store.fetchRepositoryKnowledgeRun(id: run.id).status == .completed)
+    }
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+  @Test("Team settings failure stays retryable and success updates the bounded snapshot")
+  func teamSettingsCommandReturnsCommittedSnapshot() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Team settings")
+    let store = try #require(registry.store(for: product.id))
+    let seededProfiles = try await store.seedDefaultProfiles(productID: product.id)
+    _ = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep unrelated state stable"
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+    await model.reload()
+    let unrelatedEpics = model.epics
+
+    var invalidModels = Dictionary(
+      uniqueKeysWithValues: seededProfiles.map { ($0.id, $0.model) }
+    )
+    invalidModels[try #require(seededProfiles.first).id] = ""
+    let failed = await model.updateTeamSettings(
+      productInstructions: "Unsaved guidance",
+      modelsByProfile: invalidModels,
+      effortsByProfile: [:],
+      customInstructionsByProfile: [:]
+    )
+    guard case .failure(let failure) = failed else {
+      Issue.record("Expected the invalid team settings update to fail")
+      return
+    }
+    #expect(!failure.message.isEmpty)
+    #expect(model.selectedProduct?.instructions == product.instructions)
+    #expect(model.profiles == seededProfiles)
+    #expect(model.epics == unrelatedEpics)
+
+    let updatedModels = Dictionary(
+      uniqueKeysWithValues: seededProfiles.enumerated().map {
+        ($0.element.id, "owner-selected-model-\($0.offset)")
+      }
+    )
+    let updatedEfforts = Dictionary(
+      uniqueKeysWithValues: seededProfiles.map { ($0.id, "high") }
+    )
+    let updatedInstructions = Dictionary(
+      uniqueKeysWithValues: seededProfiles.enumerated().map {
+        ($0.element.id, "Member guidance \($0.offset)")
+      }
+    )
+    let saved = await model.updateTeamSettings(
+      productInstructions: "Committed shared guidance",
+      modelsByProfile: updatedModels,
+      effortsByProfile: updatedEfforts,
+      customInstructionsByProfile: updatedInstructions
+    )
+    guard case .success(let snapshot) = saved else {
+      Issue.record("Expected the corrected team settings update to succeed")
+      return
+    }
+    #expect(snapshot.product.instructions == "Committed shared guidance")
+    #expect(model.selectedProduct == snapshot.product)
+    #expect(model.profiles == snapshot.profiles)
+    #expect(model.epics == unrelatedEpics)
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+
 }
 
 private struct ProductScopedPersistenceFixture {

@@ -538,6 +538,20 @@ enum ProductCreationRequest: Equatable, Sendable {
   }
 }
 
+enum TeamSettingsUpdateFailure: Error, Equatable, Sendable {
+  case unavailable
+  case saveFailed(String)
+
+  var message: String {
+    switch self {
+    case .unavailable:
+      "Team settings are unavailable for this product."
+    case .saveFailed(let message):
+      message
+    }
+  }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
   @Published private(set) var products: [Product] = []
@@ -688,6 +702,7 @@ final class AppModel: ObservableObject {
   private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
   private let ticketSuggestionRecoveryPolicy = TicketSuggestionRecoveryPolicy()
   private let repositoryKnowledgeRecoveryPolicy = RepositoryKnowledgeRecoveryPolicy()
+  private let remoteProductArchivePolicy = RemoteProductArchivePolicy()
   private let ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying
   private let ticketAttentionSystemNotifier: any TicketAttentionSystemNotifying
   private let codexInstallationPreferences: CodexInstallationPreferences
@@ -1629,6 +1644,11 @@ final class AppModel: ObservableObject {
       ) async throws -> GitHubRemoteRepositoryState
   ) async {
     guard !isShuttingDown, let githubRemoteService else { return }
+    guard products.contains(where: { $0.id == productID && $0.status == .active }) else {
+      githubRemoteRepositoryErrors[productID] =
+        "Restore this Product before resuming its GitHub repository work."
+      return
+    }
     while let existingTask = githubRemoteTasks[productID] {
       await existingTask.value
     }
@@ -1841,8 +1861,8 @@ final class AppModel: ObservableObject {
     }
     await reload()
     await recoverInterruptedTicketAcceptances()
-    scheduleGitHubRemoteRecovery(productIDs: (products + archivedProducts).map(\.id))
-    for product in products + archivedProducts {
+    scheduleGitHubRemoteRecovery(productIDs: products.map(\.id))
+    for product in products {
       if let workspace = try? repositoryWorkspaceURL(productID: product.id) {
         try? await gitWorkspaceManager.ensureControlDirectoryExcluded(at: workspace)
       }
@@ -2003,6 +2023,53 @@ final class AppModel: ObservableObject {
       product.status == .active
     else { return false }
 
+    let acceptingWorkItemIDs = Set(
+      workItems
+        .filter { $0.productID == product.id }
+        .map(\.id)
+    ).intersection(ticketAcceptanceInProgressWorkItemIDs)
+    guard acceptingWorkItemIDs.isEmpty else {
+      errorMessage =
+        "A ticket is currently being completed. Wait for it to reach a recoverable result before archiving this Product."
+      return false
+    }
+    guard githubRemoteTasks[product.id] == nil else {
+      errorMessage =
+        "GitHub repository work is currently active. Wait for it to finish before archiving this Product."
+      return false
+    }
+    if let githubRemoteService {
+      let remoteState = await githubRemoteService.state(productID: product.id)
+      if let reason = remoteProductArchivePolicy.blockingReason(for: remoteState) {
+        errorMessage = reason
+        return false
+      }
+      let pullRequestPollingTask = githubPullRequestPollingTask
+      pullRequestPollingTask?.cancel()
+      await pullRequestPollingTask?.value
+      githubPullRequestPollingTask = nil
+      let pullRequestPublicationIDs = remoteState.publications.map(\.id)
+      let pullRequestTasks = pullRequestPublicationIDs.compactMap {
+        githubPullRequestSyncTasks[$0]
+      }
+      pullRequestTasks.forEach { $0.cancel() }
+      for task in pullRequestTasks {
+        await task.value
+      }
+      for publicationID in pullRequestPublicationIDs {
+        githubPullRequestSyncTasks[publicationID] = nil
+      }
+      let settledState = await githubRemoteService.state(productID: product.id)
+      if let reason = remoteProductArchivePolicy.blockingReason(for: settledState) {
+        errorMessage = reason
+        scheduleGitHubPullRequestPolling()
+        return false
+      }
+      githubDeviceAuthorizationPrompts.removeValue(forKey: product.id)
+      githubRepositorySetupActivities.removeValue(forKey: product.id)
+      githubRemoteRepositoryBusyProductIDs.remove(product.id)
+    }
+
     await stopDemoSessions(productID: product.id, includesPreparation: true)
     await cancelRepositoryKnowledge(productID: product.id)
     await applyExecutionLifecycle(.productArchived(product.id))
@@ -2043,6 +2110,7 @@ final class AppModel: ObservableObject {
       return true
     } catch {
       errorMessage = error.localizedDescription
+      scheduleGitHubPullRequestPolling()
       scheduleSprintExecution(productID: product.id)
       return false
     }
@@ -2065,6 +2133,7 @@ final class AppModel: ObservableObject {
         throw PersistenceError.recordNotFound("restored product \(product.id)")
       }
       await selectProduct(restored)
+      scheduleGitHubRemoteRecovery(productIDs: [restored.id])
       return true
     } catch {
       errorMessage = error.localizedDescription
@@ -6506,27 +6575,34 @@ final class AppModel: ObservableObject {
     modelsByProfile: [UUID: String],
     effortsByProfile: [UUID: String],
     customInstructionsByProfile: [UUID: String]
-  ) {
-    guard let store, let productID = selectedProductID else { return }
-    let currentProfiles = profiles
-    Task {
-      do {
-        try await store.updateProductInstructions(
-          productID: productID,
-          instructions: productInstructions
-        )
-        for profile in currentProfiles {
-          _ = try await store.updateAgentProfileConfiguration(
-            id: profile.id,
-            model: modelsByProfile[profile.id] ?? profile.model,
-            reasoningEffort: effortsByProfile[profile.id] ?? profile.reasoningEffort,
-            customInstructions: customInstructionsByProfile[profile.id]
-          )
-        }
-        await reload()
-      } catch {
-        errorMessage = error.localizedDescription
+  ) async -> Result<TeamSettingsSnapshot, TeamSettingsUpdateFailure> {
+    guard let productID = selectedProductID, let productStore = store(for: productID) else {
+      return .failure(.unavailable)
+    }
+    let currentProfiles = profiles.filter { $0.productID == productID }
+    let updates = currentProfiles.map { profile in
+      TeamProfileSettingsUpdate(
+        profileID: profile.id,
+        model: modelsByProfile[profile.id] ?? profile.model,
+        reasoningEffort: effortsByProfile[profile.id] ?? profile.reasoningEffort,
+        customInstructions: customInstructionsByProfile[profile.id]
+      )
+    }
+    do {
+      let snapshot = try await productStore.updateTeamSettings(
+        productID: productID,
+        productInstructions: productInstructions,
+        profiles: updates
+      )
+      if let index = products.firstIndex(where: { $0.id == productID }) {
+        products[index] = snapshot.product
       }
+      if selectedProductID == productID {
+        profiles = snapshot.profiles
+      }
+      return .success(snapshot)
+    } catch {
+      return .failure(.saveFailed(error.localizedDescription))
     }
   }
 
@@ -6974,21 +7050,41 @@ final class AppModel: ObservableObject {
         continue
       }
       let canResume = isImplementer || canResumeConflict
-      let recoveredStatus: AgentRunStatus = canResume ? .awaitingOwner : .interrupted
+      let latestRequest =
+        permissionRequests
+        .filter { $0.agentRunID == run.id }
+        .max(by: { $0.updatedAt < $1.updatedAt })
+      let hasSavedDecision = latestRequest?.status.isPendingDelivery == true
+      let recoveredStatus: AgentRunStatus =
+        if canResume && hasSavedDecision {
+          .queued
+        } else {
+          canResume ? .awaitingOwner : .interrupted
+        }
+      let recoveryEventDetail: String
+      let recoveryComment: String
+      if hasSavedDecision {
+        recoveryEventDetail = "Saved permission decision queued for recovery"
+        recoveryComment =
+          "Spedito recovered the saved permission decision without asking again. The preserved conversation and workspace are queued to continue, and the decision will be delivered if the agent requests the same capability again."
+      } else if canResume {
+        recoveryEventDetail =
+          "Expired permission request remains paused for product owner input"
+        recoveryComment =
+          "The live permission request expired when Spedito stopped. The conversation and workspace are preserved, and the request remains above for your decision. Work will resume only after you choose Allow or Deny."
+      } else {
+        recoveryEventDetail = "Permission request expired when the app stopped"
+        recoveryComment =
+          "The previous permission request expired when Spedito stopped. This run cannot continue automatically."
+      }
       if run.status != recoveredStatus {
         _ = try? await updateAgentRun(
           id: run.id,
           status: recoveredStatus,
           eventActor: "Spedito",
-          eventDetail: canResume
-            ? "Expired permission request remains paused for product owner input"
-            : "Permission request expired when the app stopped"
+          eventDetail: recoveryEventDetail
         )
-        let latestRequest =
-          permissionRequests
-          .filter { $0.agentRunID == run.id }
-          .max(by: { $0.updatedAt < $1.updatedAt })
-        if canResume,
+        if canResume, !hasSavedDecision,
           let latestRequest,
           let updatedRequest = try? await store.updateAgentPermissionRequest(
             id: latestRequest.id,
@@ -7001,9 +7097,7 @@ final class AppModel: ObservableObject {
           workItemID: run.workItemID,
           authorKind: .system,
           authorName: "Spedito",
-          body: canResume
-            ? "The live permission request expired when Spedito stopped. The conversation and workspace are preserved, and the request remains above for your decision. Work will resume only after you choose Allow or Deny."
-            : "The previous permission request expired when Spedito stopped. This run cannot continue automatically."
+          body: recoveryComment
         )
       }
     }
@@ -11480,28 +11574,10 @@ final class AppModel: ObservableObject {
       else {
         return
       }
-      let shouldRetryUnproductiveAnalysis: Bool
-      if latest.status == .completed {
-        let drafts = try await productStore.fetchRepositoryKnowledgeDrafts(runID: latest.id)
-        let pages = try await productStore.fetchKnowledgePages(productID: productID)
-        shouldRetryUnproductiveAnalysis =
-          repositoryKnowledgeRecoveryPolicy.shouldRetryUnproductiveCompletedAnalysis(
-            run: latest,
-            drafts: drafts,
-            pages: pages
-          )
-      } else {
-        shouldRetryUnproductiveAnalysis = false
-      }
-      let shouldRetryLegacyLaunch =
-        repositoryKnowledgeRecoveryPolicy.shouldRetryLegacyInvalidLaunchProposal(run: latest)
-      let action =
-        shouldRetryUnproductiveAnalysis || shouldRetryLegacyLaunch
-        ? RepositoryKnowledgeRecoveryAction.createRecoveryAttempt
-        : repositoryKnowledgeRecoveryPolicy.action(
-          for: latest,
-          alreadyCreatedRecoveryAttempt: repositoryRecoveryAttemptProductIDs.contains(productID)
-        )
+      let action = repositoryKnowledgeRecoveryPolicy.action(
+        for: latest,
+        alreadyCreatedRecoveryAttempt: repositoryRecoveryAttemptProductIDs.contains(productID)
+      )
       let run: RepositoryKnowledgeRun
       guard
         repositoryKnowledgeRecoveryPolicy.canExecute(
@@ -11518,16 +11594,7 @@ final class AppModel: ObservableObject {
         run = latest
       case .createRecoveryAttempt:
         repositoryRecoveryAttemptProductIDs.insert(productID)
-        let recoveryMessage: String
-        if shouldRetryLegacyLaunch {
-          recoveryMessage =
-            "Setup is retrying because an optional app launch recipe was unsafe."
-        } else if shouldRetryUnproductiveAnalysis {
-          recoveryMessage =
-            "The earlier repository analysis produced no product knowledge and is being retried."
-        } else {
-          recoveryMessage = "Analysis was interrupted when Spedito closed and is being retried."
-        }
+        let recoveryMessage = "Analysis was interrupted when Spedito closed and is being retried."
         let interrupted = try await productStore.updateRepositoryKnowledgeRun(
           id: latest.id,
           status: .interrupted,
@@ -11592,25 +11659,52 @@ final class AppModel: ObservableObject {
     return run
   }
 
+  var repositoryKnowledgeCompletionOutcome: RepositoryKnowledgeCompletionOutcome? {
+    guard let repositoryKnowledgeRun else { return nil }
+    return repositoryKnowledgeRecoveryPolicy.completionOutcome(
+      for: repositoryKnowledgeRun,
+      drafts: repositoryKnowledgeDrafts,
+      pages: knowledgePages
+    )
+  }
+
   func retryRepositoryKnowledgeAnalysis() async {
     guard
       let productID = selectedProductID,
       repositoryKnowledgeTasks[productID] == nil,
-      let productStore = store(for: productID),
-      let latest = try? await productStore.fetchLatestRepositoryKnowledgeRun(
-        productID: productID
-      ),
-      latest.status == .failed || latest.status == .interrupted || latest.status == .stale
-        || latest.status == .publishing || latest.status == .pendingAnalysis
+      let productStore = store(for: productID)
     else {
       return
     }
-    if latest.status == .pendingAnalysis, codexRuntimeExecutableURL == nil {
-      errorMessage =
-        "Repository analysis starts when the Codex team connection is available."
-      return
-    }
     do {
+      guard
+        let latest = try await productStore.fetchLatestRepositoryKnowledgeRun(
+          productID: productID
+        )
+      else {
+        return
+      }
+      let retriesCompletedAnalysis: Bool
+      if latest.status == .completed {
+        let drafts = try await productStore.fetchRepositoryKnowledgeDrafts(runID: latest.id)
+        let pages = try await productStore.fetchKnowledgePages(productID: productID)
+        retriesCompletedAnalysis =
+          repositoryKnowledgeRecoveryPolicy.completionOutcome(
+            for: latest,
+            drafts: drafts,
+            pages: pages
+          ) == .noPublishableKnowledge
+      } else {
+        retriesCompletedAnalysis = false
+      }
+      guard
+        latest.status == .failed || latest.status == .interrupted || latest.status == .stale
+          || latest.status == .publishing || latest.status == .pendingAnalysis
+          || retriesCompletedAnalysis
+      else {
+        return
+      }
+
       let retry: RepositoryKnowledgeRun
       if latest.status == .publishing || latest.status == .pendingAnalysis {
         retry = latest
@@ -11629,6 +11723,9 @@ final class AppModel: ObservableObject {
         retry = newAttempt
       }
       await reloadSelectedProduct()
+      guard retry.status != .pendingAnalysis || codexRuntimeExecutableURL != nil else {
+        return
+      }
       let task = Task { [weak self] in
         guard let self else { return }
         defer { self.repositoryKnowledgeTasks[productID] = nil }
@@ -12710,48 +12807,50 @@ final class AppModel: ObservableObject {
       return
     }
     let resumesAfterDecision = request.status == .interrupted
-    do {
-      let proposedGrant: AgentPermissionGrant?
-      if allow && rememberForProduct {
-        guard let signature = request.productGrantSignature else {
-          errorMessage = "This type of access cannot be saved for future agent runs."
-          return
-        }
-        proposedGrant = AgentPermissionGrant(
-          productID: request.productID,
-          sourceRequestID: request.id,
-          method: request.method,
-          kind: request.kind,
-          title: request.title,
-          detail: request.detail,
-          signature: signature
-        )
-      } else {
-        proposedGrant = nil
-      }
+    let intent: AgentPermissionRequestStatus
+    if allow && rememberForProduct {
+      intent = .allowProductPendingDelivery
+    } else if allow {
+      intent = .allowOncePendingDelivery
+    } else {
+      intent = .denyPendingDelivery
+    }
 
-      var savedGrant: AgentPermissionGrant?
-      if let proposedGrant {
-        savedGrant = try await store.saveAgentPermissionGrant(proposedGrant)
+    let proposedGrant: AgentPermissionGrant?
+    if intent == .allowProductPendingDelivery {
+      guard let signature = request.productGrantSignature else {
+        errorMessage = "This type of access cannot be saved for future agent runs."
+        return
       }
-      if let serverRequest {
-        do {
-          try await client.resolveApprovalRequest(serverRequest, allow: allow)
-        } catch {
-          if let proposedGrant, savedGrant?.id == proposedGrant.id {
-            _ = try? await store.revokeAgentPermissionGrant(id: proposedGrant.id)
-          }
-          throw error
-        }
-      }
-      liveApprovalRequests.removeValue(forKey: request.id)
-      liveApprovalRequestProductIDs.removeValue(forKey: request.id)
-      let updated = try await store.updateAgentPermissionRequest(
-        id: request.id,
-        status: allow ? .allowed : .denied
+      proposedGrant = AgentPermissionGrant(
+        productID: request.productID,
+        sourceRequestID: request.id,
+        method: request.method,
+        kind: request.kind,
+        title: request.title,
+        detail: request.detail,
+        signature: signature
       )
-      replacePermissionRequest(updated)
-      if let savedGrant {
+    } else {
+      proposedGrant = nil
+    }
+
+    do {
+      let result = try await AgentPermissionResolver(
+        persistence: store,
+        responder: client
+      ).resolve(
+        request: request,
+        serverRequest: serverRequest,
+        intent: intent,
+        productGrant: proposedGrant
+      )
+      if result.responseDelivered {
+        liveApprovalRequests.removeValue(forKey: request.id)
+        liveApprovalRequestProductIDs.removeValue(forKey: request.id)
+      }
+      replacePermissionRequest(result.request)
+      if let savedGrant = result.grant {
         replacePermissionGrant(savedGrant)
       }
       if let run = try? await store.fetchAgentRun(id: request.agentRunID),
@@ -12761,9 +12860,9 @@ final class AppModel: ObservableObject {
           if resumesAfterDecision && allow && rememberForProduct {
             "Saved the recovered capability for this product; queued the conversation to resume"
           } else if resumesAfterDecision && allow {
-            "Allowed the recovered capability once; queued the conversation to resume"
+            "Saved the recovered one-time permission; queued the conversation to resume"
           } else if resumesAfterDecision {
-            "Denied the recovered capability; queued the conversation so the agent can adapt"
+            "Saved the recovered denial; queued the conversation so the agent can adapt"
           } else if allow && rememberForProduct {
             "Saved and allowed the requested capability for this product"
           } else if allow {
@@ -12783,6 +12882,9 @@ final class AppModel: ObservableObject {
         scheduleSprintExecution(productID: request.productID)
       }
     } catch {
+      if let persisted = try? await store.fetchAgentPermissionRequest(id: request.id) {
+        replacePermissionRequest(persisted)
+      }
       errorMessage = error.localizedDescription
     }
   }
@@ -12831,24 +12933,42 @@ final class AppModel: ObservableObject {
     } else {
       runStore = injectedStore ?? store
     }
-    guard
-      let runID,
-      let store = runStore,
-      let run = try? await store.fetchAgentRun(id: runID)
-    else {
+    guard let runID, let store = runStore else {
       await client.rejectUnsupportedServerRequest(request)
       return
     }
-    let productPermissionRequests =
-      (try? await store.fetchAgentPermissionRequests(productID: run.productID)) ?? []
-    let productPermissionGrants =
-      (try? await store.fetchAgentPermissionGrants(productID: run.productID)) ?? []
+
+    let run: AgentRun
+    let productPermissionRequests: [AgentPermissionRequest]
+    let productPermissionGrants: [AgentPermissionGrant]
+    do {
+      run = try await store.fetchAgentRun(id: runID)
+      productPermissionRequests = try await store.fetchAgentPermissionRequests(
+        productID: run.productID
+      )
+      productPermissionGrants = try await store.fetchAgentPermissionGrants(
+        productID: run.productID
+      )
+    } catch {
+      errorMessage =
+        "The permission request could not be checked against its durable history, so no response was sent. \(error.localizedDescription)"
+      return
+    }
+
     let productGrantSignature = try? CodexAppServerClient.productGrantSignature(
       for: request,
       ticketWorkspaceRoot: run.worktreePath.map {
         URL(fileURLWithPath: $0)
       }
     )
+    let serverRequestID = Self.serverRequestID(request.id)
+    let exactRequest = productPermissionRequests
+      .filter {
+        $0.agentRunID == runID
+          && $0.serverRequestID == serverRequestID
+          && $0.signature == presentation.signature
+      }
+      .max(by: { $0.updatedAt < $1.updatedAt })
 
     if let signature = productGrantSignature,
       AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
@@ -12860,43 +12980,49 @@ final class AppModel: ObservableObject {
         protectedStorageRoots: CodexPermissionProfiles.protectedSpeditoDeliveryStorageRoots
       )
     {
-      do {
-        try await client.resolveApprovalRequest(request, allow: false)
-        if !productPermissionRequests.contains(where: {
-          $0.agentRunID == runID
-            && $0.signature == presentation.signature
-            && $0.status == .policyDenied
-        }) {
-          let policyExplanation =
-            "Spedito protected storage owned by another execution. This delivery run must use its assigned ticket worktree; managed preview, integration, product-control, and other ticket workspaces are not available to it."
-          let recordedReason =
-            presentation.reason.map {
-              "\(policyExplanation)\n\nAgent rationale: \($0)"
-            } ?? policyExplanation
-          let record = AgentPermissionRequest(
-            productID: run.productID,
-            workItemID: run.workItemID,
-            agentRunID: run.id,
-            threadID: presentation.threadID,
-            turnID: presentation.turnID,
-            serverRequestID: Self.serverRequestID(request.id),
-            method: request.method,
-            kind: presentation.kind,
-            title: presentation.title,
-            detail: presentation.detail,
-            reason: recordedReason,
-            signature: presentation.signature,
-            productGrantSignature: productGrantSignature,
-            status: .policyDenied
-          )
-          if let saved = try? await store.saveAgentPermissionRequest(record) {
-            replacePermissionRequest(saved)
-          }
-        }
-        return
-      } catch {
-        // Fall through to a visible request if the policy response could not be sent.
+      let policyExplanation =
+        "Spedito protected storage owned by another execution. This delivery run must use its assigned ticket worktree; managed preview, integration, product-control, and other ticket workspaces are not available to it."
+      let recordedReason =
+        presentation.reason.map {
+          "\(policyExplanation)\n\nAgent rationale: \($0)"
+        } ?? policyExplanation
+      let record =
+        exactRequest
+        ?? permissionRequestRecord(
+          run: run,
+          presentation: presentation,
+          request: request,
+          productGrantSignature: productGrantSignature,
+          reason: recordedReason,
+          status: .policyDenyPendingDelivery
+        )
+      await resolveAutomaticPermissionRequest(
+        record,
+        isPersisted: exactRequest != nil,
+        intent: .policyDenyPendingDelivery,
+        serverRequest: request,
+        store: store,
+        client: client
+      )
+      return
+    }
+
+    if let exactRequest {
+      if let intent = exactRequest.status.replayIntent {
+        await resolveAutomaticPermissionRequest(
+          exactRequest,
+          isPersisted: true,
+          intent: intent,
+          serverRequest: request,
+          store: store,
+          client: client
+        )
+      } else {
+        liveApprovalRequests[exactRequest.id] = request
+        liveApprovalRequestProductIDs[exactRequest.id] = run.productID
+        replacePermissionRequest(exactRequest)
       }
+      return
     }
 
     if let priorDecision =
@@ -12904,24 +13030,32 @@ final class AppModel: ObservableObject {
         .filter {
           $0.agentRunID == runID
             && $0.signature == presentation.signature
-            && ($0.status == .allowed
-              || $0.status == .denied
-              || $0.status == .policyDenied
-              || ($0.status == .existingAccess
-                && $0.turnID == presentation.turnID))
+            && $0.status.replayIntent != nil
+            && ($0.status != .existingAccess
+              || $0.turnID == presentation.turnID)
+            && ($0.status != .existingAccessPendingDelivery
+              || $0.turnID == presentation.turnID)
         }
-        .max(by: { $0.updatedAt < $1.updatedAt }))
+        .max(by: { $0.updatedAt < $1.updatedAt })),
+      let intent = priorDecision.status.replayIntent
     {
-      do {
-        try await client.resolveApprovalRequest(
-          request,
-          allow: priorDecision.status != .denied
-            && priorDecision.status != .policyDenied
-        )
-        return
-      } catch {
-        // Fall through to a visible request if the automatic response could not be sent.
-      }
+      let record = permissionRequestRecord(
+        run: run,
+        presentation: presentation,
+        request: request,
+        productGrantSignature: productGrantSignature,
+        reason: presentation.reason,
+        status: intent
+      )
+      await resolveAutomaticPermissionRequest(
+        record,
+        isPersisted: false,
+        intent: intent,
+        serverRequest: request,
+        store: store,
+        client: client
+      )
+      return
     }
 
     if let signature = productGrantSignature,
@@ -12936,31 +13070,23 @@ final class AppModel: ObservableObject {
         requests: productPermissionRequests.filter { $0.agentRunID == runID }
       )
     {
-      do {
-        try await client.resolveApprovalRequest(request, allow: true)
-        let record = AgentPermissionRequest(
-          productID: run.productID,
-          workItemID: run.workItemID,
-          agentRunID: run.id,
-          threadID: presentation.threadID,
-          turnID: presentation.turnID,
-          serverRequestID: Self.serverRequestID(request.id),
-          method: request.method,
-          kind: presentation.kind,
-          title: presentation.title,
-          detail: presentation.detail,
-          reason: presentation.reason,
-          signature: presentation.signature,
-          productGrantSignature: productGrantSignature,
-          status: .existingAccess
-        )
-        if let saved = try? await store.saveAgentPermissionRequest(record) {
-          replacePermissionRequest(saved)
-        }
-        return
-      } catch {
-        // Fall through so the Product Owner can make a visible decision.
-      }
+      let record = permissionRequestRecord(
+        run: run,
+        presentation: presentation,
+        request: request,
+        productGrantSignature: productGrantSignature,
+        reason: presentation.reason,
+        status: .existingAccessPendingDelivery
+      )
+      await resolveAutomaticPermissionRequest(
+        record,
+        isPersisted: false,
+        intent: .existingAccessPendingDelivery,
+        serverRequest: request,
+        store: store,
+        client: client
+      )
+      return
     }
 
     if let signature = productGrantSignature,
@@ -12970,47 +13096,32 @@ final class AppModel: ObservableObject {
         grants: productPermissionGrants.filter { $0.productID == run.productID }
       )
     {
-      do {
-        try await client.resolveApprovalRequest(request, allow: true)
-        let record = AgentPermissionRequest(
-          productID: run.productID,
-          workItemID: run.workItemID,
-          agentRunID: run.id,
-          threadID: presentation.threadID,
-          turnID: presentation.turnID,
-          serverRequestID: Self.serverRequestID(request.id),
-          method: request.method,
-          kind: presentation.kind,
-          title: presentation.title,
-          detail: presentation.detail,
-          reason: presentation.reason,
-          signature: presentation.signature,
-          productGrantSignature: productGrantSignature,
-          status: .allowed
-        )
-        if let saved = try? await store.saveAgentPermissionRequest(record) {
-          replacePermissionRequest(saved)
-        }
-        return
-      } catch {
-        // Fall through so the Product Owner can make a visible decision.
-      }
+      let record = permissionRequestRecord(
+        run: run,
+        presentation: presentation,
+        request: request,
+        productGrantSignature: productGrantSignature,
+        reason: presentation.reason,
+        status: .grantAccessPendingDelivery
+      )
+      await resolveAutomaticPermissionRequest(
+        record,
+        isPersisted: false,
+        intent: .grantAccessPendingDelivery,
+        serverRequest: request,
+        store: store,
+        client: client
+      )
+      return
     }
 
-    let record = AgentPermissionRequest(
-      productID: run.productID,
-      workItemID: run.workItemID,
-      agentRunID: run.id,
-      threadID: presentation.threadID,
-      turnID: presentation.turnID,
-      serverRequestID: Self.serverRequestID(request.id),
-      method: request.method,
-      kind: presentation.kind,
-      title: presentation.title,
-      detail: presentation.detail,
+    let record = permissionRequestRecord(
+      run: run,
+      presentation: presentation,
+      request: request,
+      productGrantSignature: productGrantSignature,
       reason: presentation.reason,
-      signature: presentation.signature,
-      productGrantSignature: productGrantSignature
+      status: .pending
     )
     do {
       let saved = try await store.saveAgentPermissionRequest(record)
@@ -13025,7 +13136,92 @@ final class AppModel: ObservableObject {
       )
       await reloadSelectedProductIfCurrent(productID: run.productID)
     } catch {
-      await client.rejectUnsupportedServerRequest(request)
+      errorMessage =
+        "The permission request could not be saved, so no response was sent. \(error.localizedDescription)"
+    }
+  }
+
+  private func permissionRequestRecord(
+    run: AgentRun,
+    presentation: CodexApprovalPresentation,
+    request: CodexServerRequest,
+    productGrantSignature: String?,
+    reason: String?,
+    status: AgentPermissionRequestStatus
+  ) -> AgentPermissionRequest {
+    AgentPermissionRequest(
+      productID: run.productID,
+      workItemID: run.workItemID,
+      agentRunID: run.id,
+      threadID: presentation.threadID,
+      turnID: presentation.turnID,
+      serverRequestID: Self.serverRequestID(request.id),
+      method: request.method,
+      kind: presentation.kind,
+      title: presentation.title,
+      detail: presentation.detail,
+      reason: reason,
+      signature: presentation.signature,
+      productGrantSignature: productGrantSignature,
+      status: status
+    )
+  }
+
+  private func resolveAutomaticPermissionRequest(
+    _ request: AgentPermissionRequest,
+    isPersisted: Bool,
+    intent: AgentPermissionRequestStatus,
+    serverRequest: CodexServerRequest,
+    store: SQLiteStore,
+    client: CodexAppServerClient
+  ) async {
+    do {
+      let durableRequest =
+        if isPersisted {
+          request
+        } else {
+          try await store.saveAgentPermissionRequest(request)
+        }
+      let proposedGrant: AgentPermissionGrant?
+      if intent == .allowProductPendingDelivery {
+        guard let signature = durableRequest.productGrantSignature else {
+          throw PersistenceError.corruptData(
+            "The saved product permission has no reusable signature"
+          )
+        }
+        proposedGrant = AgentPermissionGrant(
+          productID: durableRequest.productID,
+          sourceRequestID: durableRequest.id,
+          method: durableRequest.method,
+          kind: durableRequest.kind,
+          title: durableRequest.title,
+          detail: durableRequest.detail,
+          signature: signature
+        )
+      } else {
+        proposedGrant = nil
+      }
+      let result = try await AgentPermissionResolver(
+        persistence: store,
+        responder: client
+      ).resolve(
+        request: durableRequest,
+        serverRequest: serverRequest,
+        intent: intent,
+        productGrant: proposedGrant
+      )
+      if result.responseDelivered {
+        liveApprovalRequests.removeValue(forKey: result.request.id)
+        liveApprovalRequestProductIDs.removeValue(forKey: result.request.id)
+      }
+      replacePermissionRequest(result.request)
+      if let grant = result.grant {
+        replacePermissionGrant(grant)
+      }
+    } catch {
+      if let persisted = try? await store.fetchAgentPermissionRequest(id: request.id) {
+        replacePermissionRequest(persisted)
+      }
       errorMessage = error.localizedDescription
     }
   }

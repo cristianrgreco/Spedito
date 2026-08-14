@@ -122,6 +122,50 @@ struct RemoteRepositoryAppModelTests {
     await store.close()
   }
 
+  @Test("Archived Products require restoration before remote recovery resumes")
+  func archivedProductRemoteWorkIsSuspendedUntilRestore() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-AppModel-Archived-Remote-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Archived remote Product")
+    let service = AppModelRemoteService()
+    await service.setState(
+      GitHubRemoteRepositoryState(
+        isConfigured: true,
+        connection: RemoteRepositoryConnection(
+          productID: product.id,
+          kind: .importedSource,
+          status: .connected
+        )
+      )
+    )
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      githubRemoteService: service
+    )
+    await model.reload()
+
+    #expect(await model.archiveSelectedProduct())
+    let archived = try #require(model.archivedProducts.first { $0.id == product.id })
+    await model.checkRemoteRepository(productID: product.id)
+    #expect(await service.checkCount == 0)
+    #expect(
+      model.githubRemoteRepositoryErrors[product.id]
+        == "Restore this Product before resuming its GitHub repository work."
+    )
+
+    #expect(await model.restoreProductAndSelect(archived))
+    await service.waitForRecovery()
+    #expect(await service.recoveryCount == 1)
+
+    await model.shutdown()
+    await store.close()
+  }
+
   @Test("An empty GitHub repository creates and connects a blank Product")
   func emptyGitHubRepositoryCreation() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -708,6 +752,106 @@ struct RemoteRepositoryAppModelTests {
     )
   }
 
+  @Test("Product archival blocks only remote side effects that cannot pause safely")
+  func remoteArchivePolicy() {
+    let policy = RemoteProductArchivePolicy()
+    let productID = UUID()
+    let connectionID = UUID()
+    let accountID = UUID()
+
+    for status in [
+      RemoteRepositoryConnectionStatus.selectingRepository,
+      .initializingRemote,
+      .connected,
+      .disconnected,
+      .needsAuthorization,
+      .needsInstallation,
+      .needsTargetReview,
+      .unavailable,
+    ] {
+      let state = GitHubRemoteRepositoryState(
+        isConfigured: true,
+        connection: RemoteRepositoryConnection(
+          id: connectionID,
+          productID: productID,
+          kind: .localEmptyRepository,
+          status: status
+        )
+      )
+      #expect(
+        (policy.blockingReason(for: state) != nil)
+          == (status == .initializingRemote)
+      )
+    }
+
+    let sha = String(repeating: "1", count: 40)
+    for status in [
+      RemoteSafeSyncStatus.awaitingConfirmation,
+      .accepting,
+      .accepted,
+      .rejected,
+      .stale,
+      .failed,
+    ] {
+      let state = GitHubRemoteRepositoryState(
+        isConfigured: true,
+        safeSync: RemoteSafeSync(
+          productID: productID,
+          connectionID: connectionID,
+          connectionVersion: 1,
+          kind: .fastForward,
+          status: status,
+          observationRef: "refs/spedito/observation",
+          localSHA: sha,
+          localTree: sha,
+          remoteSHA: sha,
+          remoteTree: sha,
+          mergeBaseSHA: sha,
+          candidateSHA: sha,
+          candidateTree: sha
+        )
+      )
+      #expect(
+        (policy.blockingReason(for: state) != nil)
+          == (status == .accepting)
+      )
+    }
+
+    for (index, status) in [
+      RemotePublicationStatus.awaitingConfirmation,
+      .checking,
+      .pushing,
+      .branchPublished,
+      .creatingPullRequest,
+      .open,
+      .openOutdated,
+      .openStale,
+      .merged,
+      .closed,
+      .cancelled,
+      .stale,
+      .failed,
+    ].enumerated() {
+      let publication = pollingPublication(
+        productID: productID,
+        connectionID: connectionID,
+        accountID: accountID,
+        workItemID: UUID(),
+        number: index + 1,
+        status: status,
+        updatedAt: Date()
+      )
+      let state = GitHubRemoteRepositoryState(
+        isConfigured: true,
+        publications: [publication]
+      )
+      let shouldBlock =
+        status == .checking || status == .pushing
+        || status == .branchPublished || status == .creatingPullRequest
+      #expect((policy.blockingReason(for: state) != nil) == shouldBlock)
+    }
+  }
+
   private func pollingWorkItem(
     productID: UUID,
     key: String,
@@ -794,6 +938,8 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private(set) var didShutdown = false
   private(set) var selectionCount = 0
   private(set) var refreshRepositoryCount = 0
+  private(set) var recoveryCount = 0
+  private var recoveryContinuation: CheckedContinuation<Void, Never>?
   private var initializationContinuation: CheckedContinuation<Void, Never>?
   private var shouldPauseInitialization = false
   private(set) var didStartInitialization = false
@@ -804,6 +950,17 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   func state(productID: UUID) async -> GitHubRemoteRepositoryState {
     _ = productID
     return currentState
+  }
+
+  func setState(_ state: GitHubRemoteRepositoryState) {
+    currentState = state
+  }
+
+  func waitForRecovery() async {
+    if recoveryCount > 0 { return }
+    await withCheckedContinuation { continuation in
+      recoveryContinuation = continuation
+    }
   }
 
   func importRepositories() async throws -> GitHubRepositoryImportCatalog {
@@ -1110,6 +1267,9 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
 
   func recover(productID: UUID) async {
     _ = productID
+    recoveryCount += 1
+    recoveryContinuation?.resume()
+    recoveryContinuation = nil
   }
 
   func shutdown() async {

@@ -916,6 +916,58 @@ struct RemoteRepositoryServiceTests {
     await store.close()
   }
 
+  @Test("Archived Products retain remote audit state without recovery access")
+  func archivedProductRecoveryDoesNoExternalWork() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-Archived-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Archived Product")
+    let connection = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .localEmptyRepository,
+        accountID: UUID(),
+        installationID: 1,
+        repositoryID: 2,
+        owner: "owner",
+        name: "repository",
+        fullName: "owner/repository",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/repository.git")!,
+        isPrivate: true,
+        defaultBranch: "main",
+        status: .initializingRemote,
+        bootstrapRootSHA: String(repeating: "1", count: 40),
+        bootstrapRootTree: String(repeating: "2", count: 40),
+        initializationAttemptCount: 1
+      )
+    )
+    _ = try await store.archiveProduct(id: product.id)
+    let credentialStore = ServiceCountingCredentialStore()
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(temporaryDirectory: root),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+
+    await service.recover(productID: product.id)
+    let state = await service.state(productID: product.id)
+
+    #expect(await credentialStore.accessCount == 0)
+    #expect(state.connection?.id == connection.id)
+    #expect(state.connection?.status == .initializingRemote)
+    #expect(state.errorMessage == nil)
+    await service.shutdown()
+    await store.close()
+  }
+
   @discardableResult
   private func runProcess(
     executable: URL,

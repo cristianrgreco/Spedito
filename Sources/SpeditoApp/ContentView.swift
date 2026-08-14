@@ -1223,7 +1223,21 @@ private struct TeamSidebar: View {
         .popover(isPresented: $showingProductSetupDetail, arrowEdge: .leading) {
           productSetupDetail
         }
-    case .completed, .none:
+    case .completed:
+      if productSetupCompletedWithoutKnowledge {
+        Label("No product knowledge found", systemImage: "checkmark.circle")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .onHover { showingProductSetupDetail = $0 }
+          .popover(isPresented: $showingProductSetupDetail, arrowEdge: .leading) {
+            productSetupDetail
+          }
+      } else {
+        Text("Switch product")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+    case .none:
       Text("Switch product")
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -1233,6 +1247,10 @@ private struct TeamSidebar: View {
   private var productSetupNeedsAttention: Bool {
     guard let status = model.repositoryKnowledgeRun?.status else { return false }
     return status == .failed || status == .interrupted || status == .stale
+  }
+
+  private var productSetupCompletedWithoutKnowledge: Bool {
+    model.repositoryKnowledgeCompletionOutcome == .noPublishableKnowledge
   }
 
   private var githubRepositoryNeedsAttention: Bool {
@@ -1296,7 +1314,11 @@ private struct TeamSidebar: View {
     case .failed: "Product setup could not finish"
     case .interrupted: "Product setup was interrupted"
     case .stale: "Product setup is out of date"
-    case .completed, .none: "Product setup completed"
+    case .completed:
+      productSetupCompletedWithoutKnowledge
+        ? "No product knowledge found"
+        : "Product setup completed"
+    case .none: "Product setup completed"
     }
   }
 
@@ -1317,7 +1339,11 @@ private struct TeamSidebar: View {
       "Retry creates a new versioned setup attempt."
     case .stale:
       "The imported source changed. Retry uses its current accepted revision."
-    case .completed, .none:
+    case .completed:
+      productSetupCompletedWithoutKnowledge
+        ? "The analysis completed without verified product information to add. You can keep using this product or analyze it again."
+        : "The imported product is ready."
+    case .none:
       "The imported product is ready."
     }
   }
@@ -1378,12 +1404,17 @@ private struct TeamSidebar: View {
               }
               .buttonStyle(.plain)
               .foregroundStyle(.secondary)
-              if productSetupNeedsAttention {
+              if productSetupNeedsAttention || productSetupCompletedWithoutKnowledge {
                 Button {
                   Task { await model.retryRepositoryKnowledgeAnalysis() }
                 } label: {
-                  Label("Retry product setup", systemImage: "arrow.clockwise")
-                    .font(.caption.weight(.semibold))
+                  Label(
+                    productSetupCompletedWithoutKnowledge
+                      ? "Analyze product again"
+                      : "Retry product setup",
+                    systemImage: "arrow.clockwise"
+                  )
+                  .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.purple)
@@ -4826,6 +4857,8 @@ private struct TeamPromptsView: View {
   @State private var personaEfforts: [UUID: String] = [:]
   @State private var selection: TeamSettingsSelection? = .shared
   @State private var hoveredSelection: TeamSettingsSelection?
+  @State private var isSaving = false
+  @State private var saveError: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -4904,11 +4937,26 @@ private struct TeamPromptsView: View {
 
       Divider()
 
-      HStack {
+      HStack(spacing: 10) {
+        if let saveError {
+          Text(saveError)
+            .font(.caption)
+            .foregroundStyle(.red)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+        }
         Spacer()
+        if isSaving {
+          ProgressView()
+            .controlSize(.small)
+        }
         Button("Cancel") { isPresented = false }
-        Button("Save") { saveSettings() }
-          .buttonStyle(.borderedProminent)
+          .disabled(isSaving)
+        Button("Save") {
+          Task { await saveSettings() }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(isSaving)
       }
       .padding(.horizontal, 22)
       .frame(height: 62)
@@ -5139,19 +5187,28 @@ private struct TeamPromptsView: View {
     personaEfforts = personaEfforts.filter { activeIDs.contains($0.key) }
   }
 
-  private func saveSettings() {
+  private func saveSettings() async {
+    guard !isSaving else { return }
+    isSaving = true
+    saveError = nil
+    defer { isSaving = false }
     let instructionUpdates = Dictionary(
       uniqueKeysWithValues: model.profiles.map { profile in
         (profile.id, customInstructions[profile.id] ?? profile.customInstructionText)
       }
     )
-    model.updateTeamSettings(
+    let result = await model.updateTeamSettings(
       productInstructions: sharedInstructions,
       modelsByProfile: personaModels,
       effortsByProfile: personaEfforts,
       customInstructionsByProfile: instructionUpdates
     )
-    isPresented = false
+    switch result {
+    case .success:
+      isPresented = false
+    case .failure(let failure):
+      saveError = failure.message
+    }
   }
 
   private func modelBinding(for profile: AgentProfile) -> Binding<String> {
@@ -14266,16 +14323,14 @@ enum SprintTicketWorkLogHistory {
         switch comment.authorKind {
         case .owner:
           switch request.status {
-          case .allowed:
+          case .allowOncePendingDelivery, .allowProductPendingDelivery, .allowed:
             body == "Allowed once: \(request.detail)"
               || body == "Always allowed for this product: \(request.detail)"
-          case .existingAccess:
-            false
-          case .policyDenied:
-            false
-          case .denied:
+          case .denyPendingDelivery, .denied:
             body == "Denied: \(request.detail)"
-          case .pending, .interrupted:
+          case .existingAccessPendingDelivery, .grantAccessPendingDelivery,
+            .policyDenyPendingDelivery, .existingAccess, .policyDenied,
+            .pending, .interrupted:
             false
           }
         case .system:
@@ -15450,6 +15505,11 @@ private struct SprintTicketDetailView: View {
   ) -> String {
     switch status {
     case .pending: "Needs your input"
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery:
+      "Approval saved"
+    case .denyPendingDelivery, .policyDenyPendingDelivery:
+      "Denial saved"
     case .allowed: "Allowed"
     case .existingAccess: "Existing access"
     case .policyDenied: "Protected"
@@ -15464,6 +15524,11 @@ private struct SprintTicketDetailView: View {
   ) -> Color {
     switch status {
     case .pending: .orange
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery:
+      .green
+    case .denyPendingDelivery: .secondary
+    case .policyDenyPendingDelivery: .orange
     case .allowed: .green
     case .existingAccess: .green
     case .policyDenied: .orange
@@ -15480,6 +15545,11 @@ private struct SprintTicketDetailView: View {
       } else {
         nil
       }
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery:
+      "The approval is saved. Spedito will deliver it without asking again when the agent requests the same capability."
+    case .denyPendingDelivery, .policyDenyPendingDelivery:
+      "The denial is saved. Spedito will deliver it without asking again when the agent requests the same capability."
     case .allowed, .existingAccess, .policyDenied, .denied, .interrupted:
       nil
     }

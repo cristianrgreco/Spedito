@@ -355,6 +355,11 @@ The snapshot excludes `.git`, `.spedito`, credential-shaped paths, symlinks,
 submodules, and other non-regular objects, records a content digest, becomes
 read-only before Codex can inspect it, and is removed after a terminal attempt.
 
+Completed analysis with no approved or published product knowledge is a terminal
+result, not an ambiguous recovery state. Relaunch does not create another Codex
+turn. Presentation explains that no verified product knowledge was found and
+offers a new versioned attempt only through an explicit product-owner action.
+
 The App model subscribes to each analysis and review thread's supported Codex
 notifications while its turn is active. `CodexLiveActivityAccumulator` ignores
 raw reasoning deltas and exposes only bounded reasoning-summary, plan, and
@@ -400,6 +405,12 @@ only Metadata read, Contents read/write, Pull requests read/write, and Workflows
 write capabilities. Administration write is deliberately omitted, so repository
 creation stays on GitHub rather than broadening the App's authority. There is no
 client secret, private key, in-app repository creation, or CI/check aggregation.
+
+Only active products enter automatic remote recovery. Archiving first settles
+or blocks in-flight remote commands and preserves durable connection,
+synchronization, and publication records without accessing Keychain, GitHub, or
+remote Git. Restoring the product is the authority boundary that allows those
+preserved states to resume.
 
 The account catalog can authorize an account directly from Product creation and
 enumerate public and private repositories exposed by every locally authorized
@@ -759,6 +770,11 @@ field starts empty and remains an owner-controlled overlay, so the product owner
 can redirect an agent's approach without making safety and lifecycle rules UI
 configuration.
 
+Team settings are saved through one SQLite transaction covering shared product
+guidance and the complete active profile set. The command returns the committed
+product-and-profile snapshot; presentation remains open and editable on failure
+instead of dismissing before persistence completes.
+
 Delivery selects the named `spedito-delivery` profile: Codex's minimal
 platform/runtime reads, one writable ticket worktree, exact read-only access to
 the active product's Git metadata and `.spedito` control directory,
@@ -845,6 +861,14 @@ AgentRun, projects **Needs your input**, and stores the exact scope, rationale,
 signature, and decision. **Allow once** accepts only the exact command or grants the
 requested capability for the current turn. For command and permission requests,
 **Always allow for this product** stores a durable product-scoped grant.
+Permission decisions use separate durable intent and delivery-acknowledgement
+states. Spedito persists the exact allow or denial before replying to App
+Server, fails closed if that write fails, and advances to the acknowledged
+state only after the response is delivered. Replayed requests reuse the same
+server-request identity and signature. A newly created product grant is rolled
+back if response delivery fails, while the request retains enough durable
+intent to retry or audit the outcome.
+
 Before projecting a structured permission request to the product owner, the
 coordinator compares it with the assigned read/write ticket worktree, the resolved
 baseline transient-storage roots, and structured capabilities already active for

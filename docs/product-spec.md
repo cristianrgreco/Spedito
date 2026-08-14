@@ -287,6 +287,11 @@ preserves its backlog, work logs, product knowledge, source workspace, and
 delivery history. Archived products remain available from the product library
 and can be restored and reopened. Product archival does not silently cancel
 ticket scope, discard worktrees, or physically delete audit records.
+Archived products do not resume repository setup, incoming-change acceptance,
+publication, pull-request reconciliation, or branch cleanup in the background.
+Their remote history remains readable locally; restoring the product is required
+before preserved repository work can continue.
+
 
 ### 8.2 Human owner
 
@@ -571,6 +576,11 @@ and a separate tech lead independently approves or rejects every proposal.
 Only approved pages become versioned, automatically verified product knowledge.
 Interrupted work is recovered as a new versioned attempt; a changed accepted
 revision makes the old attempt stale.
+A completed analysis with no approved product knowledge is a valid terminal
+outcome. Spedito explains that result without starting another Codex turn on
+later launches. The owner may explicitly start one new versioned analysis
+attempt when another pass is useful.
+
 
 SQLite in `.spedito` remains the only authoritative and maintained copy of
 product knowledge. Repository analysis and accepted ticket knowledge changes
@@ -2204,6 +2214,10 @@ combinations. Owners may also add shared product guidance and optional
 per-profile custom instructions. Spedito's versioned role and lifecycle
 guidance remains internal; the owner-visible custom field starts empty and its
 contents are appended last. Clearing it removes only the custom overlay.
+Saving Team settings commits the shared guidance and every active member
+configuration atomically. The sheet remains open with the owner's edits and an
+inline retryable error if the complete update cannot be saved.
+
 Max and Ultra are not defaults because
 they materially increase usage and, for Ultra, change orchestration behaviour.
 

@@ -39,6 +39,64 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Team settings update atomically across every profile boundary")
+  func teamSettingsUpdateIsAtomic() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Atomic team")
+    let originalProfiles = try await store.seedDefaultProfiles(productID: product.id)
+    let updates = originalProfiles.enumerated().map { index, profile in
+      TeamProfileSettingsUpdate(
+        profileID: profile.id,
+        model: "updated-model-\(index)",
+        reasoningEffort: index.isMultiple(of: 2) ? "high" : "medium",
+        customInstructions: " Updated guidance \(index) "
+      )
+    }
+
+    for profile in originalProfiles {
+      try fixture.execute(
+        """
+        CREATE TRIGGER fail_team_settings_profile
+        BEFORE UPDATE ON agent_profiles
+        WHEN OLD.id = '\(profile.id.uuidString)'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected team settings failure');
+        END;
+        """
+      )
+      await #expect(throws: PersistenceError.self) {
+        try await store.updateTeamSettings(
+          productID: product.id,
+          productInstructions: "Updated shared guidance",
+          profiles: updates
+        )
+      }
+      try fixture.execute("DROP TRIGGER fail_team_settings_profile;")
+
+      let unchangedProduct = try #require(
+        try await store.fetchProducts().first { $0.id == product.id }
+      )
+      #expect(unchangedProduct.instructions == product.instructions)
+      #expect(try await store.fetchAgentProfiles(productID: product.id) == originalProfiles)
+    }
+
+    let snapshot = try await store.updateTeamSettings(
+      productID: product.id,
+      productInstructions: "  Updated shared guidance  ",
+      profiles: updates
+    )
+    #expect(snapshot.product.instructions == "Updated shared guidance")
+    #expect(snapshot.profiles.count == originalProfiles.count)
+    for (index, profile) in snapshot.profiles.enumerated() {
+      #expect(profile.model == "updated-model-\(index)")
+      #expect(profile.reasoningEffort == (index.isMultiple(of: 2) ? "high" : "medium"))
+      #expect(profile.customInstructions == "Updated guidance \(index)")
+    }
+    await store.close()
+  }
+
   @Test("Version 7 databases add durable candidate delivery kinds")
   func candidateDeliveryKindMigration() async throws {
     let fixture = try DatabaseFixture()
@@ -3209,9 +3267,23 @@ struct SQLiteStoreTests {
     requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
     #expect(requests.first?.status == .interrupted)
 
-    let allowed = try await reopened.updateAgentPermissionRequest(
-      id: request.id,
-      status: .allowed
+    let prepared = try await reopened.prepareAgentPermissionResolution(
+      requestID: request.id,
+      intent: .allowOncePendingDelivery,
+      productGrant: nil
+    )
+    #expect(prepared.request.status == .allowOncePendingDelivery)
+    #expect(!prepared.request.status.needsOwnerDecision)
+    #expect(
+      try await reopened.fetchAgentPermissionRequest(
+        agentRunID: run.id,
+        serverRequestID: request.serverRequestID,
+        signature: request.signature
+      )?.id == request.id
+    )
+    let allowed = try await reopened.acknowledgeAgentPermissionResolution(
+      requestID: request.id,
+      intent: .allowOncePendingDelivery
     )
     #expect(allowed.status == .allowed)
 
