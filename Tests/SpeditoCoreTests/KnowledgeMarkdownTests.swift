@@ -19,13 +19,13 @@ struct KnowledgeMarkdownTests {
     #expect(
       KnowledgeMarkdown.normalizedBody(source)
         == """
-          ## Decision
+        ## Decision
 
-          Use the selected provider.
+        Use the selected provider.
 
-          - Reliable forecast data
-          - Documented limits
-          """
+        - Reliable forecast data
+        - Documented limits
+        """
     )
   }
 
@@ -48,7 +48,7 @@ struct KnowledgeMarkdownTests {
       # T-1 · Define weather requirements and select a data provider
 
       **Delivery evidence:** Prepared with the candidate revision  
-      **Prepared by:** Business Analyst
+      **Prepared by:** business analyst
 
       ## What changed
       Corrected the provider decision.
@@ -65,7 +65,7 @@ struct KnowledgeMarkdownTests {
         == [
           .paragraph([
             "**Delivery evidence:** Prepared with the candidate revision  ",
-            "**Prepared by:** Business Analyst",
+            "**Prepared by:** business analyst",
           ]),
           .heading(level: 2, text: "What changed"),
           .paragraph(["Corrected the provider decision."]),

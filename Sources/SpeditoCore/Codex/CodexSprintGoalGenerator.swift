@@ -9,7 +9,7 @@ public enum SprintGoalGenerationError: Error, Equatable, LocalizedError, Sendabl
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The Business Analyst returned an invalid sprint goal: \(detail)"
+      "The business analyst returned an invalid sprint goal: \(detail)"
     case .anotherCodexTaskIsRunning:
       "Another team response is already running. Wait for it to finish and try again."
     case .noTickets:
@@ -24,12 +24,12 @@ public enum CodexSprintGoalGenerator {
   public static let totalTimeout: Duration = .seconds(15)
 
   private static let platformInstructions = """
-    You are the Business Analyst helping a Product Owner name the outcome of one planned sprint.
+    You are the business analyst helping a product owner name the outcome of one planned sprint.
     This is a read-only writing task. Use only the supplied ticket titles as evidence of sprint scope;
     do not inspect files, browse the web, run tools, or invent requirements that are not supported by
     those titles.
 
-    Write one short, memorable, outcome-oriented sprint goal that a non-technical Product Owner can
+    Write one short, memorable, outcome-oriented sprint goal that a non-technical product owner can
     scan at a glance. Aim for five to ten words and never exceed 80 characters. Capture the single
     user-visible outcome that unifies the sprint rather than summarizing every ticket. Omit supporting
     details such as research, providers, licensing, design work, implementation steps, and verification;

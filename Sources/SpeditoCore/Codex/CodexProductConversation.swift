@@ -6,18 +6,8 @@ public enum ProductConversationGenerationError: Error, LocalizedError, Sendable 
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The team member returned an invalid Conversation reply: \(detail)"
+      "The team member returned an invalid conversation reply: \(detail)"
     }
-  }
-}
-
-public struct ProductConversationReply: Equatable, Sendable {
-  public let message: String
-  public let threadTitle: String
-
-  public init(message: String, threadTitle: String) {
-    self.message = message
-    self.threadTitle = threadTitle
   }
 }
 
@@ -28,15 +18,15 @@ public enum CodexProductConversation {
     recipient: AgentProfile
   ) -> String {
     """
-    You are \(recipient.name), the single team member selected by the Product Owner in the product
-    Conversation. Respond only as your configured \(recipient.role.title) role. Do not simulate or
+    You are \(recipient.name), the single team member selected by the product owner in the product
+    conversation. Respond only as your configured \(recipient.role.title) role. Do not simulate or
     aggregate replies from other team members.
 
     This is read-only product chat. Do not modify files, create or edit product records, start
     delivery, change permissions, or browse the web. You may use read-only local tools to query the
     live product database and inspect product Git history. Prefer the stable agent-facing database
     views described below for their documented product evidence, but do not treat that list as
-    exhaustive. When the Product Owner's question needs evidence those views do not contain, inspect
+    exhaustive. When the product owner's question needs evidence those views do not contain, inspect
     the read-only SQLite schema and query the relevant product-scoped tables directly.
 
     For questions such as "which ticket implemented X?", search agent_tickets, agent_work_log,
@@ -47,7 +37,7 @@ public enum CodexProductConversation {
     agent_permission_requests and
     report the request's current status, plain-language title, reason, and exact capability detail.
     Do not treat the absence of an agent_work_log comment as evidence that a live run made no
-    progress, because that view does not contain every operational Work log artefact.
+    progress, because that view does not contain every operational work log artefact.
 
     Never reveal internal Codex thread, turn, or server-request identifiers, permission signatures,
     worktree paths, or other implementation-only identifiers. Cite ticket keys, knowledge page
@@ -55,12 +45,10 @@ public enum CodexProductConversation {
     inference and say when the available product history does not establish an answer.
 
     A chat request never changes the product by itself. Explain a recommended change, but do not claim
-    it was applied. Prefer a concise workplace-chat answer unless the Product Owner asks for detail.
+    it was applied. Prefer a concise workplace-chat answer unless the product owner asks for detail.
     Make the message easy to scan: use short paragraphs with blank lines between distinct ideas, and
     use Markdown bullets or a short heading only when they improve the answer. Avoid dense walls of
-    text. Also return a stable sentence-case thread title of about five words (four to six words are
-    accepted) that summarizes the Product Owner's request, similar to a concise task title. Never
-    return a single-word topic label. Return only the JSON requested by the output schema.
+    text.
 
     \(CodexLifecycleGuidance.configuredRoleGuidance(
       role: recipient.role,
@@ -74,7 +62,8 @@ public enum CodexProductConversation {
     ownerMessage: String,
     recentRoomMessages: [ProductConversationMessage]
   ) -> String {
-    let history = recentRoomMessages.isEmpty
+    let history =
+      recentRoomMessages.isEmpty
       ? "No earlier product-room messages."
       : recentRoomMessages.suffix(100).map {
         "- \($0.authorName): \($0.body)"
@@ -83,20 +72,19 @@ public enum CodexProductConversation {
       Recent product-room context, oldest first:
       \(history)
 
-      Product Owner:
+      Product owner:
       \(ownerMessage)
 
-      Answer the Product Owner's latest message and name this thread.
+      Answer the product owner's latest message.
       """
   }
 
   public static func resumedThreadPrompt(ownerMessage: String) -> String {
     """
-    Product Owner follow-up:
+    Product owner follow-up:
     \(ownerMessage)
 
-    Continue this Conversation thread using its existing context and current product evidence.
-    Keep its concise thread title stable unless this follow-up materially clarifies the request.
+    Continue this conversation thread using its existing context and current product evidence.
     """
   }
 
@@ -107,12 +95,11 @@ public enum CodexProductConversation {
       "- \($0.authorName): \($0.body)"
     }.joined(separator: "\n")
     return """
-      This Conversation is being recovered because its previous agent session is unavailable.
+      This conversation is being recovered because its previous agent session is unavailable.
       Thread history, oldest first:
       \(history)
 
-      Answer the latest Product Owner message without repeating an answer already present.
-      Return a concise title for the recovered thread as well.
+      Answer the latest product owner message without repeating an answer already present.
       """
   }
 
@@ -123,7 +110,7 @@ public enum CodexProductConversation {
       "- \($0.authorName): \($0.body)"
     }.joined(separator: "\n")
     return """
-      The Product Owner has selected you to continue an existing Chat thread previously answered by
+      The product owner has selected you to continue an existing Chat thread previously answered by
       another team member. Use the durable visible thread history below as conversation context, but
       respond only from your own configured role. Re-query current product evidence before relying
       on earlier claims when freshness matters.
@@ -131,23 +118,38 @@ public enum CodexProductConversation {
       Thread history, oldest first:
       \(history)
 
-      Answer the latest Product Owner message without repeating an answer already present. Return an
-      updated approximately five-word title only if the latest question materially changes the topic.
+      Answer the latest product owner message without repeating an answer already present.
       """
   }
 
-  public static let outputSchema: JSONValue = .object([
+  public static let titleGenerationTimeout: Duration = .seconds(15)
+
+  public static let titleDeveloperInstructions = """
+    Name one product conversation from the product owner's first message. This is a read-only writing
+    task. Use only the supplied message; do not inspect files, query product data, browse the web, run
+    tools, or invent context.
+
+    Return a stable sentence-case thread title of four to six words that summarizes the request,
+    similar to a concise task title. Aim for five words and never return a vague single-word topic
+    label. Return only the JSON requested by the output schema.
+    """
+
+  public static func titlePrompt(ownerMessage: String) -> String {
+    """
+    Product owner's first message:
+    \(ownerMessage)
+
+    Name this conversation in four to six words.
+    """
+  }
+
+  public static let titleOutputSchema: JSONValue = .object([
     "type": .string("object"),
     "additionalProperties": .bool(false),
     "required": .array([
-      .string("message"),
-      .string("threadTitle"),
+      .string("threadTitle")
     ]),
     "properties": .object([
-      "message": .object([
-        "type": .string("string"),
-        "minLength": .integer(1),
-      ]),
       "threadTitle": .object([
         "type": .string("string"),
         "minLength": .integer(1),
@@ -159,10 +161,20 @@ public enum CodexProductConversation {
     ]),
   ])
 
-  public static func decode(_ response: String) throws -> ProductConversationReply {
+  public static func decodeMessage(_ response: String) throws -> String {
+    let message = response.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !message.isEmpty else {
+      throw ProductConversationGenerationError.invalidResponse(
+        "The response did not contain a message."
+      )
+    }
+    return message
+  }
+
+  public static func decodeTitle(_ response: String) throws -> String {
     guard let data = response.data(using: .utf8) else {
       throw ProductConversationGenerationError.invalidResponse(
-        "The response was not UTF-8."
+        "The title response was not UTF-8."
       )
     }
     let value: JSONValue
@@ -170,22 +182,11 @@ public enum CodexProductConversation {
       value = try JSONDecoder().decode(JSONValue.self, from: data)
     } catch {
       throw ProductConversationGenerationError.invalidResponse(
-        "The response was not valid JSON."
-      )
-    }
-    let rawMessage = value["message"]?.stringValue
-    let rawThreadTitle = value["threadTitle"]?.stringValue
-    guard
-      let message = rawMessage?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-      !message.isEmpty
-    else {
-      throw ProductConversationGenerationError.invalidResponse(
-        "The response did not contain a message."
+        "The title response was not valid JSON."
       )
     }
     guard
-      let threadTitle = rawThreadTitle?
+      let threadTitle = value["threadTitle"]?.stringValue?
         .trimmingCharacters(in: .whitespacesAndNewlines),
       !threadTitle.isEmpty,
       threadTitle.count <= 60,
@@ -198,9 +199,6 @@ public enum CodexProductConversation {
         "The response did not contain a four-to-six-word thread title."
       )
     }
-    return ProductConversationReply(
-      message: message,
-      threadTitle: threadTitle
-    )
+    return threadTitle
   }
 }

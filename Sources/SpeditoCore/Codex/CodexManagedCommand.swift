@@ -5,39 +5,117 @@ public enum CodexPermissionProfiles {
   public static let readOnly = ":read-only"
   public static let delivery = "spedito-delivery"
   public static let demo = "spedito-demo"
+  public static let repositoryAnalysis = "spedito-repository-analysis"
   public static let requestPermissionsFeature = "request_permissions_tool"
   public static let requestPermissionsFeatureOverride =
     "features.\(requestPermissionsFeature)=true"
   public static var agentProcessEnvironment: [String: String] {
     agentProcessEnvironment(
-      developerDirectory: activeDeveloperDirectory(),
-      inheritedPath: ProcessInfo.processInfo.environment["PATH"]
+      inherited: ProcessInfo.processInfo.environment,
+      developerDirectory: activeDeveloperDirectory()
     )
   }
 
   static func agentProcessEnvironment(
-    developerDirectory: String?,
-    inheritedPath: String? = nil
+    inherited: [String: String],
+    developerDirectory: String?
   ) -> [String: String] {
-    var environment = [
-      "GIT_CONFIG_GLOBAL": "/dev/null",
-      "GIT_OPTIONAL_LOCKS": "0",
-      "GIT_PAGER": "cat",
-    ]
+    let allowedKeys = Set(["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG"])
+    var environment = inherited.filter {
+      allowedKeys.contains($0.key) || $0.key.hasPrefix("LC_")
+    }
     if let developerDirectory {
       environment["DEVELOPER_DIR"] = developerDirectory
       let developerGitDirectory = URL(
         fileURLWithPath: developerDirectory,
         isDirectory: true
       ).appendingPathComponent("usr/libexec/git-core", isDirectory: true).path
-      let remainingPath = (inheritedPath ?? "")
+      let remainingPath = (environment["PATH"] ?? "")
         .split(separator: ":")
         .map(String.init)
         .filter { $0 != developerGitDirectory }
       environment["PATH"] = ([developerGitDirectory] + remainingPath)
         .joined(separator: ":")
     }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    environment["GIT_ATTR_NOSYSTEM"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_ASKPASS"] = "/usr/bin/false"
+    environment["SSH_ASKPASS"] = "/usr/bin/false"
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    environment["GIT_PAGER"] = "cat"
+    environment["GIT_EDITOR"] = "/usr/bin/true"
+    environment["GIT_CONFIG_COUNT"] = "0"
     return environment
+  }
+
+  public static var repositoryAnalysisProcessEnvironment: [String: String] {
+    repositoryAnalysisProcessEnvironment(
+      inherited: ProcessInfo.processInfo.environment,
+      developerDirectory: activeDeveloperDirectory()
+    )
+  }
+
+  static func repositoryAnalysisProcessEnvironment(
+    inherited: [String: String],
+    developerDirectory: String?
+  ) -> [String: String] {
+    let allowedKeys = Set(["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG"])
+    var environment = inherited.filter {
+      allowedKeys.contains($0.key) || $0.key.hasPrefix("LC_")
+    }
+    if let developerDirectory {
+      environment["DEVELOPER_DIR"] = developerDirectory
+    }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    environment["GIT_ATTR_NOSYSTEM"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_ASKPASS"] = "/usr/bin/false"
+    environment["SSH_ASKPASS"] = "/usr/bin/false"
+    environment["GIT_PAGER"] = "cat"
+    environment["GIT_EDITOR"] = "/usr/bin/true"
+    environment["GIT_CONFIG_COUNT"] = "0"
+    return environment
+  }
+
+  public static func repositoryAnalysisAppServerArguments(
+    snapshotURL: URL
+  ) -> [String] {
+    [
+      "-c",
+      #"default_permissions="spedito-repository-analysis""#,
+      "-c",
+      repositoryAnalysisProfileOverride(snapshotURL: snapshotURL),
+      "app-server",
+      "--listen",
+      "stdio://",
+    ]
+  }
+
+  static func repositoryAnalysisThreadConfiguration(snapshotURL: URL) -> JSONValue {
+    .object([
+      "permissions.\(repositoryAnalysis)": .object([
+        "description": .string("Read-only sanitized repository analysis snapshot"),
+        "filesystem": .object([
+          ":root": .string("deny"),
+          snapshotURL.standardizedFileURL.path: .string("read"),
+        ]),
+        "network": .object(["enabled": .bool(false)]),
+        "workspace_roots": .object([
+          snapshotURL.standardizedFileURL.path: .bool(true)
+        ]),
+      ])
+    ])
+  }
+
+  private static func repositoryAnalysisProfileOverride(snapshotURL: URL) -> String {
+    let path = tomlEscaped(snapshotURL.standardizedFileURL.path)
+    return
+      #"permissions.\#(repositoryAnalysis)={description="Read-only sanitized repository analysis snapshot",filesystem={":root"="deny","\#(path)"="read"},network={enabled=false},workspace_roots={"\#(path)"=true}}"#
   }
 
   public static var appServerArguments: [String] {
@@ -191,16 +269,19 @@ public enum CodexPermissionProfiles {
     readOnlyProductDirectory: URL?,
     writableTransientStorageRoots: [URL]
   ) -> String {
-    let gitEntry = readOnlyGitDirectory.map {
-      #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
-    } ?? ""
-    let productEntry = readOnlyProductDirectory.map {
-      #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
-    } ?? ""
+    let gitEntry =
+      readOnlyGitDirectory.map {
+        #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
+      } ?? ""
+    let productEntry =
+      readOnlyProductDirectory.map {
+        #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
+      } ?? ""
     let transientEntries = writableTransientStorageRoots.map {
       #""\#(tomlEscaped($0.standardizedFileURL.path))"="write","#
     }.joined()
-    let protectedPreviewEntries = protectedSpeditoDeliveryStorageRoots
+    let protectedPreviewEntries =
+      protectedSpeditoDeliveryStorageRoots
       .filter { $0.path.contains("/Library/Caches/Spedito/PreviewWorktrees") }
       .map { #""\#(tomlEscaped($0.path))"="deny","# }
       .joined()
@@ -267,7 +348,8 @@ public enum CodexPermissionProfiles {
     for root in writableTransientStorageRoots {
       filesystem[root.standardizedFileURL.resolvingSymlinksInPath().path] = .string("write")
     }
-    for root in protectedStorageRoots where
+    for root in protectedStorageRoots
+    where
       root.path.contains("/Library/Caches/Spedito/PreviewWorktrees")
     {
       filesystem[root.standardizedFileURL.resolvingSymlinksInPath().path] = .string("deny")
@@ -317,10 +399,12 @@ public enum CodexPermissionProfiles {
     workspaceRootPath: String?,
     writableTransientStorageRoots: [URL]
   ) -> String {
-    let workspaceRoots = workspaceRootPath.map {
-      #",workspace_roots={"\#(tomlEscaped($0))"=true}"#
-    } ?? ""
-    return #"permissions.\#(demo)={description="Reviewed demo with macOS transient storage and loopback-only network",filesystem={\#(demoProtectedFilesystemEntries(writableTransientStorageRoots: writableTransientStorageRoots))},network={enabled=true,domains={"localhost"="allow","127.0.0.1"="allow"}}\#(workspaceRoots)}"#
+    let workspaceRoots =
+      workspaceRootPath.map {
+        #",workspace_roots={"\#(tomlEscaped($0))"=true}"#
+      } ?? ""
+    return
+      #"permissions.\#(demo)={description="Reviewed demo with macOS transient storage and loopback-only network",filesystem={\#(demoProtectedFilesystemEntries(writableTransientStorageRoots: writableTransientStorageRoots))},network={enabled=true,domains={"localhost"="allow","127.0.0.1"="allow"}}\#(workspaceRoots)}"#
   }
 
   private static func normalizedFilesystemEntries(_ value: String) -> String {
@@ -383,7 +467,8 @@ public enum CodexPermissionProfiles {
       fileURLWithPath: selectedPath,
       isDirectory: true
     ).standardizedFileURL
-    let gitExecutable = developerDirectory
+    let gitExecutable =
+      developerDirectory
       .appendingPathComponent("usr/libexec/git-core", isDirectory: true)
       .appendingPathComponent("git")
     guard FileManager.default.isExecutableFile(atPath: gitExecutable.path) else {
@@ -539,7 +624,9 @@ public actor CodexWorkspaceCommandExecutor: CodexManagedCommandExecuting {
         arguments: CodexPermissionProfiles.appServerArguments(
           demoWorkspaceRoot: workspaceRoot
         ),
-        currentDirectoryURL: workspaceRoot
+        currentDirectoryURL: workspaceRoot,
+        environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment,
+        environmentMode: .replace
       )
     )
     let client = CodexAppServerClient(transport: transport)

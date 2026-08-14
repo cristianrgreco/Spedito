@@ -13,7 +13,8 @@ public enum GitWorkspaceError: Error, LocalizedError, Sendable {
     case .invalidRepository(let detail):
       return "The product workspace is not ready for isolated delivery: \(detail)"
     case .mergeConflict(_, let conflictedFiles, _):
-      return "Candidate integration needs conflict resolution in: \(conflictedFiles.joined(separator: ", "))."
+      return
+        "Candidate integration needs conflict resolution in: \(conflictedFiles.joined(separator: ", "))."
     }
   }
 }
@@ -201,9 +202,70 @@ public struct GitRepositorySnapshot: Equatable, Sendable {
   }
 }
 
+public struct GitImportedRepository: Equatable, Sendable {
+  public static let emptyBranchMarker = "import-empty-default-branch"
+  public static let controlCollisionMarker = "import-control-path-collision"
+
+  public let sourceDefaultBranch: String
+  public let importedSHA: String
+
+  public init(
+    sourceDefaultBranch: String,
+    importedSHA: String
+  ) {
+    self.sourceDefaultBranch = sourceDefaultBranch
+    self.importedSHA = importedSHA
+  }
+}
+
+public struct GitRepositoryTreeEntry: Equatable, Sendable {
+  public let mode: String
+  public let objectType: String
+  public let objectSHA: String
+  public let path: String
+  public let collisionKey: String
+
+  public init(
+    mode: String,
+    objectType: String,
+    objectSHA: String,
+    path: String,
+    collisionKey: String
+  ) {
+    self.mode = mode
+    self.objectType = objectType
+    self.objectSHA = objectSHA
+    self.path = path
+    self.collisionKey = collisionKey
+  }
+}
+
+public struct RepositoryKnowledgeExportResult: Equatable, Sendable {
+  public let managedPaths: [String]
+  public let touchedPaths: [String]
+  public let skippedPaths: [String]
+  public let expectedDigests: [String: String]
+  public let expectedContents: [String: Data]
+
+  public init(
+    managedPaths: [String],
+    touchedPaths: [String],
+    skippedPaths: [String],
+    expectedContents: [String: Data] = [:],
+    expectedDigests: [String: String]
+  ) {
+    self.managedPaths = managedPaths.sorted()
+    self.touchedPaths = touchedPaths.sorted()
+    self.skippedPaths = skippedPaths.sorted()
+    self.expectedDigests = expectedDigests
+    self.expectedContents = expectedContents
+  }
+}
+
 public actor GitWorkspaceManager {
   private let executableURL: URL
-  private let fileManager: FileManager
+  let fileManager: FileManager
+  private let commandHomeURL: URL
 
   public init(
     executableURL: URL = URL(fileURLWithPath: "/usr/bin/git"),
@@ -211,22 +273,501 @@ public actor GitWorkspaceManager {
   ) {
     self.executableURL = executableURL
     self.fileManager = fileManager
+    commandHomeURL = fileManager.temporaryDirectory.appendingPathComponent(
+      "Spedito-Git-\(UUID().uuidString)",
+      isDirectory: true
+    )
+  }
+
+  public func clonePublicRepository(
+    from sourceURL: URL,
+    to destinationURL: URL,
+    credentialConfiguration: GitCredentialSessionConfiguration? = nil,
+    timeout: Duration = .seconds(120)
+  ) async throws -> GitImportedRepository {
+    guard sourceURL.scheme?.lowercased() == "https", sourceURL.host != nil else {
+      throw GitWorkspaceError.invalidRepository("import-clone-failed")
+    }
+    try fileManager.createDirectory(
+      at: destinationURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    guard !fileManager.fileExists(atPath: destinationURL.path) else {
+      throw GitWorkspaceError.invalidRepository("import-clone-failed")
+    }
+
+    do {
+      let credentialArguments = credentialConfiguration?.gitConfigurationArguments ?? []
+      let cloneResult = try await runDataAsync(
+        credentialArguments + [
+          "-c", "http.followRedirects=false",
+          "-c", "filter.lfs.smudge=",
+          "-c", "filter.lfs.required=false",
+          "clone", "--no-recurse-submodules", "--origin", "origin", "--",
+          sourceURL.absoluteString, destinationURL.path,
+        ],
+        at: destinationURL.deletingLastPathComponent(),
+        environmentOverrides: ["GIT_LFS_SKIP_SMUDGE": "1"],
+        timeout: timeout
+      )
+      guard cloneResult.status == 0 else {
+        throw GitWorkspaceError.invalidRepository("import-clone-failed")
+      }
+      try Task.checkCancellation()
+
+      let sourceBranch = try run(["branch", "--show-current"], at: destinationURL)
+      guard !sourceBranch.isEmpty,
+        let importedSHA = try? run(["rev-parse", "--verify", "HEAD^{commit}"], at: destinationURL),
+        !importedSHA.isEmpty
+      else {
+        throw GitWorkspaceError.invalidRepository(GitImportedRepository.emptyBranchMarker)
+      }
+
+      let tree = try repositoryTreeEntries(at: destinationURL, sha: importedSHA)
+      if tree.entries.contains(where: {
+        $0.collisionKey.split(separator: "/", maxSplits: 1).first == ".spedito"
+      }) {
+        throw GitWorkspaceError.invalidRepository(GitImportedRepository.controlCollisionMarker)
+      }
+      guard try repositoryDirtyPaths(at: destinationURL).isEmpty else {
+        throw GitWorkspaceError.invalidRepository("import-clone-failed")
+      }
+
+      _ = try? run(
+        ["remote", "set-head", "origin", sourceBranch],
+        at: destinationURL
+      )
+      _ = try run(["branch", "-m", "trunk"], at: destinationURL)
+      try configureIdentity(at: destinationURL)
+      try ensureControlDirectoryExcluded(at: destinationURL)
+      guard try run(["rev-parse", "trunk"], at: destinationURL) == importedSHA,
+        try run(["remote", "get-url", "origin"], at: destinationURL) == sourceURL.absoluteString,
+        try repositoryDirtyPaths(at: destinationURL).isEmpty
+      else {
+        throw GitWorkspaceError.invalidRepository("import-clone-failed")
+      }
+      return GitImportedRepository(
+        sourceDefaultBranch: sourceBranch,
+        importedSHA: importedSHA
+      )
+    } catch {
+      try? fileManager.removeItem(at: destinationURL)
+      throw error
+    }
+  }
+
+  public func repositoryTreeEntries(
+    at repositoryURL: URL,
+    sha: String
+  ) throws -> (entries: [GitRepositoryTreeEntry], hasUndecodablePaths: Bool) {
+    let result = try runDataAllowingFailure(
+      ["ls-tree", "-r", "-z", "--full-tree", sha],
+      at: repositoryURL
+    )
+    guard result.status == 0 else {
+      throw GitWorkspaceError.invalidRepository("The repository revision is unavailable.")
+    }
+    var entries: [GitRepositoryTreeEntry] = []
+    var hasUndecodablePaths = false
+    for record in result.output.split(separator: 0, omittingEmptySubsequences: true) {
+      guard let tab = record.firstIndex(of: 9) else {
+        throw GitWorkspaceError.invalidRepository("The repository tree is malformed.")
+      }
+      let metadata = record[..<tab]
+      let pathBytes = record[record.index(after: tab)...]
+      guard
+        let metadataString = String(bytes: metadata, encoding: .utf8),
+        let path = String(bytes: pathBytes, encoding: .utf8)
+      else {
+        hasUndecodablePaths = true
+        continue
+      }
+      let fields = metadataString.split(separator: " ", omittingEmptySubsequences: true)
+      guard fields.count == 3,
+        let normalizedPath = validatedRepositoryPath(path)
+      else {
+        throw GitWorkspaceError.invalidRepository("The repository contains an unsafe path.")
+      }
+      entries.append(
+        GitRepositoryTreeEntry(
+          mode: String(fields[0]),
+          objectType: String(fields[1]),
+          objectSHA: String(fields[2]),
+          path: normalizedPath,
+          collisionKey: repositoryPathCollisionKey(normalizedPath)
+        )
+      )
+    }
+    entries.sort {
+      if $0.collisionKey != $1.collisionKey { return $0.collisionKey < $1.collisionKey }
+      return $0.path < $1.path
+    }
+    return (entries, hasUndecodablePaths)
+  }
+
+  public func repositoryBlobData(
+    at repositoryURL: URL,
+    objectSHA: String
+  ) throws -> Data {
+    let result = try runDataAllowingFailure(
+      ["cat-file", "blob", objectSHA],
+      at: repositoryURL
+    )
+    guard result.status == 0 else {
+      throw GitWorkspaceError.invalidRepository("A repository source file is unavailable.")
+    }
+    return result.output
+  }
+
+  public func repositoryDirtyPaths(at repositoryURL: URL) throws -> [String] {
+    let commands = [
+      ["diff", "--name-only", "-z", "--"],
+      ["diff", "--cached", "--name-only", "-z", "--"],
+      ["ls-files", "--others", "--exclude-standard", "-z", "--"],
+    ]
+    var paths: Set<String> = []
+    for command in commands {
+      let result = try runDataAllowingFailure(command, at: repositoryURL)
+      guard result.status == 0 else {
+        throw GitWorkspaceError.invalidRepository("The repository status is unavailable.")
+      }
+      for bytes in result.output.split(separator: 0, omittingEmptySubsequences: true) {
+        guard
+          let decoded = String(bytes: bytes, encoding: .utf8),
+          let path = validatedRepositoryPath(decoded)
+        else {
+          throw GitWorkspaceError.invalidRepository(
+            "The repository contains an undecodable changed path."
+          )
+        }
+        paths.insert(path)
+      }
+    }
+    return paths.sorted {
+      let lhs = repositoryPathCollisionKey($0)
+      let rhs = repositoryPathCollisionKey($1)
+      return lhs == rhs ? $0 < $1 : lhs < rhs
+    }
+  }
+
+  public nonisolated static func repositoryPathCollisionKey(_ path: String) -> String {
+    path.precomposedStringWithCanonicalMapping
+      .split(separator: "/", omittingEmptySubsequences: false)
+      .map {
+        String($0).folding(
+          options: [.caseInsensitive],
+          locale: Locale(identifier: "en_US_POSIX")
+        )
+      }
+      .joined(separator: "/")
+  }
+
+  private func repositoryPathCollisionKey(_ path: String) -> String {
+    Self.repositoryPathCollisionKey(path)
+  }
+
+  private func validatedRepositoryPath(_ path: String) -> String? {
+    let normalized = path.precomposedStringWithCanonicalMapping
+    guard !normalized.isEmpty, !normalized.hasPrefix("/"), !normalized.contains("\\0")
+    else { return nil }
+    let components = normalized.split(separator: "/", omittingEmptySubsequences: false)
+    guard !components.isEmpty,
+      components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+    else { return nil }
+    return normalized
+  }
+
+  public func ensureControlDirectoryExcluded(at repositoryURL: URL) throws {
+    let excludeURL =
+      repositoryURL
+      .appendingPathComponent(".git", isDirectory: true)
+      .appendingPathComponent("info", isDirectory: true)
+      .appendingPathComponent("exclude")
+    try fileManager.createDirectory(
+      at: excludeURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    let existing = (try? String(contentsOf: excludeURL, encoding: .utf8)) ?? ""
+    guard !existing.split(whereSeparator: \.isNewline).contains("/.spedito/") else {
+      return
+    }
+    let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
+    try Data("\(existing)\(separator)/.spedito/\n".utf8).write(
+      to: excludeURL,
+      options: .atomic
+    )
+  }
+  public func acceptedTrunkSHA(at repositoryURL: URL) throws -> String {
+    guard try run(["branch", "--show-current"], at: repositoryURL) == "trunk",
+      try repositoryDirtyPaths(at: repositoryURL).isEmpty
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The accepted product workspace must be clean and remain on trunk."
+      )
+    }
+    return try run(["rev-parse", "trunk"], at: repositoryURL)
+  }
+
+  public func validateRepositoryAnalysisRevision(
+    at repositoryURL: URL,
+    sha: String,
+    evidence: [RepositoryEvidence],
+    policy: RepositorySourcePathPolicy = RepositorySourcePathPolicy(),
+    requiresCleanWorkspace: Bool = true,
+    requiresTrunkRevisionMatch: Bool = true
+  ) throws {
+    let workspaceIsValid: Bool
+    if requiresCleanWorkspace {
+      workspaceIsValid = try repositoryDirtyPaths(at: repositoryURL).isEmpty
+    } else {
+      workspaceIsValid = true
+    }
+    let isOnTrunk = try run(["branch", "--show-current"], at: repositoryURL) == "trunk"
+    let trunkMatchesRevision: Bool
+    if requiresTrunkRevisionMatch {
+      trunkMatchesRevision = try run(["rev-parse", "trunk"], at: repositoryURL) == sha
+    } else {
+      trunkMatchesRevision = true
+    }
+    guard isOnTrunk, trunkMatchesRevision, workspaceIsValid else {
+      throw GitWorkspaceError.invalidRepository(
+        "Repository knowledge is stale because accepted trunk or its files changed."
+      )
+    }
+    let entries = try repositoryTreeEntries(at: repositoryURL, sha: sha).entries
+    let allowedPaths = Set(entries.filter(policy.allows).map(\.path))
+    guard evidence.allSatisfy({ allowedPaths.contains($0.path) }) else {
+      throw GitWorkspaceError.invalidRepository(
+        "Repository knowledge evidence no longer matches the analyzed revision."
+      )
+    }
+  }
+
+  public func repositoryKnowledgeExportDisposition(
+    at repositoryURL: URL,
+    paths: [String]
+  ) throws -> (allowed: [String], skipped: [String]) {
+    var allowed: [String] = []
+    var skipped: [String] = []
+    for path in paths.sorted() {
+      let ignored = try runAllowingFailure(
+        ["check-ignore", "--quiet", "--no-index", "--", path],
+        at: repositoryURL
+      )
+      if ignored.status == 0 {
+        skipped.append(path)
+        continue
+      }
+      guard ignored.status == 1 else {
+        throw GitWorkspaceError.invalidRepository("Repository ignore rules could not be checked.")
+      }
+      let attributes = try runDataAllowingFailure(
+        ["check-attr", "-z", "filter", "--", path],
+        at: repositoryURL
+      )
+      guard attributes.status == 0 else {
+        throw GitWorkspaceError.invalidRepository(
+          "Repository content filters could not be checked."
+        )
+      }
+      let fields = attributes.output.split(separator: 0, omittingEmptySubsequences: false)
+      guard fields.count >= 3, let value = String(bytes: fields[2], encoding: .utf8) else {
+        throw GitWorkspaceError.invalidRepository(
+          "Repository content filters returned an invalid result."
+        )
+      }
+      if value == "unspecified" || value == "unset" || value.isEmpty {
+        allowed.append(path)
+      } else {
+        skipped.append(path)
+      }
+    }
+    return (allowed, skipped)
+  }
+
+  public func checkpointRepositoryKnowledge(
+    at repositoryURL: URL,
+    analyzedSHA: String,
+    expectedFiles: [String: Data],
+    message: String = "Publish imported product knowledge"
+  ) throws -> String {
+    guard try run(["branch", "--show-current"], at: repositoryURL) == "trunk",
+      try run(["rev-parse", "trunk"], at: repositoryURL) == analyzedSHA
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "Repository knowledge is stale because accepted trunk changed."
+      )
+    }
+    let expectedPaths = Set(expectedFiles.keys)
+    guard Set(try repositoryDirtyPaths(at: repositoryURL)) == expectedPaths else {
+      throw GitWorkspaceError.invalidRepository(
+        "Repository knowledge files do not match the prepared publication."
+      )
+    }
+    for (path, expectedData) in expectedFiles {
+      guard try Data(contentsOf: repositoryURL.appendingPathComponent(path)) == expectedData else {
+        throw GitWorkspaceError.invalidRepository(
+          "A repository knowledge file changed before publication."
+        )
+      }
+    }
+    do {
+      if !expectedPaths.isEmpty {
+        _ = try run(["add", "--"] + expectedPaths.sorted(), at: repositoryURL)
+      }
+      let staged = try nulPaths(
+        runDataAllowingFailure(
+          ["diff", "--cached", "--name-only", "--no-renames", "-z", analyzedSHA, "--"],
+          at: repositoryURL
+        )
+      )
+      guard Set(staged) == expectedPaths else {
+        throw GitWorkspaceError.invalidRepository(
+          "Only prepared repository knowledge files may be committed."
+        )
+      }
+      let treeSHA = try run(["write-tree"], at: repositoryURL)
+      let commitSHA = try run(
+        ["commit-tree", treeSHA, "-p", analyzedSHA, "-m", message],
+        at: repositoryURL
+      )
+      let metadata = try run(
+        ["show", "-s", "--format=%P%x00%an%x00%ae%x00%s", commitSHA],
+        at: repositoryURL
+      ).split(separator: "\0", omittingEmptySubsequences: false)
+      guard metadata.count == 4,
+        metadata[0] == analyzedSHA,
+        metadata[1] == "Spedito",
+        metadata[2] == "spedito@localhost",
+        metadata[3] == message
+      else {
+        throw GitWorkspaceError.invalidRepository(
+          "The repository knowledge commit did not pass provenance validation."
+        )
+      }
+      let changed = try nulPaths(
+        runDataAllowingFailure(
+          ["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", commitSHA],
+          at: repositoryURL
+        )
+      )
+      guard Set(changed) == expectedPaths else {
+        throw GitWorkspaceError.invalidRepository(
+          "The repository knowledge commit changed unexpected files."
+        )
+      }
+      let committedTree = try repositoryTreeEntries(at: repositoryURL, sha: commitSHA).entries
+      let entriesByPath = Dictionary(uniqueKeysWithValues: committedTree.map { ($0.path, $0) })
+      for (path, expectedData) in expectedFiles {
+        guard
+          let entry = entriesByPath[path],
+          try repositoryBlobData(at: repositoryURL, objectSHA: entry.objectSHA) == expectedData
+        else {
+          throw GitWorkspaceError.invalidRepository(
+            "The repository knowledge commit contains unexpected content."
+          )
+        }
+      }
+      _ = try run(
+        ["update-ref", "refs/heads/trunk", commitSHA, analyzedSHA],
+        at: repositoryURL
+      )
+      guard try run(["rev-parse", "trunk"], at: repositoryURL) == commitSHA,
+        try repositoryDirtyPaths(at: repositoryURL).isEmpty
+      else {
+        throw GitWorkspaceError.invalidRepository(
+          "The repository knowledge commit could not be activated safely."
+        )
+      }
+      return commitSHA
+    } catch {
+      if (try? run(["rev-parse", "trunk"], at: repositoryURL)) == analyzedSHA {
+        _ = try? run(["reset", "--mixed", analyzedSHA, "--"], at: repositoryURL)
+      }
+      throw error
+    }
+  }
+
+  public func recoverRepositoryKnowledgeCheckpoint(
+    at repositoryURL: URL,
+    analyzedSHA: String,
+    expectedFiles: [String: Data],
+    message: String = "Publish imported product knowledge"
+  ) throws -> String? {
+    guard try run(["branch", "--show-current"], at: repositoryURL) == "trunk",
+      try repositoryDirtyPaths(at: repositoryURL).isEmpty
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The accepted product workspace changed while knowledge was publishing."
+      )
+    }
+    let currentSHA = try run(["rev-parse", "trunk"], at: repositoryURL)
+    guard currentSHA != analyzedSHA else { return nil }
+    let metadata = try run(
+      ["show", "-s", "--format=%P%x00%an%x00%ae%x00%s", currentSHA],
+      at: repositoryURL
+    ).split(separator: "\0", omittingEmptySubsequences: false)
+    guard metadata.count == 4,
+      metadata[0] == analyzedSHA,
+      metadata[1] == "Spedito",
+      metadata[2] == "spedito@localhost",
+      metadata[3] == message
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "Accepted trunk changed after repository analysis."
+      )
+    }
+    let changed = try nulPaths(
+      runDataAllowingFailure(
+        ["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", currentSHA],
+        at: repositoryURL
+      )
+    )
+    guard Set(changed) == Set(expectedFiles.keys) else {
+      throw GitWorkspaceError.invalidRepository(
+        "The recovered repository knowledge commit changed unexpected files."
+      )
+    }
+    let committedTree = try repositoryTreeEntries(at: repositoryURL, sha: currentSHA).entries
+    let entriesByPath = Dictionary(uniqueKeysWithValues: committedTree.map { ($0.path, $0) })
+    for (path, expectedData) in expectedFiles {
+      guard
+        let entry = entriesByPath[path],
+        try repositoryBlobData(at: repositoryURL, objectSHA: entry.objectSHA) == expectedData
+      else {
+        throw GitWorkspaceError.invalidRepository(
+          "The recovered repository knowledge commit contains unexpected content."
+        )
+      }
+    }
+    return currentSHA
+  }
+
+  private func nulPaths(
+    _ result: (status: Int32, output: Data)
+  ) throws -> [String] {
+    guard result.status == 0 else {
+      throw GitWorkspaceError.invalidRepository("Repository paths could not be read.")
+    }
+    return try result.output.split(separator: 0, omittingEmptySubsequences: true).map {
+      guard
+        let path = String(bytes: $0, encoding: .utf8),
+        let validated = validatedRepositoryPath(path)
+      else {
+        throw GitWorkspaceError.invalidRepository("A repository path is undecodable.")
+      }
+      return validated
+    }
   }
 
   @discardableResult
-  public func ensureRepository(
-    at repositoryURL: URL,
-    rootIgnoreEntries: [String] = []
-  ) throws -> String {
+  public func ensureRepository(at repositoryURL: URL) throws -> String {
     try fileManager.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
-    try ensureRootGitIgnore(
-      at: repositoryURL,
-      entries: rootIgnoreEntries
-    )
     let gitDirectory = repositoryURL.appendingPathComponent(".git", isDirectory: true)
     if !fileManager.fileExists(atPath: gitDirectory.path) {
       _ = try run(["init", "-b", "trunk"], at: repositoryURL)
       try configureIdentity(at: repositoryURL)
+      try ensureControlDirectoryExcluded(at: repositoryURL)
       _ = try run(["add", "-A"], at: repositoryURL)
       _ = try run(
         ["commit", "--no-gpg-sign", "--allow-empty", "-m", "Initialize product workspace"],
@@ -237,38 +778,12 @@ public actor GitWorkspaceManager {
       guard (try? run(["rev-parse", "--is-inside-work-tree"], at: repositoryURL)) == "true" else {
         throw GitWorkspaceError.invalidRepository(repositoryURL.path)
       }
+      try ensureControlDirectoryExcluded(at: repositoryURL)
       if (try? run(["rev-parse", "--verify", "refs/heads/trunk"], at: repositoryURL)) == nil {
         _ = try run(["branch", "trunk", "HEAD"], at: repositoryURL)
       }
     }
     return try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL)
-  }
-
-  private func ensureRootGitIgnore(
-    at repositoryURL: URL,
-    entries: [String]
-  ) throws {
-    let normalizedEntries = entries
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty && !$0.contains("\n") && !$0.contains("\r") }
-    guard !normalizedEntries.isEmpty else { return }
-
-    let ignoreURL = repositoryURL.appendingPathComponent(".gitignore")
-    let existing = (try? String(contentsOf: ignoreURL, encoding: .utf8)) ?? ""
-    let existingEntries = Set(
-      existing.split(whereSeparator: \.isNewline).map(String.init)
-    )
-    let missingEntries = normalizedEntries.filter {
-      !existingEntries.contains($0)
-    }
-    guard !missingEntries.isEmpty else { return }
-
-    let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
-    let addition = missingEntries.map { "\($0)\n" }.joined()
-    try Data("\(existing)\(separator)\(addition)".utf8).write(
-      to: ignoreURL,
-      options: .atomic
-    )
   }
 
   @discardableResult
@@ -308,7 +823,8 @@ public actor GitWorkspaceManager {
     try fileManager.createDirectory(at: worktreesRootURL, withIntermediateDirectories: true)
     let normalizedKey = Self.pathComponent(ticketKey)
     let runSuffix = runID.uuidString.lowercased().prefix(8)
-    let workspaceURL = worktreesRootURL
+    let workspaceURL =
+      worktreesRootURL
       .appendingPathComponent("\(normalizedKey)-\(runSuffix)", isDirectory: true)
     var branchName = "ticket/\(ticketKey.uppercased())"
     if (try? run(["rev-parse", "--verify", "refs/heads/\(branchName)"], at: repositoryURL)) != nil {
@@ -345,11 +861,12 @@ public actor GitWorkspaceManager {
       .components(separatedBy: .newlines)
       .first?
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    let message = if let trimmedSummary, !trimmedSummary.isEmpty {
-      "\(ticketKey.uppercased()): \(String(trimmedSummary.prefix(160)))"
-    } else {
-      "\(ticketKey.uppercased()): candidate v\(version)"
-    }
+    let message =
+      if let trimmedSummary, !trimmedSummary.isEmpty {
+        "\(ticketKey.uppercased()): \(String(trimmedSummary.prefix(160)))"
+      } else {
+        "\(ticketKey.uppercased()): candidate v\(version)"
+      }
     _ = try run(
       [
         "commit", "--no-gpg-sign", "--allow-empty", "-m", message,
@@ -373,6 +890,41 @@ public actor GitWorkspaceManager {
       headSHA: headSHA,
       commitCount: Int(commitCountText) ?? 0,
       changedFiles: changedFilesText.split(separator: "\n").map(String.init)
+    )
+  }
+
+  public func snapshotLocalOutcomeCandidate(
+    ticketWorkspaceURL: URL
+  ) throws -> GitCandidateSnapshot {
+    let branchName = try run(["branch", "--show-current"], at: ticketWorkspaceURL)
+    guard branchName.hasPrefix("ticket/") else {
+      throw GitWorkspaceError.invalidRepository(
+        "\(ticketWorkspaceURL.path) is not on a ticket branch."
+      )
+    }
+    guard try ticketChangePaths(ticketWorkspaceURL: ticketWorkspaceURL).isEmpty else {
+      throw GitWorkspaceError.invalidRepository(
+        "A local outcome candidate cannot leave repository changes uncommitted."
+      )
+    }
+    let headSHA = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+    let baseSHA = try run(["merge-base", "trunk", headSHA], at: ticketWorkspaceURL)
+    let commitCountText = try run(
+      ["rev-list", "--count", "\(baseSHA)..\(headSHA)"],
+      at: ticketWorkspaceURL
+    )
+    let commitCount = Int(commitCountText) ?? 0
+    guard headSHA == baseSHA, commitCount == 0 else {
+      throw GitWorkspaceError.invalidRepository(
+        "A repository-free local outcome cannot include ticket commits."
+      )
+    }
+    return GitCandidateSnapshot(
+      branchName: branchName,
+      baseSHA: baseSHA,
+      headSHA: headSHA,
+      commitCount: commitCount,
+      changedFiles: []
     )
   }
 
@@ -447,9 +999,8 @@ public actor GitWorkspaceManager {
         at: integrationURL
       )
     } catch {
-      let conflictedFiles = (
-        try? run(["diff", "--name-only", "--diff-filter=U"], at: integrationURL)
-      )?
+      let conflictedFiles =
+        (try? run(["diff", "--name-only", "--diff-filter=U"], at: integrationURL))?
         .split(separator: "\n")
         .map(String.init) ?? []
       if !conflictedFiles.isEmpty {
@@ -466,6 +1017,103 @@ public actor GitWorkspaceManager {
     return GitIntegrationSnapshot(
       url: integrationURL,
       integratedSHA: try run(["rev-parse", "HEAD"], at: integrationURL)
+    )
+  }
+
+  public func integrateVerifiedRemote(
+    repositoryURL: URL,
+    integrationWorkspaceURL: URL,
+    observationRef: String,
+    expectedRemoteSHA: String,
+    candidateHeadSHA: String,
+    commitMessage: String = "Integrate verified GitHub changes"
+  ) throws -> GitIntegrationSnapshot {
+    guard observationRef.hasPrefix("refs/spedito/observations/"),
+      try run(["rev-parse", "\(observationRef)^{commit}"], at: repositoryURL)
+        == expectedRemoteSHA
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The verified GitHub revision is no longer available for ticket integration."
+      )
+    }
+    defer {
+      try? deleteRemoteObservationRef(repositoryURL: repositoryURL, ref: observationRef)
+    }
+    let currentSHA = try run(["rev-parse", "HEAD"], at: integrationWorkspaceURL)
+    guard
+      try revision(
+        currentSHA,
+        contains: candidateHeadSHA,
+        at: integrationWorkspaceURL
+      )
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket integration no longer contains its reviewed candidate."
+      )
+    }
+    guard try run(["status", "--porcelain"], at: integrationWorkspaceURL).isEmpty else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket integration contains uncaptured changes."
+      )
+    }
+    if try revision(
+      currentSHA,
+      contains: expectedRemoteSHA,
+      at: integrationWorkspaceURL
+    ) {
+      return GitIntegrationSnapshot(
+        url: integrationWorkspaceURL,
+        integratedSHA: currentSHA
+      )
+    }
+
+    do {
+      _ = try run(
+        [
+          "merge", "--no-gpg-sign", "--no-ff", "-m", commitMessage,
+          expectedRemoteSHA,
+        ],
+        at: integrationWorkspaceURL
+      )
+    } catch {
+      let conflictedFiles =
+        (try? run(
+          ["diff", "--name-only", "--diff-filter=U"],
+          at: integrationWorkspaceURL
+        ))?
+        .split(separator: "\n")
+        .map(String.init) ?? []
+      if !conflictedFiles.isEmpty {
+        throw GitWorkspaceError.mergeConflict(
+          worktreePath: integrationWorkspaceURL.path,
+          conflictedFiles: conflictedFiles,
+          output: error.localizedDescription
+        )
+      }
+      _ = try? run(["merge", "--abort"], at: integrationWorkspaceURL)
+      throw error
+    }
+
+    let integratedSHA = try run(["rev-parse", "HEAD"], at: integrationWorkspaceURL)
+    guard
+      try revision(
+        integratedSHA,
+        contains: candidateHeadSHA,
+        at: integrationWorkspaceURL
+      ),
+      try revision(
+        integratedSHA,
+        contains: expectedRemoteSHA,
+        at: integrationWorkspaceURL
+      )
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The ticket integration did not preserve both the ticket and verified GitHub changes."
+      )
+    }
+    return GitIntegrationSnapshot(
+      url: integrationWorkspaceURL,
+      integratedSHA: integratedSHA
     )
   }
 
@@ -660,6 +1308,28 @@ public actor GitWorkspaceManager {
     return !stagedCheck.output.contains("leftover conflict marker")
   }
 
+  public func revision(
+    _ descendantSHA: String,
+    contains ancestorSHA: String,
+    at repositoryURL: URL
+  ) throws -> Bool {
+    let ancestry = try runAllowingFailure(
+      ["merge-base", "--is-ancestor", ancestorSHA, descendantSHA],
+      at: repositoryURL
+    )
+    switch ancestry.status {
+    case 0:
+      return true
+    case 1:
+      return false
+    default:
+      throw GitWorkspaceError.commandFailed(
+        arguments: ["merge-base", "--is-ancestor", ancestorSHA, descendantSHA],
+        output: ancestry.output
+      )
+    }
+  }
+
   public func integratedRevisionContainsCurrentTrunk(
     repositoryURL: URL,
     integratedSHA: String
@@ -748,7 +1418,19 @@ public actor GitWorkspaceManager {
     repositoryURL: URL,
     integratedSHA: String
   ) throws {
+    guard try run(["branch", "--show-current"], at: repositoryURL) == "trunk",
+      try run(["status", "--porcelain"], at: repositoryURL).isEmpty
+    else {
+      throw GitWorkspaceError.invalidRepository(
+        "The accepted product workspace must be clean and remain on trunk before approval."
+      )
+    }
     let currentTrunk = try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL)
+    guard try run(["rev-parse", "HEAD"], at: repositoryURL) == currentTrunk else {
+      throw GitWorkspaceError.invalidRepository(
+        "The accepted product workspace is not checked out at the current trunk revision."
+      )
+    }
     let ancestry = try runAllowingFailure(
       ["merge-base", "--is-ancestor", currentTrunk, integratedSHA],
       at: repositoryURL
@@ -918,10 +1600,11 @@ public actor GitWorkspaceManager {
     guard metadata.count >= 7 else {
       throw GitWorkspaceError.invalidRepository("Commit \(sha) could not be read.")
     }
-    let accepted = try runAllowingFailure(
-      ["merge-base", "--is-ancestor", sha, "trunk"],
-      at: repositoryURL
-    ).status == 0
+    let accepted =
+      try runAllowingFailure(
+        ["merge-base", "--is-ancestor", sha, "trunk"],
+        at: repositoryURL
+      ).status == 0
     let commit = GitCommitSummary(
       sha: metadata[0],
       parentSHAs: metadata[1].split(separator: " ").map(String.init),
@@ -966,21 +1649,22 @@ public actor GitWorkspaceManager {
       let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
       guard fields.count >= 2 else { return nil }
       let status = String(fields[0])
-      let path = fields.count >= 3
+      let path =
+        fields.count >= 3
         ? "\(fields[1]) → \(fields[2])"
         : String(fields[1])
       return GitChangedFile(status: status, path: path)
     }
-    let completeDiff = try run(diffArguments, at: repositoryURL)
-    let isTruncated = completeDiff.count > maximumDiffCharacters
-    let diff = isTruncated
-      ? String(completeDiff.prefix(maximumDiffCharacters))
-      : completeDiff
+    let boundedDiff = try runBounded(
+      diffArguments,
+      at: repositoryURL,
+      maximumCharacters: maximumDiffCharacters
+    )
     return GitCommitDetail(
       commit: commit,
       files: files,
-      unifiedDiff: diff,
-      isDiffTruncated: isTruncated
+      unifiedDiff: boundedDiff.output,
+      isDiffTruncated: boundedDiff.isTruncated
     )
   }
 
@@ -993,9 +1677,10 @@ public actor GitWorkspaceManager {
       ["merge-base", "trunk", branch.name],
       at: repositoryURL
     )
-    let workspaceURL = branch.worktreePath.map {
-      URL(fileURLWithPath: $0, isDirectory: true)
-    } ?? repositoryURL
+    let workspaceURL =
+      branch.worktreePath.map {
+        URL(fileURLWithPath: $0, isDirectory: true)
+      } ?? repositoryURL
     let target = branch.worktreePath == nil ? branch.name : nil
     var nameStatusArguments = ["diff", "--name-status", "-M", baseSHA]
     var diffArguments = [
@@ -1015,20 +1700,22 @@ public actor GitWorkspaceManager {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         guard fields.count >= 2 else { return nil }
         let status = String(fields[0])
-        let path = fields.count >= 3
+        let path =
+          fields.count >= 3
           ? "\(fields[1]) → \(fields[2])"
           : String(fields[1])
         return GitChangedFile(status: status, path: path)
       }
-    let completeDiff = try run(diffArguments, at: workspaceURL)
-    let isTruncated = completeDiff.count > maximumDiffCharacters
+    let boundedDiff = try runBounded(
+      diffArguments,
+      at: workspaceURL,
+      maximumCharacters: maximumDiffCharacters
+    )
     return GitBranchDetail(
       branch: branch,
       files: files,
-      unifiedDiff: isTruncated
-        ? String(completeDiff.prefix(maximumDiffCharacters))
-        : completeDiff,
-      isDiffTruncated: isTruncated
+      unifiedDiff: boundedDiff.output,
+      isDiffTruncated: boundedDiff.isTruncated
     )
   }
 
@@ -1077,15 +1764,17 @@ public actor GitWorkspaceManager {
     )
   }
 
-  private func run(
+  func run(
     _ arguments: [String],
     at directoryURL: URL,
-    authorName: String? = nil
+    authorName: String? = nil,
+    environmentOverrides: [String: String] = [:]
   ) throws -> String {
     let result = try runAllowingFailure(
       arguments,
       at: directoryURL,
-      authorName: authorName
+      authorName: authorName,
+      environmentOverrides: environmentOverrides
     )
     guard result.status == 0 else {
       throw GitWorkspaceError.commandFailed(arguments: arguments, output: result.output)
@@ -1093,33 +1782,249 @@ public actor GitWorkspaceManager {
     return result.output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private func runAllowingFailure(
+  func runAllowingFailure(
     _ arguments: [String],
     at directoryURL: URL,
-    authorName: String? = nil
+    authorName: String? = nil,
+    environmentOverrides: [String: String] = [:]
   ) throws -> (status: Int32, output: String) {
+    let result = try runDataAllowingFailure(
+      arguments,
+      at: directoryURL,
+      authorName: authorName,
+      environmentOverrides: environmentOverrides
+    )
+    return (
+      result.status,
+      String(data: result.output, encoding: .utf8) ?? ""
+    )
+  }
+
+  private func runBounded(
+    _ arguments: [String],
+    at directoryURL: URL,
+    maximumCharacters: Int
+  ) throws -> (output: String, isTruncated: Bool) {
+    let maximumBytes = max(64 * 1_024, maximumCharacters * 4)
+    let result = try runDataBoundedAllowingFailure(
+      arguments,
+      at: directoryURL,
+      maximumOutputBytes: maximumBytes
+    )
+    let completeOutput = String(decoding: result.output, as: UTF8.self)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let isTruncated = result.isTruncated || completeOutput.count > maximumCharacters
+    guard result.status == 0 || isTruncated else {
+      throw GitWorkspaceError.commandFailed(arguments: arguments, output: completeOutput)
+    }
+    return (
+      isTruncated ? String(completeOutput.prefix(maximumCharacters)) : completeOutput,
+      isTruncated
+    )
+  }
+
+  private func runDataBoundedAllowingFailure(
+    _ arguments: [String],
+    at directoryURL: URL,
+    maximumOutputBytes: Int
+  ) throws -> (status: Int32, output: Data, isTruncated: Bool) {
     let process = Process()
     let outputPipe = Pipe()
     process.executableURL = executableURL
-    process.arguments = arguments
+    process.arguments = safeArguments(arguments)
     process.currentDirectoryURL = directoryURL
-    if let authorName {
-      var environment = ProcessInfo.processInfo.environment
-      environment["GIT_AUTHOR_NAME"] = authorName
-      environment["GIT_AUTHOR_EMAIL"] = Self.agentEmail(authorName)
-      environment["GIT_COMMITTER_NAME"] = "Spedito"
-      environment["GIT_COMMITTER_EMAIL"] = "spedito@localhost"
-      process.environment = environment
-    }
+    process.environment = try commandEnvironment(authorName: nil)
+    process.standardInput = FileHandle.nullDevice
     process.standardOutput = outputPipe
     process.standardError = outputPipe
     try process.run()
+
+    var output = Data()
+    var isTruncated = false
+    while let chunk = try outputPipe.fileHandleForReading.read(upToCount: 64 * 1_024),
+      !chunk.isEmpty
+    {
+      let remaining = maximumOutputBytes - output.count
+      if remaining > 0 {
+        output.append(chunk.prefix(remaining))
+      }
+      if chunk.count > remaining {
+        isTruncated = true
+        if process.isRunning {
+          process.terminate()
+        }
+      }
+    }
+    process.waitUntilExit()
+    return (process.terminationStatus, output, isTruncated)
+  }
+
+  func runDataAllowingFailure(
+    _ arguments: [String],
+    at directoryURL: URL,
+    authorName: String? = nil,
+    environmentOverrides: [String: String] = [:],
+    standardInput: Data? = nil
+  ) throws -> (status: Int32, output: Data) {
+    let process = Process()
+    let outputPipe = Pipe()
+    process.executableURL = executableURL
+    process.arguments = safeArguments(arguments)
+    process.currentDirectoryURL = directoryURL
+    process.environment = try commandEnvironment(
+      authorName: authorName,
+      overrides: environmentOverrides
+    )
+    process.standardOutput = outputPipe
+    process.standardError = outputPipe
+    let inputPipe = standardInput.map { _ in Pipe() }
+    if let inputPipe {
+      process.standardInput = inputPipe
+    } else {
+      process.standardInput = FileHandle.nullDevice
+    }
+    try process.run()
+    if let standardInput, let inputPipe {
+      inputPipe.fileHandleForWriting.write(standardInput)
+      try inputPipe.fileHandleForWriting.close()
+    }
     let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    return (
-      process.terminationStatus,
-      String(data: data, encoding: .utf8) ?? ""
+    return (process.terminationStatus, data)
+  }
+
+  func runDataAsync(
+    _ arguments: [String],
+    at directoryURL: URL,
+    environmentOverrides: [String: String] = [:],
+    timeout: Duration,
+    storageRootURL: URL? = nil,
+    maximumStorageBytes: Int64? = nil
+  ) async throws -> (status: Int32, output: Data) {
+    let process = Process()
+    let outputPipe = Pipe()
+    process.executableURL = executableURL
+    process.arguments = safeArguments(arguments)
+    process.currentDirectoryURL = directoryURL
+    process.environment = try commandEnvironment(
+      authorName: nil,
+      overrides: environmentOverrides
     )
+    process.standardOutput = outputPipe
+    process.standardError = outputPipe
+    let execution = GitAsyncProcess(process: process, outputPipe: outputPipe)
+    try execution.start()
+    return try await withTaskCancellationHandler {
+      try await withThrowingTaskGroup(
+        of: GitAsyncProcess.Result.self
+      ) { group in
+        group.addTask {
+          await Task.detached(priority: .userInitiated) {
+            execution.waitForExit()
+          }.value
+        }
+        group.addTask {
+          try await Task.sleep(for: timeout)
+          execution.cancel()
+          throw GitWorkspaceError.invalidRepository("import-clone-failed")
+        }
+        if let storageRootURL, let maximumStorageBytes {
+          group.addTask {
+            while true {
+              if try Self.allocatedByteCount(
+                under: storageRootURL,
+                stoppingAfter: maximumStorageBytes
+              ) > maximumStorageBytes {
+                execution.cancel()
+                throw GitWorkspaceError.invalidRepository(
+                  "The remote repository exceeds Spedito's safe download limit."
+                )
+              }
+              try await Task.sleep(for: .milliseconds(100))
+            }
+          }
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+          throw GitWorkspaceError.invalidRepository("import-clone-failed")
+        }
+        return (result.status, result.output)
+      }
+    } onCancel: {
+      execution.cancel()
+    }
+  }
+
+  private nonisolated static func allocatedByteCount(
+    under rootURL: URL,
+    stoppingAfter limit: Int64
+  ) throws -> Int64 {
+    guard
+      let enumerator = FileManager.default.enumerator(
+        at: rootURL,
+        includingPropertiesForKeys: [.fileAllocatedSizeKey, .isRegularFileKey],
+        options: [.skipsPackageDescendants]
+      )
+    else {
+      return 0
+    }
+    var total: Int64 = 0
+    for case let fileURL as URL in enumerator {
+      let values = try fileURL.resourceValues(forKeys: [.fileAllocatedSizeKey, .isRegularFileKey])
+      guard values.isRegularFile == true else { continue }
+      total += Int64(values.fileAllocatedSize ?? 0)
+      if total > limit {
+        return total
+      }
+    }
+    return total
+  }
+
+  private func safeArguments(_ arguments: [String]) -> [String] {
+    [
+      "-c", "core.hooksPath=/dev/null",
+      "-c", "core.fsmonitor=false",
+      "-c", "credential.helper=",
+    ] + arguments
+  }
+
+  private func commandEnvironment(
+    authorName: String?,
+    overrides: [String: String] = [:]
+  ) throws -> [String: String] {
+    try fileManager.createDirectory(at: commandHomeURL, withIntermediateDirectories: true)
+    let configURL = commandHomeURL.appendingPathComponent("config", isDirectory: true)
+    try fileManager.createDirectory(at: configURL, withIntermediateDirectories: true)
+    let inherited = ProcessInfo.processInfo.environment
+    var environment: [String: String] = [
+      "HOME": commandHomeURL.path,
+      "XDG_CONFIG_HOME": configURL.path,
+      "TMPDIR": inherited["TMPDIR"] ?? fileManager.temporaryDirectory.path,
+      "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+      "GIT_CONFIG_NOSYSTEM": "1",
+      "GIT_CONFIG_SYSTEM": "/dev/null",
+      "GIT_CONFIG_GLOBAL": "/dev/null",
+      "GIT_ATTR_NOSYSTEM": "1",
+      "GIT_TERMINAL_PROMPT": "0",
+      "GIT_ASKPASS": "/usr/bin/false",
+      "SSH_ASKPASS": "/usr/bin/false",
+      "GIT_EDITOR": "/usr/bin/true",
+      "GIT_PAGER": "cat",
+      "PAGER": "cat",
+      "GIT_EXTERNAL_DIFF": "",
+      "GIT_CONFIG_COUNT": "0",
+      "GIT_AUTHOR_NAME": authorName ?? "Spedito",
+      "GIT_AUTHOR_EMAIL": authorName.map(Self.agentEmail) ?? "spedito@localhost",
+      "GIT_COMMITTER_NAME": "Spedito",
+      "GIT_COMMITTER_EMAIL": "spedito@localhost",
+    ]
+    for (key, value) in inherited where key.hasPrefix("LC_") {
+      environment[key] = value
+    }
+    for (key, value) in overrides {
+      environment[key] = value
+    }
+    return environment
   }
 
   private static func pathComponent(_ value: String) -> String {
@@ -1163,5 +2068,42 @@ public actor GitWorkspaceManager {
   private static func agentEmail(_ name: String) -> String {
     let localPart = pathComponent(name).replacingOccurrences(of: "-", with: ".")
     return "\(localPart)@agents.spedito.local"
+  }
+}
+
+private final class GitAsyncProcess: @unchecked Sendable {
+  struct Result: Sendable {
+    let status: Int32
+    let output: Data
+  }
+
+  private let process: Process
+  private let outputPipe: Pipe
+  private let lock = NSLock()
+  private let terminationSignal = DispatchSemaphore(value: 0)
+
+  init(process: Process, outputPipe: Pipe) {
+    self.process = process
+    self.outputPipe = outputPipe
+    process.terminationHandler = { [terminationSignal] _ in
+      terminationSignal.signal()
+    }
+  }
+
+  func start() throws {
+    try process.run()
+  }
+
+  func waitForExit() -> Result {
+    let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    terminationSignal.wait()
+    return Result(status: process.terminationStatus, output: output)
+  }
+
+  func cancel() {
+    lock.lock()
+    defer { lock.unlock() }
+    guard process.isRunning else { return }
+    process.terminate()
   }
 }

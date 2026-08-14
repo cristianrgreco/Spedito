@@ -118,6 +118,7 @@ public actor SQLiteStore {
       """
       SELECT color
       FROM products
+      WHERE status = 'active'
       ORDER BY created_at ASC, id ASC;
       """
     ) { statement in
@@ -168,24 +169,49 @@ public actor SQLiteStore {
   }
 
   public func restoreProduct(id: UUID) throws -> Product {
-    try setProductStatus(id: id, status: .active)
+    let product = try fetchProduct(id: id)
+    guard product.status == .archived else { return product }
+    let existingColors = try fetchProducts().map(\.color)
+    let restoredColor =
+      existingColors.contains(product.color)
+      ? ProductColor.nextUnassigned(after: existingColors) ?? product.color
+      : product.color
+    return try restoreProduct(id: id, color: restoredColor)
   }
 
-  private func setProductStatus(id: UUID, status: ProductStatus) throws -> Product {
+  func restoreProduct(id: UUID, color: ProductColor) throws -> Product {
+    try setProductStatus(id: id, status: .active, color: color)
+  }
+
+  private func setProductStatus(
+    id: UUID,
+    status: ProductStatus,
+    color: ProductColor? = nil
+  ) throws -> Product {
     var product = try fetchProduct(id: id)
-    guard product.status != status else { return product }
+    let updatedColor = color ?? product.color
+    guard product.status != status || product.color != updatedColor else { return product }
 
     let updatedAt = Date()
     try transaction {
       try withStatement(
         """
-        UPDATE products SET status = ?, updated_at = ? WHERE id = ?;
+        UPDATE products SET status = ?, color = ?, updated_at = ? WHERE id = ?;
         """
       ) { statement in
         try bind(status.rawValue, to: 1, in: statement)
-        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
-        try bind(id.uuidString, to: 3, in: statement)
+        try bind(updatedColor.rawValue, to: 2, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 3, in: statement)
+        try bind(id.uuidString, to: 4, in: statement)
         try stepDone(statement)
+      }
+      if product.color != updatedColor {
+        _ = try insertEvent(
+          productID: id,
+          kind: "product.color_reassigned",
+          actor: "system",
+          detail: "\(product.color.rawValue) → \(updatedColor.rawValue)"
+        )
       }
       _ = try insertEvent(
         productID: id,
@@ -196,6 +222,36 @@ public actor SQLiteStore {
     }
 
     product.status = status
+    product.color = updatedColor
+    product.updatedAt = updatedAt
+    return product
+  }
+
+  func reassignProductColor(id: UUID, to color: ProductColor) throws -> Product {
+    var product = try fetchProduct(id: id)
+    guard product.color != color else { return product }
+
+    let updatedAt = Date()
+    try transaction {
+      try withStatement(
+        """
+        UPDATE products SET color = ?, updated_at = ? WHERE id = ?;
+        """
+      ) { statement in
+        try bind(color.rawValue, to: 1, in: statement)
+        try bind(updatedAt.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: id,
+        kind: "product.color_reassigned",
+        actor: "system",
+        detail: "\(product.color.rawValue) → \(color.rawValue)"
+      )
+    }
+
+    product.color = color
     product.updatedAt = updatedAt
     return product
   }
@@ -253,11 +309,9 @@ public actor SQLiteStore {
     guard !goal.isEmpty else {
       throw PersistenceError.corruptData("Epic outcome cannot be empty")
     }
-    let firstLine = goal.split(whereSeparator: \.isNewline).first.map(String.init) ?? goal
-    let provisionalTitle = String(firstLine.prefix(72))
     let epic = Epic(
       productID: productID,
-      title: provisionalTitle,
+      title: "",
       goal: goal,
       color: try nextEpicColor(productID: productID),
       rank: try nextEpicRank(productID: productID)
@@ -288,7 +342,7 @@ public actor SQLiteStore {
         productID: productID,
         kind: "epic.created",
         actor: "owner",
-        detail: epic.title
+        detail: epic.goal
       )
     }
     return epic
@@ -414,12 +468,22 @@ public actor SQLiteStore {
     }
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedTitle.isEmpty, !trimmedGoal.isEmpty else {
-      throw PersistenceError.corruptData("Epic title and goal cannot be empty")
+    guard !trimmedGoal.isEmpty else {
+      throw PersistenceError.corruptData("Epic goal cannot be empty")
     }
-    let criteria = successCriteria
+    if epic.hasAnalyzedMetadata, trimmedTitle.isEmpty {
+      throw PersistenceError.corruptData("Epic title cannot be empty after analysis")
+    }
+    let criteria =
+      successCriteria
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
+    let trimmedConstraints = constraints.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedTitle.isEmpty, !criteria.isEmpty || !trimmedConstraints.isEmpty {
+      throw PersistenceError.corruptData(
+        "Analyze this epic before adding success criteria or constraints"
+      )
+    }
     let updatedAt = Date()
     try withStatement(
       """
@@ -431,7 +495,7 @@ public actor SQLiteStore {
       try bind(trimmedTitle, to: 1, in: statement)
       try bind(trimmedGoal, to: 2, in: statement)
       try bind(try encodeStringArray(criteria), to: 3, in: statement)
-      try bind(constraints.trimmingCharacters(in: .whitespacesAndNewlines), to: 4, in: statement)
+      try bind(trimmedConstraints, to: 4, in: statement)
       try bind(updatedAt.timeIntervalSince1970, to: 5, in: statement)
       try bind(id.uuidString, to: 6, in: statement)
       try stepDone(statement)
@@ -445,13 +509,13 @@ public actor SQLiteStore {
       return epic
     }
     guard epic.status == .open else {
-      throw PersistenceError.corruptData("Only an open epic can be closed")
+      throw PersistenceError.corruptData("Only an open epic can be completed")
     }
     let tickets = try fetchWorkItems(productID: epic.productID)
       .filter { $0.epicID == epic.id }
     guard EpicProgress(tickets: tickets) == .complete else {
       throw PersistenceError.corruptData(
-        "Deliver every accepted ticket before closing this epic"
+        "Deliver every accepted ticket before completing this epic"
       )
     }
     let outstandingPlanningCount = try withStatement(
@@ -478,7 +542,7 @@ public actor SQLiteStore {
     }
     guard outstandingPlanningCount == 0 else {
       throw PersistenceError.corruptData(
-        "Review or dismiss every proposed ticket before closing this epic"
+        "Review or dismiss every proposed ticket before completing this epic"
       )
     }
 
@@ -495,8 +559,8 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: epic.productID,
         kind: "epic.closed",
-        actor: "Product Owner",
-        detail: epic.title
+        actor: "Product owner",
+        detail: epic.displayTitle
       )
     }
     return try fetchEpic(id: id)
@@ -524,8 +588,8 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: epic.productID,
         kind: "epic.reopened",
-        actor: "Product Owner",
-        detail: epic.title
+        actor: "Product owner",
+        detail: epic.displayTitle
       )
     }
     return try fetchEpic(id: id)
@@ -573,8 +637,11 @@ public actor SQLiteStore {
         _ = try insertEvent(
           productID: epic.productID,
           kind: "epic.ranked",
-          actor: "Product Owner",
-          detail: targetID == nil ? "\(epic.title) moved to bottom" : "\(epic.title) reordered"
+          actor: "Product owner",
+          detail:
+            targetID == nil
+            ? "\(epic.displayTitle) moved to bottom"
+            : "\(epic.displayTitle) reordered"
         )
       }
     }
@@ -653,7 +720,7 @@ public actor SQLiteStore {
         _ = try insertEvent(
           productID: epic.productID,
           kind: "ticket_suggestion.rejected",
-          actor: "Product Owner",
+          actor: "Product owner",
           detail: title
         )
       }
@@ -668,8 +735,8 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: epic.productID,
         kind: "epic.archived",
-        actor: "Product Owner",
-        detail: epic.title
+        actor: "Product owner",
+        detail: epic.displayTitle
       )
     }
   }
@@ -779,15 +846,16 @@ public actor SQLiteStore {
 
     var workItem = try fetchWorkItem(id: id)
     let previousWorkItem = workItem
-    let previousDependencyIDs: Set<UUID>? = if dependsOnWorkItemIDs != nil {
-      Set(
-        try fetchWorkItemDependencies(productID: workItem.productID)
-          .filter { $0.workItemID == workItem.id }
-          .map(\.dependsOnWorkItemID)
-      )
-    } else {
-      nil
-    }
+    let previousDependencyIDs: Set<UUID>? =
+      if dependsOnWorkItemIDs != nil {
+        Set(
+          try fetchWorkItemDependencies(productID: workItem.productID)
+            .filter { $0.workItemID == workItem.id }
+            .map(\.dependsOnWorkItemID)
+        )
+      } else {
+        nil
+      }
     if let expectedVersion, workItem.version != expectedVersion {
       throw WorkItemUpdateError.versionConflict(
         key: workItem.key,
@@ -798,7 +866,8 @@ public actor SQLiteStore {
     workItem.title = trimmedTitle
     workItem.type = type
     workItem.body = body.trimmingCharacters(in: .whitespacesAndNewlines)
-    workItem.acceptanceCriteria = acceptanceCriteria
+    workItem.acceptanceCriteria =
+      acceptanceCriteria
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     workItem.priority = priority
@@ -837,7 +906,8 @@ public actor SQLiteStore {
         .union(workItem.customFields.keys)
         .filter { previousWorkItem.customFields[$0] != workItem.customFields[$0] }
         .sorted()
-      let fieldSummary = changedKeys.count <= 3
+      let fieldSummary =
+        changedKeys.count <= 3
         ? changedKeys.joined(separator: ", ")
         : "\(changedKeys.count) fields"
       updateDetails.append("custom fields (\(fieldSummary))")
@@ -855,7 +925,8 @@ public actor SQLiteStore {
       let currentValue = currentKeys.isEmpty ? "none" : currentKeys.joined(separator: ", ")
       updateDetails.append("blockers \(previousValue) → \(currentValue)")
     }
-    let updateDetail = updateDetails.isEmpty
+    let updateDetail =
+      updateDetails.isEmpty
       ? "Saved without field changes"
       : "Changed \(updateDetails.joined(separator: "; "))"
 
@@ -889,7 +960,7 @@ public actor SQLiteStore {
         productID: workItem.productID,
         workItemID: workItem.id,
         kind: "work_item.updated",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: updateDetail
       )
     }
@@ -943,7 +1014,8 @@ public actor SQLiteStore {
       items.append(workItem)
     }
 
-    let indexByID = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
+    let indexByID = Dictionary(
+      uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
     let itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
     for dependency in try fetchWorkItemDependencies(productID: workItem.productID) {
       guard
@@ -975,7 +1047,7 @@ public actor SQLiteStore {
         productID: workItem.productID,
         workItemID: workItem.id,
         kind: "work_item.ranked",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: detail
       )
     }
@@ -1048,7 +1120,7 @@ public actor SQLiteStore {
           productID: item.productID,
           workItemID: item.id,
           kind: "work_item.ranked",
-          actor: "Product Owner",
+          actor: "Product owner",
           detail: targetID == nil ? "Moved to bottom" : "Moved before another ticket"
         )
       }
@@ -1081,7 +1153,8 @@ public actor SQLiteStore {
       throw PersistenceError.corruptData("Only backlog tickets can be archived")
     }
     let dependencies = try fetchWorkItemDependencies(productID: productID)
-    let activeDependent = dependencies
+    let activeDependent =
+      dependencies
       .filter {
         archiveIDs.contains($0.dependsOnWorkItemID)
           && !archiveIDs.contains($0.workItemID)
@@ -1089,7 +1162,8 @@ public actor SQLiteStore {
       .compactMap { try? fetchWorkItem(id: $0.workItemID) }
       .first { planningStates.contains($0.state) }
     if let activeDependent {
-      let prerequisiteKey = dependencies
+      let prerequisiteKey =
+        dependencies
         .first { dependency in
           dependency.workItemID == activeDependent.id
             && archiveIDs.contains(dependency.dependsOnWorkItemID)
@@ -1145,7 +1219,7 @@ public actor SQLiteStore {
         productID: workItem.productID,
         workItemID: workItem.id,
         kind: "work_item.archived",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: workItem.key
       )
     }
@@ -1158,7 +1232,7 @@ public actor SQLiteStore {
     if let active = try fetchSuggestionSession(productID: productID, status: .generating) {
       guard active.epicID == epicID else {
         throw PersistenceError.corruptData(
-          "Another epic is already being planned by the Business Analyst"
+          "Another epic is already being planned by the business analyst"
         )
       }
       return active
@@ -1198,7 +1272,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: productID,
         kind: "ticket_suggestions.started",
-        actor: "Business Analyst",
+        actor: "Business analyst",
         detail: session.id.uuidString
       )
     }
@@ -1265,7 +1339,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: session.productID,
         kind: "ticket_suggestions.ready",
-        actor: "Business Analyst",
+        actor: "Business analyst",
         detail: "\(drafts.count) proposals"
       )
     }
@@ -1330,7 +1404,7 @@ public actor SQLiteStore {
         productID: source.productID,
         workItemID: source.id,
         kind: "ticket_suggestions.created_from_research",
-        actor: "Business Analyst",
+        actor: "Business analyst",
         detail: "\(drafts.count) follow-up proposals"
       )
     }
@@ -1760,8 +1834,8 @@ public actor SQLiteStore {
           productID: session.productID,
           kind:
             affected.id == suggestion.id
-              ? "ticket_suggestion.rejected"
-              : "ticket_suggestion.rejected_cascade",
+            ? "ticket_suggestion.rejected"
+            : "ticket_suggestion.rejected_cascade",
           actor: "owner",
           detail: affected.title
         )
@@ -1844,7 +1918,12 @@ public actor SQLiteStore {
     authorName: String,
     body: String,
     ownerQuestion: TicketOwnerQuestion? = nil,
-    answeredQuestions: [TicketAnsweredQuestion] = []
+    answeredQuestions: [TicketAnsweredQuestion] = [],
+    authorAvatarURL: URL? = nil,
+    externalURL: URL? = nil,
+    externalID: String? = nil,
+    githubReviewContext: GitHubReviewCommentContext? = nil,
+    createdAt: Date = Date()
   ) throws -> TicketComment {
     let workItem = try fetchWorkItem(id: workItemID)
     let comment = TicketComment(
@@ -1853,12 +1932,17 @@ public actor SQLiteStore {
       authorName: authorName,
       body: body,
       ownerQuestion: ownerQuestion,
-      answeredQuestions: answeredQuestions
+      answeredQuestions: answeredQuestions,
+      authorAvatarURL: authorAvatarURL,
+      externalURL: externalURL,
+      externalID: externalID,
+      githubReviewContext: githubReviewContext,
+      createdAt: createdAt
     )
     let ownerQuestionJSON = try ownerQuestion.map { question in
       let data = try encoder.encode(question)
       guard let json = String(data: data, encoding: .utf8) else {
-        throw PersistenceError.corruptData("Could not encode the Product Owner question")
+        throw PersistenceError.corruptData("Could not encode the product owner question")
       }
       return json
     }
@@ -1872,14 +1956,22 @@ public actor SQLiteStore {
       }
       answeredQuestionsJSON = json
     }
+    let githubReviewContextJSON = try githubReviewContext.map { context in
+      let data = try encoder.encode(context)
+      guard let json = String(data: data, encoding: .utf8) else {
+        throw PersistenceError.corruptData("Could not encode the GitHub review context")
+      }
+      return json
+    }
 
     try transaction {
       try withStatement(
         """
         INSERT INTO ticket_comments (
             id, work_item_id, author_kind, author_name, body, owner_question_json,
-            answered_questions_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            answered_questions_json, author_avatar_url, external_url, external_id,
+            github_review_context_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(comment.id.uuidString, to: 1, in: statement)
@@ -1889,7 +1981,11 @@ public actor SQLiteStore {
         try bind(comment.body, to: 5, in: statement)
         try bindOptionalString(ownerQuestionJSON, to: 6, in: statement)
         try bindOptionalString(answeredQuestionsJSON, to: 7, in: statement)
-        try bind(comment.createdAt.timeIntervalSince1970, to: 8, in: statement)
+        try bindOptionalString(comment.authorAvatarURL?.absoluteString, to: 8, in: statement)
+        try bindOptionalString(comment.externalURL?.absoluteString, to: 9, in: statement)
+        try bindOptionalString(comment.externalID, to: 10, in: statement)
+        try bindOptionalString(githubReviewContextJSON, to: 11, in: statement)
+        try bind(comment.createdAt.timeIntervalSince1970, to: 12, in: statement)
         try stepDone(statement)
       }
 
@@ -1909,7 +2005,8 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, work_item_id, author_kind, author_name, body, owner_question_json,
-             answered_questions_json, created_at
+             answered_questions_json, author_avatar_url, external_url, external_id,
+             github_review_context_json, created_at
       FROM ticket_comments
       WHERE work_item_id = ?
       ORDER BY created_at ASC;
@@ -1934,7 +2031,7 @@ public actor SQLiteStore {
             body: try text(statement, column: 4),
             ownerQuestion: try optionalText(statement, column: 5).map { json in
               guard let data = json.data(using: .utf8) else {
-                throw PersistenceError.corruptData("Invalid Product Owner question text")
+                throw PersistenceError.corruptData("Invalid product owner question text")
               }
               return try decoder.decode(TicketOwnerQuestion.self, from: data)
             },
@@ -1944,12 +2041,63 @@ public actor SQLiteStore {
               }
               return try decoder.decode([TicketAnsweredQuestion].self, from: data)
             } ?? [],
-            createdAt: date(statement, column: 7)
+            authorAvatarURL: try optionalText(statement, column: 7).flatMap(URL.init(string:)),
+            externalURL: try optionalText(statement, column: 8).flatMap(URL.init(string:)),
+            externalID: try optionalText(statement, column: 9),
+            githubReviewContext: try optionalText(statement, column: 10).map { json in
+              guard let data = json.data(using: .utf8) else {
+                throw PersistenceError.corruptData("Invalid GitHub review context text")
+              }
+              return try decoder.decode(GitHubReviewCommentContext.self, from: data)
+            },
+            createdAt: date(statement, column: 11)
           )
         )
       }
       return comments
     }
+  }
+
+  public func appendExternalCommentIfNeeded(
+    workItemID: UUID,
+    authorName: String,
+    body: String,
+    authorAvatarURL: URL?,
+    externalURL: URL,
+    externalID: String,
+    createdAt: Date,
+    githubReviewContext: GitHubReviewCommentContext? = nil
+  ) throws -> TicketComment? {
+    guard !externalID.isEmpty, externalID.unicodeScalars.count <= 256,
+      externalURL.scheme == "https", externalURL.host?.lowercased() == "github.com"
+    else {
+      throw PersistenceError.corruptData("The external work log reference is invalid.")
+    }
+    if let authorAvatarURL {
+      guard authorAvatarURL.scheme == "https",
+        authorAvatarURL.host?.lowercased() == "avatars.githubusercontent.com"
+      else {
+        throw PersistenceError.corruptData("The external reviewer avatar URL is invalid.")
+      }
+    }
+    let exists = try withStatement(
+      "SELECT 1 FROM ticket_comments WHERE external_id = ? LIMIT 1;"
+    ) { statement in
+      try bind(externalID, to: 1, in: statement)
+      return sqlite3_step(statement) == SQLITE_ROW
+    }
+    guard !exists else { return nil }
+    return try appendComment(
+      workItemID: workItemID,
+      authorKind: .external,
+      authorName: authorName,
+      body: body,
+      authorAvatarURL: authorAvatarURL,
+      externalURL: externalURL,
+      externalID: externalID,
+      githubReviewContext: githubReviewContext,
+      createdAt: createdAt
+    )
   }
 
   public func createConversationThread(
@@ -1958,7 +2106,7 @@ public actor SQLiteStore {
   ) throws -> ProductConversationThread {
     guard initialMessage.threadID == thread.id else {
       throw PersistenceError.corruptData(
-        "The initial Conversation message belongs to another thread."
+        "The initial conversation message belongs to another thread."
       )
     }
     let profile = try fetchAgentProfile(id: thread.recipientProfileID)
@@ -2111,6 +2259,29 @@ public actor SQLiteStore {
     return updatedThread
   }
 
+  public func updateConversationThreadSubject(
+    id: UUID,
+    subject: String,
+    replacing expectedSubject: String
+  ) throws -> ProductConversationThread {
+    try withStatement(
+      """
+      UPDATE conversation_threads
+      SET subject = ?
+      WHERE id = ? AND subject = ?;
+      """
+    ) { statement in
+      try bind(subject, to: 1, in: statement)
+      try bind(id.uuidString, to: 2, in: statement)
+      try bind(expectedSubject, to: 3, in: statement)
+      try stepDone(statement)
+    }
+    guard let thread = try fetchConversationThread(id: id) else {
+      throw PersistenceError.recordNotFound("Conversation thread \(id)")
+    }
+    return thread
+  }
+
   public func updateConversationThread(
     id: UUID,
     status: ConversationThreadStatus,
@@ -2179,9 +2350,9 @@ public actor SQLiteStore {
   public func seedDefaultProfiles(productID: UUID) throws -> [AgentProfile] {
     let existing = try fetchAgentProfiles(productID: productID)
     let defaultRoles: [(String, AgentRole)] = [
-      ("Business Analyst", .businessAnalyst),
-      ("UX Designer", .uxDesigner),
-      ("Tech Lead", .lead),
+      ("Business analyst", .businessAnalyst),
+      ("UX designer", .uxDesigner),
+      ("Tech lead", .lead),
       ("Implementer", .implementer),
     ]
     let desired = defaultRoles.map { name, role in
@@ -2416,9 +2587,6 @@ public actor SQLiteStore {
     tokenBudgetLimit: Int?,
     items inputs: [SprintDraftItemInput]
   ) throws -> SprintPlan {
-    guard !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw SprintPlanningError.notReady(["Add a sprint goal."])
-    }
     if let tokenBudgetLimit, tokenBudgetLimit <= 0 {
       throw SprintPlanningError.invalidTokenBudget
     }
@@ -2499,12 +2667,63 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: productID,
         kind: "sprint.plan_saved",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: "Sprint \(sprint.number), plan v\(sprint.planVersion): \(sprintItems.count) tickets"
       )
     }
 
     return SprintPlan(sprint: sprint, items: sprintItems)
+  }
+
+  public func saveGeneratedSprintGoal(
+    id: UUID,
+    goal: String,
+    expectedPlanVersion: Int
+  ) throws -> SprintPlan {
+    let trimmedGoal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedGoal.isEmpty else {
+      throw SprintPlanningError.notReady(["The generated sprint goal was empty."])
+    }
+
+    var sprint = try fetchSprint(id: id)
+    if !sprint.goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return SprintPlan(sprint: sprint, items: try fetchSprintItems(sprintID: id))
+    }
+    guard [.draft, .active, .paused].contains(sprint.state) else {
+      throw SprintPlanningError.planChanged
+    }
+    guard sprint.planVersion == expectedPlanVersion else {
+      throw SprintPlanningError.planChanged
+    }
+
+    let now = Date()
+    sprint.goal = trimmedGoal
+    sprint.planVersion += 1
+    sprint.updatedAt = now
+
+    try transaction {
+      try withStatement(
+        """
+        UPDATE sprints
+        SET goal = ?, plan_version = ?, updated_at = ?
+        WHERE id = ? AND state IN ('draft', 'active', 'paused');
+        """
+      ) { statement in
+        try bind(sprint.goal, to: 1, in: statement)
+        try bind(Int64(sprint.planVersion), to: 2, in: statement)
+        try bind(sprint.updatedAt.timeIntervalSince1970, to: 3, in: statement)
+        try bind(sprint.id.uuidString, to: 4, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: sprint.productID,
+        kind: "sprint.goal_generated",
+        actor: "Business analyst",
+        detail: "Sprint \(sprint.number), plan v\(sprint.planVersion)"
+      )
+    }
+
+    return SprintPlan(sprint: sprint, items: try fetchSprintItems(sprintID: id))
   }
 
   public func fetchCurrentSprint(productID: UUID) throws -> SprintPlan? {
@@ -2566,6 +2785,7 @@ public actor SQLiteStore {
         : [SprintReadinessIssue(id: "sprint.state", message: "This sprint is not a draft.")]
     }
 
+
     let items = try fetchSprintItems(sprintID: sprintID)
     let sprintWorkItemIDs = Set(items.map(\.workItemID))
     let activeSprintWorkItemIDs: Set<UUID>
@@ -2605,7 +2825,8 @@ public actor SQLiteStore {
             SprintReadinessIssue(
               id: "\(workItem.id).dependency.\(prerequisite.id)",
               workItemID: workItem.id,
-              message: "\(workItem.key) is blocked by \(prerequisite.key), which is not in this sprint, the active sprint, or Done."
+              message:
+                "\(workItem.key) is blocked by \(prerequisite.key), which is not in this sprint, the active sprint, or done."
             )
           )
         }
@@ -2721,8 +2942,8 @@ public actor SQLiteStore {
           productID: sprint.productID,
           workItemID: workItem.id,
           kind: "work_item.queued",
-          actor: "Sprint Scheduler",
-          detail: "Authorized by Sprint \(sprint.number), plan v\(sprint.planVersion)"
+          actor: "Sprint scheduler",
+          detail: "Authorized by sprint \(sprint.number), plan v\(sprint.planVersion)"
         )
       }
 
@@ -2741,7 +2962,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: sprint.productID,
         kind: "sprint.started",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail:
           "Sprint \(sprint.number), plan v\(sprint.planVersion): \(items.count) tickets authorized"
       )
@@ -2777,7 +2998,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: sprint.productID,
         kind: "sprint.paused",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: "Sprint \(sprint.number): delivery paused"
       )
     }
@@ -2813,7 +3034,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: sprint.productID,
         kind: "sprint.resumed",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: "Sprint \(sprint.number): preserved delivery resumed"
       )
     }
@@ -2830,7 +3051,8 @@ public actor SQLiteStore {
     }
 
     let items = try fetchSprintItems(sprintID: id)
-    let unfinishedItems = try items
+    let unfinishedItems =
+      try items
       .map { try fetchWorkItem(id: $0.workItemID) }
       .filter { $0.state != .released && $0.state != .cancelled }
     let now = Date()
@@ -2852,9 +3074,9 @@ public actor SQLiteStore {
             productID: sprint.productID,
             workItemID: item.id,
             kind: "work_item.transitioned",
-            actor: "Product Owner",
+            actor: "Product owner",
             detail:
-              "\(item.state.rawValue) -> ready: Sprint \(sprint.number) stopped; returned for replanning"
+              "\(item.state.rawValue) -> ready: sprint \(sprint.number) stopped; returned for replanning"
           )
         }
 
@@ -2863,7 +3085,7 @@ public actor SQLiteStore {
           authorKind: .system,
           authorName: "Spedito",
           body:
-            "Sprint \(sprint.number) was stopped by the Product Owner. This unfinished ticket returned to Ready for replanning. Its Work log, Conversation, and any preserved workspace or candidate history remain available for audit; no unaccepted candidate was promoted."
+            "Sprint \(sprint.number) was stopped by the product owner. This unfinished ticket returned to Ready for replanning. Its work log, conversation, and any preserved workspace or candidate history remain available for audit; no unaccepted candidate was promoted."
         )
         try withStatement(
           """
@@ -2936,7 +3158,7 @@ public actor SQLiteStore {
         """
         UPDATE demo_sessions
         SET status = 'stopped', allocated_port = NULL, updated_at = ?
-        WHERE candidate_revision_id IN (
+        WHERE source_kind = 'accepted_candidate' AND launch_id IN (
           SELECT id FROM candidate_revisions WHERE sprint_id = ?
         ) AND status IN ('preparing', 'starting', 'ready');
         """
@@ -2956,7 +3178,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: sprint.productID,
         kind: "sprint.cancelled",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail:
           "Sprint \(sprint.number): stopped with \(unfinishedItems.count) unfinished ticket\(unfinishedItems.count == 1 ? "" : "s") returned to Ready"
       )
@@ -3076,7 +3298,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: sprint.productID,
         kind: "retrospective.concluded",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: "Sprint \(sprint.number) retrospective concluded"
       )
     }
@@ -3213,7 +3435,8 @@ public actor SQLiteStore {
     let existing = try fetchAgentRun(id: id)
     let now = Date()
     let closesActiveTurn = existing.status == .running && status != .running
-    let additionalActiveDuration = closesActiveTurn
+    let additionalActiveDuration =
+      closesActiveTurn
       ? existing.turnStartedAt.map { max(0, now.timeIntervalSince($0)) } ?? 0
       : 0
     try transaction {
@@ -3338,8 +3561,8 @@ public actor SQLiteStore {
           id, product_id, sprint_id, sprint_item_id, work_item_id,
           implementation_run_id, version, branch_name, base_sha, head_sha,
           integrated_sha, worktree_path, integration_worktree_path, status,
-          commit_count, execution_result_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          commit_count, execution_result_json, created_at, updated_at, delivery_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(candidate.id.uuidString, to: 1, in: statement)
@@ -3360,6 +3583,7 @@ public actor SQLiteStore {
       try bind(candidate.executionResultJSON, to: 16, in: statement)
       try bind(candidate.createdAt.timeIntervalSince1970, to: 17, in: statement)
       try bind(candidate.updatedAt.timeIntervalSince1970, to: 18, in: statement)
+      try bind(candidate.deliveryKind.rawValue, to: 19, in: statement)
       try stepDone(statement)
     }
     return try fetchCandidateRevision(id: candidate.id)
@@ -3371,7 +3595,7 @@ public actor SQLiteStore {
       SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
              implementation_run_id, version, branch_name, base_sha, head_sha,
              integrated_sha, worktree_path, integration_worktree_path, status,
-             commit_count, execution_result_json, created_at, updated_at
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind
       FROM candidate_revisions
       WHERE product_id = ?
       ORDER BY created_at ASC;
@@ -3392,7 +3616,7 @@ public actor SQLiteStore {
       SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
              implementation_run_id, version, branch_name, base_sha, head_sha,
              integrated_sha, worktree_path, integration_worktree_path, status,
-             commit_count, execution_result_json, created_at, updated_at
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind
       FROM candidate_revisions
       WHERE id = ?;
       """
@@ -3436,10 +3660,10 @@ public actor SQLiteStore {
     try withStatement(
       """
       INSERT INTO demo_sessions (
-          id, product_id, candidate_revision_id, status, preview_worktree_path,
+          id, product_id, source_kind, launch_id, status, preview_worktree_path,
           allocated_port, output, error_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(candidate_revision_id) DO UPDATE SET
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_kind, launch_id) DO UPDATE SET
           status = excluded.status,
           preview_worktree_path = excluded.preview_worktree_path,
           allocated_port = excluded.allocated_port,
@@ -3450,23 +3674,24 @@ public actor SQLiteStore {
     ) { statement in
       try bind(session.id.uuidString, to: 1, in: statement)
       try bind(session.productID.uuidString, to: 2, in: statement)
-      try bind(session.candidateRevisionID.uuidString, to: 3, in: statement)
-      try bind(session.status.rawValue, to: 4, in: statement)
-      try bindOptionalString(session.previewWorktreePath, to: 5, in: statement)
-      try bindOptionalInt(session.allocatedPort, to: 6, in: statement)
-      try bindOptionalString(session.output, to: 7, in: statement)
-      try bindOptionalString(session.errorMessage, to: 8, in: statement)
-      try bind(session.createdAt.timeIntervalSince1970, to: 9, in: statement)
-      try bind(session.updatedAt.timeIntervalSince1970, to: 10, in: statement)
+      try bind(session.sourceKind.rawValue, to: 3, in: statement)
+      try bind(session.launchID.uuidString, to: 4, in: statement)
+      try bind(session.status.rawValue, to: 5, in: statement)
+      try bindOptionalString(session.previewWorktreePath, to: 6, in: statement)
+      try bindOptionalInt(session.allocatedPort, to: 7, in: statement)
+      try bindOptionalString(session.output, to: 8, in: statement)
+      try bindOptionalString(session.errorMessage, to: 9, in: statement)
+      try bind(session.createdAt.timeIntervalSince1970, to: 10, in: statement)
+      try bind(session.updatedAt.timeIntervalSince1970, to: 11, in: statement)
       try stepDone(statement)
     }
-    return try fetchDemoSession(candidateRevisionID: session.candidateRevisionID)
+    return try fetchDemoSession(sourceKind: session.sourceKind, launchID: session.launchID)
   }
 
   public func fetchDemoSessions(productID: UUID) throws -> [DemoSession] {
     try withStatement(
       """
-      SELECT id, product_id, candidate_revision_id, status, preview_worktree_path,
+      SELECT id, product_id, source_kind, launch_id, status, preview_worktree_path,
              allocated_port, output, error_message, created_at, updated_at
       FROM demo_sessions
       WHERE product_id = ?
@@ -3482,20 +3707,22 @@ public actor SQLiteStore {
     }
   }
 
-  public func fetchDemoSession(candidateRevisionID: UUID) throws -> DemoSession {
+  public func fetchDemoSession(
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID
+  ) throws -> DemoSession {
     try withStatement(
       """
-      SELECT id, product_id, candidate_revision_id, status, preview_worktree_path,
+      SELECT id, product_id, source_kind, launch_id, status, preview_worktree_path,
              allocated_port, output, error_message, created_at, updated_at
       FROM demo_sessions
-      WHERE candidate_revision_id = ?;
+      WHERE source_kind = ? AND launch_id = ?;
       """
     ) { statement in
-      try bind(candidateRevisionID.uuidString, to: 1, in: statement)
+      try bind(sourceKind.rawValue, to: 1, in: statement)
+      try bind(launchID.uuidString, to: 2, in: statement)
       guard sqlite3_step(statement) == SQLITE_ROW else {
-        throw PersistenceError.recordNotFound(
-          "demo session for candidate \(candidateRevisionID)"
-        )
+        throw PersistenceError.recordNotFound("demo session \(sourceKind.rawValue)/\(launchID)")
       }
       return try decodeDemoSession(statement)
     }
@@ -3895,6 +4122,7 @@ public actor SQLiteStore {
     guard proposal.status == .reviewed || proposal.status == .accepted else {
       return proposal
     }
+    try ensureKnowledgeMutationAllowed(productID: proposal.productID)
     let wasAlreadyAccepted = proposal.status == .accepted
     let now = Date()
     try transaction {
@@ -3947,8 +4175,7 @@ public actor SQLiteStore {
       let normalizedBody = KnowledgeMarkdown.normalizedBody(
         proposal.proposedBodyMarkdown
       )
-      if
-        target.title == proposal.title,
+      if target.title == proposal.title,
         target.bodyMarkdown == normalizedBody,
         target.verificationStatus == .verified
       {
@@ -4162,7 +4389,7 @@ public actor SQLiteStore {
     let note = RetrospectiveNote(
       productID: productID,
       sprintID: sprintID,
-      authorName: "Product Owner",
+      authorName: "Product owner",
       category: .suggestedAction,
       body: actionIdea,
       isActionCandidate: true
@@ -4172,7 +4399,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: productID,
         kind: "retrospective.action_idea_captured",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: note.id.uuidString
       )
     }
@@ -4182,7 +4409,7 @@ public actor SQLiteStore {
   public func deleteRetrospectiveActionIdea(noteID: UUID) throws {
     let note = try fetchRetrospectiveNote(id: noteID)
     guard
-      note.authorName == "Product Owner",
+      note.authorName == "Product owner",
       note.profileID == nil,
       note.category == .suggestedAction,
       note.isActionCandidate,
@@ -4190,7 +4417,7 @@ public actor SQLiteStore {
       note.synthesisID == nil
     else {
       throw PersistenceError.corruptData(
-        "Only Product Owner action ideas can be deleted."
+        "Only product owner action ideas can be deleted."
       )
     }
 
@@ -4214,7 +4441,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: note.productID,
         kind: "retrospective.action_idea_deleted",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: note.id.uuidString
       )
     }
@@ -4258,7 +4485,7 @@ public actor SQLiteStore {
     let note = RetrospectiveNote(
       productID: productID,
       sprintID: sprintID,
-      authorName: "Product Owner",
+      authorName: "Product owner",
       category: .suggestedAction,
       body: proposal,
       actionStatus: .proposed,
@@ -4269,7 +4496,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: productID,
         kind: "retrospective.action_proposed",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: note.id.uuidString
       )
     }
@@ -4434,7 +4661,7 @@ public actor SQLiteStore {
       profile.role == .businessAnalyst
     else {
       throw PersistenceError.corruptData(
-        "A Business Analyst must prepare the final retrospective actions."
+        "A business analyst must prepare the final retrospective actions."
       )
     }
 
@@ -4524,12 +4751,14 @@ public actor SQLiteStore {
     let allowedSourceIDs = Set(
       try fetchRetrospectiveSynthesisSourceNotes(synthesisID: id).map(\.id)
     )
-    guard actions.allSatisfy({
-      !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !$0.expectedEffect.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        && !$0.sourceNoteIDs.isEmpty
-        && Set($0.sourceNoteIDs).isSubset(of: allowedSourceIDs)
-    }) else {
+    guard
+      actions.allSatisfy({
+        !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          && !$0.expectedEffect.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          && !$0.sourceNoteIDs.isEmpty
+          && Set($0.sourceNoteIDs).isSubset(of: allowedSourceIDs)
+      })
+    else {
       throw PersistenceError.corruptData(
         "Every final action needs a description, expected effect, and frozen sprint evidence."
       )
@@ -4612,7 +4841,7 @@ public actor SQLiteStore {
       _ = try insertEvent(
         productID: synthesis.productID,
         kind: "retrospective.synthesis_skipped",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: synthesis.sprintID.uuidString
       )
     }
@@ -4853,7 +5082,7 @@ public actor SQLiteStore {
           title: note.body,
           type: .task,
           body:
-            "Suggested by the Sprint retrospective. Refine this improvement before planning it.",
+            "Suggested by the sprint retrospective. Refine this improvement before planning it.",
           acceptanceCriteria: [],
           priority: .normal
         )
@@ -4862,7 +5091,7 @@ public actor SQLiteStore {
             productID: note.productID,
             workItemID: createdItem.id,
             kind: "work_item.created_from_retrospective",
-            actor: "Product Owner",
+            actor: "Product owner",
             detail: note.id.uuidString
           )
         }
@@ -4955,8 +5184,8 @@ public actor SQLiteStore {
         try insertKnowledgeRevision(
           pageID: page.id,
           bodyMarkdown: page.bodyMarkdown,
-          authorName: "Product Owner",
-          changeSummary: "Adopted a Sprint retrospective practice",
+          authorName: "Product owner",
+          changeSummary: "Adopted a sprint retrospective practice",
           createdAt: now
         )
       }
@@ -4976,7 +5205,7 @@ public actor SQLiteStore {
         productID: note.productID,
         workItemID: note.workItemID,
         kind: "retrospective.action_promoted_to_practice",
-        actor: "Product Owner",
+        actor: "Product owner",
         detail: practice
       )
     }
@@ -5031,8 +5260,732 @@ public actor SQLiteStore {
     )
   }
 
+  public func createProductRepository(_ repository: ProductRepository) throws {
+    let protectedPathsJSON = try encodeJSON(repository.protectedKnowledgePaths)
+    try withStatement(
+      """
+      INSERT INTO product_repositories (
+          product_id, origin_url, source_default_branch, imported_sha,
+          protected_knowledge_paths_json, blocks_knowledge_export, imported_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(repository.productID.uuidString, to: 1, in: statement)
+      try bind(repository.originURL.absoluteString, to: 2, in: statement)
+      try bind(repository.sourceDefaultBranch, to: 3, in: statement)
+      try bind(repository.importedSHA, to: 4, in: statement)
+      try bind(protectedPathsJSON, to: 5, in: statement)
+      try bind(repository.blocksKnowledgeExport ? Int64(1) : Int64(0), to: 6, in: statement)
+      try bind(repository.importedAt.timeIntervalSince1970, to: 7, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  public func fetchProductRepository(productID: UUID) throws -> ProductRepository? {
+    try withStatement(
+      """
+      SELECT product_id, origin_url, source_default_branch, imported_sha,
+             protected_knowledge_paths_json, blocks_knowledge_export, imported_at
+      FROM product_repositories
+      WHERE product_id = ?;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      guard
+        let storedProductID = UUID(uuidString: try text(statement, column: 0)),
+        let originURL = URL(string: try text(statement, column: 1))
+      else {
+        throw PersistenceError.corruptData("Invalid imported repository metadata")
+      }
+      return ProductRepository(
+        productID: storedProductID,
+        originURL: originURL,
+        sourceDefaultBranch: try text(statement, column: 2),
+        importedSHA: try text(statement, column: 3),
+        protectedKnowledgePaths: try decodeJSON(
+          [ProtectedRepositoryPath].self,
+          from: try text(statement, column: 4)
+        ),
+        blocksKnowledgeExport: sqlite3_column_int64(statement, 5) != 0,
+        importedAt: date(statement, column: 6)
+      )
+    }
+  }
+
+  public func createRepositoryKnowledgeRun(
+    _ run: RepositoryKnowledgeRun
+  ) throws {
+    try withStatement(
+      """
+      INSERT INTO repository_knowledge_runs (
+          id, product_id, attempt, purpose, analyzed_sha, analyzer_profile_id,
+          reviewer_profile_id, analyzer_thread_id, analyzer_turn_id,
+          reviewer_thread_id, reviewer_turn_id, status, analysis_summary,
+          review_summary, error_message, knowledge_export_paths_json,
+          knowledge_commit_sha, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bindRepositoryKnowledgeRun(run, to: statement)
+      try stepDone(statement)
+    }
+  }
+
+  public func fetchRepositoryKnowledgeRuns(
+    productID: UUID
+  ) throws -> [RepositoryKnowledgeRun] {
+    try withStatement(
+      """
+      SELECT id, product_id, attempt, purpose, analyzed_sha, analyzer_profile_id,
+             reviewer_profile_id, analyzer_thread_id, analyzer_turn_id,
+             reviewer_thread_id, reviewer_turn_id, status, analysis_summary,
+             review_summary, error_message, knowledge_export_paths_json,
+             knowledge_commit_sha, created_at, updated_at
+      FROM repository_knowledge_runs
+      WHERE product_id = ?
+      ORDER BY attempt DESC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var runs: [RepositoryKnowledgeRun] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        runs.append(try decodeRepositoryKnowledgeRun(statement))
+      }
+      return runs
+    }
+  }
+
+  public func fetchLatestRepositoryKnowledgeRun(
+    productID: UUID
+  ) throws -> RepositoryKnowledgeRun? {
+    try fetchRepositoryKnowledgeRuns(productID: productID).first
+  }
+
+  public func fetchRepositoryKnowledgeRun(id: UUID) throws -> RepositoryKnowledgeRun {
+    try withStatement(
+      """
+      SELECT id, product_id, attempt, purpose, analyzed_sha, analyzer_profile_id,
+             reviewer_profile_id, analyzer_thread_id, analyzer_turn_id,
+             reviewer_thread_id, reviewer_turn_id, status, analysis_summary,
+             review_summary, error_message, knowledge_export_paths_json,
+             knowledge_commit_sha, created_at, updated_at
+      FROM repository_knowledge_runs
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("repository knowledge run \(id)")
+      }
+      return try decodeRepositoryKnowledgeRun(statement)
+    }
+  }
+
+  @discardableResult
+  public func updateRepositoryKnowledgeRun(
+    id: UUID,
+    status: RepositoryKnowledgeRunStatus,
+    analyzerThreadID: String? = nil,
+    analyzerTurnID: String? = nil,
+    reviewerThreadID: String? = nil,
+    reviewerTurnID: String? = nil,
+    analysisSummary: String? = nil,
+    reviewSummary: String? = nil,
+    errorMessage: String? = nil
+  ) throws -> RepositoryKnowledgeRun {
+    let now = Date()
+    try withStatement(
+      """
+      UPDATE repository_knowledge_runs
+      SET status = ?,
+          analyzer_thread_id = COALESCE(?, analyzer_thread_id),
+          analyzer_turn_id = COALESCE(?, analyzer_turn_id),
+          reviewer_thread_id = COALESCE(?, reviewer_thread_id),
+          reviewer_turn_id = COALESCE(?, reviewer_turn_id),
+          analysis_summary = COALESCE(?, analysis_summary),
+          review_summary = COALESCE(?, review_summary),
+          error_message = ?,
+          updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(status.rawValue, to: 1, in: statement)
+      try bindOptionalString(analyzerThreadID, to: 2, in: statement)
+      try bindOptionalString(analyzerTurnID, to: 3, in: statement)
+      try bindOptionalString(reviewerThreadID, to: 4, in: statement)
+      try bindOptionalString(reviewerTurnID, to: 5, in: statement)
+      try bindOptionalString(analysisSummary, to: 6, in: statement)
+      try bindOptionalString(reviewSummary, to: 7, in: statement)
+      try bindOptionalString(errorMessage, to: 8, in: statement)
+      try bind(now.timeIntervalSince1970, to: 9, in: statement)
+      try bind(id.uuidString, to: 10, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchRepositoryKnowledgeRun(id: id)
+  }
+
+  public func recordRepositoryKnowledgeAnalysis(
+    runID: UUID,
+    summary: String,
+    drafts: [RepositoryKnowledgeDraft],
+    launchProposal: RepositoryLaunchProposal? = nil,
+    analyzerThreadID: String,
+    analyzerTurnID: String
+  ) throws -> RepositoryKnowledgeRun {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .analyzing || run.status == .pendingAnalysis else {
+      throw PersistenceError.corruptData("Repository analysis is not active")
+    }
+    guard run.purpose == .knowledge || drafts.isEmpty else {
+      throw PersistenceError.corruptData(
+        "An imported app launch check cannot change product knowledge"
+      )
+    }
+    guard drafts.allSatisfy({ $0.runID == runID && $0.status == .proposed }) else {
+      throw PersistenceError.corruptData("Repository knowledge drafts do not match the run")
+    }
+    guard
+      launchProposal == nil
+        || (launchProposal?.runID == runID && launchProposal?.status == .proposed)
+    else {
+      throw PersistenceError.corruptData("Imported app launch proposal does not match the run")
+    }
+    let now = Date()
+    try transaction {
+      for draft in drafts {
+        try insertRepositoryKnowledgeDraft(draft)
+      }
+      if let launchProposal {
+        try insertRepositoryLaunchProposal(launchProposal)
+      }
+      try withStatement(
+        """
+        UPDATE repository_knowledge_runs
+        SET status = ?, analysis_summary = ?, analyzer_thread_id = ?,
+            analyzer_turn_id = ?, error_message = NULL, updated_at = ?
+        WHERE id = ?;
+        """
+      ) { statement in
+        try bind(
+          drafts.isEmpty && launchProposal == nil
+            ? RepositoryKnowledgeRunStatus.completed.rawValue
+            : RepositoryKnowledgeRunStatus.reviewing.rawValue,
+          to: 1,
+          in: statement
+        )
+        try bind(summary, to: 2, in: statement)
+        try bind(analyzerThreadID, to: 3, in: statement)
+        try bind(analyzerTurnID, to: 4, in: statement)
+        try bind(now.timeIntervalSince1970, to: 5, in: statement)
+        try bind(runID.uuidString, to: 6, in: statement)
+        try stepDone(statement)
+      }
+    }
+    return try fetchRepositoryKnowledgeRun(id: runID)
+  }
+
+  public func fetchRepositoryKnowledgeDrafts(
+    runID: UUID
+  ) throws -> [RepositoryKnowledgeDraft] {
+    try withStatement(
+      """
+      SELECT id, run_id, operation, target_page_id, parent_page_id,
+             base_page_title, base_page_body_markdown, base_page_updated_at,
+             title, proposed_body_markdown, rationale, evidence_json, status,
+             review_explanation, created_at, updated_at
+      FROM repository_knowledge_drafts
+      WHERE run_id = ?
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      try bind(runID.uuidString, to: 1, in: statement)
+      var drafts: [RepositoryKnowledgeDraft] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        drafts.append(try decodeRepositoryKnowledgeDraft(statement))
+      }
+      return drafts
+    }
+  }
+
+  public func fetchRepositoryLaunchProposal(
+    runID: UUID
+  ) throws -> RepositoryLaunchProposal? {
+    try withStatement(
+      """
+      SELECT id, run_id, specification_json, evidence_json, status,
+             review_explanation, created_at, updated_at
+      FROM repository_launch_proposals
+      WHERE run_id = ?;
+      """
+    ) { statement in
+      try bind(runID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeRepositoryLaunchProposal(statement)
+    }
+  }
+
+  public func fetchImportedAppLaunch(productID: UUID) throws -> ImportedAppLaunch? {
+    try withStatement(
+      """
+      SELECT proposal.id, proposal.run_id, run.product_id, run.analyzed_sha,
+             proposal.specification_json, proposal.evidence_json, proposal.updated_at
+      FROM repository_launch_proposals AS proposal
+      JOIN repository_knowledge_runs AS run ON run.id = proposal.run_id
+      JOIN product_repositories AS repository ON repository.product_id = run.product_id
+      WHERE run.product_id = ?
+        AND run.status = 'completed'
+        AND proposal.status = 'published'
+        AND run.analyzed_sha = repository.imported_sha
+      ORDER BY proposal.updated_at DESC, proposal.id DESC
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      guard
+        let id = UUID(uuidString: try text(statement, column: 0)),
+        let runID = UUID(uuidString: try text(statement, column: 1)),
+        let storedProductID = UUID(uuidString: try text(statement, column: 2))
+      else {
+        throw PersistenceError.corruptData("Invalid imported app launch")
+      }
+      return ImportedAppLaunch(
+        id: id,
+        runID: runID,
+        productID: storedProductID,
+        revisionSHA: try text(statement, column: 3),
+        specification: try decodeJSON(
+          DemoLaunchSpecification.self,
+          from: try text(statement, column: 4)
+        ),
+        evidence: try decodeJSON(
+          [RepositoryEvidence].self,
+          from: try text(statement, column: 5)
+        ),
+        publishedAt: date(statement, column: 6)
+      )
+    }
+  }
+
+  public func recordRepositoryKnowledgeReview(
+    runID: UUID,
+    summary: String,
+    decisions: [RepositoryKnowledgeReviewDecision],
+    launchDecision: RepositoryLaunchReviewDecision? = nil,
+    reviewerThreadID: String,
+    reviewerTurnID: String
+  ) throws -> RepositoryKnowledgeRun {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .reviewing else {
+      throw PersistenceError.corruptData("Repository knowledge is not awaiting review")
+    }
+    let drafts = try fetchRepositoryKnowledgeDrafts(runID: runID)
+    for draft in drafts {
+      switch draft.operation {
+      case .update:
+        guard
+          let targetID = draft.targetPageID,
+          let target = try? fetchKnowledgePage(id: targetID),
+          target.title == draft.basePageTitle,
+          target.bodyMarkdown == draft.basePageBodyMarkdown,
+          target.updatedAt == draft.basePageUpdatedAt
+        else {
+          throw PersistenceError.corruptData(
+            "Repository knowledge changed after analysis and must be analyzed again"
+          )
+        }
+      case .create:
+        guard
+          let parentID = draft.parentPageID,
+          let parent = try? fetchKnowledgePage(id: parentID),
+          parent.productID == run.productID,
+          parent.kind == .section
+        else {
+          throw PersistenceError.corruptData(
+            "Repository knowledge creation parent changed after analysis"
+          )
+        }
+      }
+    }
+    let draftIDs = Set(drafts.map(\.id))
+    let decisionIDs = Set(decisions.map(\.draftID))
+    guard decisions.count == draftIDs.count, decisionIDs == draftIDs else {
+      throw PersistenceError.corruptData(
+        "The tech lead must return exactly one decision for every repository knowledge draft"
+      )
+    }
+    guard
+      decisions.allSatisfy({
+        !$0.explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      })
+    else {
+      throw PersistenceError.corruptData("Every repository knowledge decision needs an explanation")
+    }
+    let launchProposal = try fetchRepositoryLaunchProposal(runID: runID)
+    guard
+      (launchProposal == nil && launchDecision == nil)
+        || (launchProposal?.id == launchDecision?.proposalID
+          && !(launchDecision?.explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true))
+    else {
+      throw PersistenceError.corruptData(
+        "The tech lead must decide the exact imported app launch proposal"
+      )
+    }
+    let now = Date()
+    try transaction {
+      for decision in decisions {
+        try withStatement(
+          """
+          UPDATE repository_knowledge_drafts
+          SET status = ?, review_explanation = ?, updated_at = ?
+          WHERE id = ? AND run_id = ? AND status = 'proposed';
+          """
+        ) { statement in
+          try bind(
+            decision.approved
+              ? RepositoryKnowledgeDraftStatus.approved.rawValue
+              : RepositoryKnowledgeDraftStatus.rejected.rawValue,
+            to: 1,
+            in: statement
+          )
+          try bind(decision.explanation, to: 2, in: statement)
+          try bind(now.timeIntervalSince1970, to: 3, in: statement)
+          try bind(decision.draftID.uuidString, to: 4, in: statement)
+          try bind(runID.uuidString, to: 5, in: statement)
+          try stepDone(statement)
+        }
+      }
+      if let launchDecision {
+        try withStatement(
+          """
+          UPDATE repository_launch_proposals
+          SET status = ?, review_explanation = ?, updated_at = ?
+          WHERE id = ? AND run_id = ? AND status = 'proposed';
+          """
+        ) { statement in
+          try bind(
+            launchDecision.approved
+              ? RepositoryLaunchProposalStatus.approved.rawValue
+              : RepositoryLaunchProposalStatus.rejected.rawValue,
+            to: 1,
+            in: statement
+          )
+          try bind(launchDecision.explanation, to: 2, in: statement)
+          try bind(now.timeIntervalSince1970, to: 3, in: statement)
+          try bind(launchDecision.proposalID.uuidString, to: 4, in: statement)
+          try bind(runID.uuidString, to: 5, in: statement)
+          try stepDone(statement)
+        }
+      }
+      try withStatement(
+        """
+        UPDATE repository_knowledge_runs
+        SET status = 'publishing', review_summary = ?, reviewer_thread_id = ?,
+            reviewer_turn_id = ?, error_message = NULL, updated_at = ?
+        WHERE id = ?;
+        """
+      ) { statement in
+        try bind(summary, to: 1, in: statement)
+        try bind(reviewerThreadID, to: 2, in: statement)
+        try bind(reviewerTurnID, to: 3, in: statement)
+        try bind(now.timeIntervalSince1970, to: 4, in: statement)
+        try bind(runID.uuidString, to: 5, in: statement)
+        try stepDone(statement)
+      }
+    }
+    return try fetchRepositoryKnowledgeRun(id: runID)
+  }
+
+  public func projectRepositoryKnowledgePublication(
+    runID: UUID
+  ) throws -> RepositoryKnowledgePublicationProjection {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .publishing else {
+      throw PersistenceError.corruptData("Repository knowledge is not ready to publish")
+    }
+    var pages = try fetchKnowledgePages(productID: run.productID)
+    let drafts = try fetchRepositoryKnowledgeDrafts(runID: runID)
+      .filter { $0.status == .approved || $0.status == .published }
+    var changedPageIDs: [UUID] = []
+    for draft in drafts {
+      switch draft.operation {
+      case .update:
+        guard
+          let targetID = draft.targetPageID,
+          let index = pages.firstIndex(where: { $0.id == targetID }),
+          pages[index].title == draft.basePageTitle,
+          pages[index].bodyMarkdown == draft.basePageBodyMarkdown,
+          pages[index].updatedAt == draft.basePageUpdatedAt
+        else {
+          throw PersistenceError.corruptData(
+            "Repository knowledge changed after analysis and must be analyzed again"
+          )
+        }
+        pages[index].title = draft.title
+        pages[index].bodyMarkdown = KnowledgeMarkdown.normalizedBody(
+          draft.proposedBodyMarkdown
+        )
+        pages[index].sourceRepositoryKnowledgeRunID = run.id
+        pages[index].updatedAt = draft.updatedAt
+        changedPageIDs.append(targetID)
+      case .create:
+        guard
+          let parentID = draft.parentPageID,
+          let parent = pages.first(where: { $0.id == parentID }),
+          parent.productID == run.productID,
+          parent.kind == .section
+        else {
+          throw PersistenceError.corruptData("Repository knowledge creation parent is unavailable")
+        }
+        let siblingSlugs = Set(pages.filter { $0.parentID == parentID }.map(\.slug))
+        let slug = uniqueKnowledgeSlug(title: draft.title, existing: siblingSlugs)
+        let sortOrder =
+          (pages.filter { $0.parentID == parentID }.map(\.sortOrder).max() ?? -1) + 1
+        pages.append(
+          KnowledgePage(
+            id: draft.id,
+            productID: run.productID,
+            parentID: parentID,
+            title: draft.title,
+            slug: slug,
+            bodyMarkdown: KnowledgeMarkdown.normalizedBody(draft.proposedBodyMarkdown),
+            verificationStatus: .verified,
+            sortOrder: sortOrder,
+            sourceRepositoryKnowledgeRunID: run.id,
+            createdAt: draft.updatedAt,
+            updatedAt: draft.updatedAt
+          )
+        )
+        changedPageIDs.append(draft.id)
+      }
+    }
+    pages.sort {
+      if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+      return $0.id.uuidString < $1.id.uuidString
+    }
+    return RepositoryKnowledgePublicationProjection(
+      pages: pages,
+      changedPageIDs: changedPageIDs.sorted { $0.uuidString < $1.uuidString }
+    )
+  }
+
+  @discardableResult
+  public func recordRepositoryKnowledgeExport(
+    runID: UUID,
+    paths: [String]
+  ) throws -> RepositoryKnowledgeRun {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .publishing else {
+      throw PersistenceError.corruptData("Repository knowledge is not ready to publish")
+    }
+    let sortedPaths = Array(Set(paths)).sorted()
+    try withStatement(
+      """
+      UPDATE repository_knowledge_runs
+      SET knowledge_export_paths_json = ?, updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(try encodeStringArray(sortedPaths), to: 1, in: statement)
+      try bind(Date().timeIntervalSince1970, to: 2, in: statement)
+      try bind(runID.uuidString, to: 3, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchRepositoryKnowledgeRun(id: runID)
+  }
+
+  @discardableResult
+  public func recordRepositoryKnowledgeCommitSHA(
+    runID: UUID,
+    sha: String
+  ) throws -> RepositoryKnowledgeRun {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .publishing else {
+      throw PersistenceError.corruptData("Repository knowledge is not ready to publish")
+    }
+    try withStatement(
+      """
+      UPDATE repository_knowledge_runs
+      SET knowledge_commit_sha = ?, updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(sha, to: 1, in: statement)
+      try bind(Date().timeIntervalSince1970, to: 2, in: statement)
+      try bind(runID.uuidString, to: 3, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchRepositoryKnowledgeRun(id: runID)
+  }
+
+  @discardableResult
+  public func finalizeRepositoryKnowledgePublication(
+    runID: UUID
+  ) throws -> RepositoryKnowledgeRun {
+    let run = try fetchRepositoryKnowledgeRun(id: runID)
+    guard run.status == .publishing else {
+      throw PersistenceError.corruptData("Repository knowledge is not ready to publish")
+    }
+    let projection = try projectRepositoryKnowledgePublication(runID: runID)
+    let drafts = try fetchRepositoryKnowledgeDrafts(runID: runID)
+      .filter { $0.status == .approved }
+    if !run.knowledgeExportPaths.isEmpty, run.knowledgeCommitSHA == nil {
+      throw PersistenceError.corruptData(
+        "Repository knowledge cannot become verified before its Git commit is proven"
+      )
+    }
+    let approvedLaunchProposal = try fetchRepositoryLaunchProposal(runID: runID)
+      .flatMap { $0.status == .approved ? $0 : nil }
+    if approvedLaunchProposal != nil {
+      guard
+        let repository = try fetchProductRepository(productID: run.productID),
+        repository.importedSHA == run.analyzedSHA
+      else {
+        throw PersistenceError.corruptData(
+          "An imported app baseline must remain pinned to the imported revision"
+        )
+      }
+    }
+    let now = Date()
+    try transaction {
+      for draft in drafts {
+        guard
+          let page = projection.pages.first(where: { $0.id == (draft.targetPageID ?? draft.id) })
+        else {
+          throw PersistenceError.corruptData("Projected repository knowledge page is missing")
+        }
+        switch draft.operation {
+        case .update:
+          try withStatement(
+            """
+            UPDATE knowledge_pages
+            SET title = ?, body_markdown = ?, verification_status = 'verified',
+                source_repository_knowledge_run_id = ?, updated_at = ?
+            WHERE id = ?;
+            """
+          ) { statement in
+            try bind(page.title, to: 1, in: statement)
+            try bind(page.bodyMarkdown, to: 2, in: statement)
+            try bind(runID.uuidString, to: 3, in: statement)
+            try bind(now.timeIntervalSince1970, to: 4, in: statement)
+            try bind(page.id.uuidString, to: 5, in: statement)
+            try stepDone(statement)
+          }
+          try insertKnowledgeRevision(
+            pageID: page.id,
+            bodyMarkdown: page.bodyMarkdown,
+            authorName: "Spedito tech lead",
+            changeSummary: draft.rationale,
+            createdAt: now
+          )
+        case .create:
+          var publishedPage = page
+          publishedPage.updatedAt = now
+          try insertKnowledgePage(
+            publishedPage,
+            authorName: "Spedito tech lead",
+            changeSummary: draft.rationale
+          )
+        }
+        try withStatement(
+          """
+          UPDATE repository_knowledge_drafts
+          SET status = 'published', updated_at = ?
+          WHERE id = ?;
+          """
+        ) { statement in
+          try bind(now.timeIntervalSince1970, to: 1, in: statement)
+          try bind(draft.id.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+      if let approvedLaunchProposal {
+        try withStatement(
+          """
+          UPDATE repository_launch_proposals
+          SET status = 'published', updated_at = ?
+          WHERE id = ? AND status = 'approved';
+          """
+        ) { statement in
+          try bind(now.timeIntervalSince1970, to: 1, in: statement)
+          try bind(approvedLaunchProposal.id.uuidString, to: 2, in: statement)
+          try stepDone(statement)
+        }
+      }
+      try withStatement(
+        """
+        UPDATE repository_knowledge_runs
+        SET status = 'completed', error_message = NULL, updated_at = ?
+        WHERE id = ?;
+        """
+      ) { statement in
+        try bind(now.timeIntervalSince1970, to: 1, in: statement)
+        try bind(runID.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: run.productID,
+        kind: "repository.knowledge.published",
+        actor: "tech_lead",
+        detail: "\(drafts.count) verified repository knowledge page(s)"
+      )
+    }
+    return try fetchRepositoryKnowledgeRun(id: runID)
+  }
+
+  public func createRepositoryKnowledgeRetry(
+    productID: UUID,
+    analyzedSHA: String,
+    purpose: RepositoryKnowledgeRunPurpose = .knowledge,
+    analyzerProfileID: UUID,
+    reviewerProfileID: UUID
+  ) throws -> RepositoryKnowledgeRun {
+    let runs = try fetchRepositoryKnowledgeRuns(productID: productID)
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: (runs.map(\.attempt).max() ?? 0) + 1,
+      purpose: purpose,
+      analyzedSHA: analyzedSHA,
+      analyzerProfileID: analyzerProfileID,
+      reviewerProfileID: reviewerProfileID
+    )
+    try transaction {
+      try withStatement(
+        """
+        UPDATE repository_knowledge_drafts
+        SET status = 'superseded', updated_at = ?
+        WHERE run_id IN (
+          SELECT id FROM repository_knowledge_runs WHERE product_id = ?
+        ) AND status IN ('proposed', 'approved');
+        """
+      ) { statement in
+        try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+        try bind(productID.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      try withStatement(
+        """
+        INSERT INTO repository_knowledge_runs (
+            id, product_id, attempt, purpose, analyzed_sha, analyzer_profile_id,
+            reviewer_profile_id, analyzer_thread_id, analyzer_turn_id,
+            reviewer_thread_id, reviewer_turn_id, status, analysis_summary,
+            review_summary, error_message, knowledge_export_paths_json,
+            knowledge_commit_sha, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+      ) { statement in
+        try bindRepositoryKnowledgeRun(run, to: statement)
+        try stepDone(statement)
+      }
+    }
+    return run
+  }
+
   @discardableResult
   public func seedKnowledgeBase(productID: UUID) throws -> [KnowledgePage] {
+    try ensureKnowledgeMutationAllowed(productID: productID)
     let existing = try fetchKnowledgePages(productID: productID)
     if !existing.isEmpty {
       var pages = existing
@@ -5068,7 +6021,7 @@ public actor SQLiteStore {
             "Ways of working",
             "ways-of-working",
             """
-            Shared delivery practices adopted by the Product Owner live here. Every team member receives this page as part of their working context.
+            Shared delivery practices adopted by the product owner live here. Every team member receives this page as part of their working context.
 
             ## Adopted practices
             """,
@@ -5082,8 +6035,8 @@ public actor SQLiteStore {
             title: child.title,
             slug: child.slug,
             bodyMarkdown: child.body,
-            sortOrder:
-              (pages.filter { $0.parentID == operations.id }.map(\.sortOrder).max() ?? -1) + 1
+            sortOrder: (pages.filter { $0.parentID == operations.id }.map(\.sortOrder).max() ?? -1)
+              + 1
           )
           try insertKnowledgePage(
             page,
@@ -5154,10 +6107,10 @@ public actor SQLiteStore {
           slug: child.2,
           bodyMarkdown: child.2 == "ways-of-working"
             ? """
-              Shared delivery practices adopted by the Product Owner live here. Every team member receives this page as part of their working context.
+            Shared delivery practices adopted by the product owner live here. Every team member receives this page as part of their working context.
 
-              ## Adopted practices
-              """
+            ## Adopted practices
+            """
             : "",
           sortOrder: order,
           createdAt: now,
@@ -5173,7 +6126,8 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, parent_id, title, slug, body_markdown, kind,
-             verification_status, sort_order, source_work_item_id, created_at, updated_at
+             verification_status, sort_order, source_work_item_id,
+             source_repository_knowledge_run_id, created_at, updated_at
       FROM knowledge_pages
       WHERE product_id = ?
       ORDER BY sort_order ASC, title COLLATE NOCASE ASC;
@@ -5325,6 +6279,7 @@ public actor SQLiteStore {
     parentID: UUID?,
     title: String
   ) throws -> KnowledgePage {
+    try ensureKnowledgeMutationAllowed(productID: productID)
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedTitle.isEmpty else {
       throw PersistenceError.corruptData("A knowledge page needs a title")
@@ -5333,11 +6288,12 @@ public actor SQLiteStore {
       let parent = try fetchKnowledgePage(id: parentID)
       guard parent.productID == productID else {
         throw PersistenceError.corruptData(
-          "A Product knowledge page and its parent must belong to the same product"
+          "A product knowledge page and its parent must belong to the same product"
         )
       }
     }
-    let baseSlug = trimmedTitle
+    let baseSlug =
+      trimmedTitle
       .lowercased()
       .split { !$0.isLetter && !$0.isNumber }
       .map(String.init)
@@ -5385,6 +6341,7 @@ public actor SQLiteStore {
     changeSummary: String
   ) throws -> KnowledgePage {
     var page = try fetchKnowledgePage(id: id)
+    try ensureKnowledgeMutationAllowed(productID: page.productID)
     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedTitle.isEmpty else {
       throw PersistenceError.corruptData("A knowledge page needs a title")
@@ -5464,25 +6421,27 @@ public actor SQLiteStore {
       updated.bodyMarkdown = KnowledgeMarkdown.normalizedBody(bodyMarkdown)
       updated.verificationStatus = .proposed
       updated.updatedAt = Date()
-      try withStatement(
-        """
-        UPDATE knowledge_pages
-        SET body_markdown = ?, verification_status = ?, updated_at = ?
-        WHERE id = ?;
-        """
-      ) { statement in
-        try bind(updated.bodyMarkdown, to: 1, in: statement)
-        try bind(updated.verificationStatus.rawValue, to: 2, in: statement)
-        try bind(updated.updatedAt.timeIntervalSince1970, to: 3, in: statement)
-        try bind(updated.id.uuidString, to: 4, in: statement)
-        try stepDone(statement)
+      try transaction {
+        try withStatement(
+          """
+          UPDATE knowledge_pages
+          SET body_markdown = ?, verification_status = ?, updated_at = ?
+          WHERE id = ?;
+          """
+        ) { statement in
+          try bind(updated.bodyMarkdown, to: 1, in: statement)
+          try bind(updated.verificationStatus.rawValue, to: 2, in: statement)
+          try bind(updated.updatedAt.timeIntervalSince1970, to: 3, in: statement)
+          try bind(updated.id.uuidString, to: 4, in: statement)
+          try stepDone(statement)
+        }
+        try insertKnowledgeRevision(
+          pageID: updated.id,
+          bodyMarkdown: updated.bodyMarkdown,
+          authorName: authorName,
+          changeSummary: "Updated delivery note"
+        )
       }
-      try insertKnowledgeRevision(
-        pageID: updated.id,
-        bodyMarkdown: updated.bodyMarkdown,
-        authorName: authorName,
-        changeSummary: "Updated delivery note"
-      )
       return updated
     }
 
@@ -5502,37 +6461,43 @@ public actor SQLiteStore {
   }
 
   public func verifyDeliveryNote(workItemID: UUID, authorName: String) throws {
-    guard let page = try withStatement(
-      """
-      SELECT id, product_id, parent_id, title, slug, body_markdown, kind,
-             verification_status, sort_order, source_work_item_id, created_at, updated_at
-      FROM knowledge_pages
-      WHERE source_work_item_id = ? AND kind = 'delivery_note'
-      LIMIT 1;
-      """
-    , operation: { statement -> KnowledgePage? in
-      try bind(workItemID.uuidString, to: 1, in: statement)
-      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-      return try decodeKnowledgePage(statement)
-    }) else { return }
+    guard
+      let page = try withStatement(
+        """
+        SELECT id, product_id, parent_id, title, slug, body_markdown, kind,
+               verification_status, sort_order, source_work_item_id,
+               source_repository_knowledge_run_id, created_at, updated_at
+        FROM knowledge_pages
+        WHERE source_work_item_id = ? AND kind = 'delivery_note'
+        LIMIT 1;
+        """,
+        operation: { statement -> KnowledgePage? in
+          try bind(workItemID.uuidString, to: 1, in: statement)
+          guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+          return try decodeKnowledgePage(statement)
+        })
+    else { return }
+    try ensureKnowledgeMutationAllowed(productID: page.productID)
 
     let now = Date()
-    try withStatement(
-      """
-      UPDATE knowledge_pages SET verification_status = 'verified', updated_at = ? WHERE id = ?;
-      """
-    ) { statement in
-      try bind(now.timeIntervalSince1970, to: 1, in: statement)
-      try bind(page.id.uuidString, to: 2, in: statement)
-      try stepDone(statement)
+    try transaction {
+      try withStatement(
+        """
+        UPDATE knowledge_pages SET verification_status = 'verified', updated_at = ? WHERE id = ?;
+        """
+      ) { statement in
+        try bind(now.timeIntervalSince1970, to: 1, in: statement)
+        try bind(page.id.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      try insertKnowledgeRevision(
+        pageID: page.id,
+        bodyMarkdown: page.bodyMarkdown,
+        authorName: authorName,
+        changeSummary: "Verified during tech lead review",
+        createdAt: now
+      )
     }
-    try insertKnowledgeRevision(
-      pageID: page.id,
-      bodyMarkdown: page.bodyMarkdown,
-      authorName: authorName,
-      changeSummary: "Verified during Tech Lead review",
-      createdAt: now
-    )
   }
 
   public func importAllRows(from legacyDatabaseURL: URL) throws {
@@ -5602,7 +6567,7 @@ public actor SQLiteStore {
     }
   }
 
-  private var requiredDatabase: OpaquePointer {
+  var requiredDatabase: OpaquePointer {
     get throws {
       guard let database else {
         throw PersistenceError.sqlite(
@@ -5625,16 +6590,58 @@ public actor SQLiteStore {
       return
     }
 
-    let version = try integerPragma("user_version", database: database)
+    var version = try integerPragma("user_version", database: database)
     guard version != ProductDatabaseSchema.version else { return }
     if try tableExists("schema_migrations", schema: "main", database: database) {
       throw PersistenceError.corruptData(
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    throw PersistenceError.corruptData(
-      "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
-    )
+    guard (1..<ProductDatabaseSchema.version).contains(version) else {
+      throw PersistenceError.corruptData(
+        "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+      )
+    }
+
+    try execute("BEGIN IMMEDIATE;", database: database)
+    do {
+      while version < ProductDatabaseSchema.version {
+        let migration: String
+        switch version {
+        case 1:
+          migration = ProductDatabaseSchema.migrationV1ToV2
+        case 2:
+          migration = ProductDatabaseSchema.migrationV2ToV3
+        case 3:
+          migration = ProductDatabaseSchema.migrationV3ToV4
+        case 4:
+          migration = ProductDatabaseSchema.migrationV4ToV5
+        case 5:
+          migration = ProductDatabaseSchema.migrationV5ToV6
+        case 6:
+          migration = ProductDatabaseSchema.migrationV6ToV7
+        case 7:
+          migration = ProductDatabaseSchema.migrationV7ToV8
+        case 8:
+          migration = ProductDatabaseSchema.migrationV8ToV9
+        default:
+          throw PersistenceError.corruptData(
+            "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+          )
+        }
+        try execute(migration, database: database)
+        version = try integerPragma("user_version", database: database)
+      }
+      guard version == ProductDatabaseSchema.version else {
+        throw PersistenceError.corruptData(
+          "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+        )
+      }
+      try execute("COMMIT;", database: database)
+    } catch {
+      try? execute("ROLLBACK;", database: database)
+      throw error
+    }
   }
 
   private static func integerPragma(
@@ -5777,7 +6784,7 @@ public actor SQLiteStore {
         rawValue: try text(statement, column: 4)
       )
     else {
-      throw PersistenceError.corruptData("Invalid Conversation thread")
+      throw PersistenceError.corruptData("Invalid conversation thread")
     }
     return ProductConversationThread(
       id: id,
@@ -5801,7 +6808,7 @@ public actor SQLiteStore {
         rawValue: try text(statement, column: 2)
       )
     else {
-      throw PersistenceError.corruptData("Invalid Conversation message")
+      throw PersistenceError.corruptData("Invalid conversation message")
     }
     return ProductConversationMessage(
       id: id,
@@ -5848,8 +6855,9 @@ public actor SQLiteStore {
       """
       INSERT INTO knowledge_pages (
           id, product_id, parent_id, title, slug, body_markdown, kind,
-          verification_status, sort_order, source_work_item_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          verification_status, sort_order, source_work_item_id,
+          source_repository_knowledge_run_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(page.id.uuidString, to: 1, in: statement)
@@ -5862,8 +6870,9 @@ public actor SQLiteStore {
       try bind(page.verificationStatus.rawValue, to: 8, in: statement)
       try bind(Int64(page.sortOrder), to: 9, in: statement)
       try bindOptionalUUID(page.sourceWorkItemID, to: 10, in: statement)
-      try bind(page.createdAt.timeIntervalSince1970, to: 11, in: statement)
-      try bind(page.updatedAt.timeIntervalSince1970, to: 12, in: statement)
+      try bindOptionalUUID(page.sourceRepositoryKnowledgeRunID, to: 11, in: statement)
+      try bind(page.createdAt.timeIntervalSince1970, to: 12, in: statement)
+      try bind(page.updatedAt.timeIntervalSince1970, to: 13, in: statement)
       try stepDone(statement)
     }
     try insertKnowledgeRevision(
@@ -5914,7 +6923,8 @@ public actor SQLiteStore {
     try withStatement(
       """
       SELECT id, product_id, parent_id, title, slug, body_markdown, kind,
-             verification_status, sort_order, source_work_item_id, created_at, updated_at
+             verification_status, sort_order, source_work_item_id,
+             source_repository_knowledge_run_id, created_at, updated_at
       FROM knowledge_pages WHERE id = ?;
       """
     ) { statement in
@@ -5953,7 +6963,8 @@ public actor SQLiteStore {
       let sprintItemID = UUID(uuidString: try text(statement, column: 3)),
       let workItemID = UUID(uuidString: try text(statement, column: 4)),
       let implementationRunID = UUID(uuidString: try text(statement, column: 5)),
-      let status = CandidateRevisionStatus(rawValue: try text(statement, column: 13))
+      let status = CandidateRevisionStatus(rawValue: try text(statement, column: 13)),
+      let deliveryKind = CandidateDeliveryKind(rawValue: try text(statement, column: 18))
     else {
       throw PersistenceError.corruptData("Invalid candidate revision")
     }
@@ -5965,6 +6976,7 @@ public actor SQLiteStore {
       workItemID: workItemID,
       implementationRunID: implementationRunID,
       version: Int(sqlite3_column_int64(statement, 6)),
+      deliveryKind: deliveryKind,
       branchName: try text(statement, column: 7),
       baseSHA: try text(statement, column: 8),
       headSHA: try text(statement, column: 9),
@@ -5983,22 +6995,24 @@ public actor SQLiteStore {
     guard
       let id = UUID(uuidString: try text(statement, column: 0)),
       let productID = UUID(uuidString: try text(statement, column: 1)),
-      let candidateRevisionID = UUID(uuidString: try text(statement, column: 2)),
-      let status = DemoSessionStatus(rawValue: try text(statement, column: 3))
+      let sourceKind = DemoSessionSourceKind(rawValue: try text(statement, column: 2)),
+      let launchID = UUID(uuidString: try text(statement, column: 3)),
+      let status = DemoSessionStatus(rawValue: try text(statement, column: 4))
     else {
       throw PersistenceError.corruptData("Invalid demo session")
     }
     return DemoSession(
       id: id,
       productID: productID,
-      candidateRevisionID: candidateRevisionID,
+      sourceKind: sourceKind,
+      launchID: launchID,
       status: status,
-      previewWorktreePath: try optionalText(statement, column: 4),
-      allocatedPort: optionalInt(statement, column: 5),
-      output: try optionalText(statement, column: 6),
-      errorMessage: try optionalText(statement, column: 7),
-      createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 8)),
-      updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+      previewWorktreePath: try optionalText(statement, column: 5),
+      allocatedPort: optionalInt(statement, column: 6),
+      output: try optionalText(statement, column: 7),
+      errorMessage: try optionalText(statement, column: 8),
+      createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9)),
+      updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 10))
     )
   }
 
@@ -6116,8 +7130,10 @@ public actor SQLiteStore {
       verificationStatus: status,
       sortOrder: Int(sqlite3_column_int64(statement, 8)),
       sourceWorkItemID: try optionalText(statement, column: 9).flatMap(UUID.init(uuidString:)),
-      createdAt: date(statement, column: 10),
-      updatedAt: date(statement, column: 11)
+      sourceRepositoryKnowledgeRunID:
+        try optionalText(statement, column: 10).flatMap(UUID.init(uuidString:)),
+      createdAt: date(statement, column: 11),
+      updatedAt: date(statement, column: 12)
     )
   }
 
@@ -6585,12 +7601,14 @@ public actor SQLiteStore {
         throw PersistenceError.recordNotFound("ticket suggestion \(id)")
       }
       var suggestion = try decodeTicketSuggestion(statement)
-      suggestion.dependencyIDs = try fetchSuggestionDependencies(
-        sessionID: suggestion.sessionID
-      )[suggestion.id] ?? []
-      suggestion.existingDependencyWorkItemIDs = try fetchSuggestionExistingDependencies(
-        sessionID: suggestion.sessionID
-      )[suggestion.id] ?? []
+      suggestion.dependencyIDs =
+        try fetchSuggestionDependencies(
+          sessionID: suggestion.sessionID
+        )[suggestion.id] ?? []
+      suggestion.existingDependencyWorkItemIDs =
+        try fetchSuggestionExistingDependencies(
+          sessionID: suggestion.sessionID
+        )[suggestion.id] ?? []
       return suggestion
     }
   }
@@ -6808,9 +7826,11 @@ public actor SQLiteStore {
     var ordered: [WorkItem] = []
 
     while !remaining.isEmpty {
-      guard let nextIndex = remaining.firstIndex(where: { item in
-        prerequisitesByItem[item.id, default: []].isSubset(of: placedIDs)
-      }) else {
+      guard
+        let nextIndex = remaining.firstIndex(where: { item in
+          prerequisitesByItem[item.id, default: []].isSubset(of: placedIDs)
+        })
+      else {
         throw PersistenceError.corruptData("Work item dependencies contain a cycle")
       }
       let next = remaining.remove(at: nextIndex)
@@ -7040,6 +8060,245 @@ public actor SQLiteStore {
     )
   }
 
+  private func ensureKnowledgeMutationAllowed(productID: UUID) throws {
+    let hasPublishingRun = try withStatement(
+      """
+      SELECT 1
+      FROM repository_knowledge_runs
+      WHERE product_id = ? AND status = 'publishing'
+      LIMIT 1;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      return sqlite3_step(statement) == SQLITE_ROW
+    }
+    guard !hasPublishingRun else {
+      throw PersistenceError.corruptData(
+        "Verified product knowledge is publishing and cannot be changed yet"
+      )
+    }
+  }
+
+  private func bindRepositoryKnowledgeRun(
+    _ run: RepositoryKnowledgeRun,
+    to statement: OpaquePointer
+  ) throws {
+    try bind(run.id.uuidString, to: 1, in: statement)
+    try bind(run.productID.uuidString, to: 2, in: statement)
+    try bind(Int64(run.attempt), to: 3, in: statement)
+    try bind(run.purpose.rawValue, to: 4, in: statement)
+    try bind(run.analyzedSHA, to: 5, in: statement)
+    try bind(run.analyzerProfileID.uuidString, to: 6, in: statement)
+    try bind(run.reviewerProfileID.uuidString, to: 7, in: statement)
+    try bindOptionalString(run.analyzerThreadID, to: 8, in: statement)
+    try bindOptionalString(run.analyzerTurnID, to: 9, in: statement)
+    try bindOptionalString(run.reviewerThreadID, to: 10, in: statement)
+    try bindOptionalString(run.reviewerTurnID, to: 11, in: statement)
+    try bind(run.status.rawValue, to: 12, in: statement)
+    try bindOptionalString(run.analysisSummary, to: 13, in: statement)
+    try bindOptionalString(run.reviewSummary, to: 14, in: statement)
+    try bindOptionalString(run.errorMessage, to: 15, in: statement)
+    try bind(try encodeStringArray(run.knowledgeExportPaths), to: 16, in: statement)
+    try bindOptionalString(run.knowledgeCommitSHA, to: 17, in: statement)
+    try bind(run.createdAt.timeIntervalSince1970, to: 18, in: statement)
+    try bind(run.updatedAt.timeIntervalSince1970, to: 19, in: statement)
+  }
+
+  private func decodeRepositoryKnowledgeRun(
+    _ statement: OpaquePointer
+  ) throws -> RepositoryKnowledgeRun {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let productID = UUID(uuidString: try text(statement, column: 1)),
+      let purpose = RepositoryKnowledgeRunPurpose(rawValue: try text(statement, column: 3)),
+      let analyzerProfileID = UUID(uuidString: try text(statement, column: 5)),
+      let reviewerProfileID = UUID(uuidString: try text(statement, column: 6)),
+      let status = RepositoryKnowledgeRunStatus(rawValue: try text(statement, column: 11))
+    else {
+      throw PersistenceError.corruptData("Invalid repository knowledge run")
+    }
+    return RepositoryKnowledgeRun(
+      id: id,
+      productID: productID,
+      attempt: Int(sqlite3_column_int64(statement, 2)),
+      purpose: purpose,
+      analyzedSHA: try text(statement, column: 4),
+      analyzerProfileID: analyzerProfileID,
+      reviewerProfileID: reviewerProfileID,
+      analyzerThreadID: try optionalText(statement, column: 7),
+      analyzerTurnID: try optionalText(statement, column: 8),
+      reviewerThreadID: try optionalText(statement, column: 9),
+      reviewerTurnID: try optionalText(statement, column: 10),
+      status: status,
+      analysisSummary: try optionalText(statement, column: 12),
+      reviewSummary: try optionalText(statement, column: 13),
+      errorMessage: try optionalText(statement, column: 14),
+      knowledgeExportPaths: try decodeStringArray(try text(statement, column: 15)),
+      knowledgeCommitSHA: try optionalText(statement, column: 16),
+      createdAt: date(statement, column: 17),
+      updatedAt: date(statement, column: 18)
+    )
+  }
+
+  private func insertRepositoryKnowledgeDraft(
+    _ draft: RepositoryKnowledgeDraft
+  ) throws {
+    try withStatement(
+      """
+      INSERT INTO repository_knowledge_drafts (
+          id, run_id, operation, target_page_id, parent_page_id,
+          base_page_title, base_page_body_markdown, base_page_updated_at,
+          title, proposed_body_markdown, rationale, evidence_json, status,
+          review_explanation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(draft.id.uuidString, to: 1, in: statement)
+      try bind(draft.runID.uuidString, to: 2, in: statement)
+      try bind(draft.operation.rawValue, to: 3, in: statement)
+      try bindOptionalUUID(draft.targetPageID, to: 4, in: statement)
+      try bindOptionalUUID(draft.parentPageID, to: 5, in: statement)
+      try bindOptionalString(draft.basePageTitle, to: 6, in: statement)
+      try bindOptionalString(draft.basePageBodyMarkdown, to: 7, in: statement)
+      if let basePageUpdatedAt = draft.basePageUpdatedAt {
+        try bind(basePageUpdatedAt.timeIntervalSince1970, to: 8, in: statement)
+      } else {
+        sqlite3_bind_null(statement, 8)
+      }
+      try bind(draft.title, to: 9, in: statement)
+      try bind(draft.proposedBodyMarkdown, to: 10, in: statement)
+      try bind(draft.rationale, to: 11, in: statement)
+      try bind(try encodeJSON(draft.evidence), to: 12, in: statement)
+      try bind(draft.status.rawValue, to: 13, in: statement)
+      try bindOptionalString(draft.reviewExplanation, to: 14, in: statement)
+      try bind(draft.createdAt.timeIntervalSince1970, to: 15, in: statement)
+      try bind(draft.updatedAt.timeIntervalSince1970, to: 16, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func decodeRepositoryKnowledgeDraft(
+    _ statement: OpaquePointer
+  ) throws -> RepositoryKnowledgeDraft {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let runID = UUID(uuidString: try text(statement, column: 1)),
+      let operation = RepositoryKnowledgeDraftOperation(
+        rawValue: try text(statement, column: 2)
+      ),
+      let status = RepositoryKnowledgeDraftStatus(
+        rawValue: try text(statement, column: 12)
+      )
+    else {
+      throw PersistenceError.corruptData("Invalid repository knowledge draft")
+    }
+    return RepositoryKnowledgeDraft(
+      id: id,
+      runID: runID,
+      operation: operation,
+      targetPageID: try optionalText(statement, column: 3).flatMap(UUID.init(uuidString:)),
+      parentPageID: try optionalText(statement, column: 4).flatMap(UUID.init(uuidString:)),
+      basePageTitle: try optionalText(statement, column: 5),
+      basePageBodyMarkdown: try optionalText(statement, column: 6),
+      basePageUpdatedAt: optionalDate(statement, column: 7),
+      title: try text(statement, column: 8),
+      proposedBodyMarkdown: try text(statement, column: 9),
+      rationale: try text(statement, column: 10),
+      evidence: try decodeJSON(
+        [RepositoryEvidence].self,
+        from: try text(statement, column: 11)
+      ),
+      status: status,
+      reviewExplanation: try optionalText(statement, column: 13),
+      createdAt: date(statement, column: 14),
+      updatedAt: date(statement, column: 15)
+    )
+  }
+
+  private func insertRepositoryLaunchProposal(
+    _ proposal: RepositoryLaunchProposal
+  ) throws {
+    try withStatement(
+      """
+      INSERT INTO repository_launch_proposals (
+          id, run_id, specification_json, evidence_json, status,
+          review_explanation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(proposal.id.uuidString, to: 1, in: statement)
+      try bind(proposal.runID.uuidString, to: 2, in: statement)
+      try bind(try encodeJSON(proposal.specification), to: 3, in: statement)
+      try bind(try encodeJSON(proposal.evidence), to: 4, in: statement)
+      try bind(proposal.status.rawValue, to: 5, in: statement)
+      try bindOptionalString(proposal.reviewExplanation, to: 6, in: statement)
+      try bind(proposal.createdAt.timeIntervalSince1970, to: 7, in: statement)
+      try bind(proposal.updatedAt.timeIntervalSince1970, to: 8, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func decodeRepositoryLaunchProposal(
+    _ statement: OpaquePointer
+  ) throws -> RepositoryLaunchProposal {
+    guard
+      let id = UUID(uuidString: try text(statement, column: 0)),
+      let runID = UUID(uuidString: try text(statement, column: 1)),
+      let status = RepositoryLaunchProposalStatus(rawValue: try text(statement, column: 4))
+    else {
+      throw PersistenceError.corruptData("Invalid imported app launch proposal")
+    }
+    return RepositoryLaunchProposal(
+      id: id,
+      runID: runID,
+      specification: try decodeJSON(
+        DemoLaunchSpecification.self,
+        from: try text(statement, column: 2)
+      ),
+      evidence: try decodeJSON(
+        [RepositoryEvidence].self,
+        from: try text(statement, column: 3)
+      ),
+      status: status,
+      reviewExplanation: try optionalText(statement, column: 5),
+      createdAt: date(statement, column: 6),
+      updatedAt: date(statement, column: 7)
+    )
+  }
+
+  private func encodeJSON<Value: Encodable>(_ value: Value) throws -> String {
+    let data = try encoder.encode(value)
+    guard let string = String(data: data, encoding: .utf8) else {
+      throw PersistenceError.corruptData("Could not encode repository metadata")
+    }
+    return string
+  }
+
+  private func decodeJSON<Value: Decodable>(
+    _ type: Value.Type,
+    from string: String
+  ) throws -> Value {
+    guard let data = string.data(using: .utf8) else {
+      throw PersistenceError.corruptData("Could not decode repository metadata")
+    }
+    return try decoder.decode(type, from: data)
+  }
+
+  private func uniqueKnowledgeSlug(title: String, existing: Set<String>) -> String {
+    let base = title.lowercased()
+      .split { !$0.isLetter && !$0.isNumber }
+      .map(String.init)
+      .joined(separator: "-")
+    let normalizedBase = base.isEmpty ? "page" : base
+    var candidate = normalizedBase
+    var suffix = 2
+    while existing.contains(candidate) {
+      candidate = "\(normalizedBase)-\(suffix)"
+      suffix += 1
+    }
+    return candidate
+  }
+
   private func encodeStringArray(_ values: [String]) throws -> String {
     let data = try encoder.encode(values)
     guard let value = String(data: data, encoding: .utf8) else {
@@ -7070,7 +8329,7 @@ public actor SQLiteStore {
     return try decoder.decode([String: String].self, from: data)
   }
 
-  private func transaction(_ operation: () throws -> Void) throws {
+  func transaction(_ operation: () throws -> Void) throws {
     try execute("BEGIN IMMEDIATE;")
     do {
       try operation()
@@ -7100,7 +8359,7 @@ public actor SQLiteStore {
     }
   }
 
-  private func withStatement<T>(
+  func withStatement<T>(
     _ sql: String,
     operation: (OpaquePointer) throws -> T
   ) throws -> T {
@@ -7116,14 +8375,14 @@ public actor SQLiteStore {
     return try operation(statement)
   }
 
-  private func stepDone(_ statement: OpaquePointer) throws {
+  func stepDone(_ statement: OpaquePointer) throws {
     let result = sqlite3_step(statement)
     guard result == SQLITE_DONE else {
       throw currentSQLiteError(code: result)
     }
   }
 
-  private func bind(_ value: String, to index: Int32, in statement: OpaquePointer) throws {
+  func bind(_ value: String, to index: Int32, in statement: OpaquePointer) throws {
     let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     let result = value.withCString {
       sqlite3_bind_text(statement, index, $0, -1, transient)
@@ -7133,21 +8392,21 @@ public actor SQLiteStore {
     }
   }
 
-  private func bind(_ value: Int64, to index: Int32, in statement: OpaquePointer) throws {
+  func bind(_ value: Int64, to index: Int32, in statement: OpaquePointer) throws {
     let result = sqlite3_bind_int64(statement, index, value)
     guard result == SQLITE_OK else {
       throw currentSQLiteError(code: result)
     }
   }
 
-  private func bind(_ value: Double, to index: Int32, in statement: OpaquePointer) throws {
+  func bind(_ value: Double, to index: Int32, in statement: OpaquePointer) throws {
     let result = sqlite3_bind_double(statement, index, value)
     guard result == SQLITE_OK else {
       throw currentSQLiteError(code: result)
     }
   }
 
-  private func bindOptionalString(
+  func bindOptionalString(
     _ value: String?,
     to index: Int32,
     in statement: OpaquePointer
@@ -7159,7 +8418,7 @@ public actor SQLiteStore {
     }
   }
 
-  private func bindOptionalUUID(
+  func bindOptionalUUID(
     _ value: UUID?,
     to index: Int32,
     in statement: OpaquePointer
@@ -7167,7 +8426,7 @@ public actor SQLiteStore {
     try bindOptionalString(value?.uuidString, to: index, in: statement)
   }
 
-  private func bindOptionalInt(
+  func bindOptionalInt(
     _ value: Int?,
     to index: Int32,
     in statement: OpaquePointer
@@ -7179,7 +8438,7 @@ public actor SQLiteStore {
     }
   }
 
-  private func bindOptionalDate(
+  func bindOptionalDate(
     _ value: Date?,
     to index: Int32,
     in statement: OpaquePointer
@@ -7191,35 +8450,35 @@ public actor SQLiteStore {
     }
   }
 
-  private func bindNull(to index: Int32, in statement: OpaquePointer) throws {
+  func bindNull(to index: Int32, in statement: OpaquePointer) throws {
     let result = sqlite3_bind_null(statement, index)
     guard result == SQLITE_OK else {
       throw currentSQLiteError(code: result)
     }
   }
 
-  private func text(_ statement: OpaquePointer, column: Int32) throws -> String {
+  func text(_ statement: OpaquePointer, column: Int32) throws -> String {
     guard let value = sqlite3_column_text(statement, column) else {
       throw PersistenceError.corruptData("Missing text at column \(column)")
     }
     return String(cString: value)
   }
 
-  private func optionalText(_ statement: OpaquePointer, column: Int32) throws -> String? {
+  func optionalText(_ statement: OpaquePointer, column: Int32) throws -> String? {
     guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
     return try text(statement, column: column)
   }
 
-  private func optionalInt(_ statement: OpaquePointer, column: Int32) -> Int? {
+  func optionalInt(_ statement: OpaquePointer, column: Int32) -> Int? {
     guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
     return Int(sqlite3_column_int64(statement, column))
   }
 
-  private func date(_ statement: OpaquePointer, column: Int32) -> Date {
+  func date(_ statement: OpaquePointer, column: Int32) -> Date {
     Date(timeIntervalSince1970: sqlite3_column_double(statement, column))
   }
 
-  private func optionalDate(_ statement: OpaquePointer, column: Int32) -> Date? {
+  func optionalDate(_ statement: OpaquePointer, column: Int32) -> Date? {
     guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
     return date(statement, column: column)
   }

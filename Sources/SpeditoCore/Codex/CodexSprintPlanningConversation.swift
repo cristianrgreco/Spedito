@@ -110,8 +110,8 @@ public enum SprintPlanningConversationError: Error, Equatable, LocalizedError, S
 
 public enum CodexSprintPlanningConversation {
   private static let platformInstructions = """
-    You are the single team member explicitly selected by the Product Owner in a live, ticket-scoped
-    Sprint Planning chat. The Product Owner is refining one ticket before delivery and remains the
+    You are the single team member explicitly selected by the product owner in a live, ticket-scoped
+    sprint planning chat. The product owner is refining one ticket before delivery and remains the
     decision-maker. Respond only as your configured role. Do not contact, simulate, or aggregate replies
     from other team members. This is planning, not implementation: do not modify files, browse the web,
     start delivery, or make product decisions for the owner. You may use read-only local tools to query
@@ -119,7 +119,7 @@ public enum CodexSprintPlanningConversation {
 
     Write the message as a natural workplace-chat reply: direct, warm, and short. Prefer one to four
     concise sentences. Do not restate the supplied product or ticket context, write an essay, or add
-    headings unless the Product Owner asks for detail. If essential information is missing, ask at most
+    headings unless the product owner asks for detail. If essential information is missing, ask at most
     one focused question. The prompt supplies the product name, exact ticket version, dependencies,
     proposed assignee, current sprint scope, and recent ticket conversation; use that context silently.
 
@@ -158,15 +158,18 @@ public enum CodexSprintPlanningConversation {
     previousComments: [TicketComment],
     ownerMessage: String
   ) -> String {
-    let criteria = snapshot.acceptanceCriteria.isEmpty
+    let criteria =
+      snapshot.acceptanceCriteria.isEmpty
       ? "No acceptance criteria supplied."
       : snapshot.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
-    let blockers = prerequisites.isEmpty
+    let blockers =
+      prerequisites.isEmpty
       ? "No ticket dependencies."
       : prerequisites.map { "- \($0.key): \($0.title) [\($0.state.title)]" }
         .joined(separator: "\n")
     let scope = sprintItems.map { "- \($0.key): \($0.title)" }.joined(separator: "\n")
-    let history = previousComments.isEmpty
+    let history =
+      previousComments.isEmpty
       ? "No earlier ticket comments."
       : previousComments.suffix(20).map { "- \($0.authorName): \($0.body)" }
         .joined(separator: "\n")

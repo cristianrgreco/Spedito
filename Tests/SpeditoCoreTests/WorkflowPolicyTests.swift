@@ -13,6 +13,7 @@ struct WorkflowPolicyTests {
     let epicID = UUID()
 
     #expect(EpicProgress(tickets: []).title == "Created")
+    #expect(EpicStatus.closed.title == "Completed")
     #expect(
       EpicProgress(
         tickets: [
@@ -46,26 +47,26 @@ struct WorkflowPolicyTests {
         ]
       ) == .inProgress
     )
-    #expect(
-      EpicProgress(
-        tickets: [
-          WorkItem(
-            productID: productID,
-            key: "T1",
-            title: "Delivered",
-            state: .released,
-            epicID: epicID
-          ),
-          WorkItem(
-            productID: productID,
-            key: "T2",
-            title: "Archived",
-            state: .cancelled,
-            epicID: epicID
-          ),
-        ]
-      ) == .complete
+    let readyToComplete = EpicProgress(
+      tickets: [
+        WorkItem(
+          productID: productID,
+          key: "T1",
+          title: "Delivered",
+          state: .released,
+          epicID: epicID
+        ),
+        WorkItem(
+          productID: productID,
+          key: "T2",
+          title: "Archived",
+          state: .cancelled,
+          epicID: epicID
+        ),
+      ]
     )
+    #expect(readyToComplete == .complete)
+    #expect(readyToComplete.title == "Ready to complete")
   }
 
   @Test("Happy-path transitions are available")
@@ -96,12 +97,12 @@ struct WorkflowPolicyTests {
     let productID = UUID()
     let analyst = AgentProfile(
       productID: productID,
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst
     )
     let designer = AgentProfile(
       productID: productID,
-      name: "UX Designer",
+      name: "UX designer",
       role: .uxDesigner
     )
     let implementer = AgentProfile(
@@ -294,43 +295,42 @@ struct WorkflowPolicyTests {
     #expect(eligible.map(\.id) == runs.map(\.id))
   }
 
-  @Test("Every reviewed candidate can integrate while other integrations continue")
-  func candidateIntegrationsAreUncapped() throws {
+  @Test("Completed candidates integrate before review while integrations remain uncapped")
+  func candidateIntegrationsPrecedeReview() {
     let productID = UUID()
     let sprintID = UUID()
     let first = WorkItem(
       productID: productID,
       key: "T62",
-      title: "Revise the first candidate",
-      state: .running,
+      title: "Integrate the fresh candidate",
+      state: .integrating,
       rank: 1
     )
     let second = WorkItem(
       productID: productID,
       key: "T63",
-      title: "Integrate the approved candidate",
-      state: .verifying,
+      title: "Integrate another candidate",
+      state: .integrating,
       rank: 2
     )
     let third = WorkItem(
       productID: productID,
       key: "T64",
-      title: "Review another candidate",
+      title: "Review an integrated candidate",
       state: .verifying,
       rank: 3
     )
     let fourth = WorkItem(
       productID: productID,
       key: "T65",
-      title: "Integrate another approved candidate",
-      state: .verifying,
+      title: "Recover a legacy queued candidate",
+      state: .integrating,
       rank: 4
     )
 
     func candidate(
       for item: WorkItem,
-      status: CandidateRevisionStatus,
-      integratedSHA: String? = nil
+      status: CandidateRevisionStatus
     ) -> CandidateRevision {
       CandidateRevision(
         productID: productID,
@@ -342,7 +342,6 @@ struct WorkflowPolicyTests {
         branchName: "ticket/\(item.key)",
         baseSHA: "base-\(item.key)",
         headSHA: "head-\(item.key)",
-        integratedSHA: integratedSHA,
         worktreePath: "/tmp/\(item.key)",
         status: status,
         commitCount: 1,
@@ -350,36 +349,31 @@ struct WorkflowPolicyTests {
       )
     }
 
-    let changesRequested = candidate(for: first, status: .changesRequested)
-    let approvedAndQueued = candidate(for: second, status: .queuedForIntegration)
-    let parallelReview = candidate(for: third, status: .reviewing)
-    let secondApprovedAndQueued = candidate(for: fourth, status: .queuedForIntegration)
-    let candidates = [
-      changesRequested,
-      approvedAndQueued,
-      parallelReview,
-      secondApprovedAndQueued,
-    ]
+    let fresh = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: UUID(),
+      workItemID: first.id,
+      implementationRunID: UUID(),
+      version: 1,
+      branchName: "ticket/\(first.key)",
+      baseSHA: "base-\(first.key)",
+      headSHA: "head-\(first.key)",
+      worktreePath: "/tmp/\(first.key)",
+      commitCount: 1,
+      executionResultJSON: "{}"
+    )
+    let queued = candidate(for: second, status: .queuedForIntegration)
+    let reviewing = candidate(for: third, status: .reviewing)
+    let legacyQueued = candidate(for: fourth, status: .queuedForReview)
 
+    #expect(fresh.status == .queuedForIntegration)
     #expect(
       SprintCandidateAdmission.integrationQueue(
-        candidates: candidates,
+        candidates: [reviewing, legacyQueued, queued, fresh],
         sprintID: sprintID,
         workItems: [first, second, third, fourth]
-      ).map(\.id) == [approvedAndQueued.id, secondApprovedAndQueued.id]
-    )
-
-    let conflictReview = candidate(
-      for: third,
-      status: .reviewing,
-      integratedSHA: "resolved-merge"
-    )
-    #expect(
-      SprintCandidateAdmission.integrationQueue(
-        candidates: candidates + [conflictReview],
-        sprintID: sprintID,
-        workItems: [first, second, third, fourth]
-      ).map(\.id) == [approvedAndQueued.id, secondApprovedAndQueued.id]
+      ).map(\.id) == [fresh.id, queued.id, legacyQueued.id]
     )
   }
 

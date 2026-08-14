@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import SpeditoApp
 
 struct SprintReportPresentationTests {
@@ -116,6 +117,16 @@ struct SprintReportPresentationTests {
     #expect(
       SprintReportChartType.allCases.map(\.title)
         == ["Cycle time", "Agent effort", "Outcomes and review"]
+    )
+  }
+
+  @Test("The selected sprint remains visible after chart interaction ends")
+  func persistentSelection() {
+    #expect(
+      SprintReportPresentation.retainedSelection(current: 3, proposed: nil) == 3
+    )
+    #expect(
+      SprintReportPresentation.retainedSelection(current: 3, proposed: 4) == 4
     )
   }
 

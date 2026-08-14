@@ -1,5 +1,6 @@
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Ticket attention sound")

@@ -418,23 +418,25 @@ struct AgentPermissionGrantPolicyTests {
     writePaths: [String],
     includesNetwork: Bool = false
   ) -> JSONValue {
-    let entries = readPaths.map { path in
-      JSONValue.object([
-        "access": .string("read"),
-        "path": .object([
-          "path": .string(path),
-          "type": .string("path"),
-        ]),
-      ])
-    } + writePaths.map { path in
-      JSONValue.object([
-        "access": .string("write"),
-        "path": .object([
-          "path": .string(path),
-          "type": .string("path"),
-        ]),
-      ])
-    }
+    let entries =
+      readPaths.map { path in
+        JSONValue.object([
+          "access": .string("read"),
+          "path": .object([
+            "path": .string(path),
+            "type": .string("path"),
+          ]),
+        ])
+      }
+      + writePaths.map { path in
+        JSONValue.object([
+          "access": .string("write"),
+          "path": .object([
+            "path": .string(path),
+            "type": .string("path"),
+          ]),
+        ])
+      }
     return .object([
       "fileSystem": entries.isEmpty
         ? .null

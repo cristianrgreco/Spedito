@@ -170,7 +170,7 @@ enum CodexInstallationDiscovery {
     if selectionURL.pathExtension.lowercased() == "app" {
       let bundleName =
         Bundle(url: selectionURL)?.object(forInfoDictionaryKey: "CFBundleDisplayName")
-          as? String
+        as? String
       return bundleName ?? selectionURL.deletingPathExtension().lastPathComponent
     }
 

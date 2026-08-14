@@ -12,7 +12,8 @@ public enum SprintRunAdmission {
     )
     let itemByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
 
-    return runs
+    return
+      runs
       .filter { run in
         guard
           run.sprintID == plan.sprint.id,
@@ -21,7 +22,8 @@ public enum SprintRunAdmission {
           sprintItem.implementerProfileID == run.profileID
         else { return false }
 
-        let prerequisiteIDs = dependencies
+        let prerequisiteIDs =
+          dependencies
           .filter { $0.workItemID == run.workItemID }
           .map(\.dependsOnWorkItemID)
         return prerequisiteIDs.allSatisfy { itemByID[$0]?.state == .released }

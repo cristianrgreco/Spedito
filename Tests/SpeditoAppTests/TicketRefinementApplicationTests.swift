@@ -1,6 +1,7 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Ticket refinement application")
@@ -92,7 +93,8 @@ struct TicketRefinementApplicationTests {
     await store.close()
   }
 
-  @Test("A completed refinement assigns an unassigned Next sprint ticket without replacing its plan")
+  @Test(
+    "A completed refinement assigns an unassigned Next sprint ticket without replacing its plan")
   @MainActor
   func completedRefinementUpdatesDraftSprintAssignee() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -151,7 +153,7 @@ struct TicketRefinementApplicationTests {
     await store.close()
   }
 
-  @Test("A completed refinement preserves an existing Product Owner assignee")
+  @Test("A completed refinement preserves an existing product owner assignee")
   @MainActor
   func completedRefinementPreservesExistingAssignee() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(

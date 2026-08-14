@@ -46,6 +46,7 @@ public final class ProductStoreRegistry {
       try writeLegacyImportMarker(productIDs: Set(importedStores.keys))
     }
     try loadExistingStores()
+    try await repairActiveProductColorCollisions()
   }
 
   public func store(for productID: UUID) -> SQLiteStore? {
@@ -68,9 +69,7 @@ public final class ProductStoreRegistry {
   }
 
   public func createProduct(name: String) async throws -> Product {
-    let existingProducts =
-      try await fetchProducts(status: .active)
-      + fetchProducts(status: .archived)
+    let existingProducts = try await fetchProducts()
     let productID = UUID()
     let store = try SQLiteStore(url: databaseURL(for: productID))
     do {
@@ -80,6 +79,107 @@ public final class ProductStoreRegistry {
         id: productID
       )
       stores[product.id] = store
+      return product
+    } catch {
+      await store.close()
+      throw error
+    }
+  }
+
+  public func restoreProduct(id: UUID) async throws -> Product {
+    guard let store = stores[id] else {
+      throw PersistenceError.recordNotFound("product \(id)")
+    }
+    let storedProducts =
+      try await store.fetchProducts()
+      + store.fetchProducts(status: .archived)
+    guard let product = storedProducts.first(where: { $0.id == id }) else {
+      throw PersistenceError.recordNotFound("product \(id)")
+    }
+    guard product.status == .archived else { return product }
+
+    let existingProducts = try await fetchProducts()
+    let orderedProducts = existingProducts.sorted { lhs, rhs in
+      if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+      return lhs.id.uuidString < rhs.id.uuidString
+    }
+    let existingColors = orderedProducts.map(\.color)
+    let restoredColor =
+      existingColors.contains(product.color)
+      ? ProductColor.nextUnassigned(after: existingColors) ?? product.color
+      : product.color
+    return try await store.restoreProduct(id: id, color: restoredColor)
+  }
+
+  func prepareImportedProduct(
+    name: String,
+    id: UUID,
+    workspaceURL: URL,
+    repository: ProductRepository
+  ) async throws -> Product {
+    guard repository.productID == id else {
+      throw PersistenceError.corruptData("Imported repository metadata does not match its product")
+    }
+    let existingProducts = try await fetchProducts()
+    let databaseURL =
+      workspaceURL
+      .appendingPathComponent(Self.controlDirectoryName, isDirectory: true)
+      .appendingPathComponent(Self.databaseFilename)
+    let store = try SQLiteStore(url: databaseURL)
+    do {
+      let product = try await store.createProduct(
+        name: name,
+        color: nextColor(existingProducts: existingProducts),
+        id: id
+      )
+      let profiles = try await store.seedDefaultProfiles(productID: id)
+      _ = try await store.seedKnowledgeBase(productID: id)
+      guard
+        let analyzer = profiles.first(where: { $0.role == .businessAnalyst }),
+        let reviewer = profiles.first(where: { $0.role == .lead })
+      else {
+        throw PersistenceError.corruptData(
+          "Imported products need an active business analyst and tech lead"
+        )
+      }
+      try await store.createProductRepository(repository)
+      try await store.createRepositoryKnowledgeRun(
+        RepositoryKnowledgeRun(
+          productID: id,
+          attempt: 1,
+          analyzedSHA: repository.importedSHA,
+          analyzerProfileID: analyzer.id,
+          reviewerProfileID: reviewer.id
+        )
+      )
+      await store.close()
+      return product
+    } catch {
+      await store.close()
+      throw error
+    }
+  }
+
+  func registerPreparedProduct(id: UUID) async throws -> Product {
+    guard stores[id] == nil else {
+      throw PersistenceError.corruptData("The imported product is already registered")
+    }
+    let store = try SQLiteStore(url: databaseURL(for: id))
+    do {
+      let products =
+        try await store.fetchProducts(status: .active)
+        + store.fetchProducts(status: .archived)
+      guard products.count == 1, let product = products.first, product.id == id else {
+        throw PersistenceError.corruptData(
+          "The prepared product database does not contain exactly one matching product"
+        )
+      }
+      guard try await store.fetchProductRepository(productID: id) != nil else {
+        throw PersistenceError.corruptData(
+          "The prepared product database is missing repository provenance"
+        )
+      }
+      stores[id] = store
       return product
     } catch {
       await store.close()
@@ -215,6 +315,25 @@ public final class ProductStoreRegistry {
     try data.write(to: legacyImportMarkerURL, options: .atomic)
   }
 
+  private func repairActiveProductColorCollisions() async throws {
+    let products = try await fetchProducts()
+    var reservedColors = products.map(\.color)
+    var seenColors: Set<ProductColor> = []
+
+    for product in products {
+      guard !seenColors.insert(product.color).inserted else { continue }
+      guard let replacementColor = ProductColor.nextUnassigned(after: reservedColors) else {
+        continue
+      }
+      guard let store = stores[product.id] else {
+        throw PersistenceError.recordNotFound("product \(product.id)")
+      }
+      _ = try await store.reassignProductColor(id: product.id, to: replacementColor)
+      seenColors.insert(replacementColor)
+      reservedColors.append(replacementColor)
+    }
+  }
+
   private func nextColor(existingProducts: [Product]) -> ProductColor {
     let orderedProducts = existingProducts.sorted { lhs, rhs in
       if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
@@ -260,9 +379,11 @@ private enum LegacyProductDatabaseImporter {
         withIntermediateDirectories: true
       )
       let importID = UUID().uuidString
-      let legacySliceURL = controlDirectory
+      let legacySliceURL =
+        controlDirectory
         .appendingPathComponent("legacy-\(importID).sqlite")
-      let stagedURL = controlDirectory
+      let stagedURL =
+        controlDirectory
         .appendingPathComponent("product-\(importID).sqlite")
       do {
         try backupDatabase(from: legacyDatabaseURL, to: legacySliceURL)
@@ -475,7 +596,8 @@ private enum LegacyProductDatabaseImporter {
     var errorMessage: UnsafeMutablePointer<CChar>?
     let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
     guard result == SQLITE_OK else {
-      let message = errorMessage.map { String(cString: $0) }
+      let message =
+        errorMessage.map { String(cString: $0) }
         ?? String(cString: sqlite3_errmsg(database))
       sqlite3_free(errorMessage)
       throw PersistenceError.sqlite(code: result, message: message)

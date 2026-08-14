@@ -84,9 +84,10 @@ Each product owns one authoritative database at
 `<product workspace>/.spedito/product.sqlite`. SQLite contains normalized
 current state and an append-only audit/activity log for that product. There is
 no continuously maintained projection or second copy of product truth.
-The product workspace's root `.gitignore` contains `/.spedito/` before
-the repository's first snapshot, so the live database and its WAL/shared-memory
-files never become candidate or accepted Git content.
+Before the repository's first snapshot, Spedito adds `/.spedito/` to the
+repository-local Git exclusion file. The database and its WAL/shared-memory
+files therefore never become candidate or accepted Git content, and Spedito
+does not modify the Product's tracked `.gitignore` to protect its control data.
 
 The Spedito rename is a one-time compatibility boundary. On first launch, the
 app moves an existing `~/Library/Application Support/StoryPointless` directory
@@ -102,11 +103,12 @@ Initial tables cover:
   curated display-color token;
 - work items and immutable contract versions;
 - Story/Task/Bug work-item classification and an optional epic foreign key;
-  Epic Created/Planned/In progress/Complete progress remains derived from
-  non-archived child tickets, while persisted Open/Closed/Archived status
-  records only owner lifecycle decisions and a durable display-color token
-  visually connects an Epic to its tickets;
-- comments and activity events, including an optional structured Product Owner
+  epic Created/Planned/In progress/Ready to complete progress remains derived
+  from non-archived child tickets, while persisted Open/Closed/Archived values
+  record only owner lifecycle decisions. The closed value is presented to the
+  product owner as Completed. A durable display-color token visually connects an
+  epic to its tickets;
+- comments and activity events, including an optional structured product owner
   question with two to four answer options;
 - agent profiles and runs;
 - product-wide guidance and optional per-profile instruction overrides;
@@ -116,12 +118,17 @@ Initial tables cover:
   work-item dependency edges;
 - sprints, sprint assignments, forecast slots, dependency admission, internal
   safety limits, and frozen ticket snapshots;
-- immutable retrospective notes and action candidates from team runs, Product
-  Owner action ideas that remain owner-deletable only while their sprint is
+- immutable retrospective notes and action candidates from team runs, product
+  owner action ideas that remain owner-deletable only while their sprint is
   active, one durable synthesis state per completed sprint, frozen
   synthesis-source links, consolidated final actions, and their many-to-many
   evidence links;
-- decision records and knowledge claims; and
+- decision records and knowledge claims;
+- imported-repository provenance, versioned repository-analysis attempts,
+  evidence-backed drafts, independent review decisions, and verified knowledge
+  publication state;
+- GitHub repository connections, immutable observations, safe-sync proofs,
+  publication manifests, branches, and pull-request snapshots; and
 - product-level conversation threads and messages.
 
 Fresh product databases are created directly from one declarative final schema
@@ -138,13 +145,33 @@ repeat work while the former shared database remains intact as a recovery
 backup. Runtime persistence contains no `schema_migrations` table or historical
 migration chain.
 
+Schema version 2 adds imported-repository and repository-knowledge provenance,
+links verified knowledge pages back to their source analysis attempt, and adds
+the indexes needed for recovery and active publication guards. The migration
+runs in one immediate transaction with foreign-key enforcement restored and
+validated before commit.
+
+Schema version 4 adds remote repository connections, observations, safe
+synchronization attempts, immutable publication attempts, and pull-request
+snapshots. Status/version/SHA-specific compare-and-swap updates guard every
+transition, active-operation partial indexes enforce one synchronization and one
+publication at a time per Product, and terminal/failed/stale rows remain for
+audit.
+
+Schema version 7 records successful publication-branch deletion so later pull
+request refreshes and explicit merge retries do not repeat completed cleanup.
+
+Schema version 8 adds a non-null candidate delivery kind. Existing rows migrate
+to `repository_change`; new `local_outcome` rows preserve repository-free
+business analyst results without an empty commit or pull request.
+
 The application catalog is the set of valid product workspace identifiers and
 their databases. Cross-product operations enumerate these stores; product
 delivery reads and writes only the owning store. SQLite WAL snapshots allow the
 UI and read-only agents to inspect current state safely while it changes.
 
-Candidate execution results also retain a schema-versioned demo launch
-specification. Durable demo-session rows record the candidate, state, preview
+Repository-changing candidate execution results also retain a schema-versioned
+demo launch specification. Durable demo-session rows record the candidate, state,
 worktree, allocated loopback port, bounded captured output, and recoverable
 failure explanation. The process object itself remains an in-memory operating
 system resource and is never inferred to be alive merely because SQLite says it
@@ -177,15 +204,15 @@ its durable execution state can recover through the normal scheduler path.
 
 - An **agent profile** is a reusable Codex configuration.
 - An **assignment** links a profile to a contract.
-- A **run** is one bounded attempt with one Codex thread and, for code-changing
-  work, one writable worktree.
+- A **run** is one bounded attempt with one Codex thread and, for delivery work,
+  one writable ticket worktree.
 - A **scheduler lease** prevents the same run from executing twice.
 
-The built-in starter profiles are Business Analyst, UX Designer, Lead, and
-Implementer. The Lead is the default reviewer for ordinary tickets. Frontend,
+The built-in starter profiles are business analyst, UX designer, Lead, and
+implementer. The Lead is the default reviewer for ordinary tickets. Frontend,
 backend, security, and other specialist profiles are owner-added capabilities,
 not required permanent roles. Implementation and review remain separate runs;
-no profile can attest independently to work it produced. Sprint Planning assigns
+no profile can attest independently to work it produced. Sprint planning assigns
 the delivery member only; the scheduler creates the ordinary Lead review run
 against the immutable ticket candidate before integration, with specialist review
 added later by policy when warranted.
@@ -199,9 +226,9 @@ actions such as pause, retry, cancel, or resume.
 
 The durable execution state remains granular, but the active owner-facing board
 projects queueing, implementation, integration, verification, review, and
-post-approval finalization into four decision-oriented stages: **In Progress**,
-**In Review**, **Ready for Demo**, and **Done**. Integration and Tech Lead review
-share **In Review**, with the card and Work log stating which activity is current.
+post-approval finalization into four decision-oriented stages: **In progress**,
+**In review**, **Ready for demo**, and **Done**. Integration and tech lead review
+share **In review**, with the card and work log stating which activity is current.
 
 Thirty dependency-free tickets produce thirty admitted runs in the local MVP.
 Account or machine back-pressure may delay the underlying turns, but there is no
@@ -210,109 +237,364 @@ headcount.
 
 ## 6. Repository and integration lifecycle
 
-1. Record the current local-trunk commit when admitting a contract.
-2. Create a private branch and worktree for the implementation run.
-3. Produce a candidate commit after fast checks.
+Every delivery run starts from a recorded local-trunk commit in a private branch
+and worktree. On completed structured output, Spedito compares reported paths with
+the actual workspace:
+
+- actual repository changes produce an immutable `repository_change` candidate,
+  a host-owned candidate commit, and a required managed demo recipe;
+- an empty workspace may produce a `local_outcome` candidate only for the
+  business analyst role. Its immutable evidence is the completion handoff,
+  reported checks, review instructions, and candidate-bound product knowledge
+  proposals already persisted in SQLite. Its base and head identify the unchanged
+  checkout, but Spedito creates no commit and requires no demo; and
+- every other role fails closed when it reports completion without repository
+  evidence.
+
+Repository-changing candidates follow the Git integration lifecycle:
+
+1. Replay each candidate into its own ephemeral integration worktree based on
+   the latest accepted trunk. All eligible candidates may proceed in parallel.
+2. For a connected Product, fetch and validate the exact GitHub default-branch
+   head, then merge that verified revision into the ticket integration.
+3. Surface local or GitHub conflicts as explicit integrator work; resolve only
+   unambiguous overlap and pause material choices for the product owner through
+   the ticket's existing question and work log lifecycle.
 4. Run independent Lead reviews in parallel against detached workspaces pinned
-   to the immutable candidate commits.
-5. Replay each approved candidate into its own ephemeral integration worktree
-   based on the latest accepted trunk. All eligible candidates may proceed in
-   parallel.
-6. Surface conflicts as explicit Integrator work; resolve only unambiguous overlap
-   and pause material choices for the Product Owner.
-7. Preserve the candidate review after a clean merge. If conflict resolution
-   changes the merge result, pin a focused Lead re-review to that exact integrated
-   revision.
-8. Pin the preview to the integrated candidate and advance trunk only after
-   human acceptance of that exact commit.
+   to the exact integrated commits.
+5. Pin the preview to the reviewed integrated candidate and advance trunk only
+   after human acceptance of that exact commit.
 
-The merge path is deterministic first and agentic only when necessary. Git attempts
-to merge a reviewed candidate without involving an agent. A clean merge advances
-directly to demo preparation. A conflict creates an **Integrator** system run with
-the reported unmerged paths, ticket context, and preserved conflicted worktree. The
-Integrator inspects only the affected files and nearby context, edits the unambiguous
-overlap, and returns without running a second review or test pass. Spedito
-performs mechanical Git validation and owns the merge commit. The Integrator must
-return semantic or product conflicts to the relevant implementation ticket or
-Product Owner. It is not an independent product persona and it cannot approve its
-own resolution. The Tech Lead reviews the immutable ticket candidate before
-integration, then reviews the final integrated candidate only when conflict
-resolution changed it. The board keeps this understandable as **In Review**, while
-the card and Work log distinguish **Tech Lead reviewing**, **Queued to integrate**,
-**Integrating changes**, and **Resolving a conflict**.
+A local-outcome candidate bypasses integration and GitHub publication. It enters
+the same independent Lead review queue, where the reviewer evaluates only the
+candidate-bound SQLite outcome and must not infer delivery from the unchanged
+checkout. Approval moves it directly to the owner-facing **Ready for demo** state
+without a managed demo action. Product owner acceptance publishes accepted
+knowledge, records the completion handoff, and completes the ticket without
+moving `trunk`.
 
-The Tech Lead review is an evidence-only once-over, not a second verification run.
-The reviewer may read the ticket contract, dependency handoffs, exact candidate
-diff, directly relevant files, delivered artefacts, reported checks, knowledge
-proposals, and demo contract. It does not build or test, execute the candidate,
-launch a preview, revisit research sources, use the network, or request additional
-capabilities. Missing evidence blocks only when it is required by the contract or
-leaves a concrete material claim unreviewable; the reviewer reports that gap
-instead of producing the evidence. Review threads use the configured reviewer
-model and reasoning effort, preserving the Product Owner's Team settings.
+The merge path is deterministic first and agentic only when necessary. Git first
+attempts to merge a candidate with accepted local trunk without involving an
+agent. A connected Product then performs an authoritative GitHub identity/head
+check, retains the exact verified observation ref for the bounded integration
+operation, and merges that remote head into the same isolated worktree. Only
+after this integration succeeds does the Lead review begin. If GitHub moves
+after review while the publication or demo is prepared, Spedito requeues the
+candidate through integration and reviews the newly integrated result.
 
-The Tech Lead may return a candidate only for a concrete material defect that
+A file conflict from either source creates an **Integrator** system run with the
+reported unmerged paths, ticket context, and preserved conflicted worktree. The
+integrator inspects only the affected files and nearby context, edits
+unambiguous overlap, and returns without running a second review or test pass.
+Spedito performs mechanical Git validation and owns the merge commit. The
+integrator must return semantic or product conflicts to the relevant ticket as
+a Product Owner question. Its run, question, response, comments, and recovery
+remain in that ticket's existing lifecycle; independent tickets may continue
+while direct dependants wait. The integrator is not an independent product
+persona and cannot approve its own resolution. Conflict resolution completes
+before the tech lead reviews the exact final integrated candidate. The board
+keeps this understandable as **In review**, while the card and work log
+distinguish **Queued to integrate**, **Integrating changes**, **Resolving a
+conflict**, and **Tech lead reviewing**.
+
+The tech lead review is an evidence-only once-over, not a second verification
+run. For repository-changing work, the reviewer may read the ticket contract,
+dependency handoffs, exact delivered diff and integrated workspace, directly
+relevant files, reported checks, knowledge proposals, and demo contract. For a
+local outcome, it receives the same contract plus the candidate-bound completion
+handoff, checks, limitations, decisions, and knowledge proposals from SQLite;
+the unchanged checkout is not delivery evidence. It does not build or test,
+execute a candidate, launch a preview, revisit research sources, use the network,
+or request additional capabilities. Missing evidence blocks only when required
+by the contract or when a concrete material claim is unreviewable; the reviewer
+reports that gap instead of producing the evidence. Review threads use the
+configured reviewer model and reasoning effort.
+
+The tech lead may return a candidate only for a concrete material defect that
 justifies the full implementation, integration, and review loop. Cosmetic diff
 hygiene and optional style-only checks are non-blocking unless they cause a
 behavioural, rendering, validity, required-gate, reviewability, or security
 failure. Re-review applies the same threshold to previous feedback, so an
 earlier blocker label does not perpetuate a non-material cycle. The fifth review
-return to **In Progress** preserves the workspace and findings but pauses automatic
-revision until the Product Owner provides direction.
+return to **In progress** preserves the workspace and findings but pauses automatic
+revision until the product owner provides direction.
 
 Git implementation is behind a protocol. The current workspace manager invokes
 the host's `/usr/bin/git`, so an early build may depend on an installed Apple
 developer toolchain. A later self-contained distribution must provide or embed a
 compatible Git implementation and must not trigger an unexpected Command Line
-Tools installation during the Product Owner workflow.
+Tools installation during the product owner workflow.
 Spedito-owned commits and merge commits explicitly skip Git signing so the
-non-interactive workflow never requests access to the Product Owner's personal
+non-interactive workflow never requests access to the product owner's personal
 signing key. This is scoped to each Spedito command and does not change the
 owner's global or repository Git configuration.
 
-### 6.1 Managed candidate demos
+### 6.1 Imported repository activation and knowledge
 
-Every newly completed delivery includes a typed demo recipe. The supported
-presentations are a loopback browser preview, a reviewed macOS application, a
-workspace-relative artifact, or captured output from a bounded scenario. Recipes
-contain executable and argument arrays, never shell command strings. Working
-directories and artifacts resolve inside the reviewed checkout, browser URLs
+Repository onboarding accepts only canonical HTTPS URLs from GitHub, GitLab,
+Bitbucket, or Codeberg, without credentials, query strings, fragments, or
+non-default ports. Git runs with hooks, credential helpers, global/system
+configuration, filters, pagers, prompts, and inherited signing disabled. Clone
+output is staged beneath a UUID-owned import directory.
+Activation requires a named remote default branch with at least one commit, a
+byte-safe collision check against `.spedito`, a clean worktree, and local
+`trunk` pointing at the exact imported commit. The full history, source default
+branch, and `origin` remain in the clone. Only after the product database,
+repository provenance, starter team, starter knowledge tree, and pending
+analysis run are durable does Spedito atomically move the clone into the normal
+product workspace and register the store. Cancellation or failure removes only
+Spedito-owned staging and unregistered activation paths.
+
+Repository understanding is a product-scoped background state machine:
+`pending_analysis`, `analyzing`, `reviewing`, `publishing`, then `completed`,
+with durable `failed`, `interrupted`, and `stale` outcomes. Analysis reads an
+immutable snapshot materialized from the exact accepted Git tree. Path parsing
+uses NUL-safe or private-delimiter Git records, rejects undecodable or colliding
+paths, and includes only regular blobs permitted by the source-path policy.
+The snapshot excludes `.git`, `.spedito`, credential-shaped paths, symlinks,
+submodules, and other non-regular objects, records a content digest, becomes
+read-only before Codex can inspect it, and is removed after a terminal attempt.
+
+The App model subscribes to each analysis and review thread's supported Codex
+notifications while its turn is active. `CodexLiveActivityAccumulator` ignores
+raw reasoning deltas and exposes only bounded reasoning-summary, plan, and
+tool-category activity. This ephemeral per-product activity drives the sidebar
+setup popover and is cleared when the repository-knowledge run terminates.
+
+Repository analysis uses a dedicated Codex App Server process, not the normal
+delivery client. Its process environment is replaced with a minimal allowlist.
+Spedito serializes a bounded, line-numbered set of UTF-8 files from the
+sanitized snapshot, together with its permitted path manifest and omitted-file
+list, directly into both analysis prompts. The agents are instructed not to
+invoke tools or shell commands; the exact snapshot remains their only readable
+workspace root, model-controlled subprocesses and network access are denied,
+approval policy is `never`, and repository instructions remain untrusted
+evidence. The Codex host still uses the product owner's internet connection to
+send that supplied evidence to the selected model provider; the sandbox rule
+prevents the analysis agent from browsing or contacting additional services,
+not that provider transport.
+
+A business analyst structured turn prioritizes evidence-backed updates to
+supported empty starter pages before proposing additional feature pages. Its
+strictly decoded drafts are persisted before a separate tech lead thread
+independently evaluates every draft against the same serialized repository
+evidence and returns exactly one approve/reject decision per draft. Spedito
+revalidates accepted `trunk`, every evidence path, and every canonical page base
+before accepting the review.
+
+Publication revalidates accepted `trunk`, every evidence path, and every
+canonical page base before changing authoritative knowledge. Approved drafts,
+page revisions, provenance, and the completed analysis state are committed
+atomically in SQLite. Repository files and `trunk` remain unchanged; existing
+repository documents are evidence rather than managed knowledge output.
+
+### 6.2 GitHub synchronization and pull-request publication
+
+The remote boundary uses one GitHub App with Device Flow and expiring
+user-to-server tokens. The build contains only the public App client ID and
+slug. Tokens are stored as one versioned account payload in Apple Keychain;
+refresh and sign-out are serialized around in-flight token leases. The REST
+client accepts only fixed GitHub HTTPS hosts, refuses redirects, bounds bodies,
+arrays, pages, strings, rate-limit delays, and request timeouts, and exposes
+only Metadata read, Contents read/write, Pull requests read/write, and Workflows
+write capabilities. Administration write is deliberately omitted, so repository
+creation stays on GitHub rather than broadening the App's authority. There is no
+client secret, private key, in-app repository creation, or CI/check aggregation.
+
+The account catalog can authorize an account directly from Product creation and
+enumerate public and private repositories exposed by every locally authorized
+GitHub App installation without exposing tokens to presentation code. Product
+connection reuses the sole authorized account when unambiguous; otherwise it
+starts Device Flow. Product creation carries only the selected repository ID
+into the remote service, which resolves its canonical URL and account. A
+repository with history is cloned through a scoped credential session and the
+activated Product is linked back to that exact source. An empty repository
+creates a blank local Product, then reuses the local-Product initialization flow
+to verify and seed that exact remote. Manual public-HTTPS entry remains a
+credential-free fallback and continues to require importable history.
+
+The import catalog retains each authorized installation even when it currently
+exposes no repositories. Product creation uses those installation identities to
+open the exact repository-access settings and refreshes the catalog when the app
+becomes active again, so newly granted repositories appear without repeating
+Device Flow.
+
+Git receives a token only through a UUID-owned `git credential-cache` socket
+with `credential.useHttpPath=true`. Import clone, fetch, and push operations
+supply command-scoped configuration, reject inherited helpers and prompts, then
+reject the credential, exit the cache daemon, and remove the session directory.
+GitHub tokens never appear in a remote URL, process argument, repository config,
+`~/.git-credentials`, log, SQLite row, ticket, work log, or pull-request body.
+
+An imported Product may connect only when its canonical GitHub identity,
+preserved `origin`, and source default branch still match. A local Product
+selects an accessible empty repository. Spedito re-reads its API identity,
+proves that it has no heads, pushes the local bootstrap root with create-only
+lease semantics, verifies the resulting head, and records the remote connection
+before normal publication is allowed.
+
+For an imported Product, connection matches only the immutable imported target.
+If the GitHub App lacks repository access or updated permissions need approval,
+presentation opens the existing installation settings and refreshes
+installations when Spedito becomes active again. Recovery controls remain
+available if the browser step is cancelled or GitHub has not propagated the
+grant.
+
+Every repository check performs an API repository/head read, fetches the branch
+into a disposable quarantine object store with a 512 MiB allocated-storage
+ceiling, validates the quarantined observation, and copies only its verified ref
+into the product repository before repeating the API read. The observation is
+useful only when all identities and SHAs agree. Incoming paths are decoded from
+NUL records and checked component-by-component for undecodable values and
+case/Unicode collisions with `.spedito`. Before promotion, Git attributes are
+read from the candidate tree and every named filter is neutralized with
+command-scoped no-op clean/smudge/process configuration. Unsupported
+`check-attr --source`, submodules, Git LFS pointers, non-regular entries, unsafe
+paths, or manifest inconsistencies fail closed.
+
+Starting a sprint does not perform a blocking repository check. Manual safe-sync
+preparation and acceptance remain rejected while a sprint is active or paused
+so accepted `trunk` cannot move underneath ticket workspaces.
+
+Before a reviewed ticket is published, the integration lifecycle performs a
+fresh repository check. Aligned and local-ahead history require no additional
+merge. For remote-ahead, history-alignment, or related divergent history, the
+validated observation ref and exact remote SHA become inputs to the ticket's
+isolated integration worktree. Git attempts the merge first; conflicts reuse the
+durable Integrator run and ticket owner-question path. The observation ref is
+released after Git records the remote commit in the integration or preserved
+merge state. Unrelated history and repository states that fail quarantine
+validation stop before an agent runs.
+
+This automatic ticket integration never advances accepted local `trunk`.
+Fast-forward acceptance through the explicit diagnostic workflow still stores
+the exact local base, remote candidate, tree, observation ref, commits, and paths
+before owner confirmation. Promotion revalidates the current `trunk`, checkout,
+candidate tree, and validated path set, updates `trunk` and the worktree without
+running hooks or filters, then records completion. If GitHub rewrites a merged
+Spedito pull request, manual history alignment remains available only when the
+prior immutable publication proves the published head and resulting tree.
+
+Repository-changing ticket publication captures the reviewed candidate SHA and
+tree, exact remote base, outbound object manifest, commit/path summaries, and
+deterministic `spedito/<product-slug>-<product-id-prefix>-<captured-sha-prefix>`
+branch. The first reviewed repository-changing candidate creates a draft pull
+request automatically. A later
+reviewed candidate for the same ticket may replace its captured revision and
+remote base, then update the existing branch only with an exact force-with-lease
+against the previously observed pull-request head. The durable transition clears
+the old pull-request snapshot while retaining its published head as the branch
+lease; recovery re-discovers the same pull request after the new head is pushed.
+The publication row retains the ticket and candidate foreign keys so recovery
+cannot publish or approve the wrong revision. Branch creation and pull-request
+creation remain idempotent through exact head lookup around ambiguous failures.
+After GitHub reports the unchanged head merged, Spedito deletes its publication
+branch with an exact lease; a moved branch is preserved and fails closed.
+
+For a mature locally created Product, connection captures the accepted local
+`trunk` after the minimal bootstrap root, seeds only that root to the empty
+remote default branch, and durably creates an
+`existing_product_history` publication for the captured head. The publication
+is non-draft and automatically invokes the same exact-head merge endpoint and
+mechanically proven local reconciliation as ticket approval. Recovery resumes
+remote initialization, branch/PR creation, and exact baseline merge from their
+durable states without creating another publication.
+
+GitHub review decisions and inline comments are fetched from bounded REST
+endpoints and deduplicated into external-author work log comments by stable
+GitHub identifiers. Inline comments persist the path, old/new line range,
+reviewed and original commit SHAs, and bounded diff hunk; the same structured
+context is rendered locally and supplied to resumed delivery agents.
+One Product-scoped coordinator serially checks every active
+ticket pull request for the selected Product, prioritizing the visible ticket
+and tickets in acceptance. It uses 60-second foreground cycles when prioritized
+work exists, 120-second ordinary foreground cycles, 300-second inactive cycles,
+and conditional REST requests with bounded in-memory ETag response caching.
+Fresh repository checks and product owner approval remain unconditional
+authoritative checks. `CHANGES_REQUESTED` converts the pull request back to
+draft and requeues the ticket's existing delivery run. After internal review
+and demo gates, Spedito uses GitHub's GraphQL draft-state mutation to mark the
+repository-changing pull request ready. Product owner ticket approval rechecks the open,
+non-draft, unchanged head and exact remote base, then invokes
+GitHub's merge endpoint with the
+expected head SHA. If the default branch moved or GitHub reports that the exact
+ticket is no longer mergeable, Spedito returns the pull request to draft and
+requeues the same candidate for remote-aware integration and focused review.
+
+Ticket acceptance is launched as an AppModel-owned background task rather than
+being scoped to the ticket detail view. The view dismisses as soon as that task
+is retained, and a published work-item ID set drives **Completing ticket**
+presentation if the owner returns to the board or ticket. After preflight,
+candidate `promoting` state remains the durable interruption boundary.
+Repository-changing acceptance performs the authoritative remote check, merge,
+local reconciliation, and trunk promotion. Local-outcome acceptance skips Git
+and GitHub, marks the exact reviewed candidate accepted, publishes its approved
+knowledge proposals, appends the completion handoff, and completes the workflow.
+Completion failures restore a reviewed candidate to `ready_for_demo`, retain the
+ticket in acceptance, append an actionable work-log failure, and permit an
+idempotent retry. The workflow does not transition the ticket to Done until all
+operations required by that candidate kind succeed. A moved publication branch,
+changed pull-request head, closed pull request, or unsafe repository state fails
+closed for repository-changing work. External approval never completes a ticket,
+and Spedito does not aggregate CI checks.
+
+On launch, stable `accepting`, `checking`, `pushing`, `branch_published`, and
+`creating_pull_request` phases resume from their durable proofs. Terminal merged
+publications do not initiate GitHub or Keychain access during launch recovery.
+Shutdown stops new remote work, cancels bounded external waits, lets Git and
+credential cleanup finish, then closes credential sessions without requiring
+GitHub to be available.
+
+### 6.3 Managed candidate demos
+
+Every newly completed repository-changing delivery includes a typed demo recipe.
+Supported presentations are a loopback browser preview, a workspace-relative macOS
+application bundle, an inert workspace-relative artifact from an explicit
+allowlist, or captured output from a bounded scenario. Recipes contain executable
+and argument arrays, never shell command strings. Working directories,
+applications, and artifacts resolve inside the reviewed checkout, browser URLs
 contain only a path, and Spedito allocates and injects the loopback port.
 
-The delivery sandbox is intentionally non-interactive and does not own the logged-in
-desktop session. An implementer does not call operating-system GUI launchers, run a
-graphical executable to prove that a window appears, or automate desktop interaction.
-Unavailable Launch Services, appearance, window-server, or activation facilities in
-that sandbox are expected isolation rather than a product limitation, missing
-permission, or Product Owner decision. The implementer verifies the build, tests,
-package, and non-interactive readiness evidence, then returns the typed recipe. Only
-Spedito's post-review managed demo path opens the presentation; failures there are
-classified as candidate-controlled correction or host/runtime retry.
+Local outcomes have no demo recipe or demo session. Their **Ready for demo**
+presentation is an in-app review card containing the concise outcome, an
+expandable copy of the full completion handoff and evidence, and the exact
+decision and checks for the product owner. Candidate-bound product knowledge
+proposals remain separate reviewable work-log records.
 
-After Tech Lead approval, Spedito creates or reuses a detached preview
+The delivery sandbox is intentionally non-interactive and does not own the
+logged-in desktop session. An implementer does not call operating-system GUI
+launchers, run a graphical executable to prove that a window appears, or
+automate desktop interaction. For a macOS app recipe, sandboxed preparation
+builds the bundle and smoke testing verifies its workspace-relative path and
+executable without launching it. Only Spedito opens the validated bundle through
+Launch Services, and only after the product owner explicitly chooses **Demo** or
+opens an accepted app version. Rendered markdown strips non-HTTPS links, and the
+application URL-opening boundary independently permits only credential-free
+HTTPS destinations with a host.
+
+After tech lead approval, Spedito creates or reuses a detached preview
 worktree pinned to the current integrated SHA and smoke-tests the recipe without
-opening its presentation. A candidate enters **Ready for Demo** only after that
-test succeeds. The Product Owner's **Demo** action prepares the same exact
-revision, starts or reuses a managed service where the recipe requires one, waits
-for typed readiness, and opens the browser, app, artifact, or captured result.
-Reviewed macOS application bundles are opened by Spedito through Launch Services
-in the logged-in desktop session; they are not started as non-interactive App
-Server commands. Spedito retains the returned application instance so **Demo**
-reactivates the same preview and **Stop demo** terminates only that owned instance.
+opening its presentation. A candidate enters **Ready for demo** only after that
+test succeeds. The product owner's **Demo** action prepares the same exact
+revision, starts or reuses a managed service where the recipe requires one, and
+opens the browser, validated macOS application, inert artifact, or captured
+result.
 
 Multiple independently reviewed candidates may integrate, receive any necessary
-conflict resolution and focused re-review, and prepare demos in parallel. Promotion
-still requires the approved revision to contain current accepted trunk and remains
-serialized. When another approval advances trunk, Spedito stops and removes any
-now-stale preview,
-returns its already reviewed candidate to the integration queue, and prepares a new
-exact demo revision. A clean re-integration retains the immutable candidate review;
-conflict resolution requires focused Tech Lead re-review.
+conflict resolution and focused re-review, and prepare demos in parallel.
+Promotion still requires a clean accepted workspace checked out at current
+`trunk`, the approved revision to contain that trunk, and serialized compare-and-
+swap ref movement. A durable `promoting` candidate state makes interrupted
+acceptance resumable before post-promotion publication runs. When another
+approval advances trunk, Spedito stops and removes any now-stale preview,
+returns its already reviewed candidate to the integration queue, and prepares a
+new exact demo revision. A clean re-integration retains the immutable candidate
+review; conflict resolution requires focused tech lead re-review.
 
-When a post-conflict Tech Lead review or Product Owner demo requests another
+When a post-conflict tech lead review or product owner demo requests another
 implementation revision, the host adopts the exact reviewed integrated SHA into
 the preserved ticket branch with an idempotent fast-forward before resuming the
-Implementer. It validates a clean ticket worktree, the expected immutable candidate
+implementer. It validates a clean ticket worktree, the expected immutable candidate
 HEAD, and candidate ancestry first. The candidate record remains immutable; only the
 mutable implementation branch advances. The continuation identifies the old candidate
 and adopted integrated SHA so the agent preserves accepted trunk behavior and conflict
@@ -323,21 +605,21 @@ If review succeeds but smoke preparation reports a candidate-controlled failure,
 including an invalid recipe, failed or timed-out preparation command, service exit,
 readiness timeout, or missing presentation, Spedito records the actionable
 error, adopts the integrated SHA into the preserved ticket workspace, marks the
-candidate as requiring changes, and queues the Implementer automatically. The
-correction creates a new immutable candidate and receives Tech Lead review again.
+candidate as requiring changes, and queues the implementer automatically. The
+correction creates a new immutable candidate and receives tech lead review again.
 After repeated correction cycles the existing review-return limit pauses for
-Product Owner direction. A host/runtime interruption such as an unavailable App
+product owner direction. A host/runtime interruption such as an unavailable App
 Server or failure to allocate a loopback port instead preserves the failed
 candidate's integrated SHA and completed-review provenance and presents **Retry
 demo preparation** without a new owner comment. That retry reruns only the
 candidate-bound smoke preparation and, on success, advances the existing reviewed
-candidate to **Ready for Demo**.
-The acceptance Work log routes **Comment** through the existing read-only
-ticket-conversation path, preferring the assigned Implementer, then the latest
-participating team member, then the Tech Lead. The answer does not supersede the
+candidate to **Ready for demo**.
+The acceptance work log routes **Comment** through the existing read-only
+ticket-conversation path, preferring the assigned implementer, then the latest
+participating team member, then the tech lead. The answer does not supersede the
 candidate or resume delivery; **Request changes** remains the explicit revision-loop
 action.
-In Progress and In Review Work logs keep ordinary comments informational and
+In progress and in review work logs keep ordinary comments informational and
 offer a separate read-only question action. That action prefers the profile on
 the latest active run before the normal participant fallback, remains available
 beside a pending permission decision, and can route an owner comment already
@@ -363,32 +645,75 @@ identifier while streaming output. Recipes must remain in the foreground;
 detached or daemonized services are invalid because they cannot provide reliable ownership.
 **Stop demo**, feedback, approval, product switching, shutdown, and App Server
 disconnection terminate the managed command session. Feedback and approval
-additionally remove the preview worktree. On restart, a previously active durable
-session is marked stopped rather than being mistaken for a live process. Browser
-tabs and shared document-viewer windows are not force-closed because they may
-belong to the Product Owner rather than the demo session.
+additionally remove the acceptance preview worktree.
+
+Repository analysis may return a structured imported-app launch proposal
+alongside product knowledge drafts. The proposal contains a validated browser
+`DemoLaunchSpecification` and exact snapshot evidence. It remains inert until
+an independent tech lead returns a separate decision for that exact proposal.
+An approved proposal is stored with its repository-analysis run and exact
+`analyzedSHA`. Native macOS application, executable artifact, and unsupported
+URL presentations fail Core validation. If a proposed recipe fails Core
+validation, the same schema-constrained analyzer thread receives the exact
+validation failure and one correction turn. Product knowledge drafts from the
+first response remain fixed during that correction. A second invalid optional
+recipe is omitted with its diagnostic retained in the knowledge-run summary; a
+launch-only **Check imported source** run instead fails with the actionable
+validation reason. Rejected, missing, unsupported, or under-specified recipes
+produce no imported app version.
+A product owner may explicitly run **Check imported source** later. That creates a
+launch-only analysis run pinned to the original
+`ProductRepository.importedSHA`; its analyzer contract requires an empty knowledge
+draft list, Core rejects knowledge mutations for the run, and the same independent
+review and evidence checks apply. Repository prose is never parsed or executed as
+an implicit recipe.
+
+The selected product's **App versions** workspace combines the approved imported
+browser or macOS app recipe, when present, with every accepted browser or macOS
+app candidate that has a valid schema-versioned recipe. Entries are ordered by
+their publication or acceptance time and the latest is selected by default. Any listed version
+recreates a managed preview from its exact imported or integrated SHA. Durable
+`DemoSession` identity is `(source_kind, launch_id)`, so imported analysis
+proposal IDs and accepted candidate IDs share the lifecycle without masquerading
+as each other.
+
+Opening is idempotent: it reuses and reactivates a ready runtime. Only one
+managed app version may run per product, so opening or demonstrating another
+version stops the current owned runtime while preserving its managed preview
+cache. **Stop app** also preserves that cache for a quick reopen. Before a newer
+runnable candidate becomes accepted, Spedito stops any running version and
+removes the previous latest accepted version's managed preview; historical
+accepted candidates and the imported source remain selectable.
+Accepting artifact or command-output evidence does not alter app version history
+or stop its current runtime. On restart, a previously active durable session is
+marked stopped rather than being mistaken for a live process. Browser tabs and
+shared document-viewer windows are not force-closed because they may belong to
+the product owner rather than the demo session.
 
 ## 7. Codex adapter boundary
 
 The current adapter discovers the official Codex macOS app by bundle identifier
 without consulting `PATH`, supports explicitly selected custom apps and
-executables, and remembers one application-wide selection. It checks the
+executables, and remembers one application-wide selection. Runtime version and
+feature probes have fixed wall-clock and output limits. The adapter checks the
 required permission capability, performs the `initialize` / `initialized`
 handshake over JSONL stdio, confirms the runtime is macOS, and requests the live
-model catalog before reporting a connection. The installed version remains
-visible for diagnostics but is not an exact compatibility gate. Missing
-capabilities, failed handshakes, and unsupported server-initiated requests fail
-closed. Read-only, schema-constrained threads
-power backlog suggestions, refinement, planning conversations, and ordinary
-single-recipient Ticket and Epic chat. Structured Business Analyst answers
+model catalog before reporting a connection. App Server children receive a
+replacement allowlisted process environment; arbitrary inherited credentials
+and cloud tokens are not propagated. The installed version remains visible for
+diagnostics but is not an exact compatibility gate. Missing capabilities, failed
+handshakes, and unsupported server-initiated requests fail closed.
+Read-only, schema-constrained threads power backlog suggestions, refinement,
+planning conversations, and ordinary
+single-recipient ticket and epic chat. Structured business analyst answers
 remain separate from ordinary messages and are the only inputs that advance
 their governed refinement turn. Delivery uses `approvalPolicy: on-request`.
-Independent Tech Lead review uses `approvalPolicy: never`: its detached candidate
-workspace and Product knowledge are read-only, network remains unavailable, and
+Independent tech lead review uses `approvalPolicy: never`: its detached candidate
+workspace and product knowledge are read-only, network remains unavailable, and
 the review contract never requires capability escalation.
 
 Sprint-goal generation is a bounded title-only writing turn rather than a normal
-Business Analyst lifecycle turn. It starts a fresh persistent read-only thread with
+business analyst lifecycle turn. It starts a fresh persistent read-only thread with
 only the focused goal contract, product name, sprint number, and ordered ticket
 titles; it does not append live database schemas, repository guidance, shared team
 guidance, or member instructions. The turn uses the selected model's lightest
@@ -401,16 +726,16 @@ The structured result classifies the plan as `sufficient`,
 foundation ticket when required; and classifies every proposal as
 `independent`, `establishes`, or `requires`. Decoding rejects an absent
 foundation, multiple proposed foundations, a proposed foundation that is not an
-Implementer-owned Task, and any `requires` ticket without a direct or transitive
+implementer-owned Task, and any `requires` ticket without a direct or transitive
 dependency path to the named foundation. This validation happens before
 suggestions can become reviewable scope. The assessment itself is not a second
 persisted delivery model: accepted tickets, their contracts, and their durable
 dependency edges remain the execution source of truth.
 
-Starter-backlog and Epic-planning threads receive bounded accepted-ticket
-contracts and relevant verified Product knowledge in their prompt. They are
+Starter-backlog and epic-planning threads receive bounded accepted-ticket
+contracts and relevant verified product knowledge in their prompt. They are
 explicitly prohibited from inspecting repository files or Git history and use
-the live database only to refresh mutable context. Other Business Analyst
+the live database only to refresh mutable context. Other business analyst
 refinement threads retain their read-only product boundary. None scan unrelated
 host installations or pre-authorise runtime paths.
 Ticket refinement can attach an existing foundation dependency; when no
@@ -418,8 +743,8 @@ sufficient foundation ticket exists, it returns a separate foundation split
 recommendation rather than silently expanding the feature contract. Its
 structured result also recommends the future delivery role. Once refinement is
 complete, the application uses the same ticket-owner routing policy as accepted
-Epic proposals to fill an unassigned ticket and its saved draft-sprint item,
-while preserving any existing Product Owner assignment.
+epic proposals to fill an unassigned ticket and its saved draft-sprint item,
+while preserving any existing product owner assignment.
 
 Developer instructions are composed from focused lifecycle guidance rather than
 one universal delivery prompt. Conversation, planning, authorised research,
@@ -428,9 +753,9 @@ their relevant operating contract. Research delivery explicitly treats historica
 delivery notes as analogous context rather than executable instructions and uses
 text-native documentation checks where sufficient; implementation-only runtime,
 service, and interactive-demo guidance is reserved for product-changing delivery.
-The app then appends internal role guidance, shared Product Owner guidance, and
+The app then appends internal role guidance, shared product owner guidance, and
 the selected member's optional custom instructions in that order. The custom
-field starts empty and remains an owner-controlled overlay, so the Product Owner
+field starts empty and remains an owner-controlled overlay, so the product owner
 can redirect an agent's approach without making safety and lifecycle rules UI
 configuration.
 
@@ -469,8 +794,8 @@ the read boundary while retaining ticket-scoped writes and denying every other
 product.
 When the App Server sends `item/commandExecution/requestApproval` or
 `item/permissions/requestApproval`, the adapter preserves the bidirectional JSON-RPC
-request for application policy and, when genuinely additional access remains, Product
-Owner review. A native `item/fileChange/requestApproval` does not contain the exact
+request for application policy and, when genuinely additional access remains, product
+owner review. A native `item/fileChange/requestApproval` does not contain the exact
 structured filesystem scope required for an informed decision. The Core adapter
 therefore returns `decline` before publishing that request to application subscribers;
 it cannot create a pending permission record or project **Needs your input**.
@@ -486,7 +811,7 @@ only after the capability is granted. The same guidance tells the agent to diagn
 symlink-chain, and runtime-dependency inspection. The agent establishes the foreseeable
 boundary first and submits one batched request for the smallest coherent filesystem or
 network capability rather than discovering an executable, its parent directories,
-symlink targets, and shared libraries through sequential Product Owner approvals. For
+symlink targets, and shared libraries through sequential product owner approvals. For
 a Homebrew runtime, that may be one read request for `/opt/homebrew/bin`,
 `/opt/homebrew/opt`, and `/opt/homebrew/Cellar`; package-manager data, configuration,
 credentials, and unrelated user locations remain excluded. The agent then retries the
@@ -499,7 +824,7 @@ interrupted leaf permission with one consolidated runtime request instead of con
 a path-by-path cascade. It first consults verified Environments guidance, then prefers
 the repository's established native build system and shortest maintained,
 purpose-named entry point over a shell chain. When a recurring coherent workflow has
-no suitable entry point, an Implementer may add a version-controlled, non-interactive,
+no suitable entry point, an implementer may add a version-controlled, non-interactive,
 workspace-relative task or script as normal product tooling; it must not substitute an
 unrelated package manager or runtime, conceal operations, or exist only to obtain
 broader approval. A service entry point remains in the foreground, accepts the
@@ -511,7 +836,7 @@ If the permissions tool is unavailable or a safe coherent capability cannot be
 established within the current boundary, a delivery agent fails closed with the
 diagnostic and required access instead of silently substituting older verification
 evidence.
-The permission Work log card presents the agent's plain-language purpose first
+The permission work log card presents the agent's plain-language purpose first
 and places the unchanged exact command and additional access in a disclosure.
 Persistence retains the unchanged request for audit and same-run decisions, so
 this presentation change does not alter one-time approval semantics.
@@ -520,16 +845,16 @@ AgentRun, projects **Needs your input**, and stores the exact scope, rationale,
 signature, and decision. **Allow once** accepts only the exact command or grants the
 requested capability for the current turn. For command and permission requests,
 **Always allow for this product** stores a durable product-scoped grant.
-Before projecting a structured permission request to the Product Owner, the
+Before projecting a structured permission request to the product owner, the
 coordinator compares it with the assigned read/write ticket worktree, the resolved
 baseline transient-storage roots, and structured capabilities already active for
 that turn. When their union covers
 the complete request, Spedito returns the unchanged requested capability without
 changing the permission boundary or projecting **Needs your input**. It persists
 the exact request with an existing-access status and shows a compact, non-actionable
-**Existing access used** Work log entry stating that no permissions changed.
+**Existing access used** work log entry stating that no permissions changed.
 An identical existing-access request in the same turn reuses that record rather
-than adding repeated Work log entries. Coverage is conservative: only canonical
+than adding repeated work log entries. Coverage is conservative: only canonical
 absolute paths at or below the ticket worktree or resolved transient roots, and exact
 current-turn capabilities, qualify. Sibling worktrees and traversal paths are never
 inferred from workspace access; patterns and network scopes qualify only when an exact
@@ -551,16 +876,16 @@ directory creation must be able to traverse the existing parent.
 
 The broad Foundation cache root has a more-specific delivery deny for Spedito's
 PreviewWorktrees. Structured delivery requests are also checked against canonical
-Spedito Product, Run, Integration, and Preview workspace roots. Own-ticket descendants
+Spedito product, Run, Integration, and Preview workspace roots. Own-ticket descendants
 retain their assigned workspace access; overlapping parent, sibling, or managed
 execution paths are declined automatically and persisted with a policy-denied status.
-They render as a non-actionable **Protected Spedito storage** Work log item authored
+They render as a non-actionable **Protected Spedito storage** work log item authored
 by Spedito. The lifecycle prompt explains that a delivery agent must not request
 those paths, while the demo command profile grants the exact candidate PreviewWorktree.
 Before running any candidate recipe, Spedito executes a bounded nested-directory
 write check through that same managed command profile. Failure is a host preparation
 error that preserves the reviewed candidate for retry; it is not implementation
-feedback or a reason to repeat Tech Lead review.
+feedback or a reason to repeat tech lead review.
 Command grants retain the exact command and omit the ticket worktree path only
 after confirming the requested working directory is inside that run's assigned
 workspace. They never use prefix, fuzzy, or semantic command matching. Structured
@@ -577,7 +902,7 @@ structured consent while stating that consent is not active sandbox access and
 does not expand ticket scope. The assigned agent therefore knows which capability
 can be requested rather than rediscovering it through repeated failures. Matching
 future requests receive a turn-scoped approval and are recorded in the receiving
-ticket's Work log. Product settings present overlapping structured grants as one
+ticket's work log. Product settings present overlapping structured grants as one
 effective access group and revoke its underlying rows atomically; exact commands
 remain separate. Revoked rows remain available for audit. File-change approvals
 cannot be persisted. **Deny** declines without cancelling the turn so the agent
@@ -586,9 +911,9 @@ is outstanding. Spedito may also transparently reapply an identical
 recorded decision within the same durable AgentRun. If the app
 restarts, a pending connection-scoped request becomes interrupted and the
 run remains in **Needs your input** rather than being admitted by the scheduler.
-The Product Owner can still Allow or Deny the durable interrupted request. That
+The product owner can still Allow or Deny the durable interrupted request. That
 decision queues the preserved run, and a matching request from its resumed
-Conversation receives the recorded answer automatically. Saved product grants
+conversation receives the recorded answer automatically. Saved product grants
 remain durable.
 
 Every application-owned AgentRun update passes through one coordination boundary.
@@ -597,6 +922,28 @@ After the durable write succeeds, a transition from any other status to
 reloading an already-waiting status stays silent, background-product transitions
 use the same path, and shutdown suppresses new playback. Audio failure never
 changes the durable attention state.
+
+The application also derives a cross-product attention projection from
+`awaiting_owner` AgentRuns in every active product store, deduplicated by work
+item and ordered by the latest run update. The projection joins the product and
+work item with the latest structured owner question or pending permission
+request summary. Startup reloads the projection from SQLite; every transition
+into or out of `awaiting_owner` refreshes the owning product so attention counts
+remain durable rather than behaving like unread notifications. Product-switcher
+and product-library navigation counts exclude the selected product. The
+product-switcher capsule uses the app accent color. The product-library section
+count uses an orange capsule, while inline attention labels remain orange text.
+Attention within the selected product remains on its workspace destination.
+
+A newly waiting run publishes one transient in-app presentation containing its
+product, ticket, and summary. Its action selects the owning product only after
+the product owner chooses it, then opens the ticket. Product-library navigation
+opens a single waiting ticket directly or publishes a multi-ticket sprint-board
+filter. When the app is inactive, `UNUserNotificationCenter` receives an alert
+without an additional sound. Notification metadata contains only product and
+work-item identifiers; the application delegate resolves the click through the
+same durable attention projection and navigation path. Notification denial or
+delivery failure never changes ticket state or removes the in-app badge.
 
 The same adapter owns buffered and streaming `command/exec`, output deltas, and
 termination for candidate demos. The durable run stores the thread identifier
@@ -608,20 +955,27 @@ payload but does not close the waiter. Spedito retains that payload until
 the matching `turn/completed` notification or reconciled durable terminal state,
 then validates it and may start a repair turn. This prevents a repair submission
 from overlapping the turn whose response it is repairing.
-Product Chat turns consume the same supported Codex activity events as
-Sprint Board runs, but keep that transient projection keyed by conversation
+Product chat turns consume the same supported Codex activity events as
+sprint board runs, but keep that transient projection keyed by conversation
 thread rather than creating a delivery AgentRun. The bottom conversation status
 strip shows concise reasoning summaries, planning steps, and local inspection
-activity; it never exposes raw chain-of-thought. The final structured result
-contains a four-to-six-word durable thread title that aims for five and a
-Markdown-formatted answer. Same-member follow-ups resume the stored Codex thread.
+activity; it never exposes raw chain-of-thought. A new conversation concurrently
+starts a 15-second, ephemeral read-only title turn using the selected model's
+lightest supported reasoning effort. That isolated turn is instructed to use
+only the first owner message, not inspect product evidence, and return a
+structured four-to-six-word title. Its compare-and-set persistence update
+replaces only the original provisional subject, does not change the thread's
+last-activity time, and fails independently of the main conversation turn. The
+durable conversation turn returns a plain Markdown answer without a title
+schema. Same-member
+follow-ups resume the stored Codex thread without regenerating the title.
 When the owner selects another member, the persistence write atomically changes
 the current recipient and clears the former role-specific Codex identifier; the
 new member starts a fresh read-only session whose prompt contains the durable
 visible Chat transcript and whose tools can re-query current product evidence.
 Stable agent-facing views are the preferred compatibility contract, not an
 artificial limit on that product-scoped read access. When an operational question
-requires evidence outside those views, Product Chat may inspect the read-only
+requires evidence outside those views, product chat may inspect the read-only
 schema and query the relevant tables directly. Run-status answers use durable
 activity telemetry rather than inferring progress from comments, and permission
 answers expose the request's owner-facing purpose and scope without returning
@@ -652,6 +1006,77 @@ falls back to full access or the retired custom Seatbelt allow-list.
 Unknown versions are allowed to attempt the capability handshake. Missing
 required behavior fails closed with an owner-facing recovery path.
 
+### 7.1 ACP feasibility and parity boundary
+
+As of August 4, 2026, stable Agent Client Protocol (ACP) v1 can support a
+product-wide agent boundary, but it cannot by itself guarantee exact feature
+parity across arbitrary ACP agents.
+
+| Goal | Verdict | Boundary |
+| --- | --- | --- |
+| Put every Spedito lifecycle behind one provider-neutral internal interface | **Yes** | Keep one Spedito-owned backend contract with direct Codex and ACP implementations. |
+| Send every agent interaction over ACP, including Codex | **Technically yes** | The current Codex ACP adapter starts Codex App Server underneath, so this adds a translation process rather than removing the Codex dependency. |
+| Preserve product chat, refinement, planning, implementation, review, recovery, and demo behavior for selected non-Codex agents | **Yes, conditionally** | Spedito must own the durable run and transcript, structured-result validation and repair, worktree and candidate lifecycle, process sandbox, approval policy, crash recovery, and demo process. Each agent must pass a lifecycle-specific capability and isolation conformance suite. |
+| Preserve identical context, compaction, detailed token, cost, and shared-account quota metrics across providers | **No, not from stable ACP v1** | ACP standardizes optional current-context usage and optional cumulative cost. Detailed turn token categories, compaction events, and account quotas require provider-specific extensions or APIs. Missing values remain **Unavailable**. |
+| Let any ACP-compatible agent perform every Spedito lifecycle | **No** | ACP capabilities are optional, and protocol compliance does not prove Spedito's sandbox boundary. An agent that cannot satisfy a lifecycle contract is limited to eligible work or rejected. |
+| Remove all provider-specific code while keeping exact Codex behavior | **No** | Codex rate limits, compaction, structured-output enforcement, and exact permission semantics are outside portable ACP v1 unless an equivalent extension is available. |
+
+The portable ACP v1 surface includes initialization and authentication
+negotiation; session creation with optional load and resume; prompts,
+streamed messages, plans, tool calls, stop reasons, and cancellation;
+session-scoped model and reasoning configuration; permission-choice
+interaction; and optional `usage_update` values for current context
+`used`/`size` tokens and cumulative cost.
+
+ACP v1 does not standardize Codex-equivalent `outputSchema`, detailed
+per-turn input/output/reasoning/cache token accounting, context-compaction
+events, provider account quotas, or Spedito's exact structured filesystem
+and network capability rules. Generic `session/request_permission` choices
+provide a review interaction but not an isolation proof. Spedito therefore
+preserves governed structured results by validating and repairing the final
+message, and admits code-changing delivery only when it owns or independently
+proves the agent process boundary.
+
+Spedito remains the authoritative local control plane for AgentRuns, Work
+logs, tickets, scheduler leases, permission decisions, worktrees, candidate
+hashes, and recovery. An ACP session identifier is an opaque continuation
+handle. If an agent cannot load or resume it, Spedito reconstructs a new
+session from the durable transcript or completion handoff rather than
+claiming native thread durability.
+
+ACP is agent-agnostic, not a raw model-provider gateway. A selected ACP agent
+may expose OpenAI, Anthropic, Google, or local models through its own session
+configuration; otherwise model routing would require a separate agent that
+owns provider APIs, tools, context, compaction, and safety. Initial ACP
+support remains local JSON-RPC over stdio because the official remote
+HTTP/WebSocket transport remains work in progress.
+
+The recommended architecture is a product-wide Spedito backend interface
+with the direct Codex App Server backend and stable ACP v1 backend beside
+each other. Capability-gate each lifecycle instead of presenting one global
+“ACP compatible” switch. Start with a transcript-backed read-only lifecycle,
+add governed structured workflows after validation-and-repair parity, and
+admit implementation or review only after a real-agent isolation and
+recovery suite passes. Managed candidate demos remain on Spedito's host-owned
+foreground command path until an ACP backend proves the same ownership and
+teardown guarantees.
+
+ACP v2 was published as a draft on July 20, 2026 and must not ship by
+default. Re-evaluate it after stabilization while retaining v1 compatibility.
+
+Primary references: [ACP introduction](https://agentclientprotocol.com/get-started/introduction),
+[initialization](https://agentclientprotocol.com/protocol/v1/initialization),
+[session setup](https://agentclientprotocol.com/protocol/v1/session-setup),
+[prompt turns](https://agentclientprotocol.com/protocol/v1/prompt-turn),
+[tool calls and permissions](https://agentclientprotocol.com/protocol/v1/tool-calls),
+[session configuration](https://agentclientprotocol.com/protocol/v1/session-config-options),
+[stable session usage](https://agentclientprotocol.com/rfds/session-usage),
+[draft end-turn token accounting](https://agentclientprotocol.com/rfds/end-turn-token-usage),
+[ACP v2 draft status](https://agentclientprotocol.com/announcements/acp-v2-draft),
+[Buzz architecture](https://github.com/block/buzz/blob/main/ARCHITECTURE.md),
+[Buzz agent design](https://github.com/block/buzz/blob/main/VISION_AGENT.md),
+and the current [Codex ACP adapter](https://github.com/agentclientprotocol/codex-acp).
+
 ## 8. Recovery model
 
 Durable writes occur before a UI projection announces a state. On launch the
@@ -663,10 +1088,10 @@ filesystem state when no agent-authored checkpoint exists.
 
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral
-Conversation, except when a live permission decision was outstanding; that run
-remains awaiting the Product Owner. A Product Owner stop also leaves the run
+conversation, except when a live permission decision was outstanding; that run
+remains awaiting the product owner. A product owner stop also leaves the run
 interrupted until they resume it. On restart Spedito explicitly calls App
-Server `thread/resume` to load the persisted Conversation into the new server
+Server `thread/resume` to load the persisted conversation into the new server
 process, then first recovers a valid completed structured result when one exists.
 Otherwise it starts a focused continuation turn, telling the team member to use
 the current workspace and prior context rather than restart the ticket or repeat
@@ -674,41 +1099,44 @@ completed work and checks. A live approval request cannot survive the old App
 Server connection, so its durable interrupted record remains an actionable
 **Needs your input** item. Allow or Deny stores the scoped decision and only then
 queues the run; if the resumed agent still needs the matching capability,
-Spedito applies that decision automatically. A missing Conversation is
+Spedito applies that decision automatically. A missing conversation is
 established only when `thread/resume` reports it unavailable; the replacement
 receives the full ticket contract plus an explicit preserved-workspace
 continuation instruction.
 If the recorded ticket worktree is missing, Spedito does not claim that
-its uncaptured changes were preserved: it records the loss in the Work log and
+its uncaptured changes were preserved: it records the loss in the work log and
 prepares a fresh isolated ticket workspace.
 
 An `awaiting_owner` delivery result is run-bound rather than candidate-bound. It
 stores its question, options, and optional decision-artifact title and
 workspace-relative path in the ticket comment. The artifact path must resolve
 inside the preserved ticket workspace, exist as a changed file, and is opened
-directly from the Work log. The result must not contain Product knowledge or
+directly from the work log. The result must not contain product knowledge or
 follow-up proposals or a demo. Those records require a completed immutable
 candidate revision and are produced only after the same run resumes with the
-Product Owner's answer.
+product owner's answer.
 
-Review recovery is revision-bound. A Tech Lead turn interrupted by shutdown
-retains its review run, non-ephemeral Conversation, detached path, and reviewed SHA. On restart
-Spedito verifies or reconstructs the detached checkout at that exact SHA,
-recovers a valid completed structured result when one exists, or starts a
-continuation turn after explicitly resuming the same Conversation. Review uses
-`approvalPolicy: never`; an expired request created by an older review contract is
-retired and the run is queued to continue within the evidence-only boundary. A
-missing Conversation starts a replacement review against the same SHA only after
-`thread/resume` fails. A missing, mutated, or unverifiable candidate checkout
-returns the immutable candidate to review. An unverifiable post-conflict
+Review recovery is candidate-bound. A tech lead turn interrupted by shutdown
+retains its review run, non-ephemeral conversation, detached path, and reviewed
+candidate identifier. For repository-changing work, restart verifies or
+reconstructs the detached checkout at the exact reviewed SHA. For a local outcome,
+restart reloads the immutable execution result and candidate-bound knowledge
+proposals from SQLite; its unchanged base SHA remains only an isolation and
+workspace-recovery anchor. Spedito then recovers a valid completed structured
+review result or starts a continuation turn after explicitly resuming the same
+conversation. Review uses `approvalPolicy: never`; an expired request created by
+an older review contract is retired and the run is queued to continue within the
+evidence-only boundary. A missing conversation starts a replacement review only
+after `thread/resume` fails. A missing, mutated, or unverifiable checkout returns
+a repository-changing candidate to review. An unverifiable post-conflict
 integrated revision returns it to integration and focused re-review, with an
-explicit Work log explanation. A candidate already in **Ready for Demo** keeps its
+explicit work log explanation. A candidate already in **Ready for demo** keeps its
 reviewed revision; only its owned demo process is stopped and restarted.
 Product switching is not an execution suspension boundary. The application owns
 one product-scoped scheduler task per active sprint, and each scheduler reloads
 its own product, plan, tickets, profiles, permission records, and knowledge from
 the durable store. The selected product controls only the published UI
-projection. Background Implementer, Integrator, and Tech Lead turns therefore
+projection. Background implementer, integrator, and tech lead turns therefore
 continue without interruption, while their telemetry, permission cards, demo
 preparation, and refreshes remain product-scoped. Product archival suspends only
 the archived product; app shutdown suspends every product.
@@ -716,7 +1144,7 @@ the archived product; app shutdown suspends every product.
 Sprint pause is a durable execution boundary rather than a UI-only flag. The
 store changes the sprint from `active` to `paused` before the application
 interrupts its product-scoped scheduler and active turns. Cancellation recovery
-queues preserved implementation work against the same run, Conversation, and
+queues preserved implementation work against the same run, conversation, and
 ticket workspace, while permission decisions remain owner-controlled. Resume
 atomically restores `active` before waking the scheduler. A paused sprint counts
 as the product's in-progress sprint and prevents a later draft from starting.
@@ -725,7 +1153,7 @@ Stopping a sprint first reaches the same suspension boundary, then atomically
 marks the sprint `cancelled`, cancels non-terminal runs, supersedes unaccepted
 candidates and unpublished knowledge proposals, and returns unfinished tickets
 to `ready`. Released tickets and accepted candidates are immutable. Audit rows,
-Work logs, Conversations, and workspace references are retained; no stopped
+work logs, conversations, and workspace references are retained; no stopped
 candidate is promoted to trunk.
 
 Owner-facing clarification records are durable independently of their Codex
@@ -751,7 +1179,7 @@ unknown.
 
 Agent instructions provide the exact active product database path and exact
 column schemas for stable read-only views covering tickets, dependencies, Work
-logs, Epics, sprints, verified knowledge, decisions, provenance, retrospectives,
+logs, epics, sprints, verified knowledge, decisions, provenance, retrospectives,
 and team members. This includes the durable ticket key as `item_key`. Planning
 prompts contain a bounded snapshot of active ticket contracts and selected
 verified knowledge, while other agent workflows can discover broader evidence
@@ -774,21 +1202,22 @@ than treating every readable page as writable. The prompt still shows the full
 canonical directory as routing metadata, without presenting unavailable page
 bodies as verified context.
 
-Overview, Product principles, Glossary, Ways of working, and Environments form
+Overview, product principles, Glossary, Ways of working, and Environments form
 the central mandatory-page policy. Every product is idempotently backfilled with
 the Operations section and Environments page, but an empty page remains only a
 destination. Non-empty verified mandatory pages are supplied to implementation,
-Tech Lead, Integrator, and other product agent instructions. Delivery context
+tech lead, integrator, and other product agent instructions. Delivery context
 records combine these pages with bounded ticket-relevant selection, and the Work
 log presents the two groups separately.
 
 Environments is always an authorised update destination for an implementation
 run so an agent can propose a complete replacement after verifying operational
-guidance is absent or stale. It remains read-only to Tech Lead and Integrator
-runs. Tech Lead approval uses the existing candidate-bound knowledge proposal
-path. Reviewed Markdown is materialized only in the integrated candidate;
-ticket acceptance publishes it into canonical Product knowledge. The stricter
-Product Owner approval feature flag still adds an explicit per-proposal decision
+guidance is absent or stale. It remains read-only to tech lead and integrator
+runs. Tech lead approval uses the existing candidate-bound knowledge proposal
+path. For repository-changing delivery, reviewed Markdown may also be
+materialized in the integrated candidate. Local outcomes keep the proposal only
+in SQLite. Ticket acceptance publishes either kind into canonical product knowledge.
+The stricter product owner approval feature flag still adds an explicit per-proposal decision
 before ticket acceptance. Stable repository entry points improve exact saved-product
 permission matching without converting knowledge into a grant.
 
@@ -797,7 +1226,7 @@ delivery contract verifies the approved toolchain and versions, stable
 repository-owned build/test/local-run/demo entry points, run-private temporary
 and cache locations, required capabilities, a managed readiness check, and
 known limitations, then proposes the complete Environments replacement.
-Downstream tickets receive the accepted foundation's concise Work log handoff
+Downstream tickets receive the accepted foundation's concise work log handoff
 and verified Environments page through the normal direct-prerequisite context
 rules. Production credentials, signing identities, and release authority are
 not implied by local environment readiness.
@@ -806,7 +1235,7 @@ not implied by local environment readiness.
 
 The repository implements the local control plane, owner-facing planning and
 delivery workflow, Codex App Server adapter, isolated ticket workspaces,
-candidate review and integration, managed local demos, recovery, Product
+candidate review and integration, managed local demos, recovery, product
 knowledge, conversations, retrospectives, and reporting described above.
 
 Architecture descriptions are invariants and intended behaviour, not evidence

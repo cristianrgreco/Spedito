@@ -1,6 +1,7 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Planning drop policy")
@@ -375,21 +376,21 @@ struct PlanningDropPolicyTests {
       self.dependant = dependant
       self.downstream = downstream
       self.workItems = [prerequisite, dependant] + (downstream.map { [$0] } ?? [])
-      self.dependencies = [
-        WorkItemDependency(
-          workItemID: dependant.id,
-          dependsOnWorkItemID: prerequisite.id
-        )
-      ] + (
-        downstream.map {
+      self.dependencies =
+        [
+          WorkItemDependency(
+            workItemID: dependant.id,
+            dependsOnWorkItemID: prerequisite.id
+          )
+        ]
+        + (downstream.map {
           [
             WorkItemDependency(
               workItemID: $0.id,
               dependsOnWorkItemID: dependant.id
             )
           ]
-        } ?? []
-      )
+        } ?? [])
       self.candidateIDs = candidateIDs
     }
 

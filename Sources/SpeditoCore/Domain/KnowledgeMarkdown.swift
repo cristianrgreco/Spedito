@@ -37,7 +37,8 @@ public enum KnowledgeMarkdown {
   /// Knowledge page titles are stored separately from their Markdown bodies.
   /// Remove a leading level-one heading so readers do not render the title twice.
   public static func normalizedBody(_ source: String) -> String {
-    let normalizedNewlines = source
+    let normalizedNewlines =
+      source
       .replacingOccurrences(of: "\r\n", with: "\n")
       .replacingOccurrences(of: "\r", with: "\n")
 
@@ -68,7 +69,8 @@ public enum KnowledgeMarkdown {
     in source: String,
     removesLeadingTitle: Bool = true
   ) -> [Block] {
-    let normalized = removesLeadingTitle
+    let normalized =
+      removesLeadingTitle
       ? normalizedBody(source)
       : source
         .replacingOccurrences(of: "\r\n", with: "\n")

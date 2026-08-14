@@ -94,6 +94,155 @@ public struct DemoLaunchSpecification: Codable, Equatable, Sendable {
   }
 }
 
+public struct AcceptedAppLaunch: Equatable, Sendable {
+  public let candidate: CandidateRevision
+  public let specification: DemoLaunchSpecification
+
+  public init(candidate: CandidateRevision, specification: DemoLaunchSpecification) {
+    self.candidate = candidate
+    self.specification = specification
+  }
+}
+
+public enum AcceptedAppLaunchPolicy {
+  public static func latest(in candidates: [CandidateRevision]) -> AcceptedAppLaunch? {
+    candidates.compactMap(launch(for:)).max(by: isEarlier)
+  }
+
+  public static func all(in candidates: [CandidateRevision]) -> [AcceptedAppLaunch] {
+    candidates.compactMap(launch(for:)).sorted { lhs, rhs in
+      isEarlier(rhs, lhs)
+    }
+  }
+
+  private static func launch(for candidate: CandidateRevision) -> AcceptedAppLaunch? {
+    guard candidate.status == .accepted, candidate.integratedSHA != nil,
+      let result = try? CodexTicketExecutor.decode(candidate.executionResultJSON),
+      let specification = result.demo,
+      specification.presentation.kind == .browser
+        || specification.presentation.kind == .macApplication,
+      (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
+    else {
+      return nil
+    }
+    return AcceptedAppLaunch(candidate: candidate, specification: specification)
+  }
+
+  private static func isEarlier(_ lhs: AcceptedAppLaunch, _ rhs: AcceptedAppLaunch) -> Bool {
+    if lhs.candidate.updatedAt != rhs.candidate.updatedAt {
+      return lhs.candidate.updatedAt < rhs.candidate.updatedAt
+    }
+    if lhs.candidate.createdAt != rhs.candidate.createdAt {
+      return lhs.candidate.createdAt < rhs.candidate.createdAt
+    }
+    return lhs.candidate.id.uuidString < rhs.candidate.id.uuidString
+  }
+}
+
+public struct ImportedAppLaunch: Identifiable, Codable, Equatable, Sendable {
+  public let id: UUID
+  public let runID: UUID
+  public let productID: UUID
+  public let revisionSHA: String
+  public let specification: DemoLaunchSpecification
+  public let evidence: [RepositoryEvidence]
+  public let publishedAt: Date
+
+  public init(
+    id: UUID,
+    runID: UUID,
+    productID: UUID,
+    revisionSHA: String,
+    specification: DemoLaunchSpecification,
+    evidence: [RepositoryEvidence],
+    publishedAt: Date
+  ) {
+    self.id = id
+    self.runID = runID
+    self.productID = productID
+    self.revisionSHA = revisionSHA
+    self.specification = specification
+    self.evidence = evidence
+    self.publishedAt = publishedAt
+  }
+}
+
+public enum AppVersion: Identifiable, Equatable, Sendable {
+  case imported(ImportedAppLaunch)
+  case accepted(AcceptedAppLaunch)
+
+  public var id: UUID {
+    switch self {
+    case .imported(let launch):
+      launch.id
+    case .accepted(let launch):
+      launch.candidate.id
+    }
+  }
+
+  public var productID: UUID {
+    switch self {
+    case .imported(let launch):
+      launch.productID
+    case .accepted(let launch):
+      launch.candidate.productID
+    }
+  }
+
+  public var revisionSHA: String {
+    switch self {
+    case .imported(let launch):
+      launch.revisionSHA
+    case .accepted(let launch):
+      launch.candidate.integratedSHA ?? ""
+    }
+  }
+
+  public var sessionSourceKind: DemoSessionSourceKind {
+    switch self {
+    case .imported:
+      .importedRepository
+    case .accepted:
+      .acceptedCandidate
+    }
+  }
+  public var specification: DemoLaunchSpecification {
+    switch self {
+    case .imported(let launch):
+      launch.specification
+    case .accepted(let launch):
+      launch.specification
+    }
+  }
+
+  public var acceptedAt: Date {
+    switch self {
+    case .imported(let launch):
+      launch.publishedAt
+    case .accepted(let launch):
+      launch.candidate.updatedAt
+    }
+  }
+}
+
+public enum AppVersionPolicy {
+  public static func all(
+    imported: ImportedAppLaunch?,
+    acceptedCandidates: [CandidateRevision]
+  ) -> [AppVersion] {
+    var versions = AcceptedAppLaunchPolicy.all(in: acceptedCandidates).map(AppVersion.accepted)
+    if let imported {
+      versions.append(.imported(imported))
+    }
+    return versions.sorted { lhs, rhs in
+      if lhs.acceptedAt != rhs.acceptedAt {
+        return lhs.acceptedAt > rhs.acceptedAt
+      }
+      return lhs.id.uuidString > rhs.id.uuidString
+    }
+  }
+}
+
 public enum DemoSessionStatus: String, Codable, CaseIterable, Sendable {
   case preparing
   case starting
@@ -102,10 +251,16 @@ public enum DemoSessionStatus: String, Codable, CaseIterable, Sendable {
   case stopped
 }
 
+public enum DemoSessionSourceKind: String, Codable, CaseIterable, Sendable {
+  case acceptedCandidate = "accepted_candidate"
+  case importedRepository = "imported_repository"
+}
+
 public struct DemoSession: Identifiable, Codable, Equatable, Sendable {
   public let id: UUID
   public let productID: UUID
-  public let candidateRevisionID: UUID
+  public let sourceKind: DemoSessionSourceKind
+  public let launchID: UUID
   public var status: DemoSessionStatus
   public var previewWorktreePath: String?
   public var allocatedPort: Int?
@@ -117,7 +272,8 @@ public struct DemoSession: Identifiable, Codable, Equatable, Sendable {
   public init(
     id: UUID = UUID(),
     productID: UUID,
-    candidateRevisionID: UUID,
+    sourceKind: DemoSessionSourceKind = .acceptedCandidate,
+    launchID: UUID,
     status: DemoSessionStatus,
     previewWorktreePath: String? = nil,
     allocatedPort: Int? = nil,
@@ -128,7 +284,8 @@ public struct DemoSession: Identifiable, Codable, Equatable, Sendable {
   ) {
     self.id = id
     self.productID = productID
-    self.candidateRevisionID = candidateRevisionID
+    self.sourceKind = sourceKind
+    self.launchID = launchID
     self.status = status
     self.previewWorktreePath = previewWorktreePath
     self.allocatedPort = allocatedPort
@@ -146,6 +303,45 @@ public enum DemoLaunchValidationError: Error, Equatable, LocalizedError, Sendabl
     switch self {
     case .invalid(let detail):
       "The demo could not be prepared safely: \(detail)"
+    }
+  }
+}
+
+public enum DemoArtifactPolicy {
+  public static let allowedExtensions: Set<String> = [
+    "csv", "gif", "jpeg", "jpg", "json", "log", "markdown", "md", "pdf", "png", "txt",
+    "webp",
+  ]
+
+  public static func validatePath(_ path: String) throws {
+    let pathExtension = URL(fileURLWithPath: path).pathExtension.lowercased()
+    guard allowedExtensions.contains(pathExtension) else {
+      throw DemoLaunchValidationError.invalid(
+        "review artifacts must use an inert text, data, image, or PDF format."
+      )
+    }
+  }
+
+  public static func validateExistingFile(
+    at url: URL,
+    fileManager: FileManager = .default
+  ) throws {
+    try validatePath(url.path)
+    let values = try url.resourceValues(
+      forKeys: [.isAliasFileKey, .isPackageKey, .isRegularFileKey, .isSymbolicLinkKey]
+    )
+    let attributes = try fileManager.attributesOfItem(atPath: url.path)
+    let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+    guard
+      values.isRegularFile == true,
+      values.isAliasFile != true,
+      values.isPackage != true,
+      values.isSymbolicLink != true,
+      permissions & 0o111 == 0
+    else {
+      throw DemoLaunchValidationError.invalid(
+        "review artifacts must be regular, non-executable files."
+      )
     }
   }
 }
@@ -205,10 +401,22 @@ public enum DemoLaunchSpecificationValidator {
         )
       }
       try validateBrowserPath(specification.presentation.path ?? "/")
-    case .macApplication, .artifact:
+    case .macApplication:
       guard specification.launchCommand == nil else {
         throw DemoLaunchValidationError.invalid(
-          "app and artifact demos are opened directly and cannot declare a service command."
+          "macOS app demos are opened directly and cannot declare a service command."
+        )
+      }
+      guard let path = specification.presentation.path else {
+        throw DemoLaunchValidationError.invalid(
+          "the demo needs a workspace-relative application path."
+        )
+      }
+      try validateRelativePath(path, allowsCurrentDirectory: false)
+    case .artifact:
+      guard specification.launchCommand == nil else {
+        throw DemoLaunchValidationError.invalid(
+          "artifact demos are opened directly and cannot declare a service command."
         )
       }
       guard let path = specification.presentation.path else {
@@ -217,6 +425,7 @@ public enum DemoLaunchSpecificationValidator {
         )
       }
       try validateRelativePath(path, allowsCurrentDirectory: false)
+      try DemoArtifactPolicy.validatePath(path)
     case .commandOutput:
       guard specification.launchCommand != nil else {
         throw DemoLaunchValidationError.invalid(

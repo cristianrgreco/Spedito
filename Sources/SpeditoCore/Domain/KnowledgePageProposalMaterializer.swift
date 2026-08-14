@@ -28,7 +28,7 @@ public enum KnowledgePageProposalMaterializer {
           pages[targetIndex].productID == proposal.productID
         else {
           throw KnowledgePageProposalMaterializationError.invalidTarget(
-            "A Product knowledge update targets a page outside this product."
+            "A product knowledge update targets a page outside this product."
           )
         }
         let target = pages[targetIndex]
@@ -60,7 +60,7 @@ public enum KnowledgePageProposalMaterializer {
           })
         else {
           throw KnowledgePageProposalMaterializationError.invalidTarget(
-            "A Product knowledge creation targets a section outside this product."
+            "A product knowledge creation targets a section outside this product."
           )
         }
         let siblingPages = pages.filter { $0.parentID == parentPageID }
@@ -95,7 +95,8 @@ public enum KnowledgePageProposalMaterializer {
   }
 
   static func slug(for title: String) -> String {
-    let slug = title
+    let slug =
+      title
       .lowercased()
       .split { !$0.isLetter && !$0.isNumber }
       .map(String.init)

@@ -1,11 +1,12 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
-@Suite("Sprint ticket Work log history")
+@Suite("Sprint ticket work log history")
 struct SprintTicketWorkLogHistoryTests {
-  @Test("An active agent question marks the Work log as needing Product Owner input")
+  @Test("An active agent question marks the work log as needing product owner input")
   func activeAgentQuestionNeedsAttention() {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
@@ -18,7 +19,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(requiresInput)
   }
 
-  @Test("Ordinary in-progress activity does not mark the Work log for attention")
+  @Test("Ordinary in-progress activity does not mark the work log for attention")
   func ordinaryActivityDoesNotNeedAttention() {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
@@ -31,7 +32,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(!requiresInput)
   }
 
-  @Test("Product knowledge under Tech Lead review does not need Product Owner attention")
+  @Test("Product knowledge under tech lead review does not need product owner attention")
   func proposedKnowledgeDoesNotNeedAttention() {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
@@ -44,7 +45,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(!requiresInput)
   }
 
-  @Test("Reviewed Product knowledge needs attention only when owner approval is enabled")
+  @Test("Reviewed product knowledge needs attention only when owner approval is enabled")
   func reviewedKnowledgeNeedsAttentionWhenOwnerApprovalIsEnabled() {
     let requiresInput = SprintTicketWorkLogAttention.requiresProductOwnerInput(
       hasPendingPermissionRequest: false,
@@ -65,8 +66,59 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(!publishesAutomatically)
   }
 
-  @Test("A selected sprint answer remains on its question without a duplicate comment")
-  func selectedAnswerRemainsOnQuestion() throws {
+  @Test("Pull request creation entries include the matching GitHub link in the work log")
+  func pullRequestCreationEntriesIncludeLink() throws {
+    let workItemID = UUID()
+    let pullRequestURL = try #require(
+      URL(string: "https://github.com/example/notes/pull/2")
+    )
+    let creation = TicketComment(
+      workItemID: workItemID,
+      authorKind: .system,
+      authorName: "Spedito",
+      body: "Created draft pull request #2 for candidate revision abcdef12."
+    )
+    let unrelated = TicketComment(
+      workItemID: workItemID,
+      authorKind: .system,
+      authorName: "Spedito",
+      body: "Demo preparation completed."
+    )
+
+    #expect(
+      SprintTicketWorkLogExternalLink.resolve(
+        comment: creation,
+        pullRequestNumber: 2,
+        pullRequestURL: pullRequestURL
+      ) == pullRequestURL
+    )
+    #expect(
+      SprintTicketWorkLogExternalLink.displayedBody(
+        comment: creation,
+        externalURL: pullRequestURL
+      ) == """
+        Created draft pull request #2 for candidate revision abcdef12.
+
+        [View on GitHub](https://github.com/example/notes/pull/2)
+        """
+    )
+    #expect(
+      SprintTicketWorkLogExternalLink.resolve(
+        comment: unrelated,
+        pullRequestNumber: 2,
+        pullRequestURL: pullRequestURL
+      ) == nil
+    )
+    #expect(
+      SprintTicketWorkLogExternalLink.displayedBody(
+        comment: unrelated,
+        externalURL: pullRequestURL
+      ) == unrelated.body
+    )
+  }
+
+  @Test("A selected sprint answer stays on its question and in the chronological work log")
+  func selectedAnswerRemainsOnQuestionAndInWorkLog() throws {
     let workItemID = UUID()
     let question = TicketOwnerQuestion(
       prompt: "Which runtime should be used?",
@@ -115,11 +167,13 @@ struct SprintTicketWorkLogHistoryTests {
       ]
     )
 
-    #expect(displayed.map(\.id) == [
-      questionComment.id,
-      clarification.id,
-      clarificationReply.id,
-    ])
+    #expect(
+      displayed.map(\.id) == [
+        questionComment.id,
+        clarification.id,
+        clarificationReply.id,
+        answerComment.id,
+      ])
     let answeredQuestion = try #require(displayed.first?.answeredQuestions.first)
     #expect(answeredQuestion.selectedOption == selectedOption)
     #expect(answeredQuestion.answer == selectedOption)
@@ -132,8 +186,8 @@ struct SprintTicketWorkLogHistoryTests {
     )
   }
 
-  @Test("A structured Other answer remains attached to its question")
-  func customAnswerRemainsOnQuestion() throws {
+  @Test("A structured Other answer stays on its question and in the chronological work log")
+  func customAnswerRemainsOnQuestionAndInWorkLog() throws {
     let workItemID = UUID()
     let question = TicketOwnerQuestion(
       prompt: "Which runtime should be used?",
@@ -168,10 +222,63 @@ struct SprintTicketWorkLogHistoryTests {
       from: [questionComment, answerComment]
     )
 
+    #expect(displayed.map(\.id) == [questionComment.id, answerComment.id])
     let displayedQuestion = try #require(displayed.first)
-    #expect(displayed.count == 1)
-    #expect(displayedQuestion.answeredQuestions.first?.selectedOption == nil)
     #expect(displayedQuestion.answeredQuestions.first?.answer == customAnswer)
+  }
+
+  @Test("A submitted sprint answer becomes the latest work log row")
+  func submittedAnswerBecomesLatestWorkLogRow() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let base = Date(timeIntervalSince1970: 800)
+    let selectedOption = "Use the existing local runtime"
+    let question = TicketOwnerQuestion(
+      prompt: "Which runtime should be used?",
+      options: [selectedOption, "Configure another runtime"]
+    )
+    let questionComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .agent,
+      authorName: "Implementer",
+      body: "Choose a runtime.",
+      ownerQuestion: question,
+      createdAt: base
+    )
+    let waitingEvent = ActivityEvent(
+      productID: productID,
+      workItemID: workItemID,
+      kind: "agent_run.awaiting_owner",
+      actor: "Implementer",
+      detail: "Waiting for product owner input",
+      createdAt: base.addingTimeInterval(1)
+    )
+    let answerComment = TicketComment(
+      workItemID: workItemID,
+      authorKind: .owner,
+      authorName: "Me",
+      body: selectedOption,
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: question.prompt,
+            options: question.options
+          ),
+          selectedOption: selectedOption,
+          answer: selectedOption
+        )
+      ],
+      createdAt: base.addingTimeInterval(2)
+    )
+
+    let displayedComments = SprintTicketWorkLogHistory.displayedComments(
+      from: [questionComment, answerComment]
+    )
+    let ordered = SprintTicketWorkLogTimeline.ordered(
+      displayedComments.map(SprintWorkLogEntry.comment) + [.event(waitingEvent)]
+    )
+
+    #expect(ordered.last?.id == "comment-\(answerComment.id.uuidString)")
   }
 
   @Test("Permission decisions remain on their request without duplicate comments")
@@ -238,7 +345,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayed.map(\.id) == [ordinaryComment.id])
   }
 
-  @Test("Saved product access does not add a duplicate Work log message")
+  @Test("Saved product access does not add a duplicate work log message")
   func savedProductAccessRemainsOnRequest() {
     let productID = UUID()
     let workItemID = UUID()
@@ -379,7 +486,7 @@ struct SprintTicketWorkLogHistoryTests {
     )
     #expect(
       SprintPermissionRequestPresentation.protectedStorageSummary
-        == "Spedito kept this delivery run out of storage owned by another execution. No Product Owner decision was needed."
+        == "Spedito kept this delivery run out of storage owned by another execution. No product owner decision was needed."
     )
   }
 
@@ -425,11 +532,12 @@ struct SprintTicketWorkLogHistoryTests {
       .event(event),
     ])
 
-    #expect(ordered.map(\.id) == [
-      "event-\(event.id.uuidString)",
-      "permission-\(permission.id.uuidString)",
-      "comment-\(comment.id.uuidString)",
-    ])
+    #expect(
+      ordered.map(\.id) == [
+        "event-\(event.id.uuidString)",
+        "permission-\(permission.id.uuidString)",
+        "comment-\(comment.id.uuidString)",
+      ])
   }
 
   private func permissionRequest(
@@ -502,7 +610,7 @@ struct SprintTicketWorkLogHistoryTests {
       productID: productID,
       workItemID: workItemID,
       kind: "work_item.transitioned",
-      actor: "Product Owner",
+      actor: "Product owner",
       detail: "acceptance -> running: Demo feedback: \(feedback.prefix(160))",
       createdAt: base.addingTimeInterval(1)
     )
@@ -510,7 +618,7 @@ struct SprintTicketWorkLogHistoryTests {
       productID: productID,
       workItemID: workItemID,
       kind: "work_item.transitioned",
-      actor: "Tech Lead",
+      actor: "Tech lead",
       detail: "verifying -> running: Review changes requested",
       createdAt: base.addingTimeInterval(2)
     )
@@ -565,7 +673,43 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayed.map(\.id) == [productQuestion.id])
   }
 
-  @Test("Each Ready for Demo transition uses the latest preceding candidate")
+  @Test("Repository-free review names the outcome and exposes its full handoff")
+  func repositoryFreeReviewPresentation() {
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "I recommend WeatherAPI Starter for product owner approval.",
+      question: nil,
+      options: [],
+      summary: "WeatherAPI Starter is the strongest option after comparing cost and privacy.",
+      changedFiles: [],
+      tests: ["Official provider pages were available."],
+      knowledgeNotes: [],
+      reviewInstructions: ["Approve or decline WeatherAPI Starter."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+
+    let ready = SprintTicketLocalOutcomePresentation(
+      result: result,
+      status: .readyForDemo
+    )
+    let accepted = SprintTicketLocalOutcomePresentation(
+      result: result,
+      status: .accepted
+    )
+
+    #expect(ready.subtitle == "Research and decision outcome")
+    #expect(ready.outcome == "I recommend WeatherAPI Starter for product owner approval.")
+    #expect(
+      ready.handoff
+        == "WeatherAPI Starter is the strongest option after comparing cost and privacy."
+    )
+    #expect(ready.explanation.contains("approve and complete"))
+    #expect(accepted.explanation.contains("approved this outcome"))
+  }
+
+  @Test("Each ready for demo transition uses the latest preceding candidate")
   func demoTransitionsUseLatestCandidate() throws {
     let productID = UUID()
     let workItemID = UUID()
@@ -593,7 +737,7 @@ struct SprintTicketWorkLogHistoryTests {
       productID: productID,
       workItemID: workItemID,
       kind: "work_item.transitioned",
-      actor: "Tech Lead",
+      actor: "Tech lead",
       detail: "verifying -> acceptance: Review passed",
       createdAt: base.addingTimeInterval(20)
     )
@@ -611,7 +755,7 @@ struct SprintTicketWorkLogHistoryTests {
       productID: productID,
       workItemID: workItemID,
       kind: "work_item.transitioned",
-      actor: "Tech Lead",
+      actor: "Tech lead",
       detail: "verifying -> acceptance: Review passed",
       createdAt: base.addingTimeInterval(40)
     )
@@ -622,10 +766,11 @@ struct SprintTicketWorkLogHistoryTests {
     )
 
     #expect(submissions.map(\.event.id) == [firstDemo.id, secondDemo.id])
-    #expect(submissions.map(\.candidate.id) == [
-      firstCandidate.id,
-      secondCandidate.id,
-    ])
+    #expect(
+      submissions.map(\.candidate.id) == [
+        firstCandidate.id,
+        secondCandidate.id,
+      ])
     let displayedEvents = SprintTicketWorkLogTimeline.displayedEvents(
       events: [secondDemo, nonDemo, firstDemo],
       comments: [],
@@ -635,7 +780,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayedEvents.map(\.id) == [nonDemo.id])
   }
 
-  @Test("Ready for Demo comments prefer the assignee, recent participant, then Tech Lead")
+  @Test("Ready for demo comments prefer the assignee, recent participant, then tech lead")
   func readyForDemoCommentRouting() throws {
     let productID = UUID()
     let workItemID = UUID()
@@ -647,7 +792,7 @@ struct SprintTicketWorkLogHistoryTests {
     )
     let techLead = AgentProfile(
       productID: productID,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead
     )
     let reviewer = AgentProfile(
@@ -722,7 +867,7 @@ struct SprintTicketWorkLogHistoryTests {
     )
     let designer = AgentProfile(
       productID: productID,
-      name: "UX Designer",
+      name: "UX designer",
       role: .uxDesigner
     )
     let activeRun = AgentRun(
@@ -777,7 +922,7 @@ struct SprintTicketWorkLogHistoryTests {
     let reply = TicketComment(
       workItemID: workItemID,
       authorKind: .agent,
-      authorName: "UX Designer",
+      authorName: "UX designer",
       body: "Here is why.",
       createdAt: requestDate.addingTimeInterval(2)
     )
@@ -824,7 +969,7 @@ struct SprintTicketWorkLogHistoryTests {
     let productID = UUID()
     let techLead = AgentProfile(
       productID: productID,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead
     )
 
@@ -841,7 +986,7 @@ struct SprintTicketWorkLogHistoryTests {
     let productID = UUID()
     let techLead = AgentProfile(
       productID: productID,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead
     )
 

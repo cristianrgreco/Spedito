@@ -1,5 +1,6 @@
 import SwiftUI
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Workspace commands")
@@ -9,6 +10,7 @@ struct WorkspaceCommandTests {
     let expected: [(WorkspaceCommand, Character)] = [
       (.backlog, "1"),
       (.sprintBoard, "2"),
+      (.app, "8"),
       (.retrospectives, "3"),
       (.reports, "4"),
       (.productKnowledge, "5"),
@@ -42,6 +44,7 @@ struct WorkspaceCommandTests {
       WorkspaceCommand.allCases.map(\.title) == [
         "Backlog",
         "Sprint board",
+        "App versions",
         "Retrospectives",
         "Reports",
         "Product knowledge",

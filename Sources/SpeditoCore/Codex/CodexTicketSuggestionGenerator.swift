@@ -6,44 +6,44 @@ public enum TicketSuggestionGenerationError: Error, Equatable, LocalizedError, S
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The Business Analyst returned an invalid proposal: \(detail)"
+      "The business analyst returned an invalid proposal: \(detail)"
     }
   }
 }
 
 public enum CodexTicketSuggestionGenerator {
   private static let platformInstructions = """
-    You are the single Business Analyst responsible for proposing a coherent delivery backlog from the
-    Product Owner's outcome. A role on a ticket is a recommended future owner, not another agent producing
-    the suggestion and not a quota. Roles may repeat for any number of tickets. Use the UX Designer for
-    experience/prototype work and the generic Implementer for approved software changes, whether the
+    You are the single business analyst responsible for proposing a coherent delivery backlog from the
+    product owner's outcome. A role on a ticket is a recommended future owner, not another agent producing
+    the suggestion and not a quota. Roles may repeat for any number of tickets. Use the UX designer for
+    experience/prototype work and the generic implementer for approved software changes, whether the
     ticket concerns UI, local logic, or a service.
     Propose backend work only when it is actually justified; do not invent it merely because it is a
-    familiar architecture layer. The Tech Lead reviews delivery and dependency decisions. Identify genuine
+    familiar architecture layer. The tech lead reviews delivery and dependency decisions. Identify genuine
     dependency edges without serialising work that can proceed with mocks or agreed contracts.
     Do not propose a conditional implementation ticket as committed scope when an unresolved product
     decision may determine that no implementation is needed. Consequential product choices belong in
     refinement, not in a ticket whose purpose is merely to ask the owner later. Create research or
-    discovery work only when the Product Owner requested it or explicitly agreed that external evidence
+    discovery work only when the product owner requested it or explicitly agreed that external evidence
     is needed before a responsible decision can be made. Such work must have a concrete comparison,
     recommendation, or decision-enabling output. Otherwise propose tickets that deliver the agreed
     outcome, not tickets that discover what the outcome should be. Desired constraints alone do not select
     a real external source when current evidence about candidates, terms, suitability, or operation is
-    still needed. When the Product Owner authorises the Business Analyst or team to identify, compare,
-    recommend, or choose such a source, treat that as authorised Business Analyst research and give it a
+    still needed. When the product owner authorises the business analyst or team to identify, compare,
+    recommend, or choose such a source, treat that as authorised business analyst research and give it a
     separate ticket. Do not bury source selection inside design or implementation. Only assign selection
-    to an implementer when the Product Owner explicitly chose implementation-time selection without a
+    to an implementer when the product owner explicitly chose implementation-time selection without a
     separate recommendation.
-    Before proposing executable product work, use the accepted ticket contracts and verified Product
+    Before proposing executable product work, use the accepted ticket contracts and verified product
     knowledge supplied in the planning prompt, especially Environments. Decide whether that evidence says
     the current environment can build, test, prototype, demo, and locally run the planned outcome. Planning
     is not source-code investigation: do not inspect repository files, manifests, scripts, CI,
     documentation, or Git history. Do not infer readiness from a runtime merely being installed somewhere
-    on the Product Owner's Mac, scan the host for package managers, or silently pre-authorise machine paths.
-    If the supplied evidence is insufficient, make a concrete Implementer-owned foundation task establish
+    on the product owner's Mac, scan the host for package managers, or silently pre-authorise machine paths.
+    If the supplied evidence is insufficient, make a concrete implementer-owned foundation task establish
     the approved toolchain, stable repository entry points, isolated temporary and cache locations,
     required capabilities, a managed demo with readiness evidence, and a verified Environments update.
-    Create a separate Business Analyst research ticket before it only when the Product Owner authorised
+    Create a separate business analyst research ticket before it only when the product owner authorised
     evidence gathering for a material stack, hosting, licensing, cost, maintenance, or deployment choice.
     Work that needs the missing environment must depend on the establishment task; research, product
     decisions, and neutral design artefacts that genuinely do not need it may proceed in parallel. Do not
@@ -54,7 +54,7 @@ public enum CodexTicketSuggestionGenerator {
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
     Do not modify files, browse the web, inspect repository source or Git history, or make product
     decisions on the owner's behalf. The supplied planning evidence is the primary context. You may query
-    the live product database views read-only only when a mutable ticket or Product knowledge detail must
+    the live product database views read-only only when a mutable ticket or product knowledge detail must
     be refreshed. Return only the JSON requested by the output schema. Every proposal must explain why it
     belongs in the backlog.
     """
@@ -91,7 +91,8 @@ public enum CodexTicketSuggestionGenerator {
     if rejectedSuggestions.isEmpty {
       rejectedScope = "There are no rejected proposals from the previous analysis."
     } else {
-      rejectedScope = rejectedSuggestions
+      rejectedScope =
+        rejectedSuggestions
         .map { "- \($0.reference): \($0.title)" }
         .joined(separator: "\n")
     }
@@ -125,7 +126,7 @@ public enum CodexTicketSuggestionGenerator {
       environment, establishes when it creates or repairs the reusable delivery environment, or requires
       when it will build, test, run, prototype, or demo using that environment. If verified Environments
       guidance is absent or insufficient, include the establishment task and make every requires ticket
-      depend on it. A Product Owner preference or a responsible recommendation must resolve the intended
+      depend on it. A product owner preference or a responsible recommendation must resolve the intended
       stack before that establishment task is delivered; do not use the task as a placeholder for asking
       the owner later.
       """
@@ -144,19 +145,20 @@ public enum CodexTicketSuggestionGenerator {
       verifiedKnowledge: verifiedKnowledge,
       includesEpicIDs: true
     )
-    let rejectedScope = rejectedSuggestions.isEmpty
+    let rejectedScope =
+      rejectedSuggestions.isEmpty
       ? "There are no rejected proposals from an earlier plan for this epic."
       : rejectedSuggestions
         .map { "- \($0.reference): \($0.title)" }
         .joined(separator: "\n")
 
     return """
-      Turn the Product Owner's outcome into one durable epic and the smallest coherent set of delivery
+      Turn the product owner's outcome into one durable epic and the smallest coherent set of delivery
       tickets needed to achieve it. This is not a whole-product gap analysis: remain inside this epic's
       outcome and do not duplicate active work.
 
       Product: \(product.name)
-      Outcome supplied by the Product Owner:
+      Outcome supplied by the product owner:
       \(epic.goal)
 
       Supplied planning evidence:
@@ -166,16 +168,16 @@ public enum CodexTicketSuggestionGenerator {
       \(rejectedScope)
 
       Improve the epic title and goal so they are concise, outcome-oriented, and understandable to a
-      Product Owner. Add measurable success criteria and retain only material constraints supported by
+      product owner. Add measurable success criteria and retain only material constraints supported by
       the supplied context. Use the decisions resolved in the preceding clarification conversation. Do
-      not invent product decisions or disguise an unresolved Product Owner choice as a backlog ticket.
-      A research or discovery ticket is valid only when the Product Owner explicitly requested research
+      not invent product decisions or disguise an unresolved product owner choice as a backlog ticket.
+      A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
-      decision-enabling output. An instruction for the Business Analyst or team to identify, compare,
+      decision-enabling output. An instruction for the business analyst or team to identify, compare,
       recommend, or choose a real external source using current evidence is explicit research
-      authorisation, even when the Product Owner has already supplied the selection criteria. Create a
-      separate Business Analyst ticket for that work and do not bury source selection inside a UX or
-      implementation ticket. Only embed selection in implementation when the Product Owner explicitly
+      authorisation, even when the product owner has already supplied the selection criteria. Create a
+      separate business analyst ticket for that work and do not bury source selection inside a UX or
+      implementation ticket. Only embed selection in implementation when the product owner explicitly
       chose implementation-time selection without a separate recommendation. Research is a prerequisite,
       not a substitute for delivery: when the epic's success criteria also describe a product change,
       include the downstream work needed to achieve it. Derive ticket boundaries from independently
@@ -191,7 +193,7 @@ public enum CodexTicketSuggestionGenerator {
       Environments knowledge. Do not inspect repository source or Git history during planning.
       In epic.environmentAssessment return:
       - sufficient when the existing verified environment covers the planned executable work;
-      - foundation_required when an accepted existing ticket or one proposed Implementer task must establish
+      - foundation_required when an accepted existing ticket or one proposed implementer task must establish
         the environment first; or
       - not_required when this epic has no executable product work.
       Give a concise rationale. foundationTicketReference must be null unless readiness is
@@ -205,7 +207,7 @@ public enum CodexTicketSuggestionGenerator {
       Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
       test, local-run, and demo entry points; run-private temporary and cache locations; the complete
       filesystem, localhost, network, and service capability boundary; a successful managed readiness
-      check; limitations; and a verified Environments Product knowledge update. Consider the intended
+      check; limitations; and a verified Environments product knowledge update. Consider the intended
       deployment destination early when it affects the stack, but leave production accounts, credentials,
       signing identities, and irreversible release access to separately authorised release work.
 
@@ -225,14 +227,16 @@ public enum CodexTicketSuggestionGenerator {
     includesEpicIDs: Bool = true
   ) -> String {
     let active = existingItems.filter { $0.state != .cancelled }
-    let ticketIndex = active.isEmpty
+    let ticketIndex =
+      active.isEmpty
       ? "There are no existing active tickets."
       : active.map { item in
         let epicContext =
           includesEpicIDs
           ? item.epicID.map { " · epic \($0.uuidString)" } ?? " · no epic"
           : ""
-        return "- \(item.key) [\(item.type.title) · \(item.state.title)\(epicContext)]: \(item.title)"
+        return
+          "- \(item.key) [\(item.type.title) · \(item.state.title)\(epicContext)]: \(item.title)"
       }
       .joined(separator: "\n")
 
@@ -283,8 +287,8 @@ public enum CodexTicketSuggestionGenerator {
       Accepted ticket contracts:
       \(ticketDetails.isEmpty ? "No additional ticket contract details are recorded." : ticketDetails.joined(separator: "\n\n"))
 
-      Relevant verified Product knowledge:
-      \(knowledgeDetails.isEmpty ? "No verified Product knowledge was supplied." : knowledgeDetails.joined(separator: "\n\n"))
+      Relevant verified product knowledge:
+      \(knowledgeDetails.isEmpty ? "No verified product knowledge was supplied." : knowledgeDetails.joined(separator: "\n\n"))
       """
   }
 
@@ -298,7 +302,8 @@ public enum CodexTicketSuggestionGenerator {
     validationError: String,
     existingItems: [WorkItem]
   ) -> String {
-    let existingKeys = existingItems
+    let existingKeys =
+      existingItems
       .filter { $0.state != .cancelled }
       .map(\.key)
       .joined(separator: ", ")
@@ -323,7 +328,7 @@ public enum CodexTicketSuggestionGenerator {
       "required": .array([.string("environmentAssessment"), .string("suggestions")]),
       "properties": .object([
         "environmentAssessment": environmentAssessmentSchema,
-        "suggestions": suggestionArraySchema
+        "suggestions": suggestionArraySchema,
       ]),
     ])
   }
@@ -494,10 +499,12 @@ public enum CodexTicketSuggestionGenerator {
       uniquingKeysWith: { first, _ in first }
     )
     let validDependencyReferences = referenceSet.union(existingItemByReference.keys)
-    guard suggestions.allSatisfy({ suggestion in
-      suggestion.dependsOn.map(normalizedReference)
-        .allSatisfy(validDependencyReferences.contains)
-    }) else {
+    guard
+      suggestions.allSatisfy({ suggestion in
+        suggestion.dependsOn.map(normalizedReference)
+          .allSatisfy(validDependencyReferences.contains)
+      })
+    else {
       throw TicketSuggestionGenerationError.invalidResponse(
         "Every dependency must reference another proposed ticket or an active backlog ticket."
       )
@@ -620,7 +627,7 @@ public enum CodexTicketSuggestionGenerator {
         || ticketSuggestions.contains(where: { $0.suggestedRole != .businessAnalyst })
     else {
       throw TicketSuggestionGenerationError.invalidResponse(
-        "The epic includes a product-delivery outcome, but its plan stops at Business Analyst work. "
+        "The epic includes a product-delivery outcome, but its plan stops at business analyst work. "
           + "Include the downstream delivery tickets needed to achieve it."
       )
     }
@@ -660,9 +667,11 @@ public enum CodexTicketSuggestionGenerator {
       activeExistingItems.map { (normalizedReference($0.key), $0) },
       uniquingKeysWith: { first, _ in first }
     )
-    let trimmedFoundationReference = generated.foundationTicketReference?
+    let trimmedFoundationReference =
+      generated.foundationTicketReference?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let foundationReference = trimmedFoundationReference.isEmpty
+    let foundationReference =
+      trimmedFoundationReference.isEmpty
       ? nil
       : normalizedReference(trimmedFoundationReference)
     let establishingReferences = Set(
@@ -710,7 +719,7 @@ public enum CodexTicketSuggestionGenerator {
         else {
           throw TicketSuggestionGenerationError.invalidResponse(
             "The proposed environment foundation must be the only establishes ticket "
-              + "and must be an Implementer task."
+              + "and must be an implementer task."
           )
         }
       } else {
@@ -729,11 +738,13 @@ public enum CodexTicketSuggestionGenerator {
       )
       for (reference, suggestion) in zip(generatedReferences, ticketSuggestions)
       where suggestion.environmentRelationship == .requires {
-        guard hasDependencyPath(
-          from: reference,
-          to: foundationReference,
-          dependencies: dependencies
-        ) else {
+        guard
+          hasDependencyPath(
+            from: reference,
+            to: foundationReference,
+            dependencies: dependencies
+          )
+        else {
           throw TicketSuggestionGenerationError.invalidResponse(
             "Every ticket that requires the missing environment must depend on its foundation."
           )

@@ -4,19 +4,14 @@ import Testing
 
 @Suite("Sprint goal suggestion policy")
 struct SprintGoalSuggestionPolicyTests {
-  @Test("New and placeholder sprint goals receive an automatic suggestion")
+  @Test("Only a missing sprint goal receives an automatic suggestion")
   func automaticSuggestionCandidates() {
     #expect(SprintGoalSuggestionPolicy.shouldGenerate(existingGoal: ""))
     #expect(SprintGoalSuggestionPolicy.shouldGenerate(existingGoal: "   "))
-    #expect(
-      SprintGoalSuggestionPolicy.shouldGenerate(
-        existingGoal: SprintGoalSuggestionPolicy.defaultPlaceholder
-      )
-    )
   }
 
-  @Test("A saved owner goal is preserved when planning reopens")
-  func preservesOwnerGoal() {
+  @Test("An existing sprint goal is preserved")
+  func preservesExistingGoal() {
     #expect(
       !SprintGoalSuggestionPolicy.shouldGenerate(
         existingGoal: "Make today's weather shareable"

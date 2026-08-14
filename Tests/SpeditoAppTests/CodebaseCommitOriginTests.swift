@@ -26,7 +26,7 @@ struct CodebaseCommitOriginTests {
     let knowledge = commit(
       "knowledge",
       parents: [integration.sha],
-      subject: "T2: stage reviewed Product knowledge",
+      subject: "T2: stage reviewed product knowledge",
       isOnTrunk: false
     )
     let unrelated = commit("unrelated", parents: [root.sha], isOnTrunk: false)
@@ -111,7 +111,7 @@ struct CodebaseCommitOriginTests {
     let knowledge = commit(
       "knowledge",
       parents: [integration.sha],
-      subject: "T2: stage reviewed Product knowledge",
+      subject: "T2: stage reviewed product knowledge",
       isOnTrunk: false
     )
     let snapshot = GitRepositorySnapshot(

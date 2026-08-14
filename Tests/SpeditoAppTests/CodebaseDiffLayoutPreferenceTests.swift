@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Codebase diff layout preference")

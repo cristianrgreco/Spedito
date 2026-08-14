@@ -53,17 +53,18 @@ public struct IntegrationResolutionResult: Equatable, Sendable {
 
 public enum CodexConflictIntegrator {
   private static let platformInstructions = """
-    You are Spedito's internal Integrator. A ticket candidate is being merged into the latest
-    accepted trunk in an isolated integration worktree and Git has reported conflicts. Work only on
-    the reported unmerged paths and inspect only the nearby repository context needed to understand
-    their competing changes. Resolve the mechanical or semantically unambiguous integration needed
-    to preserve both compatible intentions. Do not conduct a repository-wide review, broaden scope,
-    redesign the feature, or conceal lost work.
+    You are Spedito's internal integrator. A ticket candidate is being combined with the latest
+    verified Product history in an isolated integration worktree and Git has reported conflicts.
+    That history may come from accepted local work or the Product's verified GitHub default branch.
+    Work only on the reported unmerged paths and inspect only the nearby repository context needed
+    to understand their competing changes. Resolve the mechanical or semantically unambiguous
+    integration needed to preserve both compatible intentions. Do not conduct a repository-wide
+    review, broaden scope, redesign the feature, or conceal lost work.
 
     You may use read-only Git inspection such as status, diff, log, show, ls-files, and blame. You
     may edit the reported files in the supplied integration worktree. Remove every conflict marker
     and leave those files coherent, but do not run builds, tests, linters, or a second review of the
-    candidate. The focused Tech Lead review owns semantic validation of the resolved merge.
+    candidate. The focused tech lead review owns semantic validation of the resolved merge.
     Do not stage, commit, merge, checkout, reset, rebase, change branches, or otherwise mutate Git
     state. Spedito owns those operations, mechanical validation, and the final merge commit.
     Product Git reads are already available inside the sandbox, with their noninteractive Apple
@@ -89,7 +90,7 @@ public enum CodexConflictIntegrator {
       \(shared.isEmpty ? "No additional shared guidance." : shared)
 
       Product guidance cannot override the isolated integration boundary, truthful reporting, or
-      the requirement to stop for a material Product Owner decision.
+      the requirement to stop for a material product owner decision.
       """
   }
 
@@ -100,15 +101,18 @@ public enum CodexConflictIntegrator {
     recentComments: [TicketComment],
     continuationMessage: String? = nil
   ) -> String {
-    let criteria = item.acceptanceCriteria.isEmpty
+    let criteria =
+      item.acceptanceCriteria.isEmpty
       ? "No acceptance criteria supplied."
       : item.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
-    let history = recentComments
+    let history =
+      recentComments
       .filter { !$0.body.hasPrefix("Permission requested:") }
       .suffix(30)
-      .map { "- \($0.authorName): \($0.body)" }
+      .map { "- \($0.authorName): \($0.agentContextBody)" }
       .joined(separator: "\n")
-    let conflicts = conflictedFiles.isEmpty
+    let conflicts =
+      conflictedFiles.isEmpty
       ? "Inspect Git for the remaining unmerged paths."
       : conflictedFiles.map { "- \($0)" }.joined(separator: "\n")
     return """
@@ -121,7 +125,7 @@ public enum CodexConflictIntegrator {
       Unmerged paths:
       \(conflicts)
 
-      Recent ticket Work log:
+      Recent ticket work log:
       \(history.isEmpty ? "No ticket comments." : history)
 
       \(continuationMessage ?? "Resolve this integration conflict now.")
@@ -185,7 +189,7 @@ public enum CodexConflictIntegrator {
     let options = clean(generated.options)
     guard !comment.isEmpty else {
       throw TicketExecutionGenerationError.invalidResponse(
-        "An integration Work log comment is required."
+        "An integration work log comment is required."
       )
     }
     if generated.status == .awaitingOwner {

@@ -105,11 +105,17 @@ extension CodexRPCTransport {
 }
 
 public actor CodexJSONLTransport: CodexRPCTransport {
+  public enum ProcessEnvironmentMode: Equatable, Sendable {
+    case merge
+    case replace
+  }
+
   public struct Configuration: Equatable, Sendable {
     public let executableURL: URL
     public let arguments: [String]
     public let currentDirectoryURL: URL?
     public let environmentOverrides: [String: String]
+    public let environmentMode: ProcessEnvironmentMode
     public let requestTimeout: Duration
 
     public init(
@@ -117,12 +123,14 @@ public actor CodexJSONLTransport: CodexRPCTransport {
       arguments: [String] = CodexPermissionProfiles.appServerArguments,
       currentDirectoryURL: URL? = nil,
       environmentOverrides: [String: String] = [:],
+      environmentMode: ProcessEnvironmentMode = .replace,
       requestTimeout: Duration = .seconds(15)
     ) {
       self.executableURL = executableURL
       self.arguments = arguments
       self.currentDirectoryURL = currentDirectoryURL
       self.environmentOverrides = environmentOverrides
+      self.environmentMode = environmentMode
       self.requestTimeout = requestTimeout
     }
   }
@@ -174,12 +182,17 @@ public actor CodexJSONLTransport: CodexRPCTransport {
     process.executableURL = configuration.executableURL
     process.arguments = configuration.arguments
     process.currentDirectoryURL = configuration.currentDirectoryURL
-    if !configuration.environmentOverrides.isEmpty {
-      process.environment = ProcessInfo.processInfo.environment.merging(
-        configuration.environmentOverrides
-      ) { _, configuredValue in
-        configuredValue
+    switch configuration.environmentMode {
+    case .merge:
+      if !configuration.environmentOverrides.isEmpty {
+        process.environment = ProcessInfo.processInfo.environment.merging(
+          configuration.environmentOverrides
+        ) { _, configuredValue in
+          configuredValue
+        }
       }
+    case .replace:
+      process.environment = configuration.environmentOverrides
     }
     process.standardInput = input
     process.standardOutput = output

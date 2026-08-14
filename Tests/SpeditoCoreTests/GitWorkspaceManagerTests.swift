@@ -108,16 +108,19 @@ struct GitWorkspaceManagerTests {
     try Data("initial control state".utf8).write(to: databaseURL)
 
     let manager = GitWorkspaceManager()
-    let initialSHA = try await manager.ensureRepository(
-      at: root,
-      rootIgnoreEntries: ["/.spedito/"]
-    )
+    let initialSHA = try await manager.ensureRepository(at: root)
 
     #expect(
       try String(
         contentsOf: root.appendingPathComponent(".gitignore"),
         encoding: .utf8
-      ) == "/.run/\n/.spedito/\n"
+      ) == "/.run/\n"
+    )
+    #expect(
+      try String(
+        contentsOf: root.appendingPathComponent(".git/info/exclude"),
+        encoding: .utf8
+      ).split(whereSeparator: \.isNewline).contains("/.spedito/")
     )
     #expect(
       try runGit(["ls-files"], at: root).split(separator: "\n").map(String.init)
@@ -128,6 +131,51 @@ struct GitWorkspaceManagerTests {
     let checkpointSHA = try await manager.checkpointTrunk(at: root)
     #expect(checkpointSHA == initialSHA)
     #expect(try runGit(["status", "--porcelain"], at: root).isEmpty)
+  }
+
+  @Test("Repository-free candidates snapshot the ticket base without an empty commit")
+  func localOutcomeCandidateSnapshot() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("spedito-local-outcome-\(UUID().uuidString)", isDirectory: true)
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("README.md")
+    )
+
+    let manager = GitWorkspaceManager()
+    let initialSHA = try await manager.ensureRepository(at: repository)
+    let workspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T1",
+      runID: UUID(),
+      authorName: "Business analyst"
+    )
+
+    let candidate = try await manager.snapshotLocalOutcomeCandidate(
+      ticketWorkspaceURL: workspace.url
+    )
+
+    #expect(candidate.baseSHA == initialSHA)
+    #expect(candidate.headSHA == initialSHA)
+    #expect(candidate.commitCount == 0)
+    #expect(candidate.changedFiles.isEmpty)
+    #expect(try runGit(["status", "--porcelain"], at: workspace.url).isEmpty)
+    #expect(try runGit(["rev-list", "--count", "HEAD"], at: workspace.url) == "1")
+
+    _ = try runGit(
+      ["-c", "commit.gpgSign=false", "commit", "--allow-empty", "-m", "Empty delivery"],
+      at: workspace.url
+    )
+    await #expect(throws: GitWorkspaceError.self) {
+      _ = try await manager.snapshotLocalOutcomeCandidate(
+        ticketWorkspaceURL: workspace.url
+      )
+    }
   }
 
   @Test("Ticket branches preserve multiple commits and promote one exact integrated revision")
@@ -179,7 +227,9 @@ struct GitWorkspaceManagerTests {
     #expect(candidate.branchName == "ticket/T42")
     #expect(candidate.commitCount == 2)
     #expect(candidate.changedFiles == ["feature.txt", "verification.txt"])
-    #expect(try runGit(["show", "-s", "--format=%an", candidate.headSHA], at: repository) == "Implementer")
+    #expect(
+      try runGit(["show", "-s", "--format=%an", candidate.headSHA], at: repository) == "Implementer"
+    )
     #expect(
       try runGit(["show", "-s", "--format=%s", candidate.headSHA], at: repository)
         == "T42: Implemented the verified feature"
@@ -585,6 +635,211 @@ struct GitWorkspaceManagerTests {
     )
   }
 
+  @Test("Verified GitHub changes merge into an isolated ticket integration")
+  func verifiedRemoteIntegration() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "spedito-verified-remote-\(UUID().uuidString)",
+        isDirectory: true
+      )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    let remoteWorkspace = root.appendingPathComponent("remote", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("README.md")
+    )
+    let manager = GitWorkspaceManager()
+    let initialSHA = try await manager.ensureRepository(at: repository)
+    let ticketWorkspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T80",
+      runID: UUID(),
+      authorName: "Implementer"
+    )
+    try Data("ticket\n".utf8).write(
+      to: ticketWorkspace.url.appendingPathComponent("ticket.txt")
+    )
+    let candidate = try await manager.createCandidate(
+      ticketWorkspaceURL: ticketWorkspace.url,
+      ticketKey: "T80",
+      version: 1,
+      authorName: "Implementer"
+    )
+    let integration = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: candidate.headSHA
+    )
+
+    _ = try runGit(
+      ["worktree", "add", "--detach", remoteWorkspace.path, initialSHA],
+      at: repository
+    )
+    try Data("github\n".utf8).write(
+      to: remoteWorkspace.appendingPathComponent("remote.txt")
+    )
+    _ = try runGit(["add", "remote.txt"], at: remoteWorkspace)
+    _ = try runGit(
+      [
+        "-c", "user.name=GitHub collaborator",
+        "-c", "user.email=github@example.com",
+        "commit", "--no-gpg-sign", "-m", "Remote change",
+      ],
+      at: remoteWorkspace
+    )
+    let remoteSHA = try runGit(["rev-parse", "HEAD"], at: remoteWorkspace)
+    let observationRef = "refs/spedito/observations/\(UUID().uuidString.lowercased())"
+    _ = try runGit(["update-ref", observationRef, remoteSHA], at: repository)
+
+    let updated = try await manager.integrateVerifiedRemote(
+      repositoryURL: repository,
+      integrationWorkspaceURL: integration.url,
+      observationRef: observationRef,
+      expectedRemoteSHA: remoteSHA,
+      candidateHeadSHA: candidate.headSHA
+    )
+
+    #expect(
+      try await manager.revision(
+        updated.integratedSHA,
+        contains: candidate.headSHA,
+        at: repository
+      )
+    )
+    #expect(
+      try await manager.revision(
+        updated.integratedSHA,
+        contains: remoteSHA,
+        at: repository
+      )
+    )
+    #expect(
+      try String(
+        contentsOf: updated.url.appendingPathComponent("ticket.txt"),
+        encoding: .utf8
+      ) == "ticket\n"
+    )
+    #expect(
+      try String(
+        contentsOf: updated.url.appendingPathComponent("remote.txt"),
+        encoding: .utf8
+      ) == "github\n"
+    )
+  }
+
+  @Test("Verified GitHub conflicts preserve the existing resolution lifecycle")
+  func verifiedRemoteConflictResolution() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "spedito-verified-remote-conflict-\(UUID().uuidString)",
+        isDirectory: true
+      )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    let remoteWorkspace = root.appendingPathComponent("remote", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("shared.txt")
+    )
+    let manager = GitWorkspaceManager()
+    let initialSHA = try await manager.ensureRepository(at: repository)
+    let ticketWorkspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T81",
+      runID: UUID(),
+      authorName: "Implementer"
+    )
+    try Data("ticket\n".utf8).write(
+      to: ticketWorkspace.url.appendingPathComponent("shared.txt")
+    )
+    let candidate = try await manager.createCandidate(
+      ticketWorkspaceURL: ticketWorkspace.url,
+      ticketKey: "T81",
+      version: 1,
+      authorName: "Implementer"
+    )
+    let integration = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: candidate.headSHA
+    )
+
+    _ = try runGit(
+      ["worktree", "add", "--detach", remoteWorkspace.path, initialSHA],
+      at: repository
+    )
+    try Data("github\n".utf8).write(
+      to: remoteWorkspace.appendingPathComponent("shared.txt")
+    )
+    _ = try runGit(["add", "shared.txt"], at: remoteWorkspace)
+    _ = try runGit(
+      [
+        "-c", "user.name=GitHub collaborator",
+        "-c", "user.email=github@example.com",
+        "commit", "--no-gpg-sign", "-m", "Conflicting remote change",
+      ],
+      at: remoteWorkspace
+    )
+    let remoteSHA = try runGit(["rev-parse", "HEAD"], at: remoteWorkspace)
+    let observationRef = "refs/spedito/observations/\(UUID().uuidString.lowercased())"
+    _ = try runGit(["update-ref", observationRef, remoteSHA], at: repository)
+
+    let conflictWorkspace: URL
+    do {
+      _ = try await manager.integrateVerifiedRemote(
+        repositoryURL: repository,
+        integrationWorkspaceURL: integration.url,
+        observationRef: observationRef,
+        expectedRemoteSHA: remoteSHA,
+        candidateHeadSHA: candidate.headSHA
+      )
+      Issue.record("Expected verified GitHub changes to conflict")
+      return
+    } catch GitWorkspaceError.mergeConflict(let worktreePath, let files, _) {
+      conflictWorkspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
+      #expect(files == ["shared.txt"])
+    }
+
+    try Data("github\nticket\n".utf8).write(
+      to: conflictWorkspace.appendingPathComponent("shared.txt")
+    )
+    let resolved = try await manager.completeConflictResolution(
+      integrationWorkspaceURL: conflictWorkspace,
+      candidateHeadSHA: candidate.headSHA
+    )
+    #expect(
+      try await manager.revision(
+        resolved.integratedSHA,
+        contains: candidate.headSHA,
+        at: repository
+      )
+    )
+    #expect(
+      try await manager.revision(
+        resolved.integratedSHA,
+        contains: remoteSHA,
+        at: repository
+      )
+    )
+    #expect(
+      try String(
+        contentsOf: conflictWorkspace.appendingPathComponent("shared.txt"),
+        encoding: .utf8
+      ) == "github\nticket\n"
+    )
+  }
+
   private func runGit(_ arguments: [String], at directory: URL) throws -> String {
     let process = Process()
     let pipe = Pipe()
@@ -596,10 +851,11 @@ struct GitWorkspaceManagerTests {
     try process.run()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    let output = String(
-      data: data,
-      encoding: .utf8
-    ) ?? ""
+    let output =
+      String(
+        data: data,
+        encoding: .utf8
+      ) ?? ""
     guard process.terminationStatus == 0 else {
       throw GitWorkspaceError.commandFailed(arguments: arguments, output: output)
     }

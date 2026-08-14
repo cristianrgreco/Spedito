@@ -35,7 +35,7 @@ struct TicketSuggestionRecoveryTests {
       productID: UUID(),
       epicID: UUID(),
       status: .failed,
-      errorMessage: "The Business Analyst returned an invalid proposal."
+      errorMessage: "The business analyst returned an invalid proposal."
     )
 
     #expect(policy.action(for: session) == .none)

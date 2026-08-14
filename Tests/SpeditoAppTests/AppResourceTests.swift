@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("App resources")

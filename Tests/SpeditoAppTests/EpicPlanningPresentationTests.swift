@@ -1,11 +1,12 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Epic planning presentation")
 struct EpicPlanningPresentationTests {
-  @Test("Ticket and Epic conversation details share the same adaptive sheet size")
+  @Test("Ticket and epic conversation details share the same adaptive sheet size")
   func conversationDetailsShareSheetSize() {
     let laptopWorkspace = CGSize(width: 1_440, height: 900)
     let largeWorkspace = CGSize(width: 1_920, height: 1_200)
@@ -102,7 +103,7 @@ struct EpicPlanningPresentationTests {
     #expect(sections.deliveredTicketCount == 1)
   }
 
-  @Test("Ticket details resolve their Epic across delivery history")
+  @Test("Ticket details resolve their epic across delivery history")
   func ticketDetailsResolveEpic() throws {
     let productID = UUID()
     let epic = Epic(
@@ -126,7 +127,7 @@ struct EpicPlanningPresentationTests {
     #expect(destination.id == epic.id)
   }
 
-  @Test("Ticket details do not cross product boundaries when resolving an Epic")
+  @Test("Ticket details do not cross product boundaries when resolving an epic")
   func ticketDetailsRejectForeignEpic() {
     let epic = Epic(
       productID: UUID(),
@@ -227,7 +228,7 @@ struct EpicPlanningPresentationTests {
     )
   }
 
-  @Test("Backlog planning split defaults to 59 percent and persists narrower Backlog sizes")
+  @Test("Backlog planning split defaults to 59 percent and persists narrower backlog sizes")
   func backlogPlanningSplitPersists() throws {
     let suiteName = "EpicPlanningPresentationTests.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -252,7 +253,7 @@ struct EpicPlanningPresentationTests {
     )
   }
 
-  @Test("Backlog planning split preserves the Backlog minimum and Sprint default share")
+  @Test("Backlog planning split preserves the backlog minimum and sprint default share")
   func backlogPlanningSplitPreservesMinimumWidths() {
     let availableWidth: CGFloat = 1_032
     let dividerWidth: CGFloat = 1
@@ -262,13 +263,16 @@ struct EpicPlanningPresentationTests {
       dividerWidth: dividerWidth,
       preferredRatio: 0.2
     )
-    let narrowSprint = availableWidth - dividerWidth - BacklogPlanningSizing.backlogWidth(
-      availableWidth: availableWidth,
-      dividerWidth: dividerWidth,
-      preferredRatio: 0.9
-    )
+    let narrowSprint =
+      availableWidth - dividerWidth
+      - BacklogPlanningSizing.backlogWidth(
+        availableWidth: availableWidth,
+        dividerWidth: dividerWidth,
+        preferredRatio: 0.9
+      )
 
-    let defaultSprintWidth = (availableWidth - dividerWidth)
+    let defaultSprintWidth =
+      (availableWidth - dividerWidth)
       * (1 - BacklogPlanningSizing.defaultBacklogRatio)
 
     #expect(narrowBacklog == BacklogPlanningSizing.minimumBacklogWidth)
@@ -287,17 +291,16 @@ struct EpicPlanningPresentationTests {
       dividerWidth: 1,
       preferredRatio: 1
     )
-    let scaledMinimum = 600 * BacklogPlanningSizing.minimumBacklogWidth
-      / (
-        BacklogPlanningSizing.minimumBacklogWidth
-          + BacklogPlanningSizing.minimumSprintWidth
-      )
+    let scaledMinimum =
+      600 * BacklogPlanningSizing.minimumBacklogWidth
+      / (BacklogPlanningSizing.minimumBacklogWidth
+        + BacklogPlanningSizing.minimumSprintWidth)
 
     #expect(abs(narrowPreferenceWidth - scaledMinimum) < 0.001)
     #expect(abs(widePreferenceWidth - scaledMinimum) < 0.001)
   }
 
-  @Test("Native Backlog split positions round-trip through the stored ratio")
+  @Test("Native backlog split positions round-trip through the stored ratio")
   func backlogPlanningNativeSplitRoundTrips() {
     let containerWidth: CGFloat = 1_200
     let horizontalPadding: CGFloat = 24
@@ -320,7 +323,7 @@ struct EpicPlanningPresentationTests {
     #expect(abs(restoredRatio - preferredRatio) < 0.001)
   }
 
-  @Test("Native Backlog split cannot make Sprint narrower than its default share")
+  @Test("Native backlog split cannot make sprint narrower than its default share")
   func backlogPlanningNativeSplitProtectsDefaultSprintWidth() {
     let containerWidth: CGFloat = 1_200
     let horizontalPadding: CGFloat = 24
@@ -342,7 +345,7 @@ struct EpicPlanningPresentationTests {
     )
   }
 
-  @Test("Native Backlog split positions include outer planning padding")
+  @Test("Native backlog split positions include outer planning padding")
   func backlogPlanningNativeSplitIncludesPadding() {
     let horizontalPadding: CGFloat = 24
     let minimumPosition = BacklogPlanningSizing.splitPosition(
@@ -358,7 +361,7 @@ struct EpicPlanningPresentationTests {
     )
   }
 
-  @Test("Backlog uses the height remaining below every visible Epic row")
+  @Test("Backlog uses the height remaining below every visible epic row")
   func backlogUsesRemainingHeightBelowEpics() {
     let availableHeight: CGFloat = 922
     let dividerHeight: CGFloat = 37
@@ -378,7 +381,7 @@ struct EpicPlanningPresentationTests {
     #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
   }
 
-  @Test("Backlog can shrink below its former minimum when Epics use the space")
+  @Test("Backlog can shrink below its former minimum when epics use the space")
   func backlogShrinksToRemainingHeight() {
     let availableHeight: CGFloat = 730
     let dividerHeight: CGFloat = 37
@@ -398,7 +401,7 @@ struct EpicPlanningPresentationTests {
     #expect(epicHeight + dividerHeight + backlogHeight == availableHeight)
   }
 
-  @Test("Expanded closed Epics contribute to the planning section height")
+  @Test("Expanded closed epics contribute to the planning section height")
   func expandedClosedEpicsContributeToHeight() {
     let collapsedHeight = BacklogPlanningSizing.epicHeight(
       openEpicCount: 2,
@@ -417,7 +420,7 @@ struct EpicPlanningPresentationTests {
     )
   }
 
-  @Test("Pending Epic questions stay attached to the analyst message that asked them")
+  @Test("Pending epic questions stay attached to the analyst message that asked them")
   func pendingEpicQuestionsStayInChronologicalPosition() throws {
     let question = TicketRefinementQuestion(
       prompt: "Which audience should this outcome serve first?",
@@ -429,14 +432,14 @@ struct EpicPlanningPresentationTests {
     )
     let laterOwnerChat = EpicPlanningConversationMessage(
       author: .owner,
-      body: "@UX Designer What would each option mean for the flow?",
+      body: "@UX designer What would each option mean for the flow?",
       kind: .chat
     )
     let laterAgentChat = EpicPlanningConversationMessage(
       author: .agent,
       body: "The first option needs more onboarding guidance.",
       kind: .chat,
-      participantName: "UX Designer"
+      participantName: "UX designer"
     )
 
     let anchorID = try #require(
@@ -449,10 +452,38 @@ struct EpicPlanningPresentationTests {
     #expect(anchorID == analystQuestion.id)
   }
 
-  @Test("A failed Epic plan retries generation without restarting clarification")
+  @Test("Submitting epic answers preserves the current question position")
+  func submittedEpicAnswersPreserveQuestionPosition() {
+    let scopeID = UUID()
+    let question = TicketRefinementQuestion(
+      prompt: "Which forecast should the epic deliver?",
+      options: ["Hourly", "Daily"]
+    )
+    let answerMessage = EpicPlanningConversationMessage(
+      author: .owner,
+      body: "",
+      answeredQuestions: [
+        EpicPlanningAnsweredQuestion(
+          question: question,
+          selectedOption: "Hourly",
+          answer: "Hourly"
+        )
+      ]
+    )
+
+    #expect(
+      !EpicPlanningConversationTimeline.shouldAutoScroll(
+        from: .questions(scopeID, [question]),
+        to: .message(answerMessage.id),
+        messages: [answerMessage]
+      )
+    )
+  }
+
+  @Test("A failed epic plan retries generation without restarting clarification")
   func failedEpicPlanRetriesGeneration() {
     let question = TicketRefinementQuestion(
-      prompt: "Which forecast should the Epic deliver?",
+      prompt: "Which forecast should the epic deliver?",
       options: ["Hourly", "Daily"]
     )
     let answer = EpicPlanningAnsweredQuestion(
@@ -493,7 +524,7 @@ struct EpicPlanningPresentationTests {
   @Test("A failed clarification retries its last durable answers")
   func failedEpicClarificationRetriesAnswers() {
     let question = TicketRefinementQuestion(
-      prompt: "Which forecast should the Epic deliver?",
+      prompt: "Which forecast should the epic deliver?",
       options: ["Hourly", "Daily"]
     )
     let answer = EpicPlanningAnsweredQuestion(
@@ -524,6 +555,51 @@ struct EpicPlanningPresentationTests {
         for: conversation,
         hasFailedPlan: false
       ) == .retryClarification([answer])
+    )
+  }
+
+  @Test("Completed epic analysis refreshes the open sheet when metadata arrives")
+  func completedEpicAnalysisRefreshesOpenSheet() {
+    let productID = UUID()
+    let epicID = UUID()
+    let draft = Epic(
+      id: epicID,
+      productID: productID,
+      title: "",
+      goal: "Give users a disposable scratchpad"
+    )
+    let analyzed = Epic(
+      id: epicID,
+      productID: productID,
+      title: "Disposable scratchpad",
+      goal: "Give macOS users an immediate place to jot plain text.",
+      successCriteria: ["Launching presents a focused plain-text editor"],
+      constraints: "Keep all text local."
+    )
+
+    #expect(
+      EpicDetailRefreshPolicy.shouldSync(
+        previous: draft,
+        current: analyzed,
+        isPlanningComplete: true,
+        hasUnsavedOwnerChanges: false
+      )
+    )
+    #expect(
+      !EpicDetailRefreshPolicy.shouldSync(
+        previous: draft,
+        current: analyzed,
+        isPlanningComplete: false,
+        hasUnsavedOwnerChanges: false
+      )
+    )
+    #expect(
+      !EpicDetailRefreshPolicy.shouldSync(
+        previous: draft,
+        current: analyzed,
+        isPlanningComplete: true,
+        hasUnsavedOwnerChanges: true
+      )
     )
   }
 

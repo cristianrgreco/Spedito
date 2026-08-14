@@ -14,6 +14,83 @@ public struct CodexConnectionInfo: Equatable, Sendable {
   }
 }
 
+public struct CodexRateLimitWindow: Identifiable, Equatable, Sendable {
+  public let id: String
+  public let usedPercent: Double
+  public let windowDurationMinutes: Int
+  public let resetsAt: Date?
+
+  public var availablePercent: Double {
+    100 - usedPercent
+  }
+
+  public init(
+    id: String,
+    usedPercent: Double,
+    windowDurationMinutes: Int,
+    resetsAt: Date?
+  ) {
+    self.id = id
+    self.usedPercent = min(max(usedPercent, 0), 100)
+    self.windowDurationMinutes = windowDurationMinutes
+    self.resetsAt = resetsAt
+  }
+}
+
+public struct CodexRateLimitsSnapshot: Equatable, Sendable {
+  public let windows: [CodexRateLimitWindow]
+  public let reachedLimitType: String?
+
+  public var nextResetAt: Date? {
+    windows.compactMap(\.resetsAt).min()
+  }
+
+  public init(windows: [CodexRateLimitWindow], reachedLimitType: String?) {
+    self.windows = windows.sorted {
+      $0.windowDurationMinutes < $1.windowDurationMinutes
+    }
+    self.reachedLimitType = reachedLimitType
+  }
+
+  init(response: JSONValue) {
+    let rateLimits = response["rateLimits"]
+    let windows = [
+      Self.decodeWindow(id: "primary", value: rateLimits?["primary"]),
+      Self.decodeWindow(id: "secondary", value: rateLimits?["secondary"]),
+    ].compactMap { $0 }
+    self.init(
+      windows: windows,
+      reachedLimitType: rateLimits?["rateLimitReachedType"]?.stringValue
+    )
+  }
+
+  private static func decodeWindow(id: String, value: JSONValue?) -> CodexRateLimitWindow? {
+    guard
+      let value,
+      let usedPercent = number(value["usedPercent"]),
+      let duration = value["windowDurationMins"]?.integerValue,
+      duration > 0
+    else { return nil }
+    let resetsAt = value["resetsAt"]?.integerValue.map {
+      Date(timeIntervalSince1970: TimeInterval($0))
+    }
+    return CodexRateLimitWindow(
+      id: id,
+      usedPercent: usedPercent,
+      windowDurationMinutes: Int(duration),
+      resetsAt: resetsAt
+    )
+  }
+
+  private static func number(_ value: JSONValue?) -> Double? {
+    switch value {
+    case .integer(let value): Double(value)
+    case .number(let value): value
+    default: nil
+    }
+  }
+}
+
 public struct CodexReasoningEffortOption: Identifiable, Equatable, Sendable {
   public let id: String
   public let description: String
@@ -91,9 +168,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
   private let transport: any CodexRPCTransport
   private var connectionInfo: CodexConnectionInfo?
   private var inboundRoutingTask: Task<Void, Never>?
-  private var inboundSubscribers: [
-    UUID: AsyncStream<CodexInboundMessage>.Continuation
-  ] = [:]
+  private var inboundSubscribers: [UUID: AsyncStream<CodexInboundMessage>.Continuation] = [:]
   private var recentInboundMessages: [CodexInboundMessage] = []
   private var managedCommandStates: [String: ManagedCommandState] = [:]
   private var managedCommandTasks: [String: Task<Void, Never>] = [:]
@@ -142,8 +217,13 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     subscribeToInboundMessages(replayRecent: replayRecent)
   }
 
-  public func readRateLimits() async throws -> JSONValue {
-    try await transport.request(method: "account/rateLimits/read", params: .object([:]))
+  public func readRateLimits() async throws -> CodexRateLimitsSnapshot {
+    guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    let response = try await transport.request(
+      method: "account/rateLimits/read",
+      params: .object([:])
+    )
+    return CodexRateLimitsSnapshot(response: response)
   }
 
   public func listModels() async throws -> [CodexModelOption] {
@@ -194,12 +274,47 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     return models
   }
 
+  public func startRepositoryAnalysisThread(
+    snapshotURL: URL,
+    developerInstructions: String,
+    model: String? = nil
+  ) async throws -> String {
+    guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    var params: [String: JSONValue] = [
+      "approvalPolicy": .string("never"),
+      "cwd": .string(snapshotURL.standardizedFileURL.path),
+      "developerInstructions": .string(developerInstructions),
+      "ephemeral": .bool(false),
+      "permissions": .string(CodexPermissionProfiles.repositoryAnalysis),
+      "personality": .string("pragmatic"),
+      "runtimeWorkspaceRoots": .array([
+        .string(snapshotURL.standardizedFileURL.path)
+      ]),
+      "serviceName": .string("Spedito repository analysis"),
+      "config": CodexPermissionProfiles.repositoryAnalysisThreadConfiguration(
+        snapshotURL: snapshotURL
+      ),
+    ]
+    if let model, model != "default" {
+      params["model"] = .string(model)
+    }
+    let response = try await transport.request(
+      method: "thread/start",
+      params: .object(params)
+    )
+    guard let threadID = response["thread"]?["id"]?.stringValue else {
+      throw CodexClientError.invalidThreadResponse
+    }
+    return threadID
+  }
+
   public func startReadOnlyThread(
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
     allowsApprovals: Bool = false,
     readOnlyProductDirectory: URL? = nil,
+    ephemeral: Bool = false,
     responseTimeout: Duration? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
@@ -207,7 +322,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "approvalPolicy": .string(allowsApprovals ? "on-request" : "never"),
       "cwd": .string(workingDirectory.path),
       "developerInstructions": .string(developerInstructions),
-      "ephemeral": .bool(false),
+      "ephemeral": .bool(ephemeral),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
       "runtimeWorkspaceRoots": .array(
@@ -248,11 +363,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     let productDirectory =
       readOnlyProductDirectory
       ?? readOnlyGitDirectory?
-        .deletingLastPathComponent()
-        .appendingPathComponent(
-          ProductStoreRegistry.controlDirectoryName,
-          isDirectory: true
-        )
+      .deletingLastPathComponent()
+      .appendingPathComponent(
+        ProductStoreRegistry.controlDirectoryName,
+        isDirectory: true
+      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -319,11 +434,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     let productDirectory =
       readOnlyProductDirectory
       ?? readOnlyGitDirectory?
-        .deletingLastPathComponent()
-        .appendingPathComponent(
-          ProductStoreRegistry.controlDirectoryName,
-          isDirectory: true
-        )
+      .deletingLastPathComponent()
+      .appendingPathComponent(
+        ProductStoreRegistry.controlDirectoryName,
+        isDirectory: true
+      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -358,6 +473,23 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     return threadID
   }
 
+  public func startTurn(
+    threadID: String,
+    prompt: String,
+    effort: String,
+    runtimeWorkspaceRoots: [URL] = [],
+    responseTimeout: Duration? = nil
+  ) async throws -> String {
+    try await startTurnRequest(
+      threadID: threadID,
+      prompt: prompt,
+      effort: effort,
+      outputSchema: nil,
+      runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+      responseTimeout: responseTimeout
+    )
+  }
+
   public func startStructuredTurn(
     threadID: String,
     prompt: String,
@@ -365,6 +497,24 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     outputSchema: JSONValue,
     runtimeWorkspaceRoots: [URL] = [],
     responseTimeout: Duration? = nil
+  ) async throws -> String {
+    try await startTurnRequest(
+      threadID: threadID,
+      prompt: prompt,
+      effort: effort,
+      outputSchema: outputSchema,
+      runtimeWorkspaceRoots: runtimeWorkspaceRoots,
+      responseTimeout: responseTimeout
+    )
+  }
+
+  private func startTurnRequest(
+    threadID: String,
+    prompt: String,
+    effort: String,
+    outputSchema: JSONValue?,
+    runtimeWorkspaceRoots: [URL],
+    responseTimeout: Duration?
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     var params: [String: JSONValue] = [
@@ -375,10 +525,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
           "type": .string("text"),
         ])
       ]),
-      "outputSchema": outputSchema,
       "summary": .string("concise"),
       "threadId": .string(threadID),
     ]
+    if let outputSchema {
+      params["outputSchema"] = outputSchema
+    }
     // Turns deliberately inherit the profile materialized by thread start/resume.
     // Reselecting a named process profile here would discard dynamic per-thread
     // grants such as the active product's exact read-only Git directory.
@@ -474,8 +626,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               if let completedAgentMessage {
                 return completedAgentMessage
               }
-              if
-                !streamedAgentMessage.isEmpty,
+              if !streamedAgentMessage.isEmpty,
                 !completedItems.contains(where: {
                   $0["type"]?.stringValue == "agentMessage"
                 })
@@ -739,10 +890,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     case "item/commandExecution/requestApproval":
       kind = .command
       title = "Allow this command?"
-      let command = request.params["command"]?.stringValue
+      let command =
+        request.params["command"]?.stringValue
         ?? "Codex requested a local command."
-      if
-        let additionalPermissions = request.params["additionalPermissions"],
+      if let additionalPermissions = request.params["additionalPermissions"],
         additionalPermissions != .null
       {
         detail = [
@@ -760,7 +911,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     case "item/fileChange/requestApproval":
       kind = .fileChange
       title = "Allow this file change?"
-      detail = request.params["reason"]?.stringValue
+      detail =
+        request.params["reason"]?.stringValue
         ?? "Codex requested a file change outside its current access."
     default:
       throw CodexApprovalError.unsupportedRequest(request.method)
@@ -1072,9 +1224,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       ])
     case "item/permissions/requestApproval":
       let permissions = params["permissions"] ?? .object([:])
-      relevant = AgentPermissionGrantPolicy.canonicalProductGrantValue(
-        for: permissions
-      ) ?? permissions
+      relevant =
+        AgentPermissionGrantPolicy.canonicalProductGrantValue(
+          for: permissions
+        ) ?? permissions
     default:
       return nil
     }
@@ -1093,7 +1246,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     let entries = value["fileSystem"]?["entries"]?.arrayValue ?? []
     for entry in entries.prefix(4) {
       let access = entry["access"]?.stringValue ?? "access"
-      let path = entry["path"]?["path"]?.stringValue
+      let path =
+        entry["path"]?["path"]?.stringValue
         ?? entry["path"]?["pattern"]?.stringValue
         ?? entry["path"]?["value"]?["kind"]?.stringValue
         ?? "an additional location"

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("App model startup")
@@ -31,7 +32,9 @@ struct AppModelStartupTests {
     let migratedURL = try AppModel.migratedApplicationSupportURL(in: root)
 
     #expect(migratedURL.lastPathComponent == "Spedito")
-    #expect(FileManager.default.fileExists(atPath: migratedURL.appendingPathComponent("existing-product-data").path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: migratedURL.appendingPathComponent("existing-product-data").path))
     #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
   }
 

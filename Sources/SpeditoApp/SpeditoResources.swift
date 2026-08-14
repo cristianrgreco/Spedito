@@ -8,9 +8,10 @@ enum SpeditoResources {
     Bundle.main.url(
       forResource: name,
       withExtension: fileExtension
-    ) ?? Bundle.module.url(
-      forResource: name,
-      withExtension: fileExtension
     )
+      ?? Bundle.module.url(
+        forResource: name,
+        withExtension: fileExtension
+      )
   }
 }

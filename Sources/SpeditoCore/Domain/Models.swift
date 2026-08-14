@@ -30,19 +30,21 @@ public enum ProductColor: String, Codable, CaseIterable, Hashable, Sendable {
     .blue,
   ]
 
+  static func nextUnassigned(after existingColors: [ProductColor]) -> ProductColor? {
+    let usedColors = Set(existingColors.filter { $0 != .accent })
+    return assignmentOrder.first { !usedColors.contains($0) }
+  }
+
   static func nextAssigned(after existingColors: [ProductColor]) -> ProductColor {
     guard !existingColors.isEmpty else {
       return .accent
     }
 
-    let rotatedColors = existingColors.filter { $0 != .accent }
-    let usedColors = Set(rotatedColors)
-    if let unusedColor = assignmentOrder.first(where: {
-      !usedColors.contains($0)
-    }) {
+    if let unusedColor = nextUnassigned(after: existingColors) {
       return unusedColor
     }
-    return assignmentOrder[rotatedColors.count % assignmentOrder.count]
+    let rotatedColorCount = existingColors.count { $0 != .accent }
+    return assignmentOrder[rotatedColorCount % assignmentOrder.count]
   }
 }
 
@@ -103,7 +105,7 @@ public enum EpicStatus: String, Codable, CaseIterable, Hashable, Sendable {
   public var title: String {
     switch self {
     case .open: "Open"
-    case .closed: "Closed"
+    case .closed: "Completed"
     case .archived: "Archived"
     }
   }
@@ -163,7 +165,7 @@ public enum EpicProgress: String, Codable, CaseIterable, Hashable, Sendable {
     case .created: "Created"
     case .planned: "Planned"
     case .inProgress: "In progress"
-    case .complete: "Complete"
+    case .complete: "Ready to complete"
     }
   }
 }
@@ -205,6 +207,14 @@ public struct Epic: Identifiable, Codable, Hashable, Sendable {
     self.rank = rank
     self.createdAt = createdAt
     self.updatedAt = updatedAt
+  }
+
+  public var hasAnalyzedMetadata: Bool {
+    !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  public var displayTitle: String {
+    hasAnalyzedMetadata ? title : goal
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -615,6 +625,7 @@ public enum CommentAuthorKind: String, Codable, Sendable {
   case owner
   case agent
   case system
+  case external
 }
 
 public enum ConversationThreadStatus: String, Codable, CaseIterable, Sendable {
@@ -728,10 +739,8 @@ public struct TicketOwnerQuestion: Codable, Hashable, Sendable {
   ) -> TicketOwnerQuestionPresentation? {
     if let legacyPresentation = parseLegacyWorkLogBody(body) {
       if let structuredQuestion,
-        (
-          structuredQuestion.prompt != legacyPresentation.question.prompt
-            || structuredQuestion.options != legacyPresentation.question.options
-        )
+        structuredQuestion.prompt != legacyPresentation.question.prompt
+          || structuredQuestion.options != legacyPresentation.question.options
       {
         return TicketOwnerQuestionPresentation(
           context: body,
@@ -798,6 +807,85 @@ public struct TicketOwnerQuestionPresentation: Equatable, Sendable {
   }
 }
 
+public struct GitHubReviewCommentContext: Codable, Hashable, Sendable {
+  public let path: String
+  public let commitSHA: String
+  public let originalCommitSHA: String
+  public let diffHunk: String
+  public let startLine: Int?
+  public let line: Int?
+  public let startSide: String?
+  public let side: String?
+  public let originalStartLine: Int?
+  public let originalLine: Int?
+
+  public init(
+    path: String,
+    commitSHA: String,
+    originalCommitSHA: String,
+    diffHunk: String,
+    startLine: Int? = nil,
+    line: Int? = nil,
+    startSide: String? = nil,
+    side: String? = nil,
+    originalStartLine: Int? = nil,
+    originalLine: Int? = nil
+  ) {
+    self.path = path
+    self.commitSHA = commitSHA
+    self.originalCommitSHA = originalCommitSHA
+    self.diffHunk = diffHunk
+    self.startLine = startLine
+    self.line = line
+    self.startSide = startSide
+    self.side = side
+    self.originalStartLine = originalStartLine
+    self.originalLine = originalLine
+  }
+
+  public var lineDescription: String {
+    let current = Self.rangeDescription(start: startLine, end: line, side: side ?? startSide)
+    if let current { return current }
+    return Self.rangeDescription(
+      start: originalStartLine,
+      end: originalLine,
+      side: "original"
+    ) ?? "Location unavailable"
+  }
+
+  public var agentContext: String {
+    """
+    GitHub inline review context:
+    - File: \(path)
+    - Location: \(lineDescription)
+    - Reviewed commit: \(commitSHA)
+    - Original commit: \(originalCommitSHA)
+    ----- BEGIN GITHUB DIFF HUNK -----
+    \(diffHunk)
+    ----- END GITHUB DIFF HUNK -----
+    """
+  }
+
+  private static func rangeDescription(start: Int?, end: Int?, side: String?) -> String? {
+    guard let line = end ?? start else { return nil }
+    let range =
+      if let start, start != line {
+        "\(start)-\(line)"
+      } else {
+        "\(line)"
+      }
+    let normalizedSide = side?.lowercased()
+    let sideDescription: String? =
+      switch normalizedSide {
+      case "left": "old"
+      case "right": "new"
+      case "original": "original"
+      default: nil
+      }
+    return sideDescription.map { "Lines \(range) (\($0))" } ?? "Lines \(range)"
+  }
+}
+
 public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let workItemID: UUID
@@ -806,6 +894,10 @@ public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
   public let body: String
   public let ownerQuestion: TicketOwnerQuestion?
   public let answeredQuestions: [TicketAnsweredQuestion]
+  public let authorAvatarURL: URL?
+  public let externalURL: URL?
+  public let externalID: String?
+  public let githubReviewContext: GitHubReviewCommentContext?
   public let createdAt: Date
 
   public init(
@@ -816,6 +908,10 @@ public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
     body: String,
     ownerQuestion: TicketOwnerQuestion? = nil,
     answeredQuestions: [TicketAnsweredQuestion] = [],
+    authorAvatarURL: URL? = nil,
+    externalURL: URL? = nil,
+    externalID: String? = nil,
+    githubReviewContext: GitHubReviewCommentContext? = nil,
     createdAt: Date = Date()
   ) {
     self.id = id
@@ -825,7 +921,18 @@ public struct TicketComment: Identifiable, Codable, Hashable, Sendable {
     self.body = body
     self.ownerQuestion = ownerQuestion
     self.answeredQuestions = answeredQuestions
+    self.authorAvatarURL = authorAvatarURL
+    self.externalURL = externalURL
+    self.externalID = externalID
+    self.githubReviewContext = githubReviewContext
     self.createdAt = createdAt
+  }
+}
+
+extension TicketComment {
+  public var agentContextBody: String {
+    guard let githubReviewContext else { return body }
+    return "\(body)\n\n\(githubReviewContext.agentContext)"
   }
 }
 
@@ -931,12 +1038,12 @@ public enum AgentRole: String, Codable, CaseIterable, Sendable {
 
   public var title: String {
     switch self {
-    case .businessAnalyst: "Business Analyst"
-    case .uxDesigner: "UX Designer"
-    case .lead: "Tech Lead"
+    case .businessAnalyst: "Business analyst"
+    case .uxDesigner: "UX designer"
+    case .lead: "Tech lead"
     case .implementer: "Implementer"
-    case .frontendEngineer: "Frontend Engineer"
-    case .backendEngineer: "Backend Engineer"
+    case .frontendEngineer: "Frontend engineer"
+    case .backendEngineer: "Backend engineer"
     case .reviewer: "Reviewer"
     case .qualityAssurance: "QA Explorer"
     case .knowledgeCurator: "Knowledge Curator"
@@ -1184,6 +1291,7 @@ public struct SprintReadinessIssue: Identifiable, Codable, Hashable, Sendable {
 public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
   case activeSprintExists
   case sprintNotDraft
+  case planChanged
   case emptySprint
   case invalidTokenBudget
   case duplicateWorkItem
@@ -1198,6 +1306,8 @@ public enum SprintPlanningError: Error, Equatable, LocalizedError, Sendable {
       "Only one sprint can be active at a time."
     case .sprintNotDraft:
       "Only a draft sprint can be edited or started."
+    case .planChanged:
+      "The sprint plan changed before the generated goal could be saved."
     case .emptySprint:
       "Select at least one ready ticket."
     case .invalidTokenBudget:
@@ -1298,7 +1408,8 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
   }
 
   public func activeDuration(at referenceDate: Date = Date()) -> TimeInterval {
-    let currentTurn = status == .running
+    let currentTurn =
+      status == .running
       ? turnStartedAt.map { max(0, referenceDate.timeIntervalSince($0)) } ?? 0
       : 0
     return max(0, activeDurationSeconds + currentTurn)
@@ -1502,6 +1613,278 @@ public struct RetrospectiveActionSource: Codable, Hashable, Sendable {
   }
 }
 
+public struct ProtectedRepositoryPath: Codable, Hashable, Sendable {
+  public let path: String
+  public let objectMode: String
+
+  public init(path: String, objectMode: String) {
+    self.path = path
+    self.objectMode = objectMode
+  }
+}
+
+public struct ProductRepository: Codable, Hashable, Sendable {
+  public let productID: UUID
+  public let originURL: URL
+  public let sourceDefaultBranch: String
+  public let importedSHA: String
+  public let protectedKnowledgePaths: [ProtectedRepositoryPath]
+  public let blocksKnowledgeExport: Bool
+  public let importedAt: Date
+
+  public init(
+    productID: UUID,
+    originURL: URL,
+    sourceDefaultBranch: String,
+    importedSHA: String,
+    protectedKnowledgePaths: [ProtectedRepositoryPath] = [],
+    blocksKnowledgeExport: Bool = false,
+    importedAt: Date = Date()
+  ) {
+    self.productID = productID
+    self.originURL = originURL
+    self.sourceDefaultBranch = sourceDefaultBranch
+    self.importedSHA = importedSHA
+    self.protectedKnowledgePaths = protectedKnowledgePaths.sorted {
+      $0.path < $1.path
+    }
+    self.blocksKnowledgeExport = blocksKnowledgeExport
+    self.importedAt = importedAt
+  }
+}
+
+public enum RepositoryKnowledgeRunStatus: String, Codable, CaseIterable, Sendable {
+  case pendingAnalysis = "pending_analysis"
+  case analyzing
+  case reviewing
+  case publishing
+  case completed
+  case failed
+  case interrupted
+  case stale
+}
+
+public enum RepositoryKnowledgeRunPurpose: String, Codable, CaseIterable, Sendable {
+  case knowledge
+  case importedAppLaunch = "imported_app_launch"
+}
+
+public struct RepositoryKnowledgeRun: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let attempt: Int
+  public let purpose: RepositoryKnowledgeRunPurpose
+  public let analyzedSHA: String
+  public let analyzerProfileID: UUID
+  public let reviewerProfileID: UUID
+  public var analyzerThreadID: String?
+  public var analyzerTurnID: String?
+  public var reviewerThreadID: String?
+  public var reviewerTurnID: String?
+  public var status: RepositoryKnowledgeRunStatus
+  public var analysisSummary: String?
+  public var reviewSummary: String?
+  public var errorMessage: String?
+  public var knowledgeExportPaths: [String]
+  public var knowledgeCommitSHA: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    attempt: Int,
+    purpose: RepositoryKnowledgeRunPurpose = .knowledge,
+    analyzedSHA: String,
+    analyzerProfileID: UUID,
+    reviewerProfileID: UUID,
+    analyzerThreadID: String? = nil,
+    analyzerTurnID: String? = nil,
+    reviewerThreadID: String? = nil,
+    reviewerTurnID: String? = nil,
+    status: RepositoryKnowledgeRunStatus = .pendingAnalysis,
+    analysisSummary: String? = nil,
+    reviewSummary: String? = nil,
+    errorMessage: String? = nil,
+    knowledgeExportPaths: [String] = [],
+    knowledgeCommitSHA: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.productID = productID
+    self.attempt = attempt
+    self.purpose = purpose
+    self.analyzedSHA = analyzedSHA
+    self.analyzerProfileID = analyzerProfileID
+    self.reviewerProfileID = reviewerProfileID
+    self.analyzerThreadID = analyzerThreadID
+    self.analyzerTurnID = analyzerTurnID
+    self.reviewerThreadID = reviewerThreadID
+    self.reviewerTurnID = reviewerTurnID
+    self.status = status
+    self.analysisSummary = analysisSummary
+    self.reviewSummary = reviewSummary
+    self.errorMessage = errorMessage
+    self.knowledgeExportPaths = knowledgeExportPaths.sorted()
+    self.knowledgeCommitSHA = knowledgeCommitSHA
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public enum RepositoryKnowledgeDraftOperation: String, Codable, CaseIterable, Sendable {
+  case update
+  case create
+}
+
+public enum RepositoryKnowledgeDraftStatus: String, Codable, CaseIterable, Sendable {
+  case proposed
+  case approved
+  case published
+  case rejected
+  case superseded
+}
+
+public struct RepositoryEvidence: Codable, Hashable, Sendable {
+  public let path: String
+  public let startLine: Int?
+  public let endLine: Int?
+
+  public init(path: String, startLine: Int? = nil, endLine: Int? = nil) {
+    self.path = path
+    self.startLine = startLine
+    self.endLine = endLine
+  }
+}
+
+public enum RepositoryLaunchProposalStatus: String, Codable, CaseIterable, Sendable {
+  case proposed
+  case approved
+  case published
+  case rejected
+}
+
+public struct RepositoryLaunchProposal: Identifiable, Codable, Equatable, Sendable {
+  public let id: UUID
+  public let runID: UUID
+  public let specification: DemoLaunchSpecification
+  public let evidence: [RepositoryEvidence]
+  public var status: RepositoryLaunchProposalStatus
+  public var reviewExplanation: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    runID: UUID,
+    specification: DemoLaunchSpecification,
+    evidence: [RepositoryEvidence],
+    status: RepositoryLaunchProposalStatus = .proposed,
+    reviewExplanation: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.runID = runID
+    self.specification = specification
+    self.evidence = evidence
+    self.status = status
+    self.reviewExplanation = reviewExplanation
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct RepositoryLaunchReviewDecision: Codable, Equatable, Sendable {
+  public let proposalID: UUID
+  public let approved: Bool
+  public let explanation: String
+
+  public init(proposalID: UUID, approved: Bool, explanation: String) {
+    self.proposalID = proposalID
+    self.approved = approved
+    self.explanation = explanation
+  }
+}
+
+public struct RepositoryKnowledgeDraft: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let runID: UUID
+  public let operation: RepositoryKnowledgeDraftOperation
+  public let targetPageID: UUID?
+  public let parentPageID: UUID?
+  public let basePageTitle: String?
+  public let basePageBodyMarkdown: String?
+  public let basePageUpdatedAt: Date?
+  public let title: String
+  public let proposedBodyMarkdown: String
+  public let rationale: String
+  public let evidence: [RepositoryEvidence]
+  public var status: RepositoryKnowledgeDraftStatus
+  public var reviewExplanation: String?
+  public let createdAt: Date
+  public var updatedAt: Date
+
+  public init(
+    id: UUID = UUID(),
+    runID: UUID,
+    operation: RepositoryKnowledgeDraftOperation,
+    targetPageID: UUID? = nil,
+    parentPageID: UUID? = nil,
+    basePageTitle: String? = nil,
+    basePageBodyMarkdown: String? = nil,
+    basePageUpdatedAt: Date? = nil,
+    title: String,
+    proposedBodyMarkdown: String,
+    rationale: String,
+    evidence: [RepositoryEvidence],
+    status: RepositoryKnowledgeDraftStatus = .proposed,
+    reviewExplanation: String? = nil,
+    createdAt: Date = Date(),
+    updatedAt: Date = Date()
+  ) {
+    self.id = id
+    self.runID = runID
+    self.operation = operation
+    self.targetPageID = targetPageID
+    self.parentPageID = parentPageID
+    self.basePageTitle = basePageTitle
+    self.basePageBodyMarkdown = basePageBodyMarkdown
+    self.basePageUpdatedAt = basePageUpdatedAt
+    self.title = title
+    self.proposedBodyMarkdown = proposedBodyMarkdown
+    self.rationale = rationale
+    self.evidence = evidence
+    self.status = status
+    self.reviewExplanation = reviewExplanation
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+  }
+}
+
+public struct RepositoryKnowledgeReviewDecision: Codable, Hashable, Sendable {
+  public let draftID: UUID
+  public let approved: Bool
+  public let explanation: String
+
+  public init(draftID: UUID, approved: Bool, explanation: String) {
+    self.draftID = draftID
+    self.approved = approved
+    self.explanation = explanation
+  }
+}
+
+public struct RepositoryKnowledgePublicationProjection: Codable, Hashable, Sendable {
+  public let pages: [KnowledgePage]
+  public let changedPageIDs: [UUID]
+
+  public init(pages: [KnowledgePage], changedPageIDs: [UUID]) {
+    self.pages = pages
+    self.changedPageIDs = changedPageIDs
+  }
+}
+
 public enum KnowledgePageKind: String, Codable, Sendable {
   case section
   case page
@@ -1529,6 +1912,7 @@ public struct KnowledgePage: Identifiable, Codable, Hashable, Sendable {
   public var verificationStatus: KnowledgeVerificationStatus
   public var sortOrder: Int
   public var sourceWorkItemID: UUID?
+  public var sourceRepositoryKnowledgeRunID: UUID?
   public let createdAt: Date
   public var updatedAt: Date
 
@@ -1543,6 +1927,7 @@ public struct KnowledgePage: Identifiable, Codable, Hashable, Sendable {
     verificationStatus: KnowledgeVerificationStatus = .verified,
     sortOrder: Int = 0,
     sourceWorkItemID: UUID? = nil,
+    sourceRepositoryKnowledgeRunID: UUID? = nil,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
   ) {
@@ -1556,6 +1941,7 @@ public struct KnowledgePage: Identifiable, Codable, Hashable, Sendable {
     self.verificationStatus = verificationStatus
     self.sortOrder = sortOrder
     self.sourceWorkItemID = sourceWorkItemID
+    self.sourceRepositoryKnowledgeRunID = sourceRepositoryKnowledgeRunID
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }
@@ -1597,9 +1983,19 @@ public enum CandidateRevisionStatus: String, Codable, CaseIterable, Sendable {
   case resolvingConflict = "resolving_conflict"
   case changesRequested = "changes_requested"
   case readyForDemo = "ready_for_demo"
+  case promoting
   case accepted
   case superseded
   case failed
+}
+
+public enum CandidateDeliveryKind: String, Codable, CaseIterable, Sendable {
+  case repositoryChange = "repository_change"
+  case localOutcome = "local_outcome"
+
+  public var changesRepository: Bool {
+    self == .repositoryChange
+  }
 }
 
 public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
@@ -1610,6 +2006,7 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
   public let workItemID: UUID
   public let implementationRunID: UUID
   public let version: Int
+  public let deliveryKind: CandidateDeliveryKind
   public let branchName: String
   public let baseSHA: String
   public let headSHA: String
@@ -1630,13 +2027,14 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
     workItemID: UUID,
     implementationRunID: UUID,
     version: Int,
+    deliveryKind: CandidateDeliveryKind = .repositoryChange,
     branchName: String,
     baseSHA: String,
     headSHA: String,
     integratedSHA: String? = nil,
     worktreePath: String,
     integrationWorktreePath: String? = nil,
-    status: CandidateRevisionStatus = .queuedForReview,
+    status: CandidateRevisionStatus = .queuedForIntegration,
     commitCount: Int,
     executionResultJSON: String,
     createdAt: Date = Date(),
@@ -1649,6 +2047,7 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
     self.workItemID = workItemID
     self.implementationRunID = implementationRunID
     self.version = version
+    self.deliveryKind = deliveryKind
     self.branchName = branchName
     self.baseSHA = baseSHA
     self.headSHA = headSHA

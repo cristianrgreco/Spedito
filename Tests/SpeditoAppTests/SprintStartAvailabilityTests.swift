@@ -1,6 +1,7 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Sprint start availability")
@@ -20,7 +21,7 @@ struct SprintStartAvailabilityTests {
     #expect(availability.blockingActiveSprintNumber == 1)
     #expect(
       availability.explanation
-        == "Finish or stop Sprint 1 before starting this sprint."
+        == "Finish or stop sprint 1 before starting this sprint."
     )
   }
 
@@ -39,7 +40,7 @@ struct SprintStartAvailabilityTests {
     #expect(availability.blockingActiveSprintNumber == 1)
     #expect(
       availability.explanation
-        == "Finish or stop Sprint 1 before starting this sprint."
+        == "Finish or stop sprint 1 before starting this sprint."
     )
   }
 
@@ -68,7 +69,7 @@ struct SprintStartAvailabilityTests {
       sprint: Sprint(
         productID: productID,
         number: number,
-        goal: "Deliver Sprint \(number)",
+        goal: "Deliver sprint \(number)",
         state: state
       ),
       items: []

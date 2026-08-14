@@ -3,6 +3,7 @@ import SwiftUI
 enum WorkspaceCommand: CaseIterable, Hashable {
   case backlog
   case sprintBoard
+  case app
   case retrospectives
   case reports
   case productKnowledge
@@ -19,6 +20,7 @@ enum WorkspaceCommand: CaseIterable, Hashable {
   static let navigation: [WorkspaceCommand] = [
     .backlog,
     .sprintBoard,
+    .app,
     .retrospectives,
     .reports,
     .productKnowledge,
@@ -35,6 +37,7 @@ enum WorkspaceCommand: CaseIterable, Hashable {
     switch self {
     case .backlog: "Backlog"
     case .sprintBoard: "Sprint board"
+    case .app: "App versions"
     case .retrospectives: "Retrospectives"
     case .reports: "Reports"
     case .productKnowledge: "Product knowledge"
@@ -49,6 +52,7 @@ enum WorkspaceCommand: CaseIterable, Hashable {
     switch self {
     case .backlog: Shortcut(key: "1", modifiers: .command)
     case .sprintBoard: Shortcut(key: "2", modifiers: .command)
+    case .app: Shortcut(key: "8", modifiers: .command)
     case .retrospectives: Shortcut(key: "3", modifiers: .command)
     case .reports: Shortcut(key: "4", modifiers: .command)
     case .productKnowledge: Shortcut(key: "5", modifiers: .command)
@@ -82,6 +86,7 @@ struct WorkspaceCommands: Commands {
     CommandMenu("Go") {
       commandButton(.backlog)
       commandButton(.sprintBoard)
+      commandButton(.app)
 
       Divider()
 

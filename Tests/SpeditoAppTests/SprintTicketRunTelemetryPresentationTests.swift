@@ -1,6 +1,7 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Sprint ticket run telemetry presentation")

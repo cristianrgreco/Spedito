@@ -59,10 +59,11 @@ struct CodexInstallationTests {
       ]
     )
 
-    #expect(installations.map(\.id) == [
-      CodexInstallation.officialApplicationID,
-      "custom",
-    ])
+    #expect(
+      installations.map(\.id) == [
+        CodexInstallation.officialApplicationID,
+        "custom",
+      ])
   }
 
   @Test("Custom installations and the selected installation are persisted")
