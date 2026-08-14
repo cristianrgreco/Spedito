@@ -67,6 +67,85 @@ struct ProductStoreRegistryTests {
     }
   }
 
+  @Test("Archived colors are available to active products and resolved on restore")
+  func activeProductColorsStayDistinctAcrossStores() async throws {
+    let fixture = try ProductRegistryFixture()
+    defer { fixture.remove() }
+
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let first = try await registry.createProduct(name: "First")
+    let archived = try await registry.createProduct(name: "Archived")
+    let archivedStore = try #require(registry.store(for: archived.id))
+    _ = try await archivedStore.archiveProduct(id: archived.id)
+
+    let replacement = try await registry.createProduct(name: "Replacement")
+    #expect(first.color == .accent)
+    #expect(archived.color == .green)
+    #expect(replacement.color == .green)
+
+    let restored = try await registry.restoreProduct(id: archived.id)
+    #expect(restored.color == .indigo)
+    #expect(Set(try await registry.fetchProducts().map(\.color)).count == 3)
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("Preparation repairs active color collisions while colors remain available")
+  func preparationRepairsActiveProductColorCollisions() async throws {
+    let fixture = try ProductRegistryFixture()
+    defer { fixture.remove() }
+    let firstID = UUID()
+    let secondID = UUID()
+    let thirdID = UUID()
+    let records: [(UUID, String, ProductColor)] = [
+      (firstID, "First", .accent),
+      (secondID, "Second", .teal),
+      (thirdID, "Third", .teal),
+    ]
+
+    for (id, name, color) in records {
+      let store = try SQLiteStore(
+        url: ProductStoreRegistry.databaseURL(
+          productID: id,
+          productWorkspacesRootURL: fixture.workspacesURL
+        )
+      )
+      _ = try await store.createProduct(name: name, color: color, id: id)
+      await store.close()
+    }
+
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    try await registry.prepare()
+    let colors = Dictionary(
+      uniqueKeysWithValues: try await registry.fetchProducts().map { ($0.id, $0.color) }
+    )
+    #expect(colors[firstID] == .accent)
+    #expect(colors[secondID] == .teal)
+    #expect(colors[thirdID] == .green)
+
+    try await registry.prepare()
+    let preparedAgain = Dictionary(
+      uniqueKeysWithValues: try await registry.fetchProducts().map { ($0.id, $0.color) }
+    )
+    #expect(preparedAgain == colors)
+
+    let thirdStore = try #require(registry.store(for: thirdID))
+    #expect(
+      try await thirdStore.fetchActivity(productID: thirdID).first?.kind
+        == "product.color_reassigned"
+    )
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
   @Test("The final schema is created once and exposes live read-only agent views")
   func finalSchemaAndAgentViews() async throws {
     let fixture = try ProductRegistryFixture()
@@ -84,14 +163,56 @@ struct ProductStoreRegistryTests {
     _ = try await store.appendComment(
       workItemID: item.id,
       authorKind: .owner,
-      authorName: "Product Owner",
+      authorName: "Product owner",
       body: "Keep the database authoritative."
     )
     await store.close()
 
     let database = try ProductRegistryFixture.openReadOnly(databaseURL)
     defer { sqlite3_close(database) }
-    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 1)
+    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 9)
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('demo_sessions') WHERE name = 'source_kind';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('repository_knowledge_runs') WHERE name = 'purpose';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('ticket_comments') WHERE name = 'github_review_context_json';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('remote_publications') WHERE name = 'purpose';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('remote_publications') WHERE name = 'remote_branch_deleted_at';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('candidate_revisions') WHERE name = 'delivery_kind';",
+        in: database
+      ) == 1
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM pragma_table_info('agent_delivery_provenance') WHERE name = 'delivery_kind';",
+        in: database
+      ) == 1
+    )
     #expect(
       try ProductRegistryFixture.scalarInt(
         "SELECT COUNT(*) FROM pragma_table_info('sprints') WHERE name = 'concurrency_limit';",
@@ -115,6 +236,12 @@ struct ProductStoreRegistryTests {
         "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'schema_migrations';",
         in: database
       ) == 0
+    )
+    #expect(
+      try ProductRegistryFixture.scalarInt(
+        "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name LIKE 'remote_%';",
+        in: database
+      ) == 3
     )
     #expect(
       try ProductRegistryFixture.scalarInt(
@@ -149,7 +276,7 @@ struct ProductStoreRegistryTests {
     await originalStore.close()
     try ProductRegistryFixture.execute(
       """
-      PRAGMA user_version = 2;
+      PRAGMA user_version = 10;
       """,
       at: databaseURL
     )
@@ -204,12 +331,14 @@ struct ProductStoreRegistryTests {
     #expect(Set(try await registry.fetchProducts().map(\.id)) == [first.id, second.id])
     let firstStore = try #require(registry.store(for: first.id))
     let secondStore = try #require(registry.store(for: second.id))
-    #expect(try await firstStore.fetchWorkItems(productID: first.id).map(\.title) == [
-      "First product ticket"
-    ])
-    #expect(try await secondStore.fetchWorkItems(productID: second.id).map(\.title) == [
-      "Second product ticket"
-    ])
+    #expect(
+      try await firstStore.fetchWorkItems(productID: first.id).map(\.title) == [
+        "First product ticket"
+      ])
+    #expect(
+      try await secondStore.fetchWorkItems(productID: second.id).map(\.title) == [
+        "Second product ticket"
+      ])
     #expect(try await firstStore.fetchWorkItems(productID: second.id).isEmpty)
     #expect(try await secondStore.fetchWorkItems(productID: first.id).isEmpty)
 
@@ -227,7 +356,8 @@ struct ProductStoreRegistryTests {
       productID.uuidString,
       isDirectory: true
     )
-    let legacyDatabaseURL = workspaceURL
+    let legacyDatabaseURL =
+      workspaceURL
       .appendingPathComponent(
         ProductStoreRegistry.legacyControlDirectoryName,
         isDirectory: true
@@ -321,7 +451,8 @@ private struct ProductRegistryFixture {
     var errorMessage: UnsafeMutablePointer<CChar>?
     let result = sqlite3_exec(database, sql, nil, nil, &errorMessage)
     guard result == SQLITE_OK else {
-      let message = errorMessage.map { String(cString: $0) }
+      let message =
+        errorMessage.map { String(cString: $0) }
         ?? String(cString: sqlite3_errmsg(database))
       sqlite3_free(errorMessage)
       throw PersistenceError.sqlite(code: result, message: message)

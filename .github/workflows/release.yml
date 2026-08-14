@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Check out release revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Validate release version
         id: version
@@ -68,17 +68,36 @@ jobs:
             CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
             swift test -Xswiftc -warnings-as-errors
 
+      - name: Verify GitHub App configuration
+        env:
+          SPEDITO_GITHUB_CLIENT_ID: ${{ vars.SPEDITO_GITHUB_CLIENT_ID }}
+          SPEDITO_GITHUB_APP_SLUG: ${{ vars.SPEDITO_GITHUB_APP_SLUG }}
+        run: |
+          [[ -n "$SPEDITO_GITHUB_CLIENT_ID" ]]
+          [[ -n "$SPEDITO_GITHUB_APP_SLUG" ]]
+
       - name: Build application bundle
         env:
           SPEDITO_VERSION: ${{ steps.version.outputs.value }}
           SPEDITO_BUILD_NUMBER: ${{ github.run_number }}
+          SPEDITO_GITHUB_CLIENT_ID: ${{ vars.SPEDITO_GITHUB_CLIENT_ID }}
+          SPEDITO_GITHUB_APP_SLUG: ${{ vars.SPEDITO_GITHUB_APP_SLUG }}
         run: ./scripts/build_app.sh release
 
       - name: Verify application signature
         run: codesign --verify --deep --strict .build/app/release/Spedito.app
 
-      - name: Install create-dmg
-        run: brew install create-dmg
+      - name: Fetch pinned create-dmg
+        env:
+          CREATE_DMG_REVISION: 118f131aa57c1278aca806eb37cf5021e9064198
+        run: |
+          tool_dir="$RUNNER_TEMP/create-dmg"
+          git init "$tool_dir"
+          git -C "$tool_dir" remote add origin https://github.com/create-dmg/create-dmg.git
+          git -C "$tool_dir" fetch --depth 1 origin "$CREATE_DMG_REVISION"
+          git -C "$tool_dir" checkout --detach FETCH_HEAD
+          test "$(git -C "$tool_dir" rev-parse HEAD)" = "$CREATE_DMG_REVISION"
+          echo "CREATE_DMG_EXECUTABLE=$tool_dir/create-dmg" >> "$GITHUB_ENV"
 
       - name: Build installation disk image and checksum
         id: artifact

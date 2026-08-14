@@ -18,8 +18,28 @@ release.
 - The static website is published independently from `Website/` by Cloudflare
   Pages
 - Clearly labelled as an early preview and provided without warranty
+- Requires the release repository variables `SPEDITO_GITHUB_CLIENT_ID` and
+  `SPEDITO_GITHUB_APP_SLUG`; the workflow refuses to publish a GitHub-disabled
+  bundle
 
 Do not describe these artifacts as trusted, notarized, or production-ready.
+
+## GitHub App prerequisite
+
+Register one GitHub App for Spedito before publishing a release. Enable Device
+Flow and expiring user-to-server tokens. Request only:
+
+- Metadata: read
+- Contents: read and write
+- Pull requests: read and write
+- Workflows: read and write
+
+Do not request Administration, Actions write, Checks, Commit statuses, Issues,
+Members, Secrets, a client secret, or a private key. Set the App's public client
+ID as the `SPEDITO_GITHUB_CLIENT_ID` GitHub Actions repository variable and its
+slug as `SPEDITO_GITHUB_APP_SLUG`. The release workflow injects those public
+values into `Distribution/Info.plist` while building and fails before packaging
+when either variable is absent.
 
 ## Publishing
 
@@ -94,5 +114,5 @@ job, and never be available to pull-request workflows. The release must then:
 4. verify the final downloadable artifact on a clean Mac; and
 5. update the README and release notes to distinguish the newly notarized build.
 
-Do not reuse Product Owner, Codex, or development credentials for release
+Do not reuse product owner, Codex, or development credentials for release
 signing.

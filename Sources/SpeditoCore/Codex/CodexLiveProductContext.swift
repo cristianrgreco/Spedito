@@ -37,8 +37,8 @@ public enum CodexLiveProductContext {
     )
     agent_delivery_provenance(
       candidate_id, product_id, work_item_id, item_key, ticket_title, candidate_version,
-      branch_name, base_sha, head_sha, integrated_sha, status, commit_count, created_at,
-      updated_at
+      delivery_kind, branch_name, base_sha, head_sha, integrated_sha, status, commit_count,
+      created_at, updated_at
     )
     agent_retrospectives(
       id, product_id, sprint_number, work_item_id, item_key, author_name, category, body,

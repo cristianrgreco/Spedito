@@ -39,7 +39,8 @@ public enum KnowledgeContextSelector {
     referenceLimit: Int = 8
   ) -> KnowledgeContextSelection {
     let verified = pages.filter { $0.verificationStatus == .verified }
-    let directory = verified
+    let directory =
+      verified
       .filter { $0.kind != .deliveryNote }
       .sorted { directoryPath(for: $0, pages: verified) < directoryPath(for: $1, pages: verified) }
     let readable = verified.filter {
@@ -48,7 +49,8 @@ public enum KnowledgeContextSelector {
     let prerequisiteIDs = Set(prerequisites.map(\.id))
     let mandatory = mandatoryPages(in: readable)
     let mandatoryIDs = Set(mandatory.map(\.id))
-    let direct = readable
+    let direct =
+      readable
       .filter {
         $0.sourceWorkItemID == item.id
           || $0.sourceWorkItemID.map(prerequisiteIDs.contains) == true
@@ -67,7 +69,8 @@ public enum KnowledgeContextSelector {
       ].joined(separator: " ")
     )
     let pagesByID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
-    let scoredEntries = readable
+    let scoredEntries =
+      readable
       .compactMap { page -> (page: KnowledgePage, score: Int, destinationRelevant: Bool)? in
         let titleMatches = queryTerms.intersection(terms(page.title)).count
         let ancestorText = ancestorTitles(for: page, pagesByID: pagesByID)
@@ -153,7 +156,8 @@ public enum KnowledgeContextSelector {
       ].joined(separator: " ")
     )
     let pagesByID = Dictionary(uniqueKeysWithValues: verified.map { ($0.id, $0) })
-    let relevant = verified
+    let relevant =
+      verified
       .compactMap { page -> (page: KnowledgePage, score: Int)? in
         let titleMatches = queryTerms.intersection(terms(page.title)).count
         let ancestorMatches = queryTerms.intersection(
@@ -191,7 +195,8 @@ public enum KnowledgeContextSelector {
     let order = Dictionary(
       uniqueKeysWithValues: mandatorySlugs.enumerated().map { ($0.element, $0.offset) }
     )
-    return pages
+    return
+      pages
       .filter {
         $0.verificationStatus == .verified
           && order[$0.slug] != nil
@@ -234,13 +239,14 @@ public enum KnowledgeContextSelector {
     case "integrations":
       return "External services, providers, APIs, attribution, privacy, and failure contracts."
     case "environments":
-      return "Verified build, test, launch, demo, runtime, configuration, and operating requirements."
+      return
+        "Verified build, test, launch, demo, runtime, configuration, and operating requirements."
     case "runbooks":
       return "Repeatable operating, support, diagnosis, and recovery procedures."
     case "release-and-rollback":
       return "Release, deployment, rollback, and restoration procedures."
     case "ways-of-working":
-      return "Product Owner-approved team delivery practices only."
+      return "Product owner-approved team delivery practices only."
     case "known-limitations":
       return "Current caveats, unsupported cases, incidents, and recurring failure patterns."
     default:

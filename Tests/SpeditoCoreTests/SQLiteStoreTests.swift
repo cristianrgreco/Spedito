@@ -39,6 +39,81 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Version 7 databases add durable candidate delivery kinds")
+  func candidateDeliveryKindMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    await currentStore.close()
+    try fixture.execute(
+      """
+      ALTER TABLE candidate_revisions DROP COLUMN delivery_kind;
+      PRAGMA user_version = 7;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    _ = try await migratedStore.createProduct(name: "Migrated product")
+    await migratedStore.close()
+  }
+
+  @Test("Version 8 placeholder sprint goals migrate to missing goals")
+  func placeholderSprintGoalMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await currentStore.createProduct(name: "Migrated planning")
+    let item = try await readyItem(
+      in: currentStore,
+      productID: product.id,
+      title: "Deliver the saved scope"
+    )
+    _ = try await currentStore.saveDraftSprint(
+      productID: product.id,
+      goal: "Next valuable increment",
+      tokenBudgetLimit: nil,
+      items: [SprintDraftItemInput(workItemID: item.id)]
+    )
+    await currentStore.close()
+
+    try fixture.execute("PRAGMA user_version = 8;")
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let migratedPlan = try #require(
+      await migratedStore.fetchCurrentSprint(productID: product.id)
+    )
+    #expect(migratedPlan.sprint.goal.isEmpty)
+    #expect(
+      try await migratedStore.sprintReadinessIssues(sprintID: migratedPlan.sprint.id)
+        .allSatisfy { $0.id != "sprint.goal" }
+    )
+    await migratedStore.close()
+  }
+
+  @Test("Archived colors are reused and restored products avoid active colors")
+  func activeProductColorsStayDistinctThroughArchiveAndRestore() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let first = try await store.createProduct(name: "First")
+    let archived = try await store.createProduct(name: "Archived")
+    _ = try await store.archiveProduct(id: archived.id)
+
+    let replacement = try await store.createProduct(name: "Replacement")
+    #expect(first.color == .accent)
+    #expect(archived.color == .green)
+    #expect(replacement.color == .green)
+
+    let restored = try await store.restoreProduct(id: archived.id)
+    #expect(restored.color == .indigo)
+    #expect(Set(try await store.fetchProducts().map(\.color)).count == 3)
+
+    await store.close()
+  }
+
   @Test("Epics follow the palette order and survive restart")
   func epicColorsAreAssignedAndPersisted() async throws {
     let fixture = try DatabaseFixture()
@@ -70,6 +145,42 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("New epics persist only the owner's outcome until analysis")
+  func newEpicsPersistOnlyOwnerOutcomeUntilAnalysis() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Outcome planning")
+    let outcome =
+      "Let a macOS user immediately type temporary plain text in a focused native app without saving."
+    let epic = try await store.createEpic(productID: product.id, outcome: outcome)
+
+    #expect(epic.title.isEmpty)
+    #expect(epic.goal == outcome)
+    #expect(epic.successCriteria.isEmpty)
+    #expect(epic.constraints.isEmpty)
+    #expect(!epic.hasAnalyzedMetadata)
+    #expect(epic.displayTitle == outcome)
+    let creationEvent = try #require(
+      try await store.fetchActivity(productID: product.id)
+        .first { $0.kind == "epic.created" }
+    )
+    #expect(creationEvent.detail == outcome)
+
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let persisted = try #require(
+      try await reopened.fetchEpics(productID: product.id).first
+    )
+    #expect(persisted.title.isEmpty)
+    #expect(persisted.goal == outcome)
+    #expect(persisted.successCriteria.isEmpty)
+    #expect(persisted.constraints.isEmpty)
+    await reopened.close()
+  }
+
   @Test("Product, ticket, comments, profiles, and audit events survive restart")
   func durableWorkflow() async throws {
     let fixture = try DatabaseFixture()
@@ -77,7 +188,7 @@ struct SQLiteStoreTests {
 
     let store = try SQLiteStore(url: fixture.databaseURL)
     let product = try await store.createProduct(
-      name: "Tiny Browser Product"
+      name: "Tiny browser product"
     )
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     #expect(
@@ -96,8 +207,8 @@ struct SQLiteStoreTests {
     #expect(defaultDesigner.reasoningEffort == "medium")
     #expect(lead.model == "gpt-5.6-terra")
     #expect(lead.reasoningEffort == "high")
-    #expect(lead.name == "Tech Lead")
-    #expect(lead.role.title == "Tech Lead")
+    #expect(lead.name == "Tech lead")
+    #expect(lead.role.title == "Tech lead")
     #expect(lead.role.capabilityTitle == "Architecture, planning & review")
     #expect(implementer.model == "gpt-5.6-terra")
     #expect(implementer.reasoningEffort == "low")
@@ -116,7 +227,7 @@ struct SQLiteStoreTests {
     let refining = try await store.transitionWorkItem(
       id: item.id,
       to: .refining,
-      actor: "Business Analyst",
+      actor: "Business analyst",
       reason: "Clarify acceptance intent"
     )
     #expect(refining.version == 2)
@@ -132,7 +243,7 @@ struct SQLiteStoreTests {
     _ = try await store.appendComment(
       workItemID: item.id,
       authorKind: .agent,
-      authorName: "Business Analyst",
+      authorName: "Business analyst",
       body: "We still need to define the empty state.",
       ownerQuestion: ownerQuestion
     )
@@ -148,7 +259,7 @@ struct SQLiteStoreTests {
       workItemID: item.id,
       authorKind: .owner,
       authorName: "Me",
-      body: "@Business Analyst A retry action",
+      body: "@Business analyst A retry action",
       answeredQuestions: [answeredQuestion]
     )
     try await store.updateProductInstructions(
@@ -157,7 +268,7 @@ struct SQLiteStoreTests {
     )
     try await store.updateProductDetails(
       productID: product.id,
-      name: "Tiny Product"
+      name: "Tiny product"
     )
     let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
     _ = try await store.updateAgentProfileConfiguration(
@@ -177,7 +288,7 @@ struct SQLiteStoreTests {
     let ticketActivity = try await reopened.fetchActivity(workItemID: item.id)
 
     #expect(products.map(\.id) == [product.id])
-    #expect(products.map(\.name) == ["Tiny Product"])
+    #expect(products.map(\.name) == ["Tiny product"])
     #expect(products.map(\.instructions) == ["Prefer plain language and accessible defaults."])
     #expect(items.count == 1)
     #expect(items.first?.state == .refining)
@@ -186,7 +297,7 @@ struct SQLiteStoreTests {
     #expect(
       comments.map(\.body) == [
         "We still need to define the empty state.",
-        "@Business Analyst A retry action",
+        "@Business analyst A retry action",
       ]
     )
     #expect(comments.first?.ownerQuestion == ownerQuestion)
@@ -230,7 +341,7 @@ struct SQLiteStoreTests {
       workItemID: item.id,
       authorKind: .owner,
       authorName: "Me",
-      body: "This Work log entry must remain available."
+      body: "This work log entry must remain available."
     )
 
     let archivedProduct = try await store.archiveProduct(id: archived.id)
@@ -242,7 +353,7 @@ struct SQLiteStoreTests {
     #expect(try await store.fetchWorkItems(productID: archived.id).map(\.id) == [item.id])
     #expect(
       try await store.fetchComments(workItemID: item.id).map(\.body)
-        == ["This Work log entry must remain available."]
+        == ["This work log entry must remain available."]
     )
     #expect(
       try await store.fetchActivity(productID: archived.id).first?.kind
@@ -345,7 +456,7 @@ struct SQLiteStoreTests {
     let queuedAgain = try await store.updateAgentRun(
       id: implementationRun.id,
       status: .queued,
-      eventActor: "Product Owner",
+      eventActor: "Product owner",
       eventDetail: "Answer received"
     )
     #expect(queuedAgain.activeDurationSeconds == paused.activeDurationSeconds)
@@ -528,6 +639,75 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Sprint start does not wait for a generated goal")
+  func sprintGoalCanFinishAfterStart() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Lazy sprint goal")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver the planned outcome"
+    )
+    let items = [
+      SprintDraftItemInput(
+        workItemID: item.id,
+        implementerProfileID: implementer.id,
+        estimatedTokens: 1_000
+      )
+    ]
+
+    let initialDraft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "   ",
+      tokenBudgetLimit: nil,
+      items: items
+    )
+    #expect(initialDraft.sprint.goal.isEmpty)
+    #expect(
+      try await store.sprintReadinessIssues(sprintID: initialDraft.sprint.id).isEmpty
+    )
+
+    let revisedDraft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "",
+      tokenBudgetLimit: nil,
+      items: items
+    )
+    await #expect(throws: SprintPlanningError.planChanged) {
+      _ = try await store.saveGeneratedSprintGoal(
+        id: initialDraft.sprint.id,
+        goal: "Ignore the newer scope",
+        expectedPlanVersion: initialDraft.sprint.planVersion
+      )
+    }
+
+    let started = try await store.startSprint(id: revisedDraft.sprint.id)
+    #expect(started.sprint.state == .active)
+    #expect(started.sprint.goal.isEmpty)
+
+    let generated = try await store.saveGeneratedSprintGoal(
+      id: started.sprint.id,
+      goal: "  Deliver the planned outcome  ",
+      expectedPlanVersion: started.sprint.planVersion
+    )
+    #expect(generated.sprint.state == .active)
+    #expect(generated.sprint.goal == "Deliver the planned outcome")
+    #expect(generated.sprint.planVersion == started.sprint.planVersion + 1)
+
+    let preserved = try await store.saveGeneratedSprintGoal(
+      id: started.sprint.id,
+      goal: "Overwrite the generated goal",
+      expectedPlanVersion: started.sprint.planVersion
+    )
+    #expect(preserved.sprint.goal == "Deliver the planned outcome")
+    await store.close()
+  }
+
   @Test("Pausing a sprint is durable, blocks another start, and resumes preserved runs")
   func sprintPauseAndResumeAreDurable() async throws {
     let fixture = try DatabaseFixture()
@@ -597,7 +777,7 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Stopping a sprint keeps Done work and returns unfinished work for replanning")
+  @Test("Stopping a sprint keeps done work and returns unfinished work for replanning")
   func stoppingSprintPreservesAcceptedWorkAndSupersedesUnacceptedWork() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -772,13 +952,13 @@ struct SQLiteStoreTests {
     _ = try await store.transitionWorkItem(
       id: item.id,
       to: .refining,
-      actor: "Business Analyst",
+      actor: "Business analyst",
       reason: "Refine"
     )
     let ready = try await store.transitionWorkItem(
       id: item.id,
       to: .ready,
-      actor: "Product Owner",
+      actor: "Product owner",
       reason: "Marked ready"
     )
 
@@ -828,12 +1008,12 @@ struct SQLiteStoreTests {
     let currentItem = try await readyItem(
       in: store,
       productID: product.id,
-      title: "Deliver Sprint 1"
+      title: "Deliver sprint 1"
     )
     let nextItem = try await readyItem(
       in: store,
       productID: product.id,
-      title: "Prepare Sprint 2"
+      title: "Prepare sprint 2"
     )
     _ = try await store.updateWorkItem(
       id: nextItem.id,
@@ -873,7 +1053,8 @@ struct SQLiteStoreTests {
     #expect(active.sprint.number == 1)
     #expect(nextDraft.sprint.number == 2)
     #expect(try await store.sprintReadinessIssues(sprintID: nextDraft.sprint.id).isEmpty)
-    #expect(try await store.fetchCurrentSprint(productID: product.id)?.sprint.id == active.sprint.id)
+    #expect(
+      try await store.fetchCurrentSprint(productID: product.id)?.sprint.id == active.sprint.id)
     let plannedHistory = try await store.fetchSprintHistory(productID: product.id)
     #expect(plannedHistory.map(\.sprint.state) == [.draft, .active])
 
@@ -895,7 +1076,8 @@ struct SQLiteStoreTests {
     let completed = try await store.completeSprintIfFinished(id: active.sprint.id)
     #expect(completed.sprint.state == .completed)
     #expect(completed.sprint.completedAt != nil)
-    #expect(try await store.fetchCurrentSprint(productID: product.id)?.sprint.id == nextDraft.sprint.id)
+    #expect(
+      try await store.fetchCurrentSprint(productID: product.id)?.sprint.id == nextDraft.sprint.id)
 
     await store.close()
   }
@@ -1013,7 +1195,7 @@ struct SQLiteStoreTests {
       title: "Research a suitable data provider",
       type: .task,
       body: "Compare providers and recommend one.",
-      acceptanceCriteria: ["The Product Owner can approve a provider"],
+      acceptanceCriteria: ["The product owner can approve a provider"],
       epicID: epic.id
     )
 
@@ -1393,7 +1575,7 @@ struct SQLiteStoreTests {
         id: ticket.id,
         to: state,
         actor: "Test",
-        reason: "Prepare the completed Epic"
+        reason: "Prepare the completed epic"
       )
     }
 
@@ -1510,11 +1692,11 @@ struct SQLiteStoreTests {
         EpicPlanningConversationMessage(
           id: UUID(uuidString: "566720CF-3398-493A-B52F-9009B987C426")!,
           author: .owner,
-          body: "@UX Designer Which existing pattern should we reuse?",
+          body: "@UX designer Which existing pattern should we reuse?",
           createdAt: Date(timeIntervalSince1970: 1_728_000_015),
           kind: .chat,
           participantID: UUID(uuidString: "395FCA59-DA75-4B34-882F-F8B5FE547CD7"),
-          participantName: "UX Designer"
+          participantName: "UX designer"
         ),
       ],
       questions: [timingQuestion],
@@ -1579,7 +1761,7 @@ struct SQLiteStoreTests {
         TicketSuggestionDraft(
           reference: "S2",
           title: "Propose another part of the outcome",
-          body: "This proposal should leave the active Backlog with its Epic.",
+          body: "This proposal should leave the active backlog with its epic.",
           acceptanceCriteria: ["The proposal is no longer active"],
           suggestedRole: .businessAnalyst,
           priority: .normal,
@@ -1588,7 +1770,7 @@ struct SQLiteStoreTests {
         TicketSuggestionDraft(
           reference: "S3",
           title: "Propose the final part of the outcome",
-          body: "This proposal should also be archived with its Epic.",
+          body: "This proposal should also be archived with its epic.",
           acceptanceCriteria: ["The proposal is no longer active"],
           suggestedRole: .implementer,
           priority: .normal,
@@ -1664,8 +1846,8 @@ struct SQLiteStoreTests {
         TicketSuggestionDraft(
           reference: "S1",
           title: "Late proposal",
-          body: "This result arrived after the Epic was archived.",
-          acceptanceCriteria: ["It does not enter the Backlog"],
+          body: "This result arrived after the epic was archived.",
+          acceptanceCriteria: ["It does not enter the backlog"],
           suggestedRole: .implementer,
           priority: .normal,
           rationale: "Late result"
@@ -2208,7 +2390,7 @@ struct SQLiteStoreTests {
     #expect(delivery.verificationStatus == .proposed)
     #expect(delivery.bodyMarkdown == "What changed.")
 
-    try await store.verifyDeliveryNote(workItemID: item.id, authorName: "Tech Lead")
+    try await store.verifyDeliveryNote(workItemID: item.id, authorName: "Tech lead")
     let verified = try #require(
       try await store.fetchKnowledgePages(productID: product.id)
         .first { $0.sourceWorkItemID == item.id }
@@ -2290,7 +2472,7 @@ struct SQLiteStoreTests {
       id: canonical.id,
       title: canonical.title,
       bodyMarkdown: "Canonical guidance contract.",
-      authorName: "Product Owner",
+      authorName: "Product owner",
       changeSummary: "Recorded the reusable contract"
     )
     await store.close()
@@ -2316,7 +2498,7 @@ struct SQLiteStoreTests {
     #expect(updatedDelivery.kind == .deliveryNote)
     #expect(updatedDelivery.bodyMarkdown == "Revised delivery note.")
 
-    try await reopened.verifyDeliveryNote(workItemID: item.id, authorName: "Tech Lead")
+    try await reopened.verifyDeliveryNote(workItemID: item.id, authorName: "Tech lead")
     let updatedPages = try await reopened.fetchKnowledgePages(productID: product.id)
     let storedDelivery = try #require(updatedPages.first { $0.id == delivery.id })
     let storedCanonical = try #require(updatedPages.first { $0.id == canonical.id })
@@ -2326,7 +2508,7 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Product Owner action ideas are appended during a sprint and frozen for synthesis")
+  @Test("Product owner action ideas are appended during a sprint and frozen for synthesis")
   func productOwnerRetrospectiveActionIdeaCapture() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -2362,7 +2544,7 @@ struct SQLiteStoreTests {
       body: "  Check external dependencies before delivery starts  "
     )
 
-    #expect(actionIdea.authorName == "Product Owner")
+    #expect(actionIdea.authorName == "Product owner")
     #expect(actionIdea.category == .suggestedAction)
     #expect(actionIdea.body == "Check external dependencies before delivery starts")
     #expect(actionIdea.isActionCandidate)
@@ -2536,7 +2718,7 @@ struct SQLiteStoreTests {
       productID: product.id,
       sprintID: active.sprint.id,
       workItemID: item.id,
-      authorName: "Tech Lead",
+      authorName: "Tech lead",
       category: .suggestedAction,
       body: "Confirm each candidate contains substantive ticket changes",
       actionStatus: .proposed,
@@ -2665,11 +2847,11 @@ struct SQLiteStoreTests {
     let ownerPractice = try await store.proposeRetrospectiveAction(
       productID: product.id,
       sprintID: completed.sprint.id,
-      body: "  Include Product Owner observations in every retrospective  ",
+      body: "  Include product owner observations in every retrospective  ",
       destination: .teamPractice
     )
-    #expect(ownerPractice.authorName == "Product Owner")
-    #expect(ownerPractice.body == "Include Product Owner observations in every retrospective")
+    #expect(ownerPractice.authorName == "Product owner")
+    #expect(ownerPractice.body == "Include product owner observations in every retrospective")
     #expect(ownerPractice.actionStatus == .proposed)
     #expect(ownerPractice.actionDestination == .teamPractice)
 
@@ -2823,7 +3005,8 @@ struct SQLiteStoreTests {
         RetrospectiveSynthesisActionDraft(
           body: "Make approved validation tools available before delivery begins.",
           destination: .teamPractice,
-          expectedEffect: "Ticket handoffs include executed checks instead of repeated runtime blockers.",
+          expectedEffect:
+            "Ticket handoffs include executed checks instead of repeated runtime blockers.",
           sourceNoteIDs: [firstCandidate.id, repeatedCandidate.id]
         )
       ],
@@ -2855,7 +3038,7 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Managed demo sessions are durable and candidate-bound")
+  @Test("Managed demo sessions are durable and launch-bound")
   func managedDemoSessions() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -2905,9 +3088,30 @@ struct SQLiteStoreTests {
         executionResultJSON: "{}"
       )
     )
+    let localCandidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: 2,
+        deliveryKind: .localOutcome,
+        branchName: "ticket/T1",
+        baseSHA: "base",
+        headSHA: "base",
+        worktreePath: "/tmp/t1",
+        status: .queuedForReview,
+        commitCount: 0,
+        executionResultJSON: "{}"
+      )
+    )
+    #expect(
+      try await store.fetchCandidateRevision(id: localCandidate.id).deliveryKind == .localOutcome
+    )
     var session = DemoSession(
       productID: product.id,
-      candidateRevisionID: candidate.id,
+      launchID: candidate.id,
       status: .starting,
       previewWorktreePath: "/tmp/preview",
       allocatedPort: 8123
@@ -2917,15 +3121,36 @@ struct SQLiteStoreTests {
     session.output = "Ready"
     session.updatedAt = Date()
     _ = try await store.saveDemoSession(session)
+    let importedLaunchID = UUID()
+    _ = try await store.saveDemoSession(
+      DemoSession(
+        productID: product.id,
+        sourceKind: .importedRepository,
+        launchID: importedLaunchID,
+        status: .stopped,
+        previewWorktreePath: "/tmp/imported-preview"
+      )
+    )
     await store.close()
 
     let reopened = try SQLiteStore(url: fixture.databaseURL)
     let sessions = try await reopened.fetchDemoSessions(productID: product.id)
-    #expect(sessions.count == 1)
-    #expect(sessions.first?.candidateRevisionID == candidate.id)
-    #expect(sessions.first?.status == .ready)
-    #expect(sessions.first?.allocatedPort == 8123)
-    #expect(sessions.first?.output == "Ready")
+    #expect(sessions.count == 2)
+    let acceptedSession = try #require(
+      sessions.first {
+        $0.sourceKind == .acceptedCandidate && $0.launchID == candidate.id
+      }
+    )
+    #expect(acceptedSession.status == .ready)
+    #expect(acceptedSession.allocatedPort == 8123)
+    #expect(acceptedSession.output == "Ready")
+    let importedSession = try #require(
+      sessions.first {
+        $0.sourceKind == .importedRepository && $0.launchID == importedLaunchID
+      }
+    )
+    #expect(importedSession.status == .stopped)
+    #expect(importedSession.previewWorktreePath == "/tmp/imported-preview")
     await reopened.close()
   }
 
@@ -3276,13 +3501,13 @@ struct SQLiteStoreTests {
     _ = try await store.transitionWorkItem(
       id: item.id,
       to: .refining,
-      actor: "Business Analyst",
+      actor: "Business analyst",
       reason: "Refine"
     )
     return try await store.transitionWorkItem(
       id: item.id,
       to: .ready,
-      actor: "Product Owner",
+      actor: "Product owner",
       reason: "Ready for delivery"
     )
   }

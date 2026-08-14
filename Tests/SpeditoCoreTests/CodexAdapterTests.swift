@@ -32,6 +32,64 @@ struct CodexAdapterTests {
     #expect(await transport.wasStopped())
   }
 
+  @Test("Rate limits preserve the dynamic windows reported by App Server")
+  func dynamicRateLimitWindows() async throws {
+    let transport = RecordingTransport(
+      initializeResponse: .object([
+        "userAgent": .string("codex-cli/test"),
+        "codexHome": .string("/tmp/codex"),
+        "platformFamily": .string("unix"),
+        "platformOs": .string("macos"),
+      ]),
+      rateLimitsResponse: .object([
+        "rateLimits": .object([
+          "primary": .object([
+            "usedPercent": .integer(22),
+            "windowDurationMins": .integer(10_080),
+            "resetsAt": .integer(1_780_000_000),
+          ]),
+          "secondary": .null,
+          "rateLimitReachedType": .null,
+        ])
+      ])
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    let snapshot = try await client.readRateLimits()
+
+    #expect(snapshot.windows.count == 1)
+    #expect(snapshot.windows[0].id == "primary")
+    #expect(snapshot.windows[0].windowDurationMinutes == 10_080)
+    #expect(snapshot.windows[0].availablePercent == 78)
+    #expect(snapshot.windows[0].resetsAt == Date(timeIntervalSince1970: 1_780_000_000))
+    #expect(await transport.recordedCalls().last?.method == "account/rateLimits/read")
+    await client.disconnect()
+  }
+
+  @Test("Rate-limit windows are ordered by duration and clamp percentages")
+  func rateLimitWindowOrdering() {
+    let snapshot = CodexRateLimitsSnapshot(
+      response: .object([
+        "rateLimits": .object([
+          "primary": .object([
+            "usedPercent": .integer(125),
+            "windowDurationMins": .integer(10_080),
+          ]),
+          "secondary": .object([
+            "usedPercent": .number(12.5),
+            "windowDurationMins": .integer(300),
+          ]),
+          "rateLimitReachedType": .string("primary"),
+        ])
+      ])
+    )
+
+    #expect(snapshot.windows.map(\.windowDurationMinutes) == [300, 10_080])
+    #expect(snapshot.windows.map(\.availablePercent) == [87.5, 0])
+    #expect(snapshot.reachedLimitType == "primary")
+  }
+
   @Test("Client rejects a non-macOS runtime and closes the transport")
   func unsupportedPlatformFailsClosed() async {
     let transport = RecordingTransport(
@@ -221,6 +279,29 @@ struct CodexAdapterTests {
     #expect(requests[2].params["summary"]?.stringValue == "concise")
   }
 
+  @Test("Plain turns omit an output schema and can use ephemeral threads")
+  func plainEphemeralTurn() async throws {
+    let transport = SuggestionTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+
+    let threadID = try await client.startReadOnlyThread(
+      workingDirectory: URL(fileURLWithPath: "/private/tmp/spedito-product"),
+      developerInstructions: "Answer one chat question",
+      ephemeral: true
+    )
+    _ = try await client.startTurn(
+      threadID: threadID,
+      prompt: "How does search work?",
+      effort: "low"
+    )
+    let requests = await transport.requests()
+
+    #expect(requests.map(\.method) == ["initialize", "thread/start", "turn/start"])
+    #expect(requests[1].params["ephemeral"]?.boolValue == true)
+    #expect(requests[2].params["outputSchema"] == nil)
+  }
+
   @Test("Live activity uses concise summaries and action categories, not raw reasoning")
   func liveActivitySummaries() {
     var accumulator = CodexLiveActivityAccumulator()
@@ -248,9 +329,10 @@ struct CodexAdapterTests {
       )
     )
     #expect(
-      summary == .activity(
-        CodexLiveActivity(text: "Inspecting provider evidence", kind: .thinking)
-      )
+      summary
+        == .activity(
+          CodexLiveActivity(text: "Inspecting provider evidence", kind: .thinking)
+        )
     )
     #expect(
       accumulator.consume(
@@ -274,13 +356,44 @@ struct CodexAdapterTests {
       )
     )
     #expect(
-      adjacentSummary == .activity(
-        CodexLiveActivity(
-          text: "Preparing the prototype artefact",
-          kind: .thinking
+      adjacentSummary
+        == .activity(
+          CodexLiveActivity(
+            text: "Preparing the prototype artefact",
+            kind: .thinking
+          )
+        )
+    )
+
+    let longSummaryParams = params.merging(["itemId": .string("item-long")]) { _, new in new }
+    let longSummary = accumulator.consume(
+      CodexNotification(
+        method: "item/reasoning/summaryTextDelta",
+        params: .object(
+          longSummaryParams.merging([
+            "delta": .string(String(repeating: "Reviewing repository evidence ", count: 7))
+          ]) { _, new in new }
         )
       )
     )
+    let latestLongSummary = accumulator.consume(
+      CodexNotification(
+        method: "item/reasoning/summaryTextDelta",
+        params: .object(
+          longSummaryParams.merging([
+            "delta": .string("Confirming the relative launch paths.")
+          ]) { _, new in new }
+        )
+      )
+    )
+    #expect(longSummary != latestLongSummary)
+    if case .activity(let latestActivity) = latestLongSummary {
+      #expect(latestActivity.text.hasPrefix("…"))
+      #expect(latestActivity.text.hasSuffix("Confirming the relative launch paths."))
+      #expect(latestActivity.text.count == 150)
+    } else {
+      Issue.record("Expected the latest supported reasoning summary")
+    }
 
     let fileChange = accumulator.consume(
       CodexNotification(
@@ -296,9 +409,10 @@ struct CodexAdapterTests {
       )
     )
     #expect(
-      fileChange == .activity(
-        CodexLiveActivity(text: "Updating project files…", kind: .changingFiles)
-      )
+      fileChange
+        == .activity(
+          CodexLiveActivity(text: "Updating project files…", kind: .changingFiles)
+        )
     )
 
     #expect(
@@ -389,7 +503,7 @@ struct CodexAdapterTests {
     #expect(requests[2].params["permissionProfile"] == nil)
   }
 
-  @Test("Persisted Conversations are explicitly resumed with their scoped permissions")
+  @Test("Persisted conversations are explicitly resumed with their scoped permissions")
   func persistedThreadsAreResumed() async throws {
     let transport = SuggestionTransport()
     let client = CodexAppServerClient(transport: transport)
@@ -461,11 +575,12 @@ struct CodexAdapterTests {
       foundationCacheDirectory: URL(fileURLWithPath: "/Users/example/Library/Caches/")
     ).map(\.path)
 
-    #expect(roots == [
-      "/private/var/folders/example/T",
-      "/private/var/folders/example/C",
-      "/Users/example/Library/Caches",
-    ])
+    #expect(
+      roots == [
+        "/private/var/folders/example/T",
+        "/private/var/folders/example/C",
+        "/Users/example/Library/Caches",
+      ])
     #expect(
       CodexPermissionProfiles.normalizedStorageRoots(
         darwinTemporaryDirectory: URL(fileURLWithPath: "/"),
@@ -537,7 +652,10 @@ struct CodexAdapterTests {
     let deliveryOverride = try #require(
       scopedArguments.first { $0.hasPrefix("permissions.spedito-delivery=") }
     )
-    #expect(demoOverride.contains(#"workspace_roots={"/Users/example/Library/Caches/Spedito/PreviewWorktrees/candidate"=true}"#))
+    #expect(
+      demoOverride.contains(
+        #"workspace_roots={"/Users/example/Library/Caches/Spedito/PreviewWorktrees/candidate"=true}"#
+      ))
     #expect(demoOverride.contains(#""/private/var/folders/example/T"="write""#))
     #expect(demoOverride.contains(#""/private/var/folders/example/C"="write""#))
     #expect(!demoOverride.contains(#""/Users/example/Library/Caches"="write""#))
@@ -578,8 +696,12 @@ struct CodexAdapterTests {
   @Test("Delivery selects Apple developer tools without broadening Git access")
   func managedGitEnvironment() {
     let environment = CodexPermissionProfiles.agentProcessEnvironment(
-      developerDirectory: "/Applications/Xcode.app/Contents/Developer",
-      inheritedPath: "/usr/bin:/bin"
+      inherited: [
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/tmp/home",
+        "GH_TOKEN": "secret",
+      ],
+      developerDirectory: "/Applications/Xcode.app/Contents/Developer"
     )
 
     #expect(environment["DEVELOPER_DIR"] == "/Applications/Xcode.app/Contents/Developer")
@@ -590,8 +712,10 @@ struct CodexAdapterTests {
     #expect(environment["GIT_CONFIG_GLOBAL"] == "/dev/null")
     #expect(environment["GIT_OPTIONAL_LOCKS"] == "0")
     #expect(environment["GIT_PAGER"] == "cat")
+    #expect(environment["GH_TOKEN"] == nil)
     #expect(
       CodexPermissionProfiles.agentProcessEnvironment(
+        inherited: [:],
         developerDirectory: nil
       )["DEVELOPER_DIR"] == nil
     )
@@ -615,7 +739,8 @@ struct CodexAdapterTests {
       "SpeditoBoundaryTests-\(UUID())",
       isDirectory: true
     )
-    let workspace = boundaryRoot
+    let workspace =
+      boundaryRoot
       .appendingPathComponent("Run Worktrees", isDirectory: true)
       .appendingPathComponent("product", isDirectory: true)
       .appendingPathComponent("ticket", isDirectory: true)
@@ -689,13 +814,16 @@ struct CodexAdapterTests {
       "SpeditoGitBoundaryTests-\(UUID())",
       isDirectory: true
     )
-    let repository = boundaryRoot
+    let repository =
+      boundaryRoot
       .appendingPathComponent("Product Workspaces", isDirectory: true)
       .appendingPathComponent("product", isDirectory: true)
-    let worktrees = boundaryRoot
+    let worktrees =
+      boundaryRoot
       .appendingPathComponent("Run Worktrees", isDirectory: true)
       .appendingPathComponent("product", isDirectory: true)
-    let otherProductGit = boundaryRoot
+    let otherProductGit =
+      boundaryRoot
       .appendingPathComponent("Product Workspaces", isDirectory: true)
       .appendingPathComponent("other-product", isDirectory: true)
       .appendingPathComponent(".git", isDirectory: true)
@@ -703,7 +831,8 @@ struct CodexAdapterTests {
       ProductStoreRegistry.controlDirectoryName,
       isDirectory: true
     )
-    let otherProductControl = otherProductGit
+    let otherProductControl =
+      otherProductGit
       .deletingLastPathComponent()
       .appendingPathComponent(
         ProductStoreRegistry.controlDirectoryName,
@@ -952,7 +1081,8 @@ struct CodexAdapterTests {
     defer { try? FileManager.default.removeItem(at: workspace) }
 
     let executor = CodexWorkspaceCommandExecutor(executableURL: codexURL)
-    let nestedBuildDirectory = workspace
+    let nestedBuildDirectory =
+      workspace
       .appendingPathComponent(".build", isDirectory: true)
       .appendingPathComponent("tmp", isDirectory: true)
     let mkdirResult = try await executor.runManagedCommand(
@@ -1012,9 +1142,10 @@ struct CodexAdapterTests {
 
     #expect(result.exitCode == 0)
     #expect(result.standardOutput == "compiled")
-    #expect(command["command"]?.arrayValue?.compactMap(\.stringValue) == [
-      "python3", "-m", "compileall", ".",
-    ])
+    #expect(
+      command["command"]?.arrayValue?.compactMap(\.stringValue) == [
+        "python3", "-m", "compileall", ".",
+      ])
     #expect(command["permissionProfile"]?.stringValue == CodexPermissionProfiles.demo)
     #expect(command["timeoutMs"]?.integerValue == 30_000)
   }
@@ -1084,7 +1215,7 @@ struct CodexAdapterTests {
                   "type": .string("path"),
                   "path": .string("/opt/homebrew/Cellar"),
                 ]),
-              ])
+              ]),
             ])
           ])
         ]),
@@ -1216,7 +1347,7 @@ struct CodexAdapterTests {
             ])
           ])
         ]),
-        "reason": .string("Apply the Product Owner's requested global setting"),
+        "reason": .string("Apply the product owner's requested global setting"),
       ])
     )
 
@@ -1499,15 +1630,18 @@ struct CodexAdapterTests {
     #expect(normalized.map(\.reference) == ["S1", "S2"])
     #expect(normalized[1].dependsOnReferences == ["S1"])
 
-    let minimal = #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires"}]}"#
+    let minimal =
+      #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires"}]}"#
     #expect(try CodexTicketSuggestionGenerator.decode(minimal).count == 1)
 
-    let cyclic = #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent"}]}"#
+    let cyclic =
+      #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(cyclic)
     }
 
-    let foundationWithoutDependency = #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires"}]}"#
+    let foundationWithoutDependency =
+      #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(foundationWithoutDependency)
     }
@@ -1630,7 +1764,7 @@ struct CodexAdapterTests {
             "title": "Design saved-location states",
             "type": "task",
             "body": "Define empty, saved, and removed states.",
-            "acceptanceCriteria": ["The Product Owner can review every state"],
+            "acceptanceCriteria": ["The product owner can review every state"],
             "role": "ux_designer",
             "priority": "high",
             "rationale": "The interaction needs an agreed direction.",
@@ -1682,7 +1816,7 @@ struct CodexAdapterTests {
             "title": "Recommend the technical foundation",
             "type": "task",
             "body": "Compare the authorised stack and hosting choices.",
-            "acceptanceCriteria": ["The Product Owner can approve one recommendation"],
+            "acceptanceCriteria": ["The product owner can approve one recommendation"],
             "role": "business_analyst",
             "priority": "high",
             "rationale": "A material stack choice needs authorised evidence.",
@@ -1697,7 +1831,7 @@ struct CodexAdapterTests {
             "acceptanceCriteria": [
               "Build, test, local-run, and demo commands pass in the delivery sandbox",
               "Run-private caches and required capabilities are verified",
-              "The Environments Product knowledge article records the complete contract"
+              "The Environments product knowledge article records the complete contract"
             ],
             "role": "implementer",
             "priority": "high",
@@ -1710,7 +1844,7 @@ struct CodexAdapterTests {
             "title": "Design the forecast journey",
             "type": "task",
             "body": "Produce a neutral review artefact.",
-            "acceptanceCriteria": ["The Product Owner can review the journey"],
+            "acceptanceCriteria": ["The product owner can review the journey"],
             "role": "ux_designer",
             "priority": "normal",
             "rationale": "The neutral artefact can proceed in parallel.",
@@ -1772,7 +1906,7 @@ struct CodexAdapterTests {
             "title": "Recommend a suitable joke provider",
             "type": "task",
             "body": "Compare public providers and recommend one.",
-            "acceptanceCriteria": ["The Product Owner can approve one provider"],
+            "acceptanceCriteria": ["The product owner can approve one provider"],
             "role": "business_analyst",
             "priority": "high",
             "rationale": "Delivery needs an approved provider.",
@@ -1855,7 +1989,7 @@ struct CodexAdapterTests {
             "title": "Recommend a suitable joke provider",
             "type": "task",
             "body": "Compare public providers and recommend one.",
-            "acceptanceCriteria": ["The Product Owner can approve one provider"],
+            "acceptanceCriteria": ["The product owner can approve one provider"],
             "role": "business_analyst",
             "priority": "high",
             "rationale": "The epic is explicitly a provider decision.",
@@ -1970,15 +2104,15 @@ struct CodexAdapterTests {
         ),
         EpicPlanningConversationMessage(
           author: .owner,
-          body: "@UX Designer Which existing pattern should we reuse?",
+          body: "@UX designer Which existing pattern should we reuse?",
           kind: .chat,
-          participantName: "UX Designer"
+          participantName: "UX designer"
         ),
         EpicPlanningConversationMessage(
           author: .agent,
           body: "Reuse the established compact result row.",
           kind: .chat,
-          participantName: "UX Designer"
+          participantName: "UX designer"
         ),
       ]
     )
@@ -1991,7 +2125,7 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Do not repeat resolved questions"))
     #expect(prompt.contains("tickets in this response"))
     #expect(prompt.contains("Constraints for an unnamed"))
-    #expect(prompt.contains("authorisation for Business Analyst research"))
+    #expect(prompt.contains("authorisation for business analyst research"))
     #expect(prompt.contains("let the team choose"))
     #expect(prompt.contains("Other text field"))
     #expect(prompt.contains("never “I’ll provide”"))
@@ -2043,7 +2177,7 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Up to 10 (Recommended)"))
     #expect(prompt.contains("Ready to plan with browser-only saved data."))
     #expect(prompt.contains("Return the complete epic metadata"))
-    #expect(prompt.contains("do not ask the Product Owner to repeat anything"))
+    #expect(prompt.contains("do not ask the product owner to repeat anything"))
   }
 
   @Test("Epic planning does not turn unresolved owner decisions into discovery tickets")
@@ -2088,14 +2222,16 @@ struct CodexAdapterTests {
     #expect(prompt.contains("do not default to a fixed"))
     #expect(prompt.contains("Make verification explicit in"))
     #expect(prompt.contains("separate design or verification ticket only when"))
-    #expect(!prompt.contains("include the downstream experience-design, implementation, and verification"))
-    #expect(prompt.contains("separate Business Analyst ticket"))
+    #expect(
+      !prompt.contains("include the downstream experience-design, implementation, and verification")
+    )
+    #expect(prompt.contains("separate business analyst ticket"))
     #expect(prompt.contains("do not bury source selection"))
     #expect(prompt.contains("implementation-time selection without a separate recommendation"))
     #expect(prompt.contains("epic.environmentAssessment"))
     #expect(prompt.contains("foundation_required"))
     #expect(prompt.contains("run-private temporary and cache locations"))
-    #expect(initial.contains("Business Analyst research ticket"))
+    #expect(initial.contains("business analyst research ticket"))
     #expect(initial.contains("Do not offer a vague option"))
     #expect(initial.contains("implementation-time selection"))
     #expect(initial.contains("verified Environments knowledge"))
@@ -2111,14 +2247,14 @@ struct CodexAdapterTests {
     #expect(followUp.contains("select only one option"))
     #expect(followUp.contains("incremental labels"))
     #expect(finalPlan.contains("is such authorisation"))
-    #expect(finalPlan.contains("Give that work a separate Business Analyst ticket"))
+    #expect(finalPlan.contains("Give that work a separate business analyst ticket"))
     #expect(finalPlan.contains("inside design or implementation"))
     #expect(finalPlan.contains("Do not force that work into a standard sequence"))
     #expect(finalPlan.contains("using a separate ticket only when"))
     #expect(finalPlan.contains("environment-establishment task"))
     #expect(finalPlan.contains("every ticket that needs it depend on it"))
     #expect(developerInstructions.contains("constraints alone do not select"))
-    #expect(developerInstructions.contains("authorised Business Analyst research"))
+    #expect(developerInstructions.contains("authorised business analyst research"))
     #expect(developerInstructions.contains("foundation task"))
     #expect(developerInstructions.contains("verified Environments"))
     #expect(developerInstructions.contains(#"not "S1 - Choose a provider""#))
@@ -2139,9 +2275,11 @@ struct CodexAdapterTests {
         .hasSuffix("Ask for concrete examples.")
     )
     #expect(prompt.contains("conditional implementation ticket"))
+    #expect(prompt.contains("Write every owner-facing response for a non-technical product owner"))
+    #expect(prompt.contains("Never compress several technical conclusions into one dense sentence"))
   }
 
-  @Test("Epic planning uses supplied ticket contracts and verified Product knowledge")
+  @Test("Epic planning uses supplied ticket contracts and verified product knowledge")
   func epicPlanningUsesSuppliedEvidence() {
     let product = Product(name: "Weather")
     let epic = Epic(
@@ -2194,6 +2332,7 @@ struct CodexAdapterTests {
     #expect(schemas.contains("item_key"))
     #expect(schemas.contains("acceptance_criteria_json"))
     #expect(schemas.contains("agent_verified_knowledge("))
+    #expect(schemas.contains("delivery_kind"))
     #expect(!schemas.contains("ticket_key"))
   }
 
@@ -2256,7 +2395,7 @@ struct CodexAdapterTests {
     )
     let lead = AgentProfile(
       productID: product.id,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead,
       model: "gpt-5.6-sol",
       reasoningEffort: "high"
@@ -2289,7 +2428,7 @@ struct CodexAdapterTests {
     )
 
     #expect(instructions.contains("single team member"))
-    #expect(instructions.contains("Tech Lead — Tech Lead"))
+    #expect(instructions.contains("Tech lead — Tech lead"))
     #expect(instructions.contains("do not modify files"))
     #expect(instructions.contains("live, ticket-scoped"))
     #expect(instructions.contains("one to four"))
@@ -2366,7 +2505,7 @@ struct CodexAdapterTests {
     )
     let instructions = CodexTicketRefinementGenerator.developerInstructions(
       productInstructions: product.instructions,
-      customInstructions: "Keep the Product Owner in control."
+      customInstructions: "Keep the product owner in control."
     )
     let prompt = CodexTicketRefinementGenerator.prompt(
       product: product,
@@ -2378,7 +2517,7 @@ struct CodexAdapterTests {
           workItemID: item.id,
           authorKind: .owner,
           authorName: "Me",
-          body: "@Business Analyst Customers should confirm ambiguous locations."
+          body: "@Business analyst Customers should confirm ambiguous locations."
         )
       ]
     )
@@ -2413,7 +2552,7 @@ struct CodexAdapterTests {
     #expect(instructions.contains("version-checked refinement result"))
     #expect(instructions.contains("verified Environments knowledge"))
     #expect(instructions.contains("splitRecommendation"))
-    #expect(instructions.contains("non-technical Product Owner"))
+    #expect(instructions.contains("non-technical product owner"))
     #expect(instructions.contains("Every option must itself be a complete answer"))
     #expect(instructions.contains("choose Other and describe it"))
     #expect(instructions.contains("self-contained description of the complete"))
@@ -2437,7 +2576,7 @@ struct CodexAdapterTests {
           "baseVersion": 1,
           "title": "A premature changed title",
           "type": "task",
-          "body": "Requires Product Owner confirmation.",
+          "body": "Requires product owner confirmation.",
           "acceptanceCriteria": ["A premature criterion"],
           "priority": "urgent",
           "role": "implementer",
@@ -2613,10 +2752,10 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("Legacy paused Work log questions retain interactive presentation")
+  @Test("Legacy paused work log questions retain interactive presentation")
   func legacyPausedWorkLogQuestionPresentation() throws {
     let body = """
-      I found two viable providers and need the Product Owner to choose one.
+      I found two viable providers and need the product owner to choose one.
 
       Question for you: Which provider should downstream delivery use?
 
@@ -2631,7 +2770,7 @@ struct CodexAdapterTests {
 
     #expect(
       presentation.context
-        == "I found two viable providers and need the Product Owner to choose one."
+        == "I found two viable providers and need the product owner to choose one."
     )
     #expect(presentation.question.prompt == "Which provider should downstream delivery use?")
     #expect(
@@ -2657,7 +2796,7 @@ struct CodexAdapterTests {
     )
     let analyst = AgentProfile(
       productID: product.id,
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst,
       model: "gpt-5.6-terra",
       reasoningEffort: "medium"
@@ -2706,8 +2845,8 @@ struct CodexAdapterTests {
 
     #expect(instructions.contains("single team member"))
     #expect(instructions.contains("Do not modify files"))
-    #expect(instructions.contains("automatic Business Analyst refinement"))
-    #expect(instructions.contains("Business Analyst — Business Analyst"))
+    #expect(instructions.contains("automatic business analyst refinement"))
+    #expect(instructions.contains("Business analyst — Business analyst"))
     #expect(prompt.contains("T-4"))
     #expect(prompt.contains("Why was this colour chosen?"))
     #expect(pausedQuestionPrompt.contains("explanatory question about sprint delivery"))
@@ -2726,7 +2865,7 @@ struct CodexAdapterTests {
     }
   }
 
-  @Test("Ordinary Epic chat is read-only, single-recipient, and separate from refinement")
+  @Test("Ordinary epic chat is read-only, single-recipient, and separate from refinement")
   func epicConversation() throws {
     let product = Product(
       name: "Weather",
@@ -2740,7 +2879,7 @@ struct CodexAdapterTests {
     )
     let designer = AgentProfile(
       productID: product.id,
-      name: "UX Designer",
+      name: "UX designer",
       role: .uxDesigner,
       model: "gpt-5.6-sol",
       reasoningEffort: "medium"
@@ -2758,7 +2897,7 @@ struct CodexAdapterTests {
       previousMessages: [
         EpicPlanningConversationMessage(
           author: .owner,
-          body: "@UX Designer Which existing pattern should we reuse?",
+          body: "@UX designer Which existing pattern should we reuse?",
           kind: .chat,
           participantID: designer.id,
           participantName: designer.name
@@ -2776,7 +2915,7 @@ struct CodexAdapterTests {
 
     #expect(instructions.contains("single team member"))
     #expect(instructions.contains("Do not modify files"))
-    #expect(instructions.contains("UX Designer — UX Designer"))
+    #expect(instructions.contains("UX designer — UX designer"))
     #expect(instructions.contains("never answers"))
     #expect(prompt.contains("Saved places"))
     #expect(prompt.contains("Which existing pattern should we reuse?"))
@@ -2842,7 +2981,7 @@ struct CodexAdapterTests {
     )
     let analyst = AgentProfile(
       productID: product.id,
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst
     )
     let prerequisite = WorkItem(
@@ -2860,7 +2999,7 @@ struct CodexAdapterTests {
       title: "Recommend a content provider",
       type: .task,
       body: "Compare eligible providers and recommend one.",
-      acceptanceCriteria: ["The Product Owner can approve one provider"]
+      acceptanceCriteria: ["The product owner can approve one provider"]
     )
     let implementation = WorkItem(
       productID: product.id,
@@ -2875,7 +3014,7 @@ struct CodexAdapterTests {
     let prerequisiteComment = TicketComment(
       workItemID: prerequisite.id,
       authorKind: .agent,
-      authorName: "Business Analyst",
+      authorName: "Business analyst",
       body: "Completion handoff: Do not send customer search terms to the provider."
     )
     let expiredPermissionComment = TicketComment(
@@ -2935,6 +3074,8 @@ struct CodexAdapterTests {
     #expect(instructions.contains("substitute another package manager"))
     #expect(instructions.contains("Historical delivery notes are analogous context"))
     #expect(instructions.contains("Do not invoke Node"))
+    #expect(instructions.contains("never create one solely to satisfy delivery evidence"))
+    #expect(instructions.contains("return an empty changedFiles array and a null"))
     #expect(!instructions.contains("small version-controlled"))
     #expect(!instructions.contains("app-supplied port"))
     #expect(instructions.contains("propose its complete replacement body"))
@@ -2961,7 +3102,7 @@ struct CodexAdapterTests {
     #expect(integrationInstructions.contains("already available inside the sandbox"))
     #expect(integrationInstructions.contains("reported unmerged paths"))
     #expect(integrationInstructions.contains("do not run builds, tests, linters"))
-    #expect(integrationInstructions.contains("focused Tech Lead review owns semantic validation"))
+    #expect(integrationInstructions.contains("focused tech lead review owns semantic validation"))
   }
 
   @Test("Ticket execution separates verified context from canonical knowledge destinations")
@@ -3037,7 +3178,7 @@ struct CodexAdapterTests {
     #expect(instructions.contains("ignored dependencies, build output, caches"))
   }
 
-  @Test("Ticket execution and Tech Lead review results are validated")
+  @Test("Ticket execution and tech lead review results are validated")
   func ticketExecutionResults() throws {
     let completed = try CodexTicketExecutor.decode(
       #"""
@@ -3086,7 +3227,8 @@ struct CodexAdapterTests {
     #expect(completed.workLogComment.contains("Delivery notes"))
     #expect(completed.workLogComment.contains("How to review"))
     #expect(completed.workLogComment.contains("Demo: Location form"))
-    #expect(CodexTicketExecutor.outputSchema["required"]?.arrayValue?.contains(.string("demo")) == true)
+    #expect(
+      CodexTicketExecutor.outputSchema["required"]?.arrayValue?.contains(.string("demo")) == true)
     #expect(
       CodexTicketExecutor.outputSchema["required"]?.arrayValue?
         .contains(.string("decisionArtifact")) == true
@@ -3228,7 +3370,7 @@ struct CodexAdapterTests {
     let product = Product(name: "Weather")
     let analyst = AgentProfile(
       productID: product.id,
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst
     )
     let researchTicket = WorkItem(
@@ -3246,10 +3388,10 @@ struct CodexAdapterTests {
         "question":null,
         "options":[],
         "summary":"Open-Meteo is recommended with documented trade-offs.",
-        "changedFiles":["docs/provider-recommendation.md"],
+        "changedFiles":[],
         "tests":["Checked every comparison criterion — passed"],
         "knowledgeNotes":["The approved provider requires no API key."],
-        "reviewInstructions":["Open the recommendation and inspect the comparison table."],
+        "reviewInstructions":["Review the completion handoff and proposed Product knowledge."],
         "retrospectiveWentWell":[],
         "retrospectiveCouldImprove":[],
         "retrospectiveActions":[],
@@ -3260,7 +3402,7 @@ struct CodexAdapterTests {
             "title":"Design provider failure states",
             "type":"task",
             "body":"Design the customer experience when forecast data is unavailable.",
-            "acceptanceCriteria":["The Product Owner can review every failure state"],
+            "acceptanceCriteria":["The product owner can review every failure state"],
             "role":"ux_designer",
             "priority":"high",
             "rationale":"The research identified the provider's availability behavior.",
@@ -3281,6 +3423,8 @@ struct CodexAdapterTests {
       }
       """#
     )
+    #expect(researchCompleted.changedFiles.isEmpty)
+    #expect(researchCompleted.demo == nil)
     #expect(researchCompleted.followUpTicketProposals.count == 2)
     #expect(researchCompleted.followUpTicketProposals[1].dependsOnReferences == ["F1"])
     #expect(researchCompleted.workLogComment.contains("Recommended follow-up tickets"))
@@ -3301,7 +3445,7 @@ struct CodexAdapterTests {
     }
     let techLead = AgentProfile(
       productID: product.id,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead
     )
     let reviewDeveloperInstructions = CodexTechLeadReviewer.developerInstructions(
@@ -3317,7 +3461,7 @@ struct CodexAdapterTests {
     #expect(reviewDeveloperInstructions.contains("Do not request broader"))
     #expect(reviewDeveloperInstructions.contains("Treat reported checks as delivery evidence"))
     #expect(!CodexTechLeadReviewer.allowsApprovals)
-    #expect(reviewDeveloperInstructions.contains("The comment is attributed Work log prose"))
+    #expect(reviewDeveloperInstructions.contains("The comment is attributed work log prose"))
     #expect(reviewDeveloperInstructions.contains("do not prefix it"))
     #expect(reviewDeveloperInstructions.contains(#""Approved", or "Changes requested""#))
     #expect(
@@ -3350,26 +3494,29 @@ struct CodexAdapterTests {
       ]
     )
     #expect(reReviewPrompt.contains("focused re-review 1"))
-    #expect(reReviewPrompt.contains("Business Analyst — Business Analyst"))
+    #expect(reReviewPrompt.contains("Business analyst — Business analyst"))
     #expect(reReviewPrompt.contains("Assume a small non-commercial demo."))
     #expect(reReviewPrompt.contains("Do not restart a full review"))
     #expect(reReviewPrompt.contains("earlier classification is not binding"))
     #expect(reReviewPrompt.contains("If no material finding remains, approve"))
     #expect(reReviewPrompt.contains("Integrate the approved provider"))
-    let candidateReviewPrompt = CodexTechLeadReviewer.prompt(
+    let integratedReviewPrompt = CodexTechLeadReviewer.prompt(
       product: product,
       item: researchTicket,
       implementation: researchCompleted,
       knowledgePageProposals: [],
       assignee: analyst,
       baseSHA: "candidate-base",
-      candidateHeadSHA: "candidate-head"
+      candidateHeadSHA: "candidate-head",
+      integratedSHA: "integrated-head"
     )
-    #expect(candidateReviewPrompt.contains("Candidate revision: candidate-head"))
-    #expect(candidateReviewPrompt.contains("A clean integration"))
-    #expect(candidateReviewPrompt.contains("will not require another review"))
-    #expect(candidateReviewPrompt.contains("Do not reproduce delivery"))
-    #expect(candidateReviewPrompt.contains("Do not run checks, launch the product or demo"))
+    #expect(integratedReviewPrompt.contains("Immutable integrated revision under review"))
+    #expect(integratedReviewPrompt.contains("Integrated revision: integrated-head"))
+    #expect(integratedReviewPrompt.contains("latest accepted local trunk"))
+    #expect(integratedReviewPrompt.contains("verified GitHub default-branch head"))
+    #expect(integratedReviewPrompt.contains("exact integrated result once"))
+    #expect(integratedReviewPrompt.contains("Do not reproduce delivery"))
+    #expect(integratedReviewPrompt.contains("Do not run checks, launch the product or demo"))
 
     let interruptedPermission = AgentPermissionRequest(
       productID: product.id,
@@ -3391,7 +3538,7 @@ struct CodexAdapterTests {
       isIntegratedRevision: true,
       interruptedPermission: interruptedPermission
     )
-    #expect(recoveryPrompt.contains("Continue the existing Tech Lead review"))
+    #expect(recoveryPrompt.contains("Continue the existing tech lead review"))
     #expect(recoveryPrompt.contains("integrated-review-sha"))
     #expect(recoveryPrompt.contains("Do not restart a full"))
     #expect(recoveryPrompt.contains("earlier version of the review contract"))
@@ -3414,7 +3561,7 @@ struct CodexAdapterTests {
       ]
     )
     #expect(implementationRecoveryPrompt.contains("Continue the existing implementation"))
-    #expect(implementationRecoveryPrompt.contains("existing Conversation and ticket workspace"))
+    #expect(implementationRecoveryPrompt.contains("existing conversation and ticket workspace"))
     #expect(implementationRecoveryPrompt.contains("swift test --filter ResearchTests"))
     #expect(
       implementationRecoveryPrompt.contains(
@@ -3427,6 +3574,9 @@ struct CodexAdapterTests {
     #expect(implementationRecoveryPrompt.contains("use `request_permissions`"))
     #expect(implementationRecoveryPrompt.contains("one batched"))
     #expect(implementationRecoveryPrompt.contains("`/opt/homebrew/Cellar`"))
+    #expect(implementationRecoveryPrompt.contains("treat it as a failed check"))
+    #expect(implementationRecoveryPrompt.contains("provide testing infrastructure"))
+    #expect(implementationRecoveryPrompt.contains("reproduce the application lifecycle"))
 
     let adoptedBaseline = TicketRevisionBaseline(
       candidateHeadSHA: "candidate-before-conflict",
@@ -3450,6 +3600,9 @@ struct CodexAdapterTests {
     )
     #expect(baselineRevisionPrompt.contains("reviewed-conflict-resolution"))
     #expect(baselineRevisionPrompt.contains("Treat the current workspace as the source"))
+    #expect(baselineRevisionPrompt.contains("missing evidence remains implementation work"))
+    #expect(baselineRevisionPrompt.contains("treat it as a failed check"))
+    #expect(baselineRevisionPrompt.contains("failed check as a product limitation"))
 
     let interruptedLeafPermission = AgentPermissionRequest(
       productID: product.id,
@@ -3483,7 +3636,7 @@ struct CodexAdapterTests {
       item: researchTicket,
       interruptedPermission: deniedPermission
     )
-    #expect(deniedRecoveryPrompt.contains("Product Owner denied"))
+    #expect(deniedRecoveryPrompt.contains("product owner denied"))
     #expect(deniedRecoveryPrompt.contains("Do not reissue the same request"))
 
     let replacementImplementationPrompt = CodexTicketExecutor.recoveryPrompt(
@@ -3491,7 +3644,7 @@ struct CodexAdapterTests {
       interruptedPermission: nil,
       conversationIsAvailable: false
     )
-    #expect(replacementImplementationPrompt.contains("previous Conversation is unavailable"))
+    #expect(replacementImplementationPrompt.contains("previous conversation is unavailable"))
     #expect(replacementImplementationPrompt.contains("workspace and its changes"))
 
     let integration = try CodexConflictIntegrator.decode(
@@ -3501,7 +3654,7 @@ struct CodexAdapterTests {
     #expect(integration.workLogComment.contains("Question for you"))
   }
 
-  @Test("Tech Lead review receives complete candidate-bound proposal contracts")
+  @Test("Tech lead review receives complete candidate-bound proposal contracts")
   func techLeadReviewCandidateContext() {
     let product = Product(name: "Weather")
     let item = WorkItem(
@@ -3509,7 +3662,7 @@ struct CodexAdapterTests {
       key: "T1",
       title: "Establish the delivery environment",
       body: "Create and document the reusable local environment.",
-      acceptanceCriteria: ["Verified Environments Product knowledge is updated."]
+      acceptanceCriteria: ["Verified Environments product knowledge is updated."]
     )
     let implementer = AgentProfile(
       productID: product.id,
@@ -3588,13 +3741,45 @@ struct CodexAdapterTests {
     #expect(prompt.contains(environmentsPageID.uuidString))
     #expect(prompt.contains("Earlier verified environment guidance."))
     #expect(prompt.contains(proposedBody))
-    #expect(prompt.contains("`agent_verified_knowledge` contains accepted canonical knowledge only"))
+    #expect(
+      prompt.contains("`agent_verified_knowledge` contains accepted canonical knowledge only"))
     #expect(prompt.contains("Do not require a pending proposal to be"))
     #expect(prompt.contains("Exercise the product when forecast data cannot be retrieved."))
     #expect(prompt.contains("The retry path is verified without losing the selected place."))
     #expect(prompt.contains("Priority: High"))
     #expect(prompt.contains("Depends on proposed references: T3"))
     #expect(!prompt.contains("This retrospective detail must stay out of review context."))
+
+    let localOutcome = TicketExecutionResult(
+      status: .completed,
+      comment: "I compared the supported providers.",
+      question: nil,
+      options: [],
+      summary: "Open-Meteo is recommended with documented limitations.",
+      changedFiles: [],
+      tests: ["Checked every accepted comparison criterion — passed"],
+      knowledgeNotes: ["No API key is required."],
+      reviewInstructions: ["Review the recommendation and evidence in the Work log."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let localPrompt = CodexTechLeadReviewer.prompt(
+      product: product,
+      item: item,
+      implementation: localOutcome,
+      knowledgePageProposals: [],
+      assignee: AgentProfile(
+        productID: product.id,
+        name: "Business analyst",
+        role: .businessAnalyst
+      ),
+      deliveryKind: .localOutcome
+    )
+    #expect(localPrompt.contains("Immutable local outcome under review"))
+    #expect(localPrompt.contains("No repository files or Git revision are part of this delivery"))
+    #expect(localPrompt.contains("Reported changed files:\nNo repository files changed."))
+    #expect(!localPrompt.contains("Inspect the exact immutable workspace"))
   }
 
   @Test("Retrospective synthesis consolidates free-text evidence into at most five actions")
@@ -3639,7 +3824,7 @@ struct CodexAdapterTests {
     let ownerIdea = RetrospectiveNote(
       productID: product.id,
       sprintID: sprint.id,
-      authorName: "Product Owner",
+      authorName: "Product owner",
       category: .suggestedAction,
       body: "Surface runtime readiness before delivery begins.",
       isActionCandidate: true,
@@ -3658,7 +3843,7 @@ struct CodexAdapterTests {
     #expect(prompt.contains("E1 [Agent action candidate · T56 · Implementer]"))
     #expect(
       prompt.contains(
-        "E3 [Product Owner action candidate · Sprint · Product Owner]"
+        "E3 [Product owner action candidate · Sprint · Product owner]"
       )
     )
     #expect(
@@ -3823,16 +4008,17 @@ private actor ConcurrentTurnTransport: CodexRPCTransport {
   }
 
   func finishTurn(threadID: String, turnID: String, text: String? = nil) {
-    let items: [JSONValue] = text.map {
-      [
-        .object([
-          "id": .string("message-\(turnID)"),
-          "type": .string("agentMessage"),
-          "phase": .string("final_answer"),
-          "text": .string($0),
-        ])
-      ]
-    } ?? []
+    let items: [JSONValue] =
+      text.map {
+        [
+          .object([
+            "id": .string("message-\(turnID)"),
+            "type": .string("agentMessage"),
+            "phase": .string("final_answer"),
+            "text": .string($0),
+          ])
+        ]
+      } ?? []
     continuation.yield(
       .notification(
         CodexNotification(
@@ -4200,12 +4386,14 @@ private actor RecordingTransport: CodexRPCTransport {
   }
 
   private let initializeResponse: JSONValue
+  private let rateLimitsResponse: JSONValue?
   private let stream: AsyncStream<CodexInboundMessage>
   private var calls: [Call] = []
   private var stopped = false
 
-  init(initializeResponse: JSONValue) {
+  init(initializeResponse: JSONValue, rateLimitsResponse: JSONValue? = nil) {
     self.initializeResponse = initializeResponse
+    self.rateLimitsResponse = rateLimitsResponse
     stream = AsyncStream { continuation in
       continuation.finish()
     }
@@ -4217,10 +4405,13 @@ private actor RecordingTransport: CodexRPCTransport {
 
   func request(method: String, params: JSONValue) throws -> JSONValue {
     calls.append(Call(kind: .request, method: method, params: params))
-    guard method == "initialize" else {
-      throw CodexRPCError(code: -32_601, message: "Unexpected request")
+    if method == "initialize" {
+      return initializeResponse
     }
-    return initializeResponse
+    if method == "account/rateLimits/read", let rateLimitsResponse {
+      return rateLimitsResponse
+    }
+    throw CodexRPCError(code: -32_601, message: "Unexpected request")
   }
 
   func notify(method: String, params: JSONValue) {

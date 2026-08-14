@@ -154,7 +154,7 @@ struct KnowledgeContextSelectorTests {
       productID: productID,
       title: "Users & journeys",
       slug: "users-and-journeys",
-      bodyMarkdown: "Product Owners review completed outcomes."
+      bodyMarkdown: "Product owners review completed outcomes."
     )
     let item = WorkItem(
       productID: productID,

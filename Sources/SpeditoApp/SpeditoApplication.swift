@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct SpeditoApplication: App {
@@ -15,6 +16,12 @@ struct SpeditoApplication: App {
             await model.shutdown()
           }
           await model.load()
+          appDelegate.ticketAttentionHandler = { productID, workItemID in
+            await model.openTicketAttention(
+              productID: productID,
+              workItemID: workItemID
+            )
+          }
         }
         .frame(minWidth: 1_080, minHeight: 680)
     }
@@ -27,10 +34,23 @@ struct SpeditoApplication: App {
 }
 
 @MainActor
-private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate,
+  UNUserNotificationCenterDelegate
+{
   var terminationHandler: (@MainActor () async -> Void)?
+  var ticketAttentionHandler: (@MainActor (UUID, UUID) async -> Void)? {
+    didSet {
+      guard let pendingTicketAttentionRoute, ticketAttentionHandler != nil else {
+        return
+      }
+      self.pendingTicketAttentionRoute = nil
+      Task { @MainActor [weak self] in
+        await self?.deliver(pendingTicketAttentionRoute)
+      }
+    }
+  }
+  private var pendingTicketAttentionRoute: TicketAttentionNotificationRoute?
   private var isPreparingToTerminate = false
-
   func applicationDidFinishLaunching(_ notification: Notification) {
     if let iconURL = SpeditoResources.url(
       forResource: "AppIcon",
@@ -39,6 +59,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
       NSApplication.shared.applicationIconImage = NSImage(contentsOf: iconURL)
     }
     NSApplication.shared.setActivationPolicy(.regular)
+    UNUserNotificationCenter.current().delegate = self
 
     DispatchQueue.main.async {
       NSApplication.shared.activate(ignoringOtherApps: true)
@@ -46,6 +67,33 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     }
   }
 
+
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+  ) {
+    guard
+      let route = TicketAttentionNotificationRoute(
+        userInfo: response.notification.request.content.userInfo
+      )
+    else {
+      completionHandler()
+      return
+    }
+    Task { @MainActor [weak self] in
+      await self?.deliver(route)
+      completionHandler()
+    }
+  }
+
+  private func deliver(_ route: TicketAttentionNotificationRoute) async {
+    guard let ticketAttentionHandler else {
+      pendingTicketAttentionRoute = route
+      return
+    }
+    await ticketAttentionHandler(route.productID, route.workItemID)
+  }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard !isPreparingToTerminate, let terminationHandler else {
       return .terminateNow

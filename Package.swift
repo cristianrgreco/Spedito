@@ -21,7 +21,8 @@ let package = Package(
     .target(
       name: "SpeditoCore",
       linkerSettings: [
-        .linkedLibrary("sqlite3")
+        .linkedLibrary("sqlite3"),
+        .linkedFramework("Security")
       ]
     ),
     .executableTarget(
@@ -35,7 +36,10 @@ let package = Package(
     ),
     .testTarget(
       name: "SpeditoCoreTests",
-      dependencies: ["SpeditoCore"]
+      dependencies: ["SpeditoCore"],
+      resources: [
+        .copy("Fixtures/product-schema-v1.sql")
+      ]
     ),
     .testTarget(
       name: "SpeditoAppTests",

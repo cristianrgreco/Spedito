@@ -3,7 +3,7 @@ import Testing
 
 @testable import SpeditoCore
 
-@Suite("Product Conversation")
+@Suite("Product conversation")
 struct ProductConversationTests {
   @Test("Threads, replies, and reversible archival are durable and independently scoped")
   func durableThreads() async throws {
@@ -31,6 +31,18 @@ struct ProductConversationTests {
         body: "Which ticket implemented search?"
       )
     )
+    let titled = try await store.updateConversationThreadSubject(
+      id: first.id,
+      subject: "Search implementation and delivery evidence",
+      replacing: "Which ticket implemented search?"
+    )
+    #expect(titled.subject == "Search implementation and delivery evidence")
+    let unchanged = try await store.updateConversationThreadSubject(
+      id: first.id,
+      subject: "This title must not replace",
+      replacing: "A different provisional subject"
+    )
+    #expect(unchanged.subject == "Search implementation and delivery evidence")
     _ = try await store.appendConversationMessage(
       ProductConversationMessage(
         threadID: first.id,
@@ -38,8 +50,7 @@ struct ProductConversationTests {
         authorName: analyst.name,
         body: "T4 introduced search in commit abc123."
       ),
-      threadStatus: .complete,
-      threadSubject: "Search implementation"
+      threadStatus: .complete
     )
 
     let second = ProductConversationThread(
@@ -65,7 +76,10 @@ struct ProductConversationTests {
     try await reopened.interruptWorkingConversationThreads()
     let threads = try await reopened.fetchConversationThreads(productID: product.id)
     #expect(Set(threads.map(\.id)) == [first.id, second.id])
-    #expect(threads.first(where: { $0.id == first.id })?.subject == "Search implementation")
+    #expect(
+      threads.first(where: { $0.id == first.id })?.subject
+        == "Search implementation and delivery evidence"
+    )
     #expect(threads.first(where: { $0.id == second.id })?.status == .failed)
     #expect(try await reopened.fetchConversationMessages(threadID: first.id).count == 2)
     #expect(try await reopened.fetchConversationMessages(threadID: second.id).count == 1)
@@ -160,7 +174,7 @@ struct ProductConversationTests {
         threadID: thread.id,
         authorKind: .owner,
         authorName: "Me",
-        body: "What does the Tech Lead think?"
+        body: "What does the tech lead think?"
       ),
       threadStatus: .working,
       threadRecipientProfileID: lead.id,
@@ -173,40 +187,38 @@ struct ProductConversationTests {
     await store.close()
   }
 
-  @Test("Replies use a strict structured result")
-  func structuredReply() throws {
-    let reply = try CodexProductConversation.decode(
-      """
-      {
-        "message":"T12 implemented the export in commit deadbeef.",
-        "threadTitle":"Export implementation and delivery evidence"
-      }
-      """
+  @Test("Messages are plain text while generated titles remain strict")
+  func splitReplyAndTitle() throws {
+    #expect(
+      try CodexProductConversation.decodeMessage(
+        "  T12 implemented the export in commit deadbeef.\n"
+      ) == "T12 implemented the export in commit deadbeef."
     )
-    #expect(reply.message == "T12 implemented the export in commit deadbeef.")
-    #expect(reply.threadTitle == "Export implementation and delivery evidence")
     #expect(throws: ProductConversationGenerationError.self) {
-      _ = try CodexProductConversation.decode(
-        #"{"message":"","threadTitle":"Export implementation and delivery evidence"}"#
+      _ = try CodexProductConversation.decodeMessage(" \n ")
+    }
+
+    let title = try CodexProductConversation.decodeTitle(
+      #"{"threadTitle":"Export implementation and delivery evidence"}"#
+    )
+    #expect(title == "Export implementation and delivery evidence")
+    #expect(throws: ProductConversationGenerationError.self) {
+      _ = try CodexProductConversation.decodeTitle(
+        #"{"threadTitle":"First line\nSecond line"}"#
       )
     }
     #expect(throws: ProductConversationGenerationError.self) {
-      _ = try CodexProductConversation.decode(
-        #"{"message":"Implemented.","threadTitle":"First line\nSecond line"}"#
-      )
-    }
-    #expect(throws: ProductConversationGenerationError.self) {
-      _ = try CodexProductConversation.decode(
-        #"{"message":"Implemented.","threadTitle":"Postcards"}"#
+      _ = try CodexProductConversation.decodeTitle(
+        #"{"threadTitle":"Postcards"}"#
       )
     }
   }
 
-  @Test("Conversation guidance asks for readable Markdown and a short title")
-  func readableReplyGuidance() {
+  @Test("Conversation and title guidance have independent contracts")
+  func independentConversationGuidance() {
     let profile = AgentProfile(
       productID: UUID(),
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst
     )
     let instructions = CodexProductConversation.developerInstructions(
@@ -216,15 +228,20 @@ struct ProductConversationTests {
     )
     #expect(instructions.contains("blank lines"))
     #expect(instructions.contains("Markdown bullets"))
-    #expect(instructions.contains("about five words"))
-    #expect(instructions.contains("single-word topic label"))
+    #expect(!instructions.contains("thread title"))
+    #expect(CodexProductConversation.titleDeveloperInstructions.contains("four to six words"))
+    #expect(CodexProductConversation.titleDeveloperInstructions.contains("do not inspect files"))
+    #expect(
+      CodexProductConversation.titlePrompt(ownerMessage: "How does search work?")
+        .contains("How does search work?")
+    )
   }
 
   @Test("Conversation guidance can inspect operational state without exposing protocol internals")
   func operationalEvidenceGuidance() {
     let profile = AgentProfile(
       productID: UUID(),
-      name: "Business Analyst",
+      name: "Business analyst",
       role: .businessAnalyst
     )
     let instructions = CodexProductConversation.developerInstructions(

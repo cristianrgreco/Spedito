@@ -50,7 +50,8 @@ public enum AgentPermissionGrantPolicy {
       return false
     }
 
-    let saved = activeGrants
+    let saved =
+      activeGrants
       .filter { $0.kind == .permissions }
       .compactMap { capabilities(fromSignature: $0.signature) }
       .reduce(into: Capabilities()) { result, capability in
@@ -81,7 +82,8 @@ public enum AgentPermissionGrantPolicy {
       return false
     }
 
-    let active = requests
+    let active =
+      requests
       .filter {
         $0.turnID == turnID
           && $0.kind == .permissions
@@ -116,7 +118,7 @@ public enum AgentPermissionGrantPolicy {
     let protectedPaths = protectedStorageRoots.map(Self.canonicalPath)
     for rule in requested.fileSystemRules {
       guard
-        (rule.access == "read" || rule.access == "write"),
+        rule.access == "read" || rule.access == "write",
         rule.selector == "path:\(rule.displayLocation)",
         rule.displayLocation.hasPrefix("/")
       else {
@@ -152,7 +154,8 @@ public enum AgentPermissionGrantPolicy {
     var groups: [AgentSavedAccessGroup] = []
 
     if !structured.isEmpty {
-      let effective = structured
+      let effective =
+        structured
         .map(\.1)
         .reduce(into: Capabilities()) { result, capability in
           result.formUnion(capability)
@@ -170,7 +173,8 @@ public enum AgentPermissionGrantPolicy {
     }
 
     groups.append(
-      contentsOf: activeGrants
+      contentsOf:
+        activeGrants
         .filter { !structuredIDs.contains($0.id) }
         .map { grant in
           AgentSavedAccessGroup(
@@ -191,15 +195,17 @@ public enum AgentPermissionGrantPolicy {
   }
 
   public static func agentContext(for grants: [AgentPermissionGrant]) -> String {
-    let effective = grants
+    let effective =
+      grants
       .filter { $0.isActive && $0.kind == .permissions }
       .compactMap { capabilities(fromSignature: $0.signature) }
       .reduce(into: Capabilities()) { result, capability in
         result.formUnion(capability)
       }
-    let access = effective.isEmpty
-      ? "No additional filesystem or network access has saved Product Owner consent."
-      : "The Product Owner has already saved consent for:\n\(effective.detailAsBullets)"
+    let access =
+      effective.isEmpty
+      ? "No additional filesystem or network access has saved product owner consent."
+      : "The product owner has already saved consent for:\n\(effective.detailAsBullets)"
     return """
       SAVED PRODUCT ACCESS
 
@@ -208,7 +214,7 @@ public enum AgentPermissionGrantPolicy {
       Saved consent is not active sandbox access and does not expand this ticket's scope. When the
       authorised work needs one of the listed capabilities, request the smallest coherent matching
       subset with `request_permissions`; Spedito will apply the saved consent automatically
-      and record it in this ticket's Work log. Do not request unrelated access or assume that an
+      and record it in this ticket's work log. Do not request unrelated access or assume that an
       exact saved command is an instruction to run it.
       """
   }
@@ -249,7 +255,8 @@ public enum AgentPermissionGrantPolicy {
       ticketWorkspaceRoot: URL? = nil,
       writableFileSystemRoots: [URL] = []
     ) -> Bool {
-      let writableRoots = writableFileSystemRoots
+      let writableRoots =
+        writableFileSystemRoots
         + (ticketWorkspaceRoot.map { [$0] } ?? [])
       for rule in requested.fileSystemRules where !fileSystemRules.contains(rule) {
         guard writableRoots.contains(where: { Self.writableRoot($0, covers: rule) }) else {
@@ -281,7 +288,8 @@ public enum AgentPermissionGrantPolicy {
         )
       }
       lines.append(
-        contentsOf: fileSystemRules
+        contentsOf:
+          fileSystemRules
           .map(\.detail)
           .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
       )

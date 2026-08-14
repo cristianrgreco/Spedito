@@ -25,14 +25,14 @@ struct RetrospectiveGuidanceTests {
     #expect(instructions.contains("provisioning change"))
   }
 
-  @Test("Tech Leads do not defer missing verification through Ways of working")
+  @Test("Tech leads do not defer missing verification through Ways of working")
   func techLeadDestinationFeasibility() {
     let instructions = CodexTechLeadReviewer.developerInstructions(
       productInstructions: "",
       customInstructions: "",
       reviewer: AgentProfile(
         productID: UUID(),
-        name: "Tech Lead",
+        name: "Tech lead",
         role: .lead
       )
     )

@@ -146,7 +146,8 @@ final class MacOSDemoLauncher {
     self.executor = executor
     self.fileManager = fileManager
     self.workspace = workspace
-    self.applicationOpener = applicationOpener
+    self.applicationOpener =
+      applicationOpener
       ?? WorkspaceDemoApplicationOpener(workspace: workspace)
     self.urlSession = urlSession ?? Self.makeReadinessURLSession()
   }
@@ -385,10 +386,12 @@ final class MacOSDemoLauncher {
 
   private func verifyManagedWorkspaceAccess(workspaceURL: URL) async throws {
     guard let executor else { throw DemoLauncherError.appServerUnavailable }
-    let accessCheckRoot = workspaceURL
+    let accessCheckRoot =
+      workspaceURL
       .appendingPathComponent(".spedito-demo-runtime", isDirectory: true)
       .appendingPathComponent("access-check", isDirectory: true)
-    let nestedDirectory = accessCheckRoot
+    let nestedDirectory =
+      accessCheckRoot
       .appendingPathComponent("nested", isDirectory: true)
     defer { try? fileManager.removeItem(at: accessCheckRoot) }
     let request = try managedRequest(
@@ -462,7 +465,8 @@ final class MacOSDemoLauncher {
     else {
       throw DemoLauncherError.missingPresentation(command.workingDirectory)
     }
-    let runtimeRoot = workspaceURL
+    let runtimeRoot =
+      workspaceURL
       .appendingPathComponent(".spedito-demo-runtime", isDirectory: true)
     let temporaryDirectory = runtimeRoot.appendingPathComponent("tmp", isDirectory: true)
     try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
@@ -598,6 +602,7 @@ final class MacOSDemoLauncher {
     guard fileManager.fileExists(atPath: url.path) else {
       throw DemoLauncherError.missingPresentation(path)
     }
+    try DemoArtifactPolicy.validateExistingFile(at: url, fileManager: fileManager)
     return url
   }
 
@@ -605,18 +610,19 @@ final class MacOSDemoLauncher {
     specification: DemoLaunchSpecification,
     workspaceURL: URL
   ) throws -> URL {
-    let applicationURL = try artifactURL(
-      specification: specification,
-      workspaceURL: workspaceURL
+    guard let path = specification.presentation.path else {
+      throw DemoLaunchValidationError.invalid("the application path is missing.")
+    }
+    let applicationURL = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+      path,
+      in: workspaceURL
     )
     guard
       applicationURL.pathExtension.lowercased() == "app",
       let executable = Bundle(url: applicationURL)?.executableURL,
       fileManager.isExecutableFile(atPath: executable.path)
     else {
-      throw DemoLauncherError.missingPresentation(
-        specification.presentation.path ?? "the reviewed app"
-      )
+      throw DemoLauncherError.missingPresentation(path)
     }
     return applicationURL
   }
@@ -647,7 +653,8 @@ final class MacOSDemoLauncher {
   }
 
   private func ownerFacingLogSummary(_ value: String) -> String {
-    let lines = value
+    let lines =
+      value
       .split(whereSeparator: \.isNewline)
       .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }

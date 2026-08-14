@@ -1,27 +1,6 @@
 import Foundation
 
 public enum SprintCandidateAdmission {
-  public static func reviewQueue(
-    candidates: [CandidateRevision],
-    sprintID: UUID,
-    workItems: [WorkItem]
-  ) -> [CandidateRevision] {
-    let rankByWorkItemID = Dictionary(
-      uniqueKeysWithValues: workItems.map { ($0.id, $0.rank) }
-    )
-    return candidates
-      .filter {
-        $0.sprintID == sprintID && $0.status == .queuedForReview
-      }
-      .sorted {
-        orderedBefore(
-          $0,
-          $1,
-          rankByWorkItemID: rankByWorkItemID
-        )
-      }
-  }
-
   public static func integrationQueue(
     candidates: [CandidateRevision],
     sprintID: UUID,
@@ -30,9 +9,11 @@ public enum SprintCandidateAdmission {
     let rankByWorkItemID = Dictionary(
       uniqueKeysWithValues: workItems.map { ($0.id, $0.rank) }
     )
-    return candidates
+    return
+      candidates
       .filter {
-        $0.sprintID == sprintID && $0.status == .queuedForIntegration
+        $0.sprintID == sprintID
+          && ($0.status == .queuedForIntegration || $0.status == .queuedForReview)
       }
       .sorted {
         orderedBefore(

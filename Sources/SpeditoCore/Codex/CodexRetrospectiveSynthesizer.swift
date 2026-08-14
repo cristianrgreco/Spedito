@@ -27,7 +27,7 @@ public enum RetrospectiveSynthesisGenerationError:
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The Business Analyst returned invalid retrospective actions: \(detail)"
+      "The business analyst returned invalid retrospective actions: \(detail)"
     }
   }
 }
@@ -36,14 +36,14 @@ public enum CodexRetrospectiveSynthesizer {
   public static let maximumActionCount = 5
 
   private static let platformInstructions = """
-    You are the Business Analyst facilitating a sprint retrospective for a non-technical Product
-    Owner. This is a read-only synthesis task. Do not modify files, browse the web, or make decisions on
-    the Product Owner's behalf. You may use read-only local tools to query the live product database and
+    You are the business analyst facilitating a sprint retrospective for a non-technical product
+    owner. This is a read-only synthesis task. Do not modify files, browse the web, or make decisions on
+    the product owner's behalf. You may use read-only local tools to query the live product database and
     inspect product Git history. Return only the JSON requested by the output schema.
 
     The supplied notes are immutable evidence. Several agents may describe the same underlying
     problem or proposed remedy in different words. Consolidate them by the single decision the
-    Product Owner would take, not by superficial keyword overlap. Repetition is supporting
+    product owner would take, not by superficial keyword overlap. Repetition is supporting
     evidence, not a reason to create another action. Keep genuinely different interventions
     separate even when they share a broad theme.
 
@@ -64,7 +64,7 @@ public enum CodexRetrospectiveSynthesizer {
     directly change inherited guidance. Use destination backlog when the improvement requires
     tangible implementation, provisioning tooling, or another durable deliverable. Do not create
     backlog work merely to edit team guidance. Before returning, compare every pair of actions and
-    combine any that would ask the Product Owner to make substantially the same decision.
+    combine any that would ask the product owner to make substantially the same decision.
     """
 
   public static func developerInstructions(
@@ -95,8 +95,8 @@ public enum CodexRetrospectiveSynthesizer {
       let ticket = note.workItemID.flatMap { itemByID[$0]?.key } ?? "Sprint"
       let kind =
         if note.isActionCandidate {
-          note.authorName == "Product Owner"
-            ? "Product Owner action candidate"
+          note.authorName == "Product owner"
+            ? "Product owner action candidate"
             : "Agent action candidate"
         } else {
           note.category.title
@@ -104,22 +104,25 @@ public enum CodexRetrospectiveSynthesizer {
       return "- \(reference) [\(kind) · \(ticket) · \(note.authorName)]: \(note.body)"
     }.joined(separator: "\n")
 
-    let activeScope = workItems
+    let activeScope =
+      workItems
       .filter { $0.state != .cancelled && $0.state != .released }
       .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
       .joined(separator: "\n")
 
-    let priorDecisions = existingActions
+    let priorDecisions =
+      existingActions
       .filter { !$0.isActionCandidate }
       .map { action in
         let status = action.actionStatus?.rawValue ?? "recorded"
-        return "- [\(status) · \(action.actionDestination?.title ?? "Ways of working")]: \(action.body)"
+        return
+          "- [\(status) · \(action.actionDestination?.title ?? "Ways of working")]: \(action.body)"
       }
       .joined(separator: "\n")
 
     let practices = waysOfWorking.trimmingCharacters(in: .whitespacesAndNewlines)
     return """
-      Prepare the final reviewable actions for Sprint \(sprint.number).
+      Prepare the final reviewable actions for sprint \(sprint.number).
 
       Product: \(product.name)
       Frozen sprint evidence:
@@ -129,7 +132,7 @@ public enum CodexRetrospectiveSynthesizer {
       \(practices.isEmpty ? "No verified practices are recorded." : practices)
 
       Existing retrospective actions and decisions:
-      \(priorDecisions.isEmpty ? "No earlier or Product Owner actions are recorded." : priorDecisions)
+      \(priorDecisions.isEmpty ? "No earlier or product owner actions are recorded." : priorDecisions)
 
       Active backlog scope:
       \(activeScope.isEmpty ? "No active backlog tickets." : activeScope)
@@ -143,13 +146,13 @@ public enum CodexRetrospectiveSynthesizer {
 
   public static func repairPrompt(validationError: String) -> String {
     """
-      Your previous retrospective synthesis could not be used:
-      \(validationError)
+    Your previous retrospective synthesis could not be used:
+    \(validationError)
 
-      Return the complete corrected synthesis again. Use only the supplied E references, include at
-      least one source per action, return no more than five actions, and combine actions that ask the
-      Product Owner to make substantially the same decision.
-      """
+    Return the complete corrected synthesis again. Use only the supplied E references, include at
+    least one source per action, return no more than five actions, and combine actions that ask the
+    product owner to make substantially the same decision.
+    """
   }
 
   public static var outputSchema: JSONValue {

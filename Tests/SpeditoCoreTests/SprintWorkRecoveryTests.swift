@@ -1,10 +1,11 @@
 import Foundation
 import Testing
+
 @testable import SpeditoCore
 
 @Suite("Sprint work recovery")
 struct SprintWorkRecoveryTests {
-  @Test("A paused Tech Lead review is recovered without selecting an older integration run")
+  @Test("A paused tech lead review is recovered without selecting an older integration run")
   func pausedReviewRunIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
@@ -66,15 +67,15 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.codexThreadID == "review-thread")
   }
 
-  @Test("A queued pre-integration review is recovered after restart")
-  func queuedPreIntegrationReviewIsRecoverable() {
+  @Test("A queued integrated review is recovered after restart")
+  func queuedIntegratedReviewIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
     let sprintItemID = UUID()
     let workItemID = UUID()
     let techLeadID = UUID()
     let reviewStartedAt = Date()
-    let reviewPath = "/private/tmp/t8-pre-integration-review"
+    let reviewPath = "/private/tmp/t8-integrated-review"
     let candidate = CandidateRevision(
       productID: productID,
       sprintID: sprintID,
@@ -85,6 +86,7 @@ struct SprintWorkRecoveryTests {
       branchName: "ticket/T8",
       baseSHA: "base",
       headSHA: "head",
+      integratedSHA: "integrated",
       worktreePath: "/private/tmp/t8",
       integrationWorktreePath: reviewPath,
       status: .reviewing,
@@ -103,13 +105,39 @@ struct SprintWorkRecoveryTests {
       createdAt: reviewStartedAt.addingTimeInterval(1)
     )
 
-    let recovered = SprintWorkRecoveryPolicy().latestReviewRun(
-      for: candidate,
-      runs: [queuedReviewRun],
-      reviewerProfileIDs: [techLeadID]
+    let recoveryPolicy = SprintWorkRecoveryPolicy()
+    #expect(
+      recoveryPolicy.latestReviewRun(
+        for: candidate,
+        runs: [queuedReviewRun],
+        reviewerProfileIDs: [techLeadID]
+      )?.id == queuedReviewRun.id
     )
 
-    #expect(recovered?.id == queuedReviewRun.id)
+    let unintegratedCandidate = CandidateRevision(
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      implementationRunID: candidate.implementationRunID,
+      version: 1,
+      branchName: candidate.branchName,
+      baseSHA: candidate.baseSHA,
+      headSHA: candidate.headSHA,
+      worktreePath: candidate.worktreePath,
+      integrationWorktreePath: reviewPath,
+      status: .reviewing,
+      commitCount: 1,
+      executionResultJSON: "{}",
+      updatedAt: reviewStartedAt
+    )
+    #expect(
+      recoveryPolicy.latestReviewRun(
+        for: unintegratedCandidate,
+        runs: [queuedReviewRun],
+        reviewerProfileIDs: [techLeadID]
+      ) == nil
+    )
   }
 
   @Test("A completed review run remains recoverable for an interrupted post-review handoff")
@@ -159,7 +187,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.id == completedReviewRun.id)
   }
 
-  @Test("An interrupted Tech Lead run remains bound to its reviewing candidate")
+  @Test("An interrupted tech lead run remains bound to its reviewing candidate")
   func interruptedReviewRunIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
@@ -605,7 +633,7 @@ struct SprintWorkRecoveryTests {
     )
     let techLead = AgentProfile(
       productID: productID,
-      name: "Tech Lead",
+      name: "Tech lead",
       role: .lead
     )
     let integrationPath = "/private/tmp/t49-integration"

@@ -15,8 +15,6 @@ struct KnowledgeBaseView: View {
   @State private var revisions: [KnowledgePageRevision] = []
   @State private var showingNewPage = false
   @State private var newPageTitle = ""
-  @State private var seenPageUpdates: [UUID: Date] = [:]
-  @State private var seenStateProductID: UUID?
 
   var body: some View {
     GeometryReader { proxy in
@@ -41,18 +39,9 @@ struct KnowledgeBaseView: View {
         alignment: .topLeading
       )
     }
-    .onAppear {
-      loadSeenStateIfNeeded()
-      selectRequestedOrInitialPage()
-    }
-    .onChange(of: model.knowledgePages) {
-      loadSeenStateIfNeeded()
-      selectRequestedOrInitialPage()
-    }
+    .onAppear { selectRequestedOrInitialPage() }
+    .onChange(of: model.knowledgePages) { selectRequestedOrInitialPage() }
     .onChange(of: model.selectedProductID) { _, _ in
-      seenPageUpdates = [:]
-      seenStateProductID = nil
-      loadSeenStateIfNeeded()
       selectRequestedOrInitialPage()
     }
     .onChange(of: model.knowledgeFocusPageID) { _, _ in
@@ -109,6 +98,7 @@ struct KnowledgeBaseView: View {
         }
         .buttonStyle(.borderedProminent)
       }
+      .disabled(repositoryKnowledgeIsRunning)
 
       HStack(spacing: 8) {
         Image(systemName: "sparkle.magnifyingglass")
@@ -139,6 +129,12 @@ struct KnowledgeBaseView: View {
     }
   }
 
+  private var repositoryKnowledgeIsRunning: Bool {
+    guard let status = model.repositoryKnowledgeRun?.status else { return false }
+    return status == .pendingAnalysis || status == .analyzing || status == .reviewing
+      || status == .publishing
+  }
+
   private var selectedPage: KnowledgePage? {
     guard let selectedPageID else { return nil }
     return model.knowledgePages.first { $0.id == selectedPageID }
@@ -163,14 +159,7 @@ struct KnowledgeBaseView: View {
   }
 
   private var changedPageIDs: Set<UUID> {
-    Set(
-      model.knowledgePages.compactMap { page in
-        guard let lastSeenUpdate = seenPageUpdates[page.id] else {
-          return page.id
-        }
-        return page.updatedAt > lastSeenUpdate ? page.id : nil
-      }
-    )
+    model.unreadKnowledgePageIDs
   }
 
   private var pageTree: some View {
@@ -283,6 +272,7 @@ struct KnowledgeBaseView: View {
         } label: {
           Label("Edit", systemImage: "pencil")
         }
+        .disabled(repositoryKnowledgeIsRunning)
       }
     }
     .padding(.horizontal, 22)
@@ -514,7 +504,7 @@ struct KnowledgeBaseView: View {
 
   private func loadSelectedPage() {
     guard let page = selectedPage else { return }
-    markPageSeen(page)
+    model.markKnowledgePageRead(page)
     titleDraft = page.title
     bodyDraft = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown)
     isEditing = false
@@ -536,54 +526,6 @@ struct KnowledgeBaseView: View {
     Task { answer = await model.askKnowledge(submitted) }
   }
 
-  private func loadSeenStateIfNeeded() {
-    guard
-      let productID = model.selectedProductID,
-      seenStateProductID != productID,
-      !model.knowledgePages.isEmpty,
-      model.knowledgePages.allSatisfy({ $0.productID == productID })
-    else { return }
-
-    let defaults = UserDefaults.standard
-    let key = seenStateKey(productID: productID)
-    if let stored = defaults.dictionary(forKey: key) {
-      seenPageUpdates = stored.reduce(into: [:]) { result, entry in
-        guard
-          let pageID = UUID(uuidString: entry.key),
-          let timestamp = (entry.value as? NSNumber)?.doubleValue
-        else { return }
-        result[pageID] = Date(timeIntervalSince1970: timestamp)
-      }
-    } else {
-      seenPageUpdates = Dictionary(
-        uniqueKeysWithValues: model.knowledgePages.map { ($0.id, $0.updatedAt) }
-      )
-      persistSeenState(productID: productID)
-    }
-    seenStateProductID = productID
-  }
-
-  private func markPageSeen(_ page: KnowledgePage) {
-    guard seenStateProductID == page.productID else { return }
-    guard seenPageUpdates[page.id] != page.updatedAt else { return }
-    seenPageUpdates[page.id] = page.updatedAt
-    persistSeenState(productID: page.productID)
-  }
-
-  private func persistSeenState(productID: UUID) {
-    UserDefaults.standard.set(
-      Dictionary(
-        uniqueKeysWithValues: seenPageUpdates.map {
-          ($0.key.uuidString, $0.value.timeIntervalSince1970)
-        }
-      ),
-      forKey: seenStateKey(productID: productID)
-    )
-  }
-
-  private func seenStateKey(productID: UUID) -> String {
-    "Spedito.knowledge-page-seen.\(productID.uuidString)"
-  }
 }
 
 private struct KnowledgeMarkdownDocument: View {
@@ -677,7 +619,7 @@ private struct KnowledgeMarkdownDocument: View {
   }
 
   private func inlineMarkdown(_ source: String) -> AttributedString {
-    (try? AttributedString(markdown: source)) ?? AttributedString(source)
+    SafeURLPolicy.markdown(source)
   }
 
   private func headingFont(_ level: Int) -> Font {

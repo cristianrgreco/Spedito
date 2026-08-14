@@ -7,8 +7,8 @@ private struct WorkspaceContainerSizeKey: EnvironmentKey {
   static let defaultValue = CGSize(width: 1_320, height: 820)
 }
 
-private extension EnvironmentValues {
-  var workspaceContainerSize: CGSize {
+extension EnvironmentValues {
+  fileprivate var workspaceContainerSize: CGSize {
     get { self[WorkspaceContainerSizeKey.self] }
     set { self[WorkspaceContainerSizeKey.self] = newValue }
   }
@@ -44,6 +44,7 @@ struct ContentView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .environment(\.workspaceContainerSize, geometry.size)
     }
+    .environment(\.openURL, SafeURLPolicy.openURLAction)
     .alert(
       "Spedito couldn't complete that action",
       isPresented: Binding(
@@ -60,8 +61,6 @@ struct ContentView: View {
 
 private struct ProductOnboardingView: View {
   @EnvironmentObject private var model: AppModel
-  @State private var name = ""
-  @State private var isCreating = false
   @State private var showingProductLibrary = false
 
   var body: some View {
@@ -79,20 +78,18 @@ private struct ProductOnboardingView: View {
         VStack(spacing: 8) {
           Text("What are you building?")
             .font(.largeTitle.bold())
-          Text("Choose a product name. You can change it later.")
+          Text("Create a blank product or start from an existing public or private repository.")
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: 460)
         }
 
-        ProductNameEntryField(
-          text: $name,
-          isDisabled: isCreating,
-          onSubmit: createProduct
-        )
-        .frame(width: 420)
-
-        HStack(spacing: 10) {
+        ProductCreationForm(
+          blankActionTitle: "Create product",
+          importActionTitle: "Create from repository",
+          actionControlSize: .large,
+          onCreate: model.createProductAndSelect
+        ) { isCreating in
           if !model.archivedProducts.isEmpty {
             Button("View archived products") {
               showingProductLibrary = true
@@ -100,15 +97,8 @@ private struct ProductOnboardingView: View {
             .buttonStyle(.bordered)
             .disabled(isCreating)
           }
-
-          Button(isCreating ? "Creating…" : "Create product") {
-            createProduct()
-          }
-          .buttonStyle(.borderedProminent)
-          .keyboardShortcut(.defaultAction)
-          .disabled(trimmedName.isEmpty || isCreating)
         }
-        .controlSize(.large)
+        .frame(width: 420)
       }
       .padding(.horizontal, 32)
       .padding(.vertical, 40)
@@ -120,19 +110,6 @@ private struct ProductOnboardingView: View {
         initiallyShowingArchived: true,
         onOpenProduct: {}
       )
-    }
-  }
-
-  private var trimmedName: String {
-    name.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private func createProduct() {
-    guard !trimmedName.isEmpty, !isCreating else { return }
-    isCreating = true
-    Task {
-      _ = await model.createProductAndSelect(name: trimmedName)
-      isCreating = false
     }
   }
 }
@@ -168,11 +145,10 @@ private struct ProductOnboardingBackdrop: View {
 
       VStack(spacing: 0) {
         HStack(spacing: 11) {
-          if
-            let iconURL = SpeditoResources.url(
-              forResource: "AppIcon",
-              withExtension: "png"
-            ),
+          if let iconURL = SpeditoResources.url(
+            forResource: "AppIcon",
+            withExtension: "png"
+          ),
             let appIcon = NSImage(contentsOf: iconURL)
           {
             Image(nsImage: appIcon)
@@ -211,7 +187,7 @@ private struct ProductOnboardingBackdrop: View {
           )
           onboardingPromise(
             symbol: "person.crop.circle",
-            title: "Made for Product Owners",
+            title: "Made for product owners",
             detail: "Describe outcomes in product language"
           )
           onboardingPromise(
@@ -249,6 +225,7 @@ private enum WorkspaceDestination: String, Hashable {
   case conversation
   case backlog
   case sprint
+  case app
   case retrospectives
   case reports
   case knowledge
@@ -276,13 +253,417 @@ enum SprintBoardSelectionDefaults {
   }
 }
 
+enum GitHubRepositoryAttentionPolicy {
+  static func needsAttention(
+    error: String?,
+    connectionStatus: RemoteRepositoryConnectionStatus?,
+    relationship: RemoteRepositoryRelationship?,
+    publicationStatus: RemotePublicationStatus?
+  ) -> Bool {
+    if let error, !error.isEmpty {
+      return true
+    }
+    switch connectionStatus {
+    case .needsAuthorization, .needsInstallation, .needsTargetReview, .unavailable:
+      return true
+    case .selectingRepository, .initializingRemote, .connected, .disconnected, nil:
+      break
+    }
+    switch relationship {
+    case .diverged, .unrelated:
+      return true
+    case .aligned, .localAhead, .remoteAhead, .historyAlignmentAvailable, nil:
+      break
+    }
+    switch publicationStatus {
+    case .openStale, .stale, .failed:
+      return true
+    default:
+      return false
+    }
+  }
+}
+
+enum GitHubRepositorySetupLaunch: Equatable {
+  case repositoryPicker
+  case installation
+  case none
+
+  static func resolve(
+    status: RemoteRepositoryConnectionStatus?
+  ) -> GitHubRepositorySetupLaunch {
+    switch status {
+    case .selectingRepository:
+      .repositoryPicker
+    case .needsInstallation:
+      .installation
+    default:
+      .none
+    }
+  }
+}
+
+struct GitHubVerifiedRepositoryPresentation: Equatable {
+  let message: String
+  let actionTitle: String
+
+  static func resolve(hasExistingHistory: Bool) -> GitHubVerifiedRepositoryPresentation {
+    if hasExistingHistory {
+      return GitHubVerifiedRepositoryPresentation(
+        message:
+          "Spedito will initialize this empty repository, then publish the Product's existing work through one pull request. No action is needed on GitHub.",
+        actionTitle: "Connect and publish"
+      )
+    }
+    return GitHubVerifiedRepositoryPresentation(
+      message: "Spedito will initialize this empty repository with the Product.",
+      actionTitle: "Connect repository"
+    )
+  }
+}
+
+enum GitHubRepositoryPickerContent: Equatable {
+  case loading
+  case failure(String)
+  case empty
+  case repositories
+
+  static func resolve(
+    repositoryCount: Int,
+    isBusy: Bool,
+    error: String?
+  ) -> GitHubRepositoryPickerContent {
+    if repositoryCount > 0 {
+      return .repositories
+    }
+    if isBusy {
+      return .loading
+    }
+    if let error, !error.isEmpty {
+      return .failure(error)
+    }
+    return .empty
+  }
+}
+
+struct GitHubRepositoryImportAccessDestination: Equatable {
+  let installationID: Int64?
+  let title: String
+  let url: URL
+}
+
+enum GitHubRepositoryImportAccessPresentation {
+  static func resolve(
+    installations: [GitHubInstallation],
+    appSlug: String
+  ) -> [GitHubRepositoryImportAccessDestination] {
+    if !installations.isEmpty {
+      let includesAccountName = installations.count > 1
+      return installations.compactMap { installation in
+        guard
+          let url = URL(
+            string: "https://github.com/settings/installations/\(installation.id)"
+          )
+        else { return nil }
+        return GitHubRepositoryImportAccessDestination(
+          installationID: installation.id,
+          title: includesAccountName
+            ? "Manage repository access for \(installation.accountLogin)"
+            : "Manage repository access",
+          url: url
+        )
+      }
+    }
+    guard !appSlug.isEmpty,
+      let url = URL(string: "https://github.com/apps/\(appSlug)/installations/new")
+    else { return [] }
+    return [
+      GitHubRepositoryImportAccessDestination(
+        installationID: nil,
+        title: "Choose repositories on GitHub",
+        url: url
+      )
+    ]
+  }
+}
+
+struct GitHubRepositorySetupPresentation: Equatable {
+  enum Step: Equatable {
+    case chooseRepository
+    case verifyRepository
+    case checkingRepository
+    case reviewAndConnect
+    case chooseAnotherRepository
+  }
+
+  let step: Step
+  let actionTitle: String?
+
+  static func resolve(
+    repositoryID: Int64?,
+    eligibility: GitHubRepositoryEligibility?
+  ) -> GitHubRepositorySetupPresentation {
+    switch eligibility {
+    case .checking:
+      GitHubRepositorySetupPresentation(step: .checkingRepository, actionTitle: nil)
+    case .empty:
+      GitHubRepositorySetupPresentation(
+        step: .reviewAndConnect,
+        actionTitle: "Review and connect"
+      )
+    case .ineligible:
+      GitHubRepositorySetupPresentation(
+        step: .chooseAnotherRepository,
+        actionTitle: "Choose another repository"
+      )
+    case .unchecked, nil:
+      if repositoryID == nil {
+        GitHubRepositorySetupPresentation(
+          step: .chooseRepository,
+          actionTitle: "Choose repository"
+        )
+      } else {
+        GitHubRepositorySetupPresentation(
+          step: .verifyRepository,
+          actionTitle: "Continue setup"
+        )
+      }
+    }
+  }
+}
+
+struct GitHubRepositoryInitializationPresentation: Equatable {
+  let title: String
+  let detail: String
+  let step: Int
+  let stepCount: Int
+  let isComplete: Bool
+
+  static func resolve(
+    activity: GitHubRepositorySetupActivity
+  ) -> GitHubRepositoryInitializationPresentation {
+    switch activity {
+    case .inProgress(let progress, let publishesExistingHistory):
+      let stepCount = publishesExistingHistory ? 6 : 4
+      return switch progress {
+      case .validatingProduct:
+        GitHubRepositoryInitializationPresentation(
+          title: "Checking the Product",
+          detail: "Verifying that local history can be published safely.",
+          step: 1,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      case .publishingBootstrap:
+        GitHubRepositoryInitializationPresentation(
+          title: "Initializing the GitHub repository",
+          detail: "Publishing the Product’s first commit to establish the default branch.",
+          step: 2,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      case .verifyingConnection:
+        GitHubRepositoryInitializationPresentation(
+          title: "Confirming the connection",
+          detail: "Verifying the repository identity and local Git connection.",
+          step: 3,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      case .checkingRepository:
+        GitHubRepositoryInitializationPresentation(
+          title: "Comparing local and GitHub history",
+          detail: "Confirming the exact revisions before publishing further work.",
+          step: 4,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      case .publishingExistingHistory:
+        GitHubRepositoryInitializationPresentation(
+          title: "Publishing existing Product work",
+          detail: "Creating one review branch and pull request for the accepted local history.",
+          step: 5,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      case .mergingExistingHistory:
+        GitHubRepositoryInitializationPresentation(
+          title: "Finishing the pull request",
+          detail: "Merging the exact published revision and aligning local history.",
+          step: 6,
+          stepCount: stepCount,
+          isComplete: false
+        )
+      }
+    case .completed(let publishedExistingHistory):
+      return GitHubRepositoryInitializationPresentation(
+        title: "GitHub repository connected",
+        detail: publishedExistingHistory
+          ? "Spedito initialized the repository, merged the pull request, and aligned the local Product."
+          : "Spedito initialized the repository. Future Product changes will use pull requests.",
+        step: publishedExistingHistory ? 6 : 4,
+        stepCount: publishedExistingHistory ? 6 : 4,
+        isComplete: true
+      )
+    }
+  }
+}
+
+struct GitHubRepositoryPickerDismissalPolicy {
+  static func canDismiss(activity: GitHubRepositorySetupActivity?) -> Bool {
+    activity?.isInProgress != true
+  }
+}
+
+struct GitHubPullRequestActionPresentation: Equatable {
+  let title: String
+  let isPrimary: Bool
+  let showsButton: Bool
+
+  static func resolve(
+    purpose: RemotePublicationPurpose,
+    status: RemotePublicationStatus,
+    relationship: RemoteRepositoryRelationship?,
+    hasAcceptedSynchronization: Bool
+  ) -> GitHubPullRequestActionPresentation {
+    let setupIsComplete =
+      purpose == .existingProductHistory
+      && status == .merged
+      && (relationship == .aligned || hasAcceptedSynchronization)
+    let isFinishingSetup =
+      purpose == .existingProductHistory
+      && (status == .open || (status == .merged && !setupIsComplete))
+    if isFinishingSetup {
+      return GitHubPullRequestActionPresentation(
+        title: "Finish GitHub setup",
+        isPrimary: true,
+        showsButton: true
+      )
+    }
+    return GitHubPullRequestActionPresentation(
+      title: "Refresh pull request",
+      isPrimary: false,
+      showsButton: !setupIsComplete
+    )
+  }
+}
+
+enum SprintBoardGitHubAction: Equatable {
+  case check
+  case reviewIncoming
+}
+
+struct SprintBoardGitHubPresentation: Equatable {
+  enum Tone: Equatable {
+    case positive
+    case informational
+    case attention
+    case critical
+  }
+
+  let title: String
+  let detail: String
+  let symbol: String
+  let tone: Tone
+  let actionTitle: String?
+  let action: SprintBoardGitHubAction?
+
+  static func resolve(
+    error: String?,
+    connectionStatus: RemoteRepositoryConnectionStatus?,
+    relationship: RemoteRepositoryRelationship?,
+    aheadCount: Int,
+    behindCount: Int,
+    publicationStatus: RemotePublicationStatus?,
+    hasActiveDelivery: Bool
+  ) -> SprintBoardGitHubPresentation? {
+    guard connectionStatus == .connected else { return nil }
+    if let error, !error.isEmpty {
+      return SprintBoardGitHubPresentation(
+        title: "GitHub needs attention",
+        detail: error,
+        symbol: "exclamationmark.triangle.fill",
+        tone: .critical,
+        actionTitle: "Check GitHub",
+        action: .check
+      )
+    }
+
+    switch publicationStatus {
+    case .awaitingConfirmation, .checking, .pushing, .branchPublished,
+      .creatingPullRequest, .open, .openOutdated, .merged:
+      return nil
+    case .openStale, .closed, .stale, .failed:
+      return SprintBoardGitHubPresentation(
+        title: "Ticket delivery needs attention",
+        detail: "Spedito could not finish publishing this ticket. Review its work log to continue.",
+        symbol: "exclamationmark.triangle.fill",
+        tone: .critical,
+        actionTitle: nil,
+        action: nil
+      )
+    case .cancelled, nil:
+      break
+    }
+
+    switch relationship {
+    case .localAhead:
+      return nil
+    case .remoteAhead, .historyAlignmentAvailable:
+      guard !hasActiveDelivery else { return nil }
+      let count = max(1, behindCount)
+      return SprintBoardGitHubPresentation(
+        title: "GitHub has \(count) incoming change\(count == 1 ? "" : "s")",
+        detail: "Review the incoming changes now, or let Spedito integrate them with the next affected ticket.",
+        symbol: "arrow.down.circle.fill",
+        tone: .attention,
+        actionTitle: "Review incoming changes",
+        action: .reviewIncoming
+      )
+    case .diverged:
+      return SprintBoardGitHubPresentation(
+        title: "Local work and GitHub both changed",
+        detail: hasActiveDelivery
+          ? "Spedito will combine the verified histories within each affected ticket and ask only if a product decision is needed."
+          : "Spedito will combine the verified histories when the next affected ticket reaches review.",
+        symbol: "arrow.triangle.merge",
+        tone: .informational,
+        actionTitle: nil,
+        action: nil
+      )
+    case .unrelated:
+      return SprintBoardGitHubPresentation(
+        title: "GitHub history does not match this Product",
+        detail: "Review the connected repository in Product settings.",
+        symbol: "exclamationmark.triangle.fill",
+        tone: .critical,
+        actionTitle: nil,
+        action: nil
+      )
+    case .aligned:
+      return nil
+    case nil:
+      return SprintBoardGitHubPresentation(
+        title: "GitHub has not been checked",
+        detail: hasActiveDelivery
+          ? "Spedito will check GitHub when an affected ticket reaches review."
+          : "Check GitHub now for diagnostics, or continue and let ticket integration check automatically.",
+        symbol: "arrow.trianglehead.2.clockwise.rotate.90",
+        tone: .informational,
+        actionTitle: "Check GitHub",
+        action: .check
+      )
+    }
+  }
+}
+
 struct SprintPermissionRequestPresentation: Equatable {
   static let existingAccessTitle = "Existing access used"
   static let existingAccessSummary =
     "Spedito continued using access already available to this run. No permissions changed."
   static let protectedStorageTitle = "Protected Spedito storage"
   static let protectedStorageSummary =
-    "Spedito kept this delivery run out of storage owned by another execution. No Product Owner decision was needed."
+    "Spedito kept this delivery run out of storage owned by another execution. No product owner decision was needed."
 
   let context: String
   let purpose: String
@@ -297,7 +678,8 @@ struct SprintPermissionRequestPresentation: Equatable {
     case .command:
       context = "The agent wants to run a local project command."
       fallbackPurpose = "Run a project command needed to continue this ticket."
-      detailTitle = request.detail.contains("Additional access for this command:")
+      detailTitle =
+        request.detail.contains("Additional access for this command:")
         ? "Exact command and access"
         : "Exact command"
     case .permissions:
@@ -310,11 +692,12 @@ struct SprintPermissionRequestPresentation: Equatable {
       detailTitle = "Requested file change"
     }
 
-    purpose = if let statedReason, !statedReason.isEmpty {
-      statedReason
-    } else {
-      fallbackPurpose
-    }
+    purpose =
+      if let statedReason, !statedReason.isEmpty {
+        statedReason
+      } else {
+        fallbackPurpose
+      }
   }
 }
 
@@ -325,9 +708,9 @@ enum RetrospectiveSprintSelection {
       .max { $0.sprint.number < $1.sprint.number }?
       .sprint.id
       ?? plans
-        .filter { $0.sprint.state.isInProgress }
-        .max { $0.sprint.number < $1.sprint.number }?
-        .sprint.id
+      .filter { $0.sprint.state.isInProgress }
+      .max { $0.sprint.number < $1.sprint.number }?
+      .sprint.id
   }
 }
 
@@ -411,12 +794,13 @@ struct SprintStartAvailability: Equatable {
 
   var explanation: String? {
     blockingActiveSprintNumber.map {
-      "Finish or stop Sprint \($0) before starting this sprint."
+      "Finish or stop sprint \($0) before starting this sprint."
     }
   }
 
   init(draft: SprintPlan, plans: [SprintPlan]) {
-    blockingActiveSprintNumber = plans
+    blockingActiveSprintNumber =
+      plans
       .filter {
         $0.sprint.state.isInProgress
           && $0.sprint.id != draft.sprint.id
@@ -450,6 +834,7 @@ private struct ProductWorkspaceView: View {
   @State private var showingProductLibrary = false
   @State private var ticketDetailPresentation: TicketDetailPresentation?
   @State private var selectedSprintID: UUID?
+  @State private var attentionWorkItemIDs: Set<UUID>?
 
   private static let destinationDefaultsPrefix = "workspaceDestination"
 
@@ -459,7 +844,7 @@ private struct ProductWorkspaceView: View {
         selection: $destination,
         onShowProducts: { showingProductLibrary = true }
       )
-        .navigationSplitViewColumnWidth(min: 232, ideal: 262, max: 320)
+      .navigationSplitViewColumnWidth(min: 232, ideal: 262, max: 320)
     } detail: {
       Group {
         switch destination {
@@ -478,11 +863,14 @@ private struct ProductWorkspaceView: View {
         case .sprint:
           SprintBoardView(
             selectedSprintID: $selectedSprintID,
+            attentionWorkItemIDs: $attentionWorkItemIDs,
             onShowBacklog: { destination = .backlog },
             onEditPlan: { showingSprintPlanning = true },
             onShowRetrospective: { destination = .retrospectives },
             onShowReports: { destination = .reports }
           )
+        case .app:
+          AppVersionsView()
         case .retrospectives:
           RetrospectivesView(
             onConcluded: { destination = .backlog },
@@ -518,6 +906,9 @@ private struct ProductWorkspaceView: View {
     }
     .onAppear {
       restoreDestination(for: model.selectedProductID)
+      if let request = model.ticketAttentionNavigationRequest {
+        handleAttentionNavigationRequest(request)
+      }
     }
     .onChange(of: model.selectedProductID) { _, productID in
       showingNewTicket = false
@@ -526,6 +917,7 @@ private struct ProductWorkspaceView: View {
       showingSprintPlanning = false
       ticketDetailPresentation = nil
       selectedSprintID = nil
+      attentionWorkItemIDs = nil
       restoreDestination(for: productID)
     }
     .onChange(of: destination) { _, destination in
@@ -541,6 +933,27 @@ private struct ProductWorkspaceView: View {
         destination = .knowledge
       }
     }
+    .onChange(of: model.ticketAttentionNavigationRequest) { _, request in
+      if let request {
+        handleAttentionNavigationRequest(request)
+      }
+    }
+    .overlay(alignment: .top) {
+      if let attention = model.presentedTicketAttention {
+        TicketAttentionBanner(
+          attention: attention,
+          onOpen: {
+            Task { await model.openTicketAttention(attention) }
+          },
+          onDismiss: {
+            model.dismissPresentedTicketAttention(id: attention.id)
+          }
+        )
+        .padding(.top, 12)
+        .transition(.move(edge: .top).combined(with: .opacity))
+      }
+    }
+    .animation(.easeInOut(duration: 0.2), value: model.presentedTicketAttention?.id)
     .sheet(isPresented: $showingNewTicket) {
       NewTicketView(
         isPresented: $showingNewTicket,
@@ -634,6 +1047,80 @@ private struct ProductWorkspaceView: View {
     destination = .sprint
   }
 
+
+  private func handleAttentionNavigationRequest(
+    _ request: TicketAttentionNavigationRequest
+  ) {
+    guard model.selectedProductID == request.productID else { return }
+    destination = .sprint
+    selectedSprintID = request.sprintID
+    if let workItemID = request.openWorkItemID,
+      let item = model.workItems.first(where: { $0.id == workItemID })
+    {
+      attentionWorkItemIDs = nil
+      ticketDetailPresentation = TicketDetailPresentation(
+        item: item,
+        startRefinementOnAppear: false,
+        mode: .delivery
+      )
+    } else {
+      attentionWorkItemIDs = request.workItemIDs
+    }
+    model.consumeTicketAttentionNavigationRequest(id: request.id)
+  }
+}
+
+private struct TicketAttentionBanner: View {
+  let attention: TicketAttention
+  let onOpen: () -> Void
+  let onDismiss: () -> Void
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 12) {
+      Image(systemName: "hand.raised.fill")
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(.orange)
+        .frame(width: 28, height: 28)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+        .accessibilityHidden(true)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("\(attention.productName) · \(attention.itemKey) needs your input")
+          .font(.callout.weight(.semibold))
+          .lineLimit(1)
+        Text(attention.summary)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(2)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+
+      Button("Open ticket", action: onOpen)
+        .buttonStyle(.borderedProminent)
+
+      Button(action: onDismiss) {
+        Image(systemName: "xmark")
+          .font(.caption.weight(.semibold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .accessibilityLabel("Dismiss ticket attention")
+    }
+    .padding(12)
+    .frame(width: 560)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .overlay {
+      RoundedRectangle(cornerRadius: 12)
+        .stroke(.orange.opacity(0.45), lineWidth: 1)
+    }
+    .shadow(color: .black.opacity(0.15), radius: 12, y: 5)
+    .padding(.horizontal, 16)
+    .task(id: attention.id) {
+      try? await Task.sleep(for: .seconds(8))
+      guard !Task.isCancelled else { return }
+      onDismiss()
+    }
+  }
 }
 
 private struct TeamSidebar: View {
@@ -642,6 +1129,7 @@ private struct TeamSidebar: View {
   let onShowProducts: () -> Void
   @State private var showingTeamPrompts = false
   @State private var showingProductContext = false
+  @State private var showingProductSetupDetail = false
   @AppStorage("teamSidebarExpanded") private var isTeamExpanded = true
 
   private var sprintAttentionCount: Int {
@@ -666,6 +1154,10 @@ private struct TeamSidebar: View {
         .map(\.id)
     )
     return attentionIDs.count
+  }
+
+  private var otherProductAttentionCount: Int {
+    model.ticketAttentionCount(excluding: model.selectedProductID)
   }
 
   private var pendingRetrospectiveCount: Int {
@@ -701,6 +1193,135 @@ private struct TeamSidebar: View {
       .joined(separator: "-")
   }
 
+  @ViewBuilder
+  private var productSetupSubtitle: some View {
+    switch model.repositoryKnowledgeRun?.status {
+    case .pendingAnalysis, .analyzing, .reviewing, .publishing:
+      HStack(spacing: 5) {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(.purple)
+        Text("Importing product…")
+      }
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(.purple)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 2)
+      .background(Color.purple.opacity(0.18), in: Capsule())
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Importing product")
+      .onHover { showingProductSetupDetail = $0 }
+      .popover(isPresented: $showingProductSetupDetail, arrowEdge: .leading) {
+        productSetupDetail
+      }
+    case .failed, .interrupted, .stale:
+      Label("Setup needs attention", systemImage: "exclamationmark.triangle.fill")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.orange)
+        .accessibilityLabel("Imported product setup needs attention")
+        .onHover { showingProductSetupDetail = $0 }
+        .popover(isPresented: $showingProductSetupDetail, arrowEdge: .leading) {
+          productSetupDetail
+        }
+    case .completed, .none:
+      Text("Switch product")
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var productSetupNeedsAttention: Bool {
+    guard let status = model.repositoryKnowledgeRun?.status else { return false }
+    return status == .failed || status == .interrupted || status == .stale
+  }
+
+  private var githubRepositoryNeedsAttention: Bool {
+    guard let productID = model.selectedProductID else { return false }
+    let state = model.githubRemoteRepositoryStates[productID]
+    return GitHubRepositoryAttentionPolicy.needsAttention(
+      error: model.githubRemoteRepositoryErrors[productID],
+      connectionStatus: state?.connection?.status,
+      relationship: state?.observation?.relationship ?? state?.connection?.latestRelationship,
+      publicationStatus: state?.publication?.status
+    )
+  }
+
+  private var productSetupDetail: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(productSetupDetailTitle)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(nil)
+      Text(productSetupDetailMessage)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(nil)
+        .fixedSize(horizontal: false, vertical: true)
+      if let activity = productSetupActivity {
+        Divider()
+          .padding(.vertical, 2)
+        HStack(alignment: .top, spacing: 7) {
+          Image(systemName: activity.kind.symbolName)
+            .foregroundStyle(.purple)
+            .frame(width: 14)
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Latest activity")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(.secondary)
+            Text(activity.text)
+              .font(.caption)
+              .lineLimit(nil)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .transition(.opacity)
+      }
+    }
+    .lineLimit(nil)
+    .padding(12)
+    .frame(width: 320, alignment: .leading)
+    .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private var productSetupActivity: CodexLiveActivity? {
+    guard let productID = model.selectedProductID else { return nil }
+    return model.repositoryKnowledgeActivities[productID]
+  }
+
+  private var productSetupDetailTitle: String {
+    switch model.repositoryKnowledgeRun?.status {
+    case .pendingAnalysis: "Waiting to continue setup"
+    case .analyzing: "Learning how the product works"
+    case .reviewing: "Checking the product understanding"
+    case .publishing: "Finishing product setup"
+    case .failed: "Product setup could not finish"
+    case .interrupted: "Product setup was interrupted"
+    case .stale: "Product setup is out of date"
+    case .completed, .none: "Product setup completed"
+    }
+  }
+
+  private var productSetupDetailMessage: String {
+    if let error = model.repositoryKnowledgeRun?.errorMessage, !error.isEmpty {
+      return error
+    }
+    return switch model.repositoryKnowledgeRun?.status {
+    case .pendingAnalysis:
+      "Setup continues when the Codex team connection is available."
+    case .analyzing:
+      "Spedito is reading the imported repository without running its code."
+    case .reviewing:
+      "Spedito is checking its understanding against the repository."
+    case .publishing:
+      "Spedito is saving the verified product information."
+    case .failed, .interrupted:
+      "Retry creates a new versioned setup attempt."
+    case .stale:
+      "The imported source changed. Retry uses its current accepted revision."
+    case .completed, .none:
+      "The imported product is ready."
+    }
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       List(selection: $selection) {
@@ -715,11 +1336,20 @@ private struct TeamSidebar: View {
                       .font(.headline)
                       .foregroundStyle(.primary)
                       .lineLimit(1)
-                    Text("Switch product")
-                      .font(.caption2)
-                      .foregroundStyle(.secondary)
+                    productSetupSubtitle
                   }
                   Spacer()
+                  if otherProductAttentionCount > 0 {
+                    Text(otherProductAttentionCount.formatted())
+                      .font(.caption2.monospacedDigit().weight(.bold))
+                      .foregroundStyle(.white)
+                      .padding(.horizontal, 7)
+                      .padding(.vertical, 2)
+                      .background(Color.accentColor, in: Capsule())
+                      .accessibilityLabel(
+                        "\(otherProductAttentionCount) ticket\(otherProductAttentionCount == 1 ? "" : "s") need your input in other products"
+                      )
+                  }
                   Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color(nsColor: .secondaryLabelColor))
@@ -732,11 +1362,32 @@ private struct TeamSidebar: View {
               Button {
                 showingProductContext = true
               } label: {
-                Label("Product settings", systemImage: "gearshape")
-                  .font(.caption)
+                Label {
+                  HStack(spacing: 6) {
+                    Text("Product settings")
+                    if githubRepositoryNeedsAttention {
+                      Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("GitHub needs attention")
+                    }
+                  }
+                } icon: {
+                  Image(systemName: "gearshape")
+                }
+                .font(.caption)
               }
               .buttonStyle(.plain)
               .foregroundStyle(.secondary)
+              if productSetupNeedsAttention {
+                Button {
+                  Task { await model.retryRepositoryKnowledgeAnalysis() }
+                } label: {
+                  Label("Retry product setup", systemImage: "arrow.clockwise")
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.purple)
+              }
             }
             .padding(.vertical, 4)
           }
@@ -746,7 +1397,7 @@ private struct TeamSidebar: View {
           Label("Backlog", systemImage: "list.bullet.rectangle")
             .tag(WorkspaceDestination.backlog)
           HStack {
-            Label("Sprint Board", systemImage: "rectangle.3.group")
+            Label("Sprint board", systemImage: "rectangle.3.group")
             Spacer()
             if sprintAttentionCount > 0 {
               Text(sprintAttentionCount.formatted())
@@ -760,7 +1411,9 @@ private struct TeamSidebar: View {
                 )
             }
           }
-            .tag(WorkspaceDestination.sprint)
+          .tag(WorkspaceDestination.sprint)
+          Label("App versions", systemImage: "macwindow")
+            .tag(WorkspaceDestination.app)
         }
 
         Section("Improve") {
@@ -784,7 +1437,7 @@ private struct TeamSidebar: View {
                 )
             }
           }
-            .tag(WorkspaceDestination.retrospectives)
+          .tag(WorkspaceDestination.retrospectives)
           Label("Reports", systemImage: "chart.xyaxis.line")
             .tag(WorkspaceDestination.reports)
         }
@@ -881,6 +1534,11 @@ private struct TeamSidebar: View {
     .sheet(isPresented: $showingProductContext) {
       ProductContextView(isPresented: $showingProductContext)
     }
+    .onChange(of: model.repositoryKnowledgeRun?.status) { _, status in
+      if status == .completed || status == nil {
+        showingProductSetupDetail = false
+      }
+    }
     .focusedSceneValue(
       \.workspaceCommandActions,
       WorkspaceCommandActions(perform: performWorkspaceCommand)
@@ -893,6 +1551,8 @@ private struct TeamSidebar: View {
       selection = .backlog
     case .sprintBoard:
       selection = .sprint
+    case .app:
+      selection = .app
     case .retrospectives:
       selection = .retrospectives
     case .reports:
@@ -909,6 +1569,371 @@ private struct TeamSidebar: View {
     case .teamSettings:
       showingProductContext = false
       showingTeamPrompts = true
+    }
+  }
+}
+
+private struct AppVersionsView: View {
+  @EnvironmentObject private var model: AppModel
+  @State private var selectedVersionID: UUID?
+  @State private var openingVersionID: UUID?
+  @State private var isStopping = false
+
+  private var appVersions: [AppVersion] {
+    model.appVersions
+  }
+
+  private var emptyStateDescription: String {
+    guard model.productRepository != nil else {
+      return "Approve a ticket with a runnable app, then open or revisit its versions here."
+    }
+    guard let run = model.repositoryKnowledgeRun else {
+      return
+        "The imported source has not been checked for a complete browser or macOS app launch recipe."
+    }
+    if run.purpose == .importedAppLaunch {
+      switch run.status {
+      case .pendingAnalysis, .analyzing, .reviewing, .publishing:
+        return
+          "The business analyst and tech lead are checking the imported source for a complete, safe launch recipe."
+      case .failed, .interrupted, .stale:
+        return
+          "The imported source launch check did not finish. Check it again, or approve a ticket with a runnable app."
+      case .completed:
+        return
+          "Spedito did not find and independently verify a complete browser or macOS app launch recipe in the imported source. Approve a ticket with a runnable app to add a version."
+      }
+    }
+    return
+      "Spedito did not find and independently verify a complete browser or macOS app launch recipe during import. Check the imported source again, or approve a ticket with a runnable app."
+  }
+
+  private var importedLaunchCheckButtonTitle: String {
+    guard let run = model.repositoryKnowledgeRun, run.purpose == .importedAppLaunch else {
+      return "Check imported source"
+    }
+    switch run.status {
+    case .failed, .interrupted, .stale, .completed:
+      return "Check imported source again"
+    default:
+      return "Checking imported source"
+    }
+  }
+
+  private var selectedVersion: AppVersion? {
+    appVersions.first { $0.id == selectedVersionID } ?? appVersions.first
+  }
+
+  private var activeVersion: AppVersion? {
+    appVersions.first { version in
+      guard let status = model.currentAppVersionSession(id: version.id)?.status else {
+        return false
+      }
+      return status == .preparing || status == .starting || status == .ready
+    }
+  }
+
+  private var actionIsRunning: Bool {
+    openingVersionID != nil || isStopping
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .center, spacing: 20) {
+        VStack(alignment: .leading, spacing: 4) {
+          Text("App versions")
+            .font(.largeTitle.bold())
+          Text("Open the imported source or any accepted app version.")
+            .foregroundStyle(.secondary)
+        }
+        Spacer()
+        if let selectedVersion {
+          VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 6) {
+              Button(action: openSelectedVersion) {
+                if openingVersionID == selectedVersion.id {
+                  ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 18, height: 18)
+                } else {
+                  Image(systemName: "play.fill")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 18, height: 18)
+                }
+              }
+              .buttonStyle(.bordered)
+              .tint(.green)
+              .disabled(actionIsRunning || selectedSessionIsOpening)
+              .accessibilityLabel(openActionTitle(for: selectedVersion))
+              .help(openActionHelp(for: selectedVersion))
+
+              if let activeVersion {
+                Button(role: .destructive, action: stopActiveVersion) {
+                  Image(systemName: "stop.fill")
+                    .font(.callout.weight(.semibold))
+                    .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(actionIsRunning)
+                .accessibilityLabel("Stop \(versionReference(for: activeVersion))")
+                .help("Stop this app version and keep it ready to reopen")
+              }
+            }
+            Text(versionReference(for: selectedVersion))
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+      }
+      .workspaceHeaderLayout()
+
+      Divider()
+
+      if appVersions.isEmpty, model.productRepository != nil {
+        ContentUnavailableView {
+          Label("Nothing to open yet", systemImage: "macwindow")
+        } description: {
+          Text(emptyStateDescription)
+        } actions: {
+          Button {
+            Task { await model.checkImportedAppLaunch() }
+          } label: {
+            HStack(spacing: 6) {
+              if model.isCheckingImportedAppLaunch {
+                ProgressView()
+                  .controlSize(.small)
+              } else {
+                Image(systemName: "sparkles")
+              }
+              Text(importedLaunchCheckButtonTitle)
+            }
+          }
+          .buttonStyle(.borderedProminent)
+          .tint(.purple)
+          .disabled(!model.canCheckImportedAppLaunch)
+          .help(
+            model.isCheckingImportedAppLaunch
+              ? "The business analyst and tech lead are checking the imported source"
+              : "Ask the business analyst and tech lead to identify and verify a launch recipe"
+          )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else if appVersions.isEmpty {
+        ContentUnavailableView(
+          "Nothing to open yet",
+          systemImage: "macwindow",
+          description: Text(emptyStateDescription)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        ScrollView {
+          LazyVStack(spacing: 6) {
+            ForEach(appVersions) { version in
+              Button {
+                selectedVersionID = version.id
+              } label: {
+                appVersionRow(
+                  version,
+                  isSelected: version.id == selectedVersionID
+                )
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          .padding(20)
+        }
+      }
+    }
+    .onAppear(perform: selectLatestVersionIfNeeded)
+    .onChange(of: appVersions.map(\.id)) { _, _ in
+      selectLatestVersionIfNeeded()
+    }
+  }
+
+  private var selectedSessionIsOpening: Bool {
+    guard
+      let selectedVersion,
+      let status = model.currentAppVersionSession(id: selectedVersion.id)?.status
+    else { return false }
+    return status == .preparing || status == .starting
+  }
+
+  private func appVersionRow(
+    _ version: AppVersion,
+    isSelected: Bool
+  ) -> some View {
+    let session = model.currentAppVersionSession(id: version.id)
+    let isLatest = version.id == appVersions.first?.id
+
+    return HStack(spacing: 12) {
+      Image(systemName: presentationSymbol(for: version))
+        .font(.title3)
+        .foregroundStyle(Color.accentColor)
+        .frame(width: 24)
+
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 7) {
+          Text(primaryDescription(for: version))
+            .font(.body.weight(.semibold))
+          if isLatest {
+            versionLabel("Latest", tint: .accentColor)
+          }
+          if case .imported = version {
+            versionLabel("Imported", tint: .secondary)
+          }
+          if let status = session?.status {
+            statusLabel(status)
+          }
+        }
+        Text(sourceDescription(for: version))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+
+      Spacer()
+
+      VStack(alignment: .trailing, spacing: 3) {
+        Text(version.acceptedAt.formatted(date: .abbreviated, time: .shortened))
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Text(shortRevision(for: version))
+          .font(.caption.monospaced())
+          .foregroundStyle(.tertiary)
+      }
+    }
+    .padding(14)
+    .background(
+      isSelected ? Color.accentColor.opacity(0.11) : .clear,
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 8)
+        .stroke(
+          isSelected ? Color.accentColor.opacity(0.28) : .clear,
+          lineWidth: 1
+        )
+    }
+    .contentShape(RoundedRectangle(cornerRadius: 8))
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+  }
+
+  @ViewBuilder
+  private func statusLabel(_ status: DemoSessionStatus) -> some View {
+    switch status {
+    case .preparing, .starting:
+      versionLabel("Opening…", tint: .orange)
+    case .ready:
+      versionLabel("Running", tint: .green)
+    case .failed:
+      versionLabel("Needs retry", tint: .orange)
+    case .stopped:
+      EmptyView()
+    }
+  }
+
+  private func versionLabel(_ title: String, tint: Color) -> some View {
+    Text(title)
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(tint)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 2)
+      .background(tint.opacity(0.1), in: Capsule())
+  }
+
+  private func presentationSymbol(for version: AppVersion) -> String {
+    switch version.specification.presentation.kind {
+    case .browser: "globe"
+    case .macApplication: "macwindow"
+    case .artifact, .commandOutput: "doc"
+    }
+  }
+
+  private func primaryDescription(for version: AppVersion) -> String {
+    switch version {
+    case .imported:
+      return "Imported source"
+    case .accepted(let launch):
+      guard
+        let item = model.workItems.first(where: {
+          $0.id == launch.candidate.workItemID
+        })
+      else {
+        return version.specification.title
+      }
+      return "\(item.key) · \(item.title)"
+    }
+  }
+
+  private func sourceDescription(for version: AppVersion) -> String {
+    "\(version.specification.title) · \(version.specification.presentation.kind.title)"
+  }
+
+  private func versionReference(for version: AppVersion) -> String {
+    switch version {
+    case .imported:
+      return "Imported · \(shortRevision(for: version))"
+    case .accepted(let launch):
+      guard
+        let item = model.workItems.first(where: {
+          $0.id == launch.candidate.workItemID
+        })
+      else {
+        return "accepted revision \(shortRevision(for: version))"
+      }
+      return "\(item.key) · \(shortRevision(for: version))"
+    }
+  }
+
+  private func shortRevision(for version: AppVersion) -> String {
+    String(version.revisionSHA.prefix(8))
+  }
+
+  private func openActionTitle(for version: AppVersion) -> String {
+    if openingVersionID == version.id || selectedSessionIsOpening {
+      return "Opening \(versionReference(for: version))"
+    }
+    switch model.currentAppVersionSession(id: version.id)?.status {
+    case .ready:
+      return "Show \(versionReference(for: version))"
+    case .failed:
+      return "Retry \(versionReference(for: version))"
+    default:
+      return "Open \(versionReference(for: version))"
+    }
+  }
+
+  private func openActionHelp(for version: AppVersion) -> String {
+    if activeVersion?.id != nil && activeVersion?.id != version.id {
+      return "Stop the running version and open \(versionReference(for: version))"
+    }
+    return openActionTitle(for: version)
+  }
+
+  private func selectLatestVersionIfNeeded() {
+    guard
+      selectedVersionID == nil || !appVersions.contains(where: { $0.id == selectedVersionID })
+    else { return }
+    selectedVersionID = appVersions.first?.id
+  }
+
+  private func openSelectedVersion() {
+    guard !actionIsRunning, let selectedVersion else { return }
+    openingVersionID = selectedVersion.id
+    Task {
+      _ = await model.openAppVersion(id: selectedVersion.id)
+      openingVersionID = nil
+    }
+  }
+
+  private func stopActiveVersion() {
+    guard !actionIsRunning, let activeVersion else { return }
+    isStopping = true
+    Task {
+      await model.stopAppVersion(id: activeVersion.id)
+      isStopping = false
     }
   }
 }
@@ -1008,8 +2033,7 @@ private struct ProductConversationView: View {
       if isStartingThread, let newest = active.first {
         selectedThreadID = newest.id
         isStartingThread = false
-      } else if
-        let selectedThreadID,
+      } else if let selectedThreadID,
         !threads.contains(where: { thread in
           thread.id == selectedThreadID
             && (showingArchived || !thread.isArchived)
@@ -1040,10 +2064,11 @@ private struct ProductConversationView: View {
           draft = ""
           chooseDefaultRecipient()
         } label: {
-          Label("New thread", systemImage: "square.and.pencil")
-            .labelStyle(.iconOnly)
+          Label("New chat", systemImage: "square.and.pencil")
         }
         .help("Start a new chat thread")
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
 
         if !archivedThreads.isEmpty {
           Button {
@@ -1063,18 +2088,7 @@ private struct ProductConversationView: View {
 
       Divider()
 
-      if activeThreads.isEmpty && (!showingArchived || archivedThreads.isEmpty) {
-        ContentUnavailableView(
-          archivedThreads.isEmpty ? "No chat threads" : "No active threads",
-          systemImage: "bubble.left.and.bubble.right",
-          description: Text(
-            archivedThreads.isEmpty
-              ? "Ask a team member a product question to begin."
-              : "Use the archive button above to show archived threads."
-          )
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else {
+      if !activeThreads.isEmpty || (showingArchived && !archivedThreads.isEmpty) {
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 3) {
             ForEach(activeThreads) { thread in
@@ -1099,7 +2113,7 @@ private struct ProductConversationView: View {
         }
       }
     }
-    .frame(maxHeight: .infinity)
+    .frame(maxHeight: .infinity, alignment: .top)
     .background(Color(nsColor: .controlBackgroundColor).opacity(0.45))
   }
 
@@ -1179,7 +2193,7 @@ private struct ProductConversationView: View {
         if selectedThread == nil {
           ConversationEmptyState(
             detail:
-              "Ask about tickets, Product knowledge, delivery history, retrospectives, or Git."
+              "Ask about tickets, product knowledge, delivery history, retrospectives, or Git."
           )
         }
       }
@@ -1210,8 +2224,7 @@ private struct ProductConversationView: View {
           model.cancelProductConversation(threadID: thread.id)
         }
       )
-    } else if
-      let thread = selectedThread,
+    } else if let thread = selectedThread,
       let error = model.conversationErrorsByThread[thread.id]
     {
       HStack(spacing: 8) {
@@ -1424,12 +2437,143 @@ private struct ProductConversationMessageRow: View {
   }
 }
 
+private struct CircularProgressRing: View {
+  let fraction: Double
+  let tint: Color
+  var size: CGFloat = 12
+  var lineWidth: CGFloat = 2.5
+
+  var body: some View {
+    ZStack {
+      Circle()
+        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: lineWidth)
+      Circle()
+        .trim(from: 0, to: min(1, max(0, fraction)))
+        .stroke(
+          tint,
+          style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+        )
+        .rotationEffect(.degrees(-90))
+    }
+    .frame(width: size, height: size)
+  }
+}
+
+struct CodexUsagePresentation {
+  static func availablePercentage(for window: CodexRateLimitWindow) -> Int {
+    Int(window.availablePercent.rounded())
+  }
+
+  static func windowTitle(minutes: Int) -> String {
+    if minutes.isMultiple(of: 1_440) {
+      let days = minutes / 1_440
+      return "\(days)-day window"
+    }
+    if minutes.isMultiple(of: 60) {
+      let hours = minutes / 60
+      return "\(hours)-hour window"
+    }
+    return "\(minutes)-minute window"
+  }
+
+  static func accessibilitySummary(for snapshot: CodexRateLimitsSnapshot) -> String? {
+    guard !snapshot.windows.isEmpty else { return nil }
+    return snapshot.windows.map {
+      "\(windowTitle(minutes: $0.windowDurationMinutes)), \(availablePercentage(for: $0)) percent available"
+    }.joined(separator: "; ")
+  }
+
+  static func resetDetail(
+    resetAt: Date,
+    now: Date,
+    isRefreshing: Bool,
+    calendar: Calendar = .current
+  ) -> String {
+    guard resetAt > now else {
+      return isRefreshing
+        ? "Reset reached · refreshing usage…"
+        : "Reset reached · usage may be out of date"
+    }
+    let minutesRemaining = max(1, Int(ceil(resetAt.timeIntervalSince(now) / 60)))
+    let relative: String
+    if minutesRemaining < 60 {
+      relative = "\(minutesRemaining)m"
+    } else if minutesRemaining < 1_440 {
+      let hours = minutesRemaining / 60
+      let minutes = minutesRemaining % 60
+      relative = minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+    } else {
+      let days = minutesRemaining / 1_440
+      let hours = (minutesRemaining % 1_440) / 60
+      relative = hours == 0 ? "\(days)d" : "\(days)d \(hours)h"
+    }
+
+    let absolute: String
+    if calendar.isDate(resetAt, inSameDayAs: now) {
+      absolute = "today at \(resetAt.formatted(date: .omitted, time: .shortened))"
+    } else if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now),
+      calendar.isDate(resetAt, inSameDayAs: tomorrow)
+    {
+      absolute = "tomorrow at \(resetAt.formatted(date: .omitted, time: .shortened))"
+    } else {
+      absolute = resetAt.formatted(
+        .dateTime
+          .weekday(.abbreviated)
+          .month(.abbreviated)
+          .day()
+          .hour()
+          .minute()
+      )
+    }
+    return "Resets \(absolute) · in \(relative)"
+  }
+
+}
+
+private struct CodexUsageWindowRow: View {
+  let window: CodexRateLimitWindow
+  let now: Date
+  let isRefreshing: Bool
+  let limitReached: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack {
+        Text(CodexUsagePresentation.windowTitle(minutes: window.windowDurationMinutes))
+          .font(.caption.weight(.medium))
+        Spacer()
+        Text("\(CodexUsagePresentation.availablePercentage(for: window))% available")
+          .font(.caption.monospacedDigit().weight(.semibold))
+      }
+      ProgressView(value: window.availablePercent, total: 100)
+        .tint(limitReached ? .red : .accentColor)
+      if let resetAt = window.resetsAt {
+        Text(
+          CodexUsagePresentation.resetDetail(
+            resetAt: resetAt,
+            now: now,
+            isRefreshing: isRefreshing
+          )
+        )
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+      } else if isRefreshing {
+        Text("Refreshing usage…")
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+      }
+    }
+  }
+}
+
 private struct SidebarCodexStatus: View {
   @EnvironmentObject private var model: AppModel
   @State private var showingConnectionPopover = false
+  @State private var showingUsagePopover = false
 
   var body: some View {
     Button {
+      showingUsagePopover = false
       showingConnectionPopover.toggle()
     } label: {
       statusLabel
@@ -1459,6 +2603,9 @@ private struct SidebarCodexStatus: View {
           .lineLimit(1)
       }
       Spacer(minLength: 0)
+      if model.codexConnectionState.isConnected {
+        codexUsageIndicator
+      }
     }
     .padding(.horizontal, 14)
     .frame(maxWidth: .infinity, minHeight: 42, maxHeight: 42)
@@ -1579,6 +2726,87 @@ private struct SidebarCodexStatus: View {
     .frame(width: 330)
   }
 
+  @ViewBuilder
+  private var codexUsageIndicator: some View {
+    Group {
+      if let snapshot = model.codexRateLimits,
+        let availablePercent = snapshot.windows.map(\.availablePercent).min()
+      {
+        CircularProgressRing(
+          fraction: availablePercent / 100,
+          tint: snapshot.reachedLimitType == nil ? .accentColor : .red
+        )
+      } else if model.isRefreshingCodexUsage {
+        ProgressView()
+          .controlSize(.mini)
+      } else {
+        Image(systemName: "circle.dashed")
+          .font(.system(size: 12))
+          .foregroundStyle(.tertiary)
+      }
+    }
+    .frame(width: 18, height: 18)
+    .contentShape(Rectangle())
+    .help("Show Codex usage")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Codex usage")
+    .accessibilityValue(
+      model.codexRateLimits.flatMap(CodexUsagePresentation.accessibilitySummary(for:))
+        ?? (model.isRefreshingCodexUsage ? "Loading" : "Unavailable")
+    )
+    .onHover { hovering in
+      showingUsagePopover = hovering
+    }
+    .popover(isPresented: $showingUsagePopover, arrowEdge: .bottom) {
+      codexUsageDetailsPopover
+    }
+  }
+
+  private var codexUsageDetailsPopover: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if let snapshot = model.codexRateLimits, !snapshot.windows.isEmpty {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+          VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(snapshot.windows.enumerated()), id: \.element.id) { index, window in
+              if index > 0 {
+                Divider()
+              }
+              CodexUsageWindowRow(
+                window: window,
+                now: context.date,
+                isRefreshing: model.isRefreshingCodexUsage,
+                limitReached: snapshot.reachedLimitType != nil
+              )
+            }
+          }
+        }
+        if model.isCodexUsageStale {
+          Text(
+            model.codexUsageUpdatedAt.map {
+              "Usage may be out of date · last updated \($0.formatted(date: .omitted, time: .shortened))"
+            } ?? "Usage may be out of date"
+          )
+          .font(.caption2)
+          .foregroundStyle(.orange)
+        }
+      } else if model.isRefreshingCodexUsage {
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Loading usage…")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      } else {
+        Text("Usage details are not available for this Codex account.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+    .padding(14)
+    .frame(width: 290)
+  }
+
   private func chooseCodexInstallation() {
     let panel = NSOpenPanel()
     panel.title = "Add Codex installation"
@@ -1627,6 +2855,26 @@ private struct ProductLibraryView: View {
       .sorted {
         $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
       }
+  }
+
+  private var visibleAttentionProducts: [Product] {
+    visibleProducts.filter {
+      $0.id != model.selectedProductID
+        && model.ticketAttentionCount(for: $0.id) > 0
+    }
+  }
+
+  private var visibleOtherProducts: [Product] {
+    visibleProducts.filter {
+      $0.id == model.selectedProductID
+        || model.ticketAttentionCount(for: $0.id) == 0
+    }
+  }
+
+  private var visibleTicketAttentionCount: Int {
+    visibleAttentionProducts.reduce(0) {
+      $0 + model.ticketAttentionCount(for: $1.id)
+    }
   }
 
   private var selectedProduct: Product? {
@@ -1692,7 +2940,7 @@ private struct ProductLibraryView: View {
       Divider()
 
       ScrollView {
-        LazyVStack(spacing: 10) {
+        LazyVStack(spacing: 4) {
           if visibleProducts.isEmpty {
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
               ContentUnavailableView(
@@ -1706,20 +2954,44 @@ private struct ProductLibraryView: View {
                 .frame(maxWidth: .infinity, minHeight: 220)
             }
           } else {
-            ForEach(visibleProducts) { product in
-              ProductLibraryRow(
-                product: product,
-                isSelected: selectedProductID == product.id
-              )
-              .onTapGesture {
-                selectedProductID = product.id
+            if !visibleAttentionProducts.isEmpty {
+              HStack(spacing: 7) {
+                Text("Needs your input")
+                  .font(.headline)
+                Text(visibleTicketAttentionCount.formatted())
+                  .font(.caption2.monospacedDigit().weight(.bold))
+                  .foregroundStyle(.white)
+                  .padding(.horizontal, 7)
+                  .padding(.vertical, 2)
+                  .background(.orange, in: Capsule())
+                  .accessibilityLabel(
+                    "\(visibleTicketAttentionCount) ticket\(visibleTicketAttentionCount == 1 ? "" : "s") need your input"
+                  )
+                Spacer()
               }
-              .simultaneousGesture(
-                TapGesture(count: 2).onEnded {
-                  selectedProductID = product.id
-                  openSelectedProduct()
+              .padding(.horizontal, 6)
+              .padding(.bottom, 2)
+
+              ForEach(visibleAttentionProducts) { product in
+                productRow(product)
+              }
+            }
+
+            if !visibleOtherProducts.isEmpty {
+              if !visibleAttentionProducts.isEmpty {
+                HStack {
+                  Text("Other products")
+                    .font(.headline)
+                  Spacer()
                 }
-              )
+                .padding(.horizontal, 6)
+                .padding(.top, 10)
+                .padding(.bottom, 2)
+              }
+
+              ForEach(visibleOtherProducts) { product in
+                productRow(product)
+              }
             }
           }
 
@@ -1732,7 +3004,7 @@ private struct ProductLibraryView: View {
                 .foregroundStyle(.secondary)
               Spacer()
             }
-            .padding(.top, visibleProducts.isEmpty ? 4 : 14)
+            .padding(.top, visibleProducts.isEmpty ? 4 : 10)
 
             ForEach(visibleArchivedProducts) { product in
               ArchivedProductLibraryRow(
@@ -1777,11 +3049,37 @@ private struct ProductLibraryView: View {
     }
   }
 
+  private func productRow(_ product: Product) -> some View {
+    ProductLibraryRow(
+      product: product,
+      isSelected: selectedProductID == product.id,
+      attentionCount:
+        product.id == model.selectedProductID
+        ? 0
+        : model.ticketAttentionCount(for: product.id)
+    )
+    .onTapGesture {
+      selectedProductID = product.id
+    }
+    .simultaneousGesture(
+      TapGesture(count: 2).onEnded {
+        selectedProductID = product.id
+        openSelectedProduct()
+      }
+    )
+  }
+
   private func openSelectedProduct() {
     guard let selectedProduct, !isOpening, restoringProductID == nil else { return }
     isOpening = true
     Task {
-      await model.selectProduct(selectedProduct)
+      if selectedProduct.id == model.selectedProductID {
+        await model.reloadSelectedProduct()
+      } else if model.ticketAttentionCount(for: selectedProduct.id) > 0 {
+        await model.openTicketAttentions(for: selectedProduct)
+      } else {
+        await model.selectProduct(selectedProduct)
+      }
       isOpening = false
       onOpenProduct()
       isPresented = false
@@ -1802,8 +3100,8 @@ private struct ProductLibraryView: View {
   }
 }
 
-private extension ProductColor {
-  var displayColor: Color {
+extension ProductColor {
+  fileprivate var displayColor: Color {
     switch self {
     case .accent: .accentColor
     case .blue: .blue
@@ -1816,8 +3114,8 @@ private extension ProductColor {
   }
 }
 
-private extension EpicColor {
-  var displayColor: Color {
+extension EpicColor {
+  fileprivate var displayColor: Color {
     switch self {
     case .blue: .blue
     case .teal: .teal
@@ -1849,33 +3147,44 @@ private struct ProductIcon: View {
 private struct ProductLibraryRow: View {
   let product: Product
   let isSelected: Bool
+  let attentionCount: Int
 
   var body: some View {
-    HStack(spacing: 12) {
-      ProductIcon(product: product, size: 36)
+    HStack(spacing: 10) {
+      ProductIcon(product: product, size: 28)
 
       Text(product.name)
         .font(.body.weight(.semibold))
 
-      Spacer(minLength: 16)
+      Spacer(minLength: 12)
+      if attentionCount > 0 {
+        Label(
+          attentionCount == 1
+            ? "1 needs your input"
+            : "\(attentionCount) need your input",
+          systemImage: "hand.raised.fill"
+        )
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.orange)
+      }
 
       if isSelected {
         Image(systemName: "checkmark")
           .font(.body.weight(.semibold))
           .foregroundStyle(Color.accentColor)
-          .frame(width: 20)
+          .frame(width: 18)
           .accessibilityHidden(true)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
     .background(
       isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
-      in: RoundedRectangle(cornerRadius: 9)
+      in: RoundedRectangle(cornerRadius: 7)
     )
     .overlay {
-      RoundedRectangle(cornerRadius: 9)
+      RoundedRectangle(cornerRadius: 7)
         .stroke(
           isSelected
             ? Color.accentColor.opacity(0.65)
@@ -1895,24 +3204,24 @@ private struct ArchivedProductLibraryRow: View {
   let onRestore: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
+    HStack(spacing: 10) {
       Image(systemName: "archivebox.fill")
         .font(.body)
         .foregroundStyle(.secondary)
-        .frame(width: 36, height: 36)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .frame(width: 28, height: 28)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
 
       Text(product.name)
         .font(.body.weight(.semibold))
 
-      Spacer(minLength: 16)
+      Spacer(minLength: 12)
 
       Button(isRestoring ? "Restoring…" : "Restore and open", action: onRestore)
         .disabled(isDisabled)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
   }
 }
 
@@ -1920,55 +3229,368 @@ private struct NewProductView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   let onCreated: () -> Void
-  @State private var name = ""
-  @State private var isCreating = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
       VStack(alignment: .leading, spacing: 5) {
         Text("New product")
           .font(.title2.bold())
-        Text("Choose a product name. You can change it later.")
+        Text("Create a blank product or start from an existing public or private repository.")
           .foregroundStyle(.secondary)
       }
 
+      ProductCreationForm(
+        blankActionTitle: "Create product",
+        importActionTitle: "Create from repository",
+        onCreate: model.createProductAndSelect,
+        onCreated: {
+          isPresented = false
+          onCreated()
+        }
+      ) { isCreating in
+        Button("Cancel") { isPresented = false }
+          .keyboardShortcut(.cancelAction)
+          .disabled(isCreating)
+      }
+    }
+    .padding(24)
+    .frame(width: 520)
+  }
+}
+
+private enum ProductCreationMode: String, CaseIterable, Identifiable {
+  case blank
+  case importRepository
+
+  var id: String { rawValue }
+}
+
+private struct ProductCreationForm<SecondaryActions: View>: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.openURL) private var openURL
+  @Environment(\.scenePhase) private var scenePhase
+  let blankActionTitle: String
+  let importActionTitle: String
+  let actionControlSize: ControlSize
+  let onCreate: (ProductCreationRequest) async -> Bool
+  let onCreated: () -> Void
+  @ViewBuilder let secondaryActions: (Bool) -> SecondaryActions
+
+  @State private var mode = ProductCreationMode.blank
+  @State private var name = ""
+  @State private var repositoryLink = ""
+  @State private var generatedName: String?
+  @State private var isCreating = false
+  @State private var selectedGitHubRepositoryID: Int64?
+  @State private var awaitingGitHubRepositoryAccess = false
+  @State private var creationError: String?
+
+  init(
+    blankActionTitle: String,
+    importActionTitle: String,
+    actionControlSize: ControlSize = .regular,
+    onCreate: @escaping (ProductCreationRequest) async -> Bool,
+    onCreated: @escaping () -> Void = {},
+    @ViewBuilder secondaryActions: @escaping (Bool) -> SecondaryActions
+  ) {
+    self.blankActionTitle = blankActionTitle
+    self.importActionTitle = importActionTitle
+    self.actionControlSize = actionControlSize
+    self.onCreate = onCreate
+    self.onCreated = onCreated
+    self.secondaryActions = secondaryActions
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Picker("Start with", selection: $mode) {
+        Text("Blank product").tag(ProductCreationMode.blank)
+        Text("Git repository").tag(ProductCreationMode.importRepository)
+      }
+      .pickerStyle(.segmented)
+      .disabled(isCreating)
       ProductNameEntryField(
         text: $name,
         isDisabled: isCreating,
         onSubmit: createProduct
       )
 
-      HStack {
+      if mode == .importRepository {
+        githubRepositoryImportPicker
+        RepositoryLinkEntryField(text: $repositoryLink, isDisabled: isCreating)
+        Text(
+          "Spedito preserves existing Git history and the default branch. If the repository is empty, Spedito initializes it with the new Product. Spedito uses your internet connection to access the repository, and Codex sends sanitized repository context to your selected model provider. The analysis agent itself cannot run repository code, browse the web, or contact other services."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if let creationError {
+        Label(creationError, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.orange)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      HStack(spacing: 10) {
+        secondaryActions(isCreating)
         Spacer()
-        Button("Cancel") { isPresented = false }
-          .keyboardShortcut(.cancelAction)
-          .disabled(isCreating)
-        Button(isCreating ? "Creating…" : "Create and open") {
+        Button(actionTitle) {
           createProduct()
         }
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.defaultAction)
-        .disabled(trimmedName.isEmpty || isCreating)
+        .disabled(!canCreate || isCreating)
+      }
+      .controlSize(actionControlSize)
+    }
+    .onChange(of: repositoryLink) { _, _ in
+      prefillSuggestedName()
+    }
+    .onChange(of: mode) { _, _ in
+      creationError = nil
+    }
+    .task(id: mode) {
+      guard mode == .importRepository else { return }
+      await model.refreshGitHubImportRepositories()
+    }
+    .onChange(of: scenePhase) { _, phase in
+      guard phase == .active, awaitingGitHubRepositoryAccess else { return }
+      awaitingGitHubRepositoryAccess = false
+      Task { await model.refreshGitHubImportRepositories() }
+    }
+    .sheet(isPresented: githubImportDevicePromptPresentation) {
+      if let prompt = model.githubImportDeviceAuthorizationPrompt {
+        GitHubDeviceAuthorizationSheet(
+          prompt: prompt,
+          onCancel: {
+            Task { await model.cancelGitHubImportAuthorization() }
+          }
+        )
       }
     }
-    .padding(24)
-    .frame(width: 480)
+  }
+
+  @ViewBuilder
+  private var githubRepositoryImportPicker: some View {
+    let catalog = model.githubImportRepositoryCatalog
+    let choices = catalog.choices
+    VStack(alignment: .leading, spacing: 7) {
+      HStack {
+        Text("GitHub repository")
+          .font(.subheadline.weight(.semibold))
+        Spacer()
+        Button("Refresh list") {
+          Task { await model.refreshGitHubImportRepositories() }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(model.isLoadingGitHubImportRepositories || isCreating)
+      }
+      if model.isLoadingGitHubImportRepositories {
+        ProgressView("Loading repositories...")
+          .controlSize(.small)
+      } else if !choices.isEmpty {
+        Picker("GitHub repository", selection: $selectedGitHubRepositoryID) {
+          Text("Choose a repository").tag(Int64?.none)
+          ForEach(choices) { choice in
+            Text(
+              choice.repository.fullName
+                + (choice.repository.isPrivate ? " · Private" : "")
+            )
+            .tag(Optional(choice.repository.id))
+          }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .disabled(isCreating)
+        .onChange(of: selectedGitHubRepositoryID) { _, repositoryID in
+          guard
+            let repositoryID,
+            let repository = choices.first(where: { $0.repository.id == repositoryID })?
+              .repository
+          else { return }
+          repositoryLink = repository.canonicalHTTPSURL.absoluteString
+          prefillSuggestedName()
+        }
+        Text(
+          "Choose a repository available to the Spedito GitHub App. To add another repository, manage access on GitHub; Spedito refreshes this list when you return."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        HStack {
+          githubRepositoryAccessControl
+            .buttonStyle(.bordered)
+          Button("Add GitHub account") {
+            Task { await model.connectGitHubForImport() }
+          }
+          .buttonStyle(.bordered)
+        }
+        .controlSize(.small)
+        .disabled(isCreating)
+      } else {
+        Text(
+          model.githubImportRepositoryError
+            ?? "No repositories are available through a connected GitHub account. You can still paste a public repository link."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        HStack {
+          if catalog.installations.isEmpty {
+            Button("Connect GitHub") {
+              Task { await model.connectGitHubForImport() }
+            }
+            .buttonStyle(.borderedProminent)
+            githubRepositoryAccessControl
+              .buttonStyle(.bordered)
+          } else {
+            githubRepositoryAccessControl
+              .buttonStyle(.borderedProminent)
+            Button("Add GitHub account") {
+              Task { await model.connectGitHubForImport() }
+            }
+            .buttonStyle(.bordered)
+          }
+        }
+        .disabled(isCreating)
+      }
+    }
+  }
+
+  private var githubImportDevicePromptPresentation: Binding<Bool> {
+    Binding(
+      get: { model.githubImportDeviceAuthorizationPrompt != nil },
+      set: { presented in
+        if !presented, model.githubImportDeviceAuthorizationPrompt != nil {
+          Task { await model.cancelGitHubImportAuthorization() }
+        }
+      }
+    )
+  }
+
+  private var githubRepositoryAccessDestinations:
+    [GitHubRepositoryImportAccessDestination]
+  {
+    GitHubRepositoryImportAccessPresentation.resolve(
+      installations: model.githubImportRepositoryCatalog.installations,
+      appSlug: GitHubConfiguration.current().appSlug
+    )
+  }
+
+  @ViewBuilder
+  private var githubRepositoryAccessControl: some View {
+    if githubRepositoryAccessDestinations.count == 1,
+      let destination = githubRepositoryAccessDestinations.first
+    {
+      Button(destination.title) {
+        openGitHubRepositoryAccess(destination)
+      }
+    } else if !githubRepositoryAccessDestinations.isEmpty {
+      Menu("Manage repository access") {
+        ForEach(githubRepositoryAccessDestinations, id: \.url) { destination in
+          Button(destination.title) {
+            openGitHubRepositoryAccess(destination)
+          }
+        }
+      }
+    }
+  }
+
+  private func openGitHubRepositoryAccess(
+    _ destination: GitHubRepositoryImportAccessDestination
+  ) {
+    awaitingGitHubRepositoryAccess = true
+    openURL(destination.url)
+  }
+
+  private var publicRepositoryURL: PublicGitRepositoryURL? {
+    try? PublicGitRepositoryURL(repositoryLink)
   }
 
   private var trimmedName: String {
     name.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  private var canCreate: Bool {
+    guard !trimmedName.isEmpty else { return false }
+    return mode == .blank
+      || selectedGitHubRepositoryID != nil
+      || publicRepositoryURL != nil
+  }
+
+  private var actionTitle: String {
+    if isCreating {
+      return mode == .blank ? "Creating…" : "Creating product from repository…"
+    }
+    return mode == .blank ? blankActionTitle : importActionTitle
+  }
+
+  private func prefillSuggestedName() {
+    guard let publicRepositoryURL else { return }
+    if trimmedName.isEmpty || name == generatedName {
+      name = publicRepositoryURL.suggestedProductName
+      generatedName = name
+    }
+  }
+
   private func createProduct() {
-    guard !trimmedName.isEmpty, !isCreating else { return }
+    guard canCreate, !isCreating else { return }
+    let request: ProductCreationRequest
+    switch mode {
+    case .blank:
+      request = .blank(name: trimmedName)
+    case .importRepository:
+      if let selectedGitHubRepositoryID {
+        request = .importGitHubRepository(
+          name: trimmedName,
+          repositoryID: selectedGitHubRepositoryID
+        )
+      } else {
+        guard let publicRepositoryURL else { return }
+        request = .importRepository(name: trimmedName, source: publicRepositoryURL)
+      }
+    }
+    creationError = nil
     isCreating = true
     Task {
-      let created = await model.createProductAndSelect(name: trimmedName)
+      let created = await onCreate(request)
       isCreating = false
       if created {
-        isPresented = false
         onCreated()
+      } else {
+        creationError =
+          model.productCreationError
+          ?? "Spedito couldn't create the Product. Review the details and try again."
       }
+    }
+  }
+}
+
+private struct RepositoryLinkEntryField: View {
+  @Binding var text: String
+  let isDisabled: Bool
+  @FocusState private var isFocused: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Text("Repository link")
+        .font(.subheadline.weight(.semibold))
+      TextField("Repository link", text: $text, prompt: Text("https://github.com/team/product.git"))
+        .textFieldStyle(.plain)
+        .padding(.horizontal, 11)
+        .frame(height: 40)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+          RoundedRectangle(cornerRadius: 8)
+            .stroke(
+              isFocused ? Color.accentColor : Color(nsColor: .separatorColor).opacity(0.7),
+              lineWidth: isFocused ? 2 : 1
+            )
+        }
+        .focused($isFocused)
+        .disabled(isDisabled)
     }
   }
 }
@@ -2044,6 +3666,14 @@ private struct ProductContextView: View {
           )
 
           Divider()
+          if let product = model.selectedProduct {
+            GitHubRepositorySettingsSection(
+              product: product,
+              importedRepository: model.productRepository
+            )
+          }
+
+          Divider()
 
           VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
@@ -2051,7 +3681,7 @@ private struct ProductContextView: View {
                 Text("Saved agent access")
                   .font(.headline)
                 Text(
-                  "Equivalent or narrower capability requests are allowed automatically for this product and recorded in the ticket Work log. Exact commands remain exact."
+                  "Equivalent or narrower capability requests are allowed automatically for this product and recorded in the ticket work log. Exact commands remain exact."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -2092,9 +3722,11 @@ private struct ProductContextView: View {
                       )
                       .textSelection(.enabled)
                       .fixedSize(horizontal: false, vertical: true)
-                    Text("Updated \(group.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                      .font(.caption2)
-                      .foregroundStyle(.tertiary)
+                    Text(
+                      "Updated \(group.updatedAt.formatted(date: .abbreviated, time: .shortened))"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                   }
                   Spacer(minLength: 12)
                   Button("Revoke", role: .destructive) {
@@ -2118,7 +3750,7 @@ private struct ProductContextView: View {
             Text("Archive product")
               .font(.headline)
             Text(
-              "Remove this product from active navigation while preserving its Backlog, Work logs, Product knowledge, source workspace, and delivery history."
+              "Remove this product from active navigation while preserving its backlog, work logs, product knowledge, source workspace, and delivery history."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -2170,7 +3802,7 @@ private struct ProductContextView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
-        "Future matching requests will need your approval again. Existing Work log history is preserved."
+        "Future matching requests will need your approval again. Existing work log history is preserved."
       )
     }
     .confirmationDialog(
@@ -2184,7 +3816,7 @@ private struct ProductContextView: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
-        "Active delivery will be safely suspended. Nothing is deleted, and you can restore the product later from Products."
+        "Active delivery will be safely suspended. Nothing is deleted, and you can restore the product later from products."
       )
     }
   }
@@ -2197,6 +3829,984 @@ private struct ProductContextView: View {
       isArchiving = false
       if archived {
         isPresented = false
+      }
+    }
+  }
+}
+
+private struct GitHubRepositorySettingsSection: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.openURL) private var openURL
+  @Environment(\.scenePhase) private var scenePhase
+  let product: Product
+  let importedRepository: ProductRepository?
+  @State private var showingRepositoryPicker = false
+  @State private var showingIncomingReview = false
+  @State private var showingDisconnectConfirmation = false
+  @State private var showingSignOutConfirmation = false
+  @State private var awaitingGitHubInstallation = false
+
+  private var state: GitHubRemoteRepositoryState? {
+    model.githubRemoteRepositoryStates[product.id]
+  }
+
+  private var isBusy: Bool {
+    model.githubRemoteRepositoryBusyProductIDs.contains(product.id)
+  }
+
+  private var hasActiveDelivery: Bool {
+    model.sprintPlan?.sprint.productID == product.id
+      && model.sprintPlan?.sprint.state.isInProgress == true
+  }
+
+  private var isSettingUpGitHubConnection: Bool {
+    guard let status = state?.connection?.status else { return false }
+    return status == .selectingRepository || status == .needsInstallation
+  }
+
+  private var productConnectionActionTitle: String {
+    isSettingUpGitHubConnection ? "Cancel setup" : "Disconnect this Product"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .top, spacing: 16) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("GitHub repository")
+            .font(.headline)
+          Text("Link this Product to one repository for pull requests and incoming changes.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 12)
+        if isBusy {
+          ProgressView()
+            .controlSize(.small)
+        }
+      }
+
+      if let error = model.githubRemoteRepositoryErrors[product.id] {
+        Label(error, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.orange)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if let state {
+        repositoryContent(state)
+      } else {
+        ProgressView("Loading GitHub repository status...")
+          .controlSize(.small)
+      }
+    }
+    .sheet(isPresented: devicePromptPresentation) {
+      if let prompt = model.githubDeviceAuthorizationPrompts[product.id] {
+        GitHubDeviceAuthorizationSheet(
+          prompt: prompt,
+          onCancel: {
+            Task { await model.cancelGitHubConnection(productID: product.id) }
+          }
+        )
+      }
+    }
+    .sheet(isPresented: $showingRepositoryPicker) {
+      GitHubRepositoryPickerSheet(
+        productID: product.id,
+        onClose: { showingRepositoryPicker = false }
+      )
+      .environmentObject(model)
+    }
+    .sheet(isPresented: $showingIncomingReview) {
+      if let sync = state?.safeSync, sync.status == .awaitingConfirmation {
+        IncomingRepositoryReviewSheet(
+          sync: sync,
+          onAccept: {
+            showingIncomingReview = false
+            Task {
+              await model.acceptIncomingRepositoryChange(
+                productID: product.id,
+                syncID: sync.id
+              )
+            }
+          },
+          onReject: {
+            showingIncomingReview = false
+            Task {
+              await model.rejectIncomingRepositoryChange(
+                productID: product.id,
+                syncID: sync.id
+              )
+            }
+          }
+        )
+      }
+    }
+    .confirmationDialog(
+      isSettingUpGitHubConnection
+        ? "Cancel GitHub setup?"
+        : "Disconnect this Product from GitHub?",
+      isPresented: $showingDisconnectConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button(productConnectionActionTitle, role: .destructive) {
+        Task {
+          if isSettingUpGitHubConnection {
+            await model.cancelGitHubConnection(productID: product.id)
+          } else {
+            await model.disconnectGitHub(productID: product.id)
+          }
+        }
+      }
+      Button("Keep connection", role: .cancel) {}
+    } message: {
+      Text(
+        isSettingUpGitHubConnection
+          ? "The selected GitHub repository will not be changed. Your signed-in GitHub account remains available to other Products."
+          : "Local work and GitHub history are preserved. Your signed-in GitHub account remains available to other Products."
+      )
+    }
+    .confirmationDialog(
+      "Sign out of GitHub?",
+      isPresented: $showingSignOutConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Sign out", role: .destructive) {
+        guard let accountID = state?.connection?.accountID else { return }
+        Task {
+          await model.signOutGitHub(accountID: accountID, productID: product.id)
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        "This removes the GitHub account from Spedito. Every Product using it will need authorization again. Local work and GitHub repositories are not changed."
+      )
+    }
+    .onChange(of: scenePhase) { _, phase in
+      guard phase == .active, awaitingGitHubInstallation else { return }
+      awaitingGitHubInstallation = false
+      Task { await model.refreshGitHubRepositories(productID: product.id) }
+    }
+  }
+
+  private var devicePromptPresentation: Binding<Bool> {
+    Binding(
+      get: { model.githubDeviceAuthorizationPrompts[product.id] != nil },
+      set: { presented in
+        if !presented, model.githubDeviceAuthorizationPrompts[product.id] != nil {
+          Task { await model.cancelGitHubConnection(productID: product.id) }
+        }
+      }
+    )
+  }
+
+  @ViewBuilder
+  private func repositoryContent(_ state: GitHubRemoteRepositoryState) -> some View {
+    if !state.isConfigured {
+      Text("This Spedito build is not configured for GitHub.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    } else if let connection = state.connection {
+      switch connection.status {
+      case .selectingRepository:
+        repositorySelectionContent(state, connection: connection)
+      case .initializingRemote:
+        repositoryIdentity(connection)
+        ProgressView("Initializing GitHub repository...")
+          .controlSize(.small)
+      case .connected:
+        connectedContent(state, connection: connection)
+      case .needsTargetReview:
+        targetReviewContent(connection)
+      case .needsAuthorization:
+        disconnectedContent(actionTitle: connectionActionTitle)
+      case .needsInstallation:
+        installationContent(connection)
+      case .unavailable:
+        repositoryIdentity(connection)
+        Text(state.errorMessage ?? "This GitHub repository is unavailable.")
+          .font(.callout)
+          .foregroundStyle(.secondary)
+        connectionManagementButtons(connection)
+      case .disconnected:
+        disconnectedContent(actionTitle: connectionActionTitle)
+      }
+    } else {
+      disconnectedContent(actionTitle: connectionActionTitle)
+    }
+  }
+
+  @ViewBuilder
+  private func repositorySelectionContent(
+    _ state: GitHubRemoteRepositoryState,
+    connection: RemoteRepositoryConnection
+  ) -> some View {
+    let presentation = GitHubRepositorySetupPresentation.resolve(
+      repositoryID: connection.repositoryID,
+      eligibility: state.selectedEligibility
+    )
+    repositoryIdentity(connection)
+    switch presentation.step {
+    case .checkingRepository:
+      ProgressView("Verifying that this repository is empty...")
+        .controlSize(.small)
+    case .reviewAndConnect:
+      Text("Repository verified. Review what Spedito will publish, then finish setup.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    case .chooseAnotherRepository:
+      if case .ineligible(let message) = state.selectedEligibility {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+          .font(.callout)
+          .foregroundStyle(.orange)
+      }
+    case .chooseRepository:
+      Text("Next: choose an empty GitHub repository.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    case .verifyRepository:
+      Text(
+        "Next: verify that this repository is empty, review what Spedito will publish, and finish setup."
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+    }
+    HStack(spacing: 8) {
+      if let actionTitle = presentation.actionTitle {
+        Button(actionTitle) {
+          showingRepositoryPicker = true
+        }
+        .buttonStyle(.borderedProminent)
+      }
+      connectionManagementButtons(connection)
+    }
+  }
+
+  private var connectionActionTitle: String {
+    importedRepository == nil ? "Set up GitHub repository" : "Connect GitHub"
+  }
+
+  @ViewBuilder
+  private func disconnectedContent(actionTitle: String) -> some View {
+    if let importedRepository {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Imported source")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
+        Text(importedRepository.originURL.absoluteString)
+          .font(.callout)
+          .textSelection(.enabled)
+        Text("Default branch: \(importedRepository.sourceDefaultBranch)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    } else {
+      Text(
+        "Create an empty repository on GitHub, then connect it here. Spedito sends the bootstrap root once and publishes every later change through a pull request."
+      )
+      .font(.callout)
+      .foregroundStyle(.secondary)
+    }
+    Button(actionTitle) {
+      connectGitHub()
+    }
+    .buttonStyle(.borderedProminent)
+    .disabled(isBusy)
+  }
+
+  @ViewBuilder
+  private func installationContent(_ connection: RemoteRepositoryConnection) -> some View {
+    repositoryIdentity(connection)
+    Text(
+      "GitHub requires one repository-access approval to finish this connection. Spedito checks the imported repository automatically when you return."
+    )
+    .font(.callout)
+    .foregroundStyle(.secondary)
+    HStack {
+      Button("Continue on GitHub") {
+        openGitHubInstallation(for: connection)
+      }
+      .buttonStyle(.borderedProminent)
+      Button("Check again") {
+        Task { await model.refreshGitHubRepositories(productID: product.id) }
+      }
+      .buttonStyle(.bordered)
+      .disabled(isBusy)
+    }
+    connectionManagementButtons(connection)
+  }
+
+  @ViewBuilder
+  private func targetReviewContent(_ connection: RemoteRepositoryConnection) -> some View {
+    Text("GitHub changed the repository target.")
+      .font(.callout.weight(.semibold))
+    if let fullName = connection.pendingFullName {
+      Text(fullName)
+        .font(.callout)
+    }
+    if let url = connection.pendingCanonicalHTTPSURL {
+      Text(url.absoluteString)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+    }
+    if let branch = connection.pendingDefaultBranch {
+      Text("Default branch: \(branch)")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+    HStack {
+      Button("Use this repository") {
+        guard let observedAt = connection.pendingObservedAt else { return }
+        Task {
+          await model.confirmRemoteRepositoryTarget(
+            productID: product.id,
+            expectedVersion: connection.version,
+            pendingObservedAt: observedAt
+          )
+        }
+      }
+      .buttonStyle(.borderedProminent)
+      Button("Disconnect", role: .destructive) {
+        showingDisconnectConfirmation = true
+      }
+      .buttonStyle(.bordered)
+      .tint(.red)
+    }
+  }
+
+  @ViewBuilder
+  private func connectedContent(
+    _ state: GitHubRemoteRepositoryState,
+    connection: RemoteRepositoryConnection
+  ) -> some View {
+    let connectionPublication = state.publications
+      .filter { $0.purpose == .existingProductHistory }
+      .max { $0.updatedAt < $1.updatedAt }
+    let publicationAction = connectionPublication.map {
+      GitHubPullRequestActionPresentation.resolve(
+        purpose: $0.purpose,
+        status: $0.status,
+        relationship: connection.latestRelationship,
+        hasAcceptedSynchronization: state.safeSync?.status == .accepted
+      )
+    }
+    repositoryIdentity(connection)
+    if let observation = state.observation {
+      repositoryRelationshipContent(observation, state: state)
+    } else if publicationAction?.isPrimary == true {
+      Text("Finish GitHub setup to reconcile the merged pull request with this Product.")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
+    if let connectionPublication, publicationAction?.showsButton == true {
+      publicationContent(connectionPublication)
+    }
+    connectionManagementButtons(connection)
+  }
+
+  @ViewBuilder
+  private func repositoryIdentity(_ connection: RemoteRepositoryConnection) -> some View {
+    if let fullName = connection.fullName {
+      HStack(spacing: 8) {
+        Text(fullName)
+          .font(.callout.weight(.semibold))
+          .textSelection(.enabled)
+        if let isPrivate = connection.isPrivate {
+          Text(isPrivate ? "Private" : "Public")
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.quaternary, in: Capsule())
+        }
+        if let branch = connection.defaultBranch {
+          Text("Default branch: \(branch)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func repositoryRelationshipContent(
+    _ observation: RemoteRepositoryObservation,
+    state: GitHubRemoteRepositoryState
+  ) -> some View {
+    switch observation.relationship {
+    case .aligned:
+      Label("Local trunk and GitHub are up to date.", systemImage: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+    case .localAhead:
+      Label(
+        "\(observation.aheadCount) local ticket commit\(observation.aheadCount == 1 ? "" : "s") not yet on the default branch.",
+        systemImage: "arrow.up.circle"
+      )
+      Text(
+        "Spedito publishes reviewed ticket revisions automatically and merges them on product owner approval."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    case .remoteAhead, .historyAlignmentAvailable:
+      Label(
+        "\(observation.behindCount) incoming commit\(observation.behindCount == 1 ? "" : "s") available for review.",
+        systemImage: "arrow.down.circle"
+      )
+      if hasActiveDelivery {
+        Text("Spedito will integrate these changes with affected tickets during review.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      } else {
+        Button("Review incoming changes") {
+          reviewIncomingChanges()
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(isBusy)
+      }
+    case .diverged:
+      Label(
+        "Local trunk and GitHub both changed.",
+        systemImage: "arrow.triangle.merge"
+      )
+      Text(
+        hasActiveDelivery
+          ? "Spedito will combine the verified histories within affected tickets during review."
+          : "Spedito will combine the verified histories when the next affected ticket reaches review."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
+    case .unrelated:
+      Label(
+        "The GitHub history is unrelated to this Product. Choose the intended repository.",
+        systemImage: "exclamationmark.triangle.fill"
+      )
+      .foregroundStyle(.orange)
+    }
+  }
+
+  @ViewBuilder
+  private func publicationContent(_ publication: RemotePublication) -> some View {
+    switch publication.status {
+    case .awaitingConfirmation:
+      Text("Spedito is preparing the reviewed ticket pull request.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    case .checking, .pushing, .creatingPullRequest:
+      ProgressView("Publishing immutable review branch...")
+        .controlSize(.small)
+    case .branchPublished:
+      Text("The review branch is on GitHub. Spedito is finishing pull request creation.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    case .open:
+      pullRequestLink(publication, message: "Pull request open")
+    case .openOutdated:
+      pullRequestLink(
+        publication,
+        message:
+          "Pull request open. New local work is not included; finish this pull request first."
+      )
+    case .openStale:
+      pullRequestLink(
+        publication,
+        message: "GitHub changed this pull request. Review it on GitHub before continuing."
+      )
+    case .merged:
+      let action = GitHubPullRequestActionPresentation.resolve(
+        purpose: publication.purpose,
+        status: publication.status,
+        relationship: state?.connection?.latestRelationship,
+        hasAcceptedSynchronization: state?.safeSync?.status == .accepted
+      )
+      let message =
+        action.isPrimary
+        ? "Pull request merged. Finish GitHub setup to align local history."
+        : publication.purpose == .existingProductHistory && !action.showsButton
+          ? "GitHub setup complete."
+          : "Pull request merged. Local and GitHub history are aligned."
+      pullRequestLink(publication, message: message)
+    case .closed:
+      pullRequestLink(publication, message: "Pull request closed")
+    case .cancelled, .stale, .failed:
+      if let errorCode = publication.errorCode {
+        Text(errorCode)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func pullRequestLink(_ publication: RemotePublication, message: String) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(message)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      if let pullRequest = publication.pullRequest {
+        let action = GitHubPullRequestActionPresentation.resolve(
+          purpose: publication.purpose,
+          status: publication.status,
+          relationship: state?.connection?.latestRelationship,
+          hasAcceptedSynchronization: state?.safeSync?.status == .accepted
+        )
+        Link("Open pull request #\(pullRequest.number)", destination: pullRequest.canonicalURL)
+          .buttonStyle(.link)
+        if action.showsButton {
+          if action.isPrimary {
+            Button(action.title) {
+              refreshPullRequest(publication)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isBusy)
+          } else {
+            Button(action.title) {
+              refreshPullRequest(publication)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isBusy)
+          }
+        }
+      }
+    }
+  }
+
+  private func refreshPullRequest(_ publication: RemotePublication) {
+    Task {
+      await model.refreshRemotePullRequest(
+        productID: product.id,
+        publicationID: publication.id
+      )
+    }
+  }
+
+  @ViewBuilder
+  private func connectionManagementButtons(_ connection: RemoteRepositoryConnection) -> some View {
+    Menu {
+      Section(product.name) {
+        Button(productConnectionActionTitle, role: .destructive) {
+          showingDisconnectConfirmation = true
+        }
+      }
+      if connection.accountID != nil {
+        Section("GitHub account") {
+          Button("Sign out of GitHub", role: .destructive) {
+            showingSignOutConfirmation = true
+          }
+        }
+      }
+    } label: {
+      Label("Manage connection", systemImage: "ellipsis.circle")
+    }
+    .buttonStyle(.bordered)
+    .tint(Color(nsColor: .secondaryLabelColor))
+  }
+
+  private func connectGitHub() {
+    Task {
+      await model.connectGitHub(productID: product.id)
+      let connection = model.githubRemoteRepositoryStates[product.id]?.connection
+      switch GitHubRepositorySetupLaunch.resolve(status: connection?.status) {
+      case .repositoryPicker:
+        showingRepositoryPicker = true
+      case .installation:
+        openGitHubInstallation(for: connection)
+      case .none:
+        break
+      }
+    }
+  }
+
+  private func openGitHubInstallation(for connection: RemoteRepositoryConnection?) {
+    let slug = GitHubConfiguration.current().appSlug
+    let url: URL? =
+      if let installationID = connection?.installationID {
+        URL(string: "https://github.com/settings/installations/\(installationID)")
+      } else if !slug.isEmpty {
+        URL(string: "https://github.com/apps/\(slug)/installations/new")
+      } else {
+        nil
+      }
+    guard let url else { return }
+    awaitingGitHubInstallation = true
+    openURL(url)
+  }
+
+  private func reviewIncomingChanges() {
+    Task {
+      await model.prepareIncomingRepositoryChange(productID: product.id)
+      if model.githubRemoteRepositoryStates[product.id]?.safeSync?.status
+        == .awaitingConfirmation
+      {
+        showingIncomingReview = true
+      }
+    }
+  }
+
+}
+
+private struct GitHubDeviceAuthorizationSheet: View {
+  let prompt: GitHubDeviceAuthorizationPrompt
+  let onCancel: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      Text("Connect GitHub")
+        .font(.title2.bold())
+      Text("Enter this one-time code on GitHub. Spedito never asks for your password.")
+        .foregroundStyle(.secondary)
+      Text(prompt.userCode)
+        .font(.system(.title, design: .monospaced, weight: .semibold))
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity)
+        .padding(18)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+      Text("Expires \(prompt.expiresAt.formatted(date: .omitted, time: .shortened))")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      HStack {
+        Button("Copy code") {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(prompt.userCode, forType: .string)
+        }
+        .buttonStyle(.bordered)
+        Button("Open GitHub") {
+          NSWorkspace.shared.open(prompt.verificationURL)
+        }
+        .buttonStyle(.borderedProminent)
+        Spacer()
+        Button("Cancel", role: .cancel, action: onCancel)
+      }
+    }
+    .padding(24)
+    .frame(width: 480)
+  }
+}
+
+private struct GitHubRepositoryPickerSheet: View {
+  @EnvironmentObject private var model: AppModel
+  let productID: UUID
+  let onClose: () -> Void
+
+  private var state: GitHubRemoteRepositoryState {
+    model.githubRemoteRepositoryStates[productID]
+      ?? GitHubRemoteRepositoryState(isConfigured: false)
+  }
+
+  private var isBusy: Bool {
+    model.githubRemoteRepositoryBusyProductIDs.contains(productID)
+  }
+
+  private var setupActivity: GitHubRepositorySetupActivity? {
+    model.githubRepositorySetupActivities[productID]
+  }
+
+  private var canDismiss: Bool {
+    GitHubRepositoryPickerDismissalPolicy.canDismiss(activity: setupActivity)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Choose an empty GitHub repository")
+          .font(.title2.bold())
+        Text(
+          "New repositories default to private. Public visibility is an explicit choice on GitHub."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .padding(22)
+      Divider()
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 10) {
+          if let error = model.githubRemoteRepositoryErrors[productID],
+            !error.isEmpty,
+            !isBusy
+          {
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+              .font(.caption)
+              .foregroundStyle(.orange)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.bottom, 4)
+          }
+          switch GitHubRepositoryPickerContent.resolve(
+            repositoryCount: state.repositories.count,
+            isBusy: isBusy,
+            error: model.githubRemoteRepositoryErrors[productID] ?? state.errorMessage
+          ) {
+          case .loading:
+            ProgressView("Loading repositories...")
+              .controlSize(.small)
+              .frame(maxWidth: .infinity, minHeight: 240)
+          case .failure(let message):
+            ContentUnavailableView(
+              "Couldn’t load repositories",
+              systemImage: "exclamationmark.triangle.fill",
+              description: Text(message)
+            )
+            .frame(maxWidth: .infinity, minHeight: 240)
+          case .empty:
+            ContentUnavailableView(
+              "No accessible repositories",
+              systemImage: "shippingbox",
+              description: Text("Create an empty repository or add the Spedito GitHub App to one.")
+            )
+            .frame(maxWidth: .infinity, minHeight: 240)
+          case .repositories:
+            ForEach(state.repositories) { choice in
+              repositoryRow(choice)
+            }
+          }
+        }
+        .padding(22)
+      }
+      Divider()
+      HStack(spacing: 12) {
+        if setupActivity == nil {
+          Link(
+            "Create repository",
+            destination: URL(string: "https://github.com/new?visibility=private")!
+          )
+          .buttonStyle(.link)
+          if let installationID = state.connection?.installationID,
+            let accessURL = URL(
+              string: "https://github.com/settings/installations/\(installationID)"
+            )
+          {
+            Link("Manage access", destination: accessURL)
+              .buttonStyle(.link)
+          }
+          Button("Refresh list") {
+            Task { await model.refreshGitHubRepositories(productID: productID) }
+          }
+          .buttonStyle(.bordered)
+          .disabled(isBusy)
+          Spacer()
+          Button("Close", action: onClose)
+            .buttonStyle(.bordered)
+        } else if setupActivity?.isCompleted == true {
+          Spacer()
+          Button("Done", action: onClose)
+            .buttonStyle(.borderedProminent)
+        } else {
+          Label("Setup continues automatically", systemImage: "arrow.triangle.2.circlepath")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Spacer()
+        }
+      }
+      .padding(18)
+    }
+    .frame(width: 620, height: 560)
+    .task {
+      await model.resumeLocalGitHubRepositorySetup(productID: productID)
+    }
+    .interactiveDismissDisabled(!canDismiss)
+
+  }
+
+  @ViewBuilder
+  private func repositoryRow(_ choice: GitHubRepositoryChoice) -> some View {
+    let isSelected = state.connection?.repositoryID == choice.id
+    VStack(alignment: .leading, spacing: 0) {
+      Button {
+        Task {
+          await model.selectLocalGitHubRepository(
+            productID: productID,
+            repositoryID: choice.id
+          )
+        }
+      } label: {
+        HStack {
+          VStack(alignment: .leading, spacing: 3) {
+            Text(choice.repository.fullName)
+              .font(.callout.weight(.semibold))
+            Text(choice.repository.isPrivate ? "Private" : "Public")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          if isSelected, state.selectedEligibility != .checking {
+            Image(systemName: "checkmark.circle.fill")
+              .foregroundStyle(Color.accentColor)
+          } else if !isSelected {
+            Text("Choose")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(Color.accentColor)
+          }
+        }
+        .padding(12)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isBusy)
+
+      if isSelected {
+        eligibilityContent
+          .padding(.horizontal, 12)
+          .padding(.bottom, 12)
+      }
+    }
+    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
+  }
+
+  @ViewBuilder
+  private var eligibilityContent: some View {
+    if let setupActivity {
+      repositoryInitializationContent(setupActivity)
+    } else {
+      switch state.selectedEligibility {
+      case .checking:
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Checking whether this repository is empty...")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.top, 2)
+      case .empty(_, let existingHistory):
+        let presentation = GitHubVerifiedRepositoryPresentation.resolve(
+          hasExistingHistory: existingHistory != nil
+        )
+        VStack(alignment: .leading, spacing: 8) {
+          Label("Ready to connect", systemImage: "checkmark.circle.fill")
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.green)
+          Text(presentation.message)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Button(presentation.actionTitle) {
+            Task {
+              await model.initializeLocalGitHubRepository(productID: productID)
+            }
+          }
+          .buttonStyle(.borderedProminent)
+          .disabled(isBusy)
+        }
+        .padding(.top, 2)
+      case .ineligible(let message):
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(.orange)
+          .padding(.top, 2)
+      case .unchecked, nil:
+        EmptyView()
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func repositoryInitializationContent(
+    _ activity: GitHubRepositorySetupActivity
+  ) -> some View {
+    let presentation = GitHubRepositoryInitializationPresentation.resolve(activity: activity)
+    VStack(alignment: .leading, spacing: 8) {
+      if presentation.isComplete {
+        Label(presentation.title, systemImage: "checkmark.circle.fill")
+          .font(.callout.weight(.semibold))
+          .foregroundStyle(.green)
+      } else {
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Step \(presentation.step) of \(presentation.stepCount)")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+        }
+        ProgressView(
+          value: Double(presentation.step),
+          total: Double(presentation.stepCount)
+        )
+        .progressViewStyle(.linear)
+        Text(presentation.title)
+          .font(.callout.weight(.semibold))
+      }
+      Text(presentation.detail)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.top, 2)
+  }
+}
+
+private struct IncomingRepositoryReviewSheet: View {
+  let sync: RemoteSafeSync
+  let onAccept: () -> Void
+  let onReject: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text(sync.kind == .fastForward ? "Review incoming changes" : "Review merged pull request")
+          .font(.title2.bold())
+        Text(
+          "Only the accepted Product workspace will change. Spedito verified this exact candidate."
+        )
+        .foregroundStyle(.secondary)
+      }
+      .padding(22)
+      Divider()
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          remoteChangeList(title: "Commits", commits: sync.commits)
+          remotePathList(title: "Files", paths: sync.paths)
+        }
+        .padding(22)
+      }
+      Divider()
+      HStack {
+        Button("Reject", role: .destructive, action: onReject)
+          .buttonStyle(.bordered)
+          .tint(.red)
+        Spacer()
+        Button(
+          sync.kind == .fastForward ? "Accept incoming changes" : "Align merged history",
+          action: onAccept
+        )
+        .buttonStyle(.borderedProminent)
+      }
+      .padding(18)
+    }
+    .frame(width: 680, height: 600)
+  }
+}
+
+@ViewBuilder
+private func remoteChangeList(title: String, commits: [RemoteCommitSummary]) -> some View {
+  VStack(alignment: .leading, spacing: 7) {
+    Text(title)
+      .font(.headline)
+    if commits.isEmpty {
+      Text("No commits to list")
+        .foregroundStyle(.secondary)
+    } else {
+      ForEach(commits) { commit in
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          Text(String(commit.sha.prefix(8)))
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.secondary)
+          Text(commit.subject)
+            .font(.callout)
+        }
+      }
+    }
+  }
+}
+
+@ViewBuilder
+private func remotePathList(title: String, paths: [String]) -> some View {
+  VStack(alignment: .leading, spacing: 7) {
+    Text(title)
+      .font(.headline)
+    if paths.isEmpty {
+      Text("No changed files to list")
+        .foregroundStyle(.secondary)
+    } else {
+      ForEach(paths, id: \.self) { path in
+        Text(path)
+          .font(.system(.caption, design: .monospaced))
+          .textSelection(.enabled)
       }
     }
   }
@@ -2382,7 +4992,7 @@ private struct TeamPromptsView: View {
           Text("Instructions")
             .font(.headline)
           Text(
-            "Verified Product knowledge, the ticket contract, and the definition of done are supplied separately."
+            "Verified product knowledge, the ticket contract, and the definition of done are supplied separately."
           )
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -2745,7 +5355,8 @@ private struct AddPersonaView: View {
       ? template.model
       : model.codexModels.first(where: \.isDefault)?.model ?? template.model
     let supported = selectedModelOption?.supportedReasoningEfforts.map(\.id) ?? []
-    effort = supported.contains(template.effort)
+    effort =
+      supported.contains(template.effort)
       ? template.effort
       : selectedModelOption?.defaultReasoningEffort ?? template.effort
     instructions = template.instructions
@@ -2794,7 +5405,8 @@ struct PlanningBulkMoveAction {
   }
 
   var title: String {
-    let quantity = selectedItems.isEmpty
+    let quantity =
+      selectedItems.isEmpty
       ? "all"
       : selectedItems.count.formatted()
     switch destination {
@@ -2806,7 +5418,8 @@ struct PlanningBulkMoveAction {
   }
 
   var compactTitle: String {
-    let quantity = selectedItems.isEmpty
+    let quantity =
+      selectedItems.isEmpty
       ? "All"
       : selectedItems.count.formatted()
     switch destination {
@@ -2846,10 +5459,11 @@ struct EpicPlanningSections {
     allEpics = visibleEpics
     openEpics = visibleOpenEpics
     closedEpics = visibleClosedEpics
-    deliveredTicketCount = workItems.filter {
-      guard let epicID = $0.epicID else { return false }
-      return closedEpicIDs.contains(epicID) && $0.state == .released
-    }.count
+    deliveredTicketCount =
+      workItems.filter {
+        guard let epicID = $0.epicID else { return false }
+        return closedEpicIDs.contains(epicID) && $0.state == .released
+      }.count
   }
 
   var isEmpty: Bool {
@@ -2929,11 +5543,12 @@ struct BacklogPlanningSizing {
     preferredRatio: CGFloat
   ) -> CGFloat {
     let availableWidth = max(0, containerWidth - (horizontalPadding * 2))
-    return horizontalPadding + backlogWidth(
-      availableWidth: availableWidth,
-      dividerWidth: dividerWidth,
-      preferredRatio: preferredRatio
-    )
+    return horizontalPadding
+      + backlogWidth(
+        availableWidth: availableWidth,
+        dividerWidth: dividerWidth,
+        preferredRatio: preferredRatio
+      )
   }
 
   static func backlogRatio(
@@ -3418,7 +6033,7 @@ private final class BacklogPlanningSplitNSView: NSSplitView, NSSplitViewDelegate
     delegate = self
     setAccessibilityLabel("Backlog planning columns")
     setAccessibilityHelp(
-      "Drag left to give the Sprint more room. Double-click to restore the default size."
+      "Drag left to give the sprint more room. Double-click to restore the default size."
     )
   }
 
@@ -3540,7 +6155,7 @@ private enum EpicPlanningTableGeometry {
   static let columnLeadingInset: CGFloat = 14
   static let ticketsWidth: CGFloat = 64
   static let progressWidth: CGFloat = 120
-  static let statusWidth: CGFloat = 96
+  static let statusWidth: CGFloat = 128
 }
 
 private struct EpicPlanningList: View {
@@ -3573,7 +6188,7 @@ private struct EpicPlanningList: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(.purple)
-        .help("Plan a substantial product outcome with the Business Analyst")
+        .help("Plan a substantial product outcome with the business analyst")
       }
       .padding(.horizontal, 2)
 
@@ -3674,7 +6289,7 @@ private struct EpicPlanningList: View {
       }
     } message: {
       Text(
-        "All unfinished Backlog tickets and proposed tickets in this epic will also be archived. Delivered tickets and history remain available."
+        "All unfinished backlog tickets and proposed tickets in this epic will also be archived. Delivered tickets and history remain available."
       )
     }
   }
@@ -3730,7 +6345,7 @@ private struct ClosedEpicsDisclosureRow: View {
   @State private var isHovering = false
 
   private var epicLabel: String {
-    "\(epicCount) closed \(epicCount == 1 ? "epic" : "epics")"
+    "\(epicCount) completed \(epicCount == 1 ? "epic" : "epics")"
   }
 
   private var ticketLabel: String {
@@ -3773,7 +6388,7 @@ private struct ClosedEpicsDisclosureRow: View {
         isHovering = hovering
       }
     }
-    .help(isExpanded ? "Hide closed epics" : "Show closed epics")
+    .help(isExpanded ? "Hide completed epics" : "Show completed epics")
   }
 }
 
@@ -3859,12 +6474,12 @@ private struct EpicPlanningRow: View {
     Button(action: onOpen) {
       Grid(horizontalSpacing: 0) {
         GridRow(alignment: .center) {
-          Text(epic.title)
+          Text(epic.displayTitle)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(isHovering ? Color.accentColor : Color.primary)
             .lineLimit(2)
             .layoutPriority(1)
-            .help(epic.goal.isEmpty ? epic.title : epic.goal)
+            .help(epic.goal)
             .frame(maxWidth: .infinity, alignment: .leading)
             .gridColumnAlignment(.leading)
 
@@ -3926,7 +6541,7 @@ private struct EpicPlanningRow: View {
     .onDrag {
       NSItemProvider(object: "epic:\(epic.id.uuidString)" as NSString)
     } preview: {
-      Label(epic.title, systemImage: "flag.checkered")
+      Label(epic.displayTitle, systemImage: "flag.checkered")
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -4065,13 +6680,13 @@ private struct CandidateSprintPanel: View {
           selectedItemCount: selectedItemCount,
           onToggleSelection: toggleAllItems
         )
-          .padding(.horizontal, PlanningTicketTableMetrics.horizontalPadding)
-          .background(PlanningDropSurfaceStyle.tableHeaderBackground)
-          .dropDestination(
-            for: String.self,
-            action: { values, _ in performDrop(values, at: 0) },
-            isTargeted: { setDropTarget($0, index: 0) }
-          )
+        .padding(.horizontal, PlanningTicketTableMetrics.horizontalPadding)
+        .background(PlanningDropSurfaceStyle.tableHeaderBackground)
+        .dropDestination(
+          for: String.self,
+          action: { values, _ in performDrop(values, at: 0) },
+          isTargeted: { setDropTarget($0, index: 0) }
+        )
 
         Divider()
 
@@ -4083,30 +6698,28 @@ private struct CandidateSprintPanel: View {
                 ? "exclamationmark.triangle.fill"
                 : "tray.and.arrow.down"
             )
-              .font(.title2)
-              .foregroundStyle(
-                activeDropEvaluation?.isValid == false
-                  ? Color.red : Color.secondary
-              )
+            .font(.title2)
+            .foregroundStyle(
+              activeDropEvaluation?.isValid == false
+                ? Color.red : Color.secondary
+            )
             Text(
               activeDropEvaluation?.isValid == false
                 ? "Can't drop here" : "Drag backlog tickets here"
             )
-              .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.medium))
             Text(
               activeDropEvaluation?.message
-                ?? (
-                  isDropTargeted
-                    ? "Backlog rank will stay unchanged."
-                    : "Only scoped work enters sprint planning."
-                )
+                ?? (isDropTargeted
+                  ? "Backlog rank will stay unchanged."
+                  : "Only scoped work enters sprint planning.")
             )
-              .font(.caption)
-              .foregroundStyle(
-                activeDropEvaluation?.isValid == false
-                  ? Color.red : Color.secondary
-              )
-              .multilineTextAlignment(.center)
+            .font(.caption)
+            .foregroundStyle(
+              activeDropEvaluation?.isValid == false
+                ? Color.red : Color.secondary
+            )
+            .multilineTextAlignment(.center)
           }
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .contentShape(Rectangle())
@@ -4137,7 +6750,8 @@ private struct CandidateSprintPanel: View {
 
                 if index < items.count {
                   let item = items[index]
-                  let dragSelection = selectedWorkItemIDs.contains(item.id)
+                  let dragSelection =
+                    selectedWorkItemIDs.contains(item.id)
                     ? selectedWorkItemIDs.intersection(itemIDs)
                     : [item.id]
                   CandidateSprintRow(
@@ -4172,11 +6786,9 @@ private struct CandidateSprintPanel: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       .background(
         isDropTargeted
-          ? (
-            activeDropEvaluation?.isValid == false
-              ? PlanningDropSurfaceStyle.invalidTargetedBackground
-              : PlanningDropSurfaceStyle.targetedBackground
-          )
+          ? (activeDropEvaluation?.isValid == false
+            ? PlanningDropSurfaceStyle.invalidTargetedBackground
+            : PlanningDropSurfaceStyle.targetedBackground)
           : PlanningDropSurfaceStyle.restingBackground(for: colorScheme)
       )
       .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -4274,9 +6886,10 @@ private struct CandidateSprintPanel: View {
     let movingItems = items.filter { ids.contains($0.id) }
     var reorderedItems = items.filter { !ids.contains($0.id) }
     let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
-    let insertionIndex = targetID.flatMap { targetID in
-      reorderedItems.firstIndex { $0.id == targetID }
-    } ?? reorderedItems.endIndex
+    let insertionIndex =
+      targetID.flatMap { targetID in
+        reorderedItems.firstIndex { $0.id == targetID }
+      } ?? reorderedItems.endIndex
     reorderedItems.insert(contentsOf: movingItems, at: insertionIndex)
     return reorderedItems.map(\.id) == items.map(\.id)
   }
@@ -4712,11 +7325,11 @@ private struct PlanningTicketList: View {
           selectedItemCount: selectedItemCount,
           onToggleSelection: toggleAllItems
         )
-          .dropDestination(
-            for: String.self,
-            action: { values, _ in performDrop(values, at: 0) },
-            isTargeted: { targeted in setDropTarget(targeted, index: 0) }
-          )
+        .dropDestination(
+          for: String.self,
+          action: { values, _ in performDrop(values, at: 0) },
+          isTargeted: { targeted in setDropTarget(targeted, index: 0) }
+        )
 
         Divider()
 
@@ -4728,28 +7341,24 @@ private struct PlanningTicketList: View {
                 ? "exclamationmark.triangle.fill"
                 : (isCandidateSection ? "tray.and.arrow.down" : "text.badge.plus")
             )
-              .font(.title2)
-              .foregroundStyle(
-                activeDropEvaluation?.isValid == false
-                  ? Color.red : Color.secondary
-              )
+            .font(.title2)
+            .foregroundStyle(
+              activeDropEvaluation?.isValid == false
+                ? Color.red : Color.secondary
+            )
             Text(
               activeDropEvaluation?.isValid == false
                 ? "Can't drop here"
                 : (isCandidateSection ? "Drag backlog tickets here" : "No backlog tickets")
             )
-              .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.medium))
             Text(
               activeDropEvaluation?.message
-                ?? (
-                  isDropTargeted
-                    ? "Backlog rank will stay unchanged."
-                    : (
-                      isCandidateSection
-                        ? "Dependencies must be added before the work that relies on them."
-                        : "Add a ticket, or create an epic and let AI plan the outcome."
-                    )
-                )
+                ?? (isDropTargeted
+                  ? "Backlog rank will stay unchanged."
+                  : (isCandidateSection
+                    ? "Dependencies must be added before the work that relies on them."
+                    : "Add a ticket, or create an epic and let AI plan the outcome."))
             )
             .font(.caption)
             .foregroundStyle(
@@ -4793,7 +7402,8 @@ private struct PlanningTicketList: View {
 
             if index < items.count {
               let item = items[index]
-              let dragSelection = selectedWorkItemIDs.contains(item.id)
+              let dragSelection =
+                selectedWorkItemIDs.contains(item.id)
                 ? selectedWorkItemIDs.intersection(itemIDs)
                 : [item.id]
               PlanningTicketRow(
@@ -4830,11 +7440,9 @@ private struct PlanningTicketList: View {
       }
       .background(
         isDropTargeted
-          ? (
-            activeDropEvaluation?.isValid == false
-              ? PlanningDropSurfaceStyle.invalidTargetedBackground
-              : PlanningDropSurfaceStyle.targetedBackground
-          )
+          ? (activeDropEvaluation?.isValid == false
+            ? PlanningDropSurfaceStyle.invalidTargetedBackground
+            : PlanningDropSurfaceStyle.targetedBackground)
           : Color.clear
       )
       .background(restingBackground)
@@ -4934,9 +7542,10 @@ private struct PlanningTicketList: View {
     let movingItems = items.filter { ids.contains($0.id) }
     var reorderedItems = items.filter { !ids.contains($0.id) }
     let targetID = items.dropFirst(safeIndex).first { !ids.contains($0.id) }?.id
-    let insertionIndex = targetID.flatMap { targetID in
-      reorderedItems.firstIndex { $0.id == targetID }
-    } ?? reorderedItems.endIndex
+    let insertionIndex =
+      targetID.flatMap { targetID in
+        reorderedItems.firstIndex { $0.id == targetID }
+      } ?? reorderedItems.endIndex
     reorderedItems.insert(contentsOf: movingItems, at: insertionIndex)
 
     return reorderedItems.map(\.id) == items.map(\.id)
@@ -5308,7 +7917,7 @@ private struct PlanningTicketRow: View {
     .animation(.easeOut(duration: 0.12), value: isHovering)
     .help(
       isSelected
-        ? "Drag to move all selected tickets between Backlog and Next sprint"
+        ? "Drag to move all selected tickets between backlog and next sprint"
         : "Open the ticket, select it to drag with other tickets, or drag it to change sprint scope"
     )
     .contextMenu {
@@ -5487,7 +8096,7 @@ private struct TicketSuggestionBatchActions: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
-        "They will not enter the Backlog. The decisions remain in history and "
+        "They will not enter the backlog. The decisions remain in history and "
           + "inform future suggestions."
       )
     }
@@ -5509,7 +8118,8 @@ private func transitiveSuggestionDependents(
     dependentIDs.formUnion(next.map(\.id))
     dependencyFrontier = Set(next.map(\.id))
   }
-  return suggestions
+  return
+    suggestions
     .filter { dependentIDs.contains($0.id) && $0.status != .rejected }
     .sorted { $0.position < $1.position }
 }
@@ -5528,7 +8138,8 @@ private func transitiveSuggestedPrerequisites(
     else { continue }
     dependencyFrontier.append(contentsOf: dependency.dependencyIDs)
   }
-  return suggestions
+  return
+    suggestions
     .filter { prerequisiteIDs.contains($0.id) && $0.status == .proposed }
     .sorted { $0.position < $1.position }
 }
@@ -5562,7 +8173,7 @@ private struct SuggestionAcceptanceImpact {
       "This also accepts \(prerequisites.count) suggested "
       + (prerequisites.count == 1 ? "prerequisite" : "prerequisites")
       + " (\(references)). All \(prerequisites.count + 1) tickets will be added to the "
-      + "Backlog with their dependency relationships. This does not add them to a Sprint."
+      + "backlog with their dependency relationships. This does not add them to a sprint."
   }
 }
 
@@ -5647,7 +8258,7 @@ private struct InlineBacklogSuggestions: View {
       HStack(spacing: 8) {
         ProgressView()
           .controlSize(.small)
-        Text("Business Analyst is generating and ordering ticket suggestions…")
+        Text("Business analyst is generating and ordering ticket suggestions…")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(.purple)
         Spacer()
@@ -5683,7 +8294,7 @@ private struct InlineBacklogSuggestions: View {
       VStack(alignment: .leading, spacing: 5) {
         Text("AI ticket suggestions need another try")
           .font(.subheadline.weight(.semibold))
-        Text(batch.session.errorMessage ?? "The Business Analyst could not complete the proposal.")
+        Text(batch.session.errorMessage ?? "The business analyst could not complete the proposal.")
           .font(.caption)
           .foregroundStyle(.secondary)
           .textSelection(.enabled)
@@ -6217,12 +8828,12 @@ private struct TicketSuggestionDetailView: View {
                 tint: suggestion.priority.tint
               ),
             ],
-              epic: epic,
-              acceptanceCriteria: suggestion.acceptanceCriteria,
-              emptyAcceptanceCriteriaText: "No acceptance criteria proposed",
-              relationships: relationships,
-              onOpenRelationship: nil
-            )
+            epic: epic,
+            acceptanceCriteria: suggestion.acceptanceCriteria,
+            emptyAcceptanceCriteriaText: "No acceptance criteria proposed",
+            relationships: relationships,
+            onOpenRelationship: nil
+          )
 
           SprintTicketSectionCard(title: "Why this work") {
             Text(suggestion.rationale)
@@ -6238,10 +8849,10 @@ private struct TicketSuggestionDetailView: View {
         Text(
           acceptanceImpact.requiresConfirmation
             ? "Accepting this ticket also accepts its suggested prerequisites."
-            : "Nothing enters the Backlog until you accept it."
+            : "Nothing enters the backlog until you accept it."
         )
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
         Spacer()
         Button("Reject", role: .destructive) {
           if rejectionImpact.requiresConfirmation {
@@ -6315,14 +8926,14 @@ private struct BacklogSuggestionStack: View {
             sourceTicket.map { "Follow-up work from \($0.key)" } ?? "Suggested work",
             systemImage: "wand.and.stars"
           )
-            .font(.headline)
+          .font(.headline)
           Text(
             sourceTicket == nil
-              ? "One Business Analyst proposal · roles are planning hints; team members are assigned in Sprint Planning"
+              ? "One business analyst proposal · roles are planning hints; team members are assigned in sprint planning"
               : "Proposed from approved research · review each ticket before it enters the backlog"
           )
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          .font(.caption)
+          .foregroundStyle(.secondary)
         }
         Spacer()
         if batch.session.status == .generating {
@@ -6333,8 +8944,8 @@ private struct BacklogSuggestionStack: View {
             Text(
               "\(proposedCount) \(proposedCount == 1 ? "suggestion" : "suggestions") to review"
             )
-              .font(.caption.monospacedDigit())
-              .foregroundStyle(.secondary)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
             if proposedCount > 1 {
               Button("Reject all") { confirmingRejectAll = true }
                 .buttonStyle(.bordered)
@@ -6354,9 +8965,11 @@ private struct BacklogSuggestionStack: View {
 
       case .failed:
         VStack(alignment: .leading, spacing: 10) {
-          Label("The Business Analyst could not finish", systemImage: "exclamationmark.triangle.fill")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.orange)
+          Label(
+            "The business analyst could not finish", systemImage: "exclamationmark.triangle.fill"
+          )
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(.orange)
           Text(batch.session.errorMessage ?? "The proposal did not complete.")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -6425,7 +9038,9 @@ private struct BacklogSuggestionStack: View {
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("They will be added to the backlog with their dependency relationships. This does not add them to a sprint.")
+      Text(
+        "They will be added to the backlog with their dependency relationships. This does not add them to a sprint."
+      )
     }
     .confirmationDialog(
       "Reject all remaining suggestions?",
@@ -6513,9 +9128,10 @@ private struct BacklogSuggestionStack: View {
     guard !directDependencies.isEmpty else { return 0 }
     var nextVisiting = visiting
     nextVisiting.insert(suggestion.id)
-    return 1 + (directDependencies.map {
-      dependencyDepth(for: $0, visiting: nextVisiting)
-    }.max() ?? 0)
+    return 1
+      + (directDependencies.map {
+        dependencyDepth(for: $0, visiting: nextVisiting)
+      }.max() ?? 0)
   }
 }
 
@@ -6651,8 +9267,8 @@ private struct TicketSuggestionCard: View {
               model.rejectTicketSuggestion(suggestion)
             }
           }
-            .buttonStyle(.bordered)
-            .disabled(model.isDecidingSuggestions)
+          .buttonStyle(.bordered)
+          .disabled(model.isDecidingSuggestions)
           Button(acceptanceImpact.requiresConfirmation ? acceptanceImpact.buttonTitle : "Accept") {
             if acceptanceImpact.requiresConfirmation {
               confirmingCascadeAcceptance = true
@@ -6660,8 +9276,8 @@ private struct TicketSuggestionCard: View {
               model.decideTicketSuggestion(suggestion, accept: true)
             }
           }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.isDecidingSuggestions)
+          .buttonStyle(.borderedProminent)
+          .disabled(model.isDecidingSuggestions)
         }
       case .accepted:
         Label("Added to backlog", systemImage: "list.bullet.clipboard")
@@ -6792,6 +9408,7 @@ private struct PlanningSlot: View {
 private struct SprintBoardView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selectedSprintID: UUID?
+  @Binding var attentionWorkItemIDs: Set<UUID>?
   let onShowBacklog: () -> Void
   let onEditPlan: () -> Void
   let onShowRetrospective: () -> Void
@@ -6802,10 +9419,10 @@ private struct SprintBoardView: View {
   @Namespace private var ticketMotionNamespace
 
   private let lanes = [
-    SprintLane(title: "Ready to Pick", states: [.queued]),
-    SprintLane(title: "In Progress", states: [.running]),
-    SprintLane(title: "In Review", states: [.integrating, .verifying, .readyToRelease]),
-    SprintLane(title: "Ready for Demo", states: [.acceptance]),
+    SprintLane(title: "Ready to pick", states: [.queued]),
+    SprintLane(title: "In progress", states: [.running]),
+    SprintLane(title: "In review", states: [.integrating, .verifying, .readyToRelease]),
+    SprintLane(title: "Ready for demo", states: [.acceptance]),
     SprintLane(title: "Done", states: [.released]),
   ]
 
@@ -6814,7 +9431,7 @@ private struct SprintBoardView: View {
       HStack(alignment: .center, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
           HStack(spacing: 9) {
-            Text("Sprint Board")
+            Text("Sprint board")
               .font(.largeTitle.bold())
             if let plan = selectedPlan {
               Text(sprintPhaseTitle(for: plan))
@@ -6822,10 +9439,26 @@ private struct SprintBoardView: View {
                 .foregroundStyle(sprintPhaseTint(for: plan))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-              .background(sprintPhaseTint(for: plan).opacity(0.1), in: Capsule())
+                .background(sprintPhaseTint(for: plan).opacity(0.1), in: Capsule())
+            }
+            if let attentionWorkItemIDs, !attentionWorkItemIDs.isEmpty {
+              Button {
+                self.attentionWorkItemIDs = nil
+              } label: {
+                Label(
+                  attentionWorkItemIDs.count == 1
+                    ? "1 needs your input"
+                    : "\(attentionWorkItemIDs.count) need your input",
+                  systemImage: "line.3.horizontal.decrease.circle.fill"
+                )
+              }
+              .buttonStyle(.bordered)
+              .tint(.orange)
+              .controlSize(.small)
+              .help("Show every sprint ticket")
             }
           }
-          Text("Track each ticket from Ready to Pick through review, demo, and Done.")
+          Text("Track each ticket from ready to pick through review, demo, and done.")
             .foregroundStyle(.secondary)
         }
         Spacer()
@@ -6946,19 +9579,7 @@ private struct SprintBoardView: View {
           }
 
           if let plan = selectedPlan {
-            HStack(spacing: 6) {
-              Image(systemName: "flag")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-              Text(plan.sprint.goal)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            }
-            .frame(maxWidth: 420, alignment: .trailing)
-            .help("Sprint goal: \(plan.sprint.goal)")
-            .accessibilityLabel("Sprint goal")
-            .accessibilityValue(plan.sprint.goal)
+            SprintBoardGoalView(plan: plan)
           }
         }
       }
@@ -6966,15 +9587,29 @@ private struct SprintBoardView: View {
 
       Divider()
 
+      if let productID = model.selectedProductID,
+        model.githubRemoteRepositoryStates[productID]?.connection?.status == .connected
+      {
+        SprintBoardGitHubStatus(
+          productID: productID,
+          hasActiveDelivery: model.sprintPlan?.sprint.productID == productID
+            && model.sprintPlan?.sprint.state.isInProgress == true
+        )
+        Divider()
+      }
+
       if let plan = selectedPlan {
         VStack(spacing: 0) {
-          let itemIDs = Set(plan.items.map(\.workItemID))
+          let planItemIDs = Set(plan.items.map(\.workItemID))
+          let displayedItemIDs =
+            attentionWorkItemIDs.map { planItemIDs.intersection($0) }
+            ?? planItemIDs
           GeometryReader { proxy in
             let horizontalPadding: CGFloat = 40
             let interColumnSpacing: CGFloat = 10
             let availableForColumns =
               proxy.size.width - horizontalPadding
-                - (interColumnSpacing * CGFloat(max(0, lanes.count - 1)))
+              - (interColumnSpacing * CGFloat(max(0, lanes.count - 1)))
             let columnWidth = min(
               270,
               max(210, availableForColumns / CGFloat(max(1, lanes.count)))
@@ -6988,7 +9623,7 @@ private struct SprintBoardView: View {
                     items: boardItems(
                       for: lane,
                       plan: plan,
-                      itemIDs: itemIDs
+                      itemIDs: displayedItemIDs
                     ),
                     columnWidth: columnWidth,
                     motionNamespace: ticketMotionNamespace,
@@ -7000,7 +9635,7 @@ private struct SprintBoardView: View {
               .frame(maxHeight: .infinity, alignment: .top)
               .animation(
                 .spring(response: 0.42, dampingFraction: 0.86),
-                value: boardPositionSignature(itemIDs: itemIDs)
+                value: boardPositionSignature(itemIDs: displayedItemIDs)
               )
             }
             .frame(maxHeight: .infinity)
@@ -7010,7 +9645,7 @@ private struct SprintBoardView: View {
         ContentUnavailableView {
           Label("No active sprint", systemImage: "figure.run")
         } description: {
-          Text("Refine the backlog, review tickets in Sprint Planning, then start the sprint.")
+          Text("Refine the backlog, review tickets in sprint planning, then start the sprint.")
         } actions: {
           Button("Open backlog", action: onShowBacklog)
             .buttonStyle(.borderedProminent)
@@ -7044,7 +9679,7 @@ private struct SprintBoardView: View {
       }
     }
     .alert(
-      selectedPlan.map { "Stop Sprint \($0.sprint.number)?" } ?? "Stop sprint?",
+      selectedPlan.map { "Stop sprint \($0.sprint.number)?" } ?? "Stop sprint?",
       isPresented: $showingStopSprintConfirmation
     ) {
       Button("Stop sprint", role: .destructive) {
@@ -7056,7 +9691,7 @@ private struct SprintBoardView: View {
       Button("Keep sprint", role: .cancel) {}
     } message: {
       Text(
-        "Done tickets stay Done. Spedito will stop current work, preserve its Work logs, Conversations, workspaces, and candidate history for audit, and return unfinished tickets to Ready for replanning. No unaccepted candidate will be promoted. This cannot be undone."
+        "Done tickets stay done. Spedito will stop current work, preserve its work logs, conversations, workspaces, and candidate history for audit, and return unfinished tickets to ready for replanning. No unaccepted candidate will be promoted. This cannot be undone."
       )
     }
   }
@@ -7086,6 +9721,7 @@ private struct SprintBoardView: View {
     guard let plan = selectedPlan, plan.sprint.state == .draft else { return nil }
     return plan
   }
+
 
   private var hasHeaderActions: Bool {
     selectedPlan?.sprint.state.isInProgress == true
@@ -7135,6 +9771,7 @@ private struct SprintBoardView: View {
   }
 
   private func selectSprint(_ sprintID: UUID?) {
+    attentionWorkItemIDs = nil
     selectedSprintID = sprintID
     guard let productID = model.selectedProductID else { return }
     SprintBoardSelectionDefaults.select(sprintID, for: productID)
@@ -7225,6 +9862,195 @@ private struct SprintBoardView: View {
       .filter { itemIDs.contains($0.id) }
       .sorted { $0.rank < $1.rank }
       .map { "\($0.id.uuidString):\($0.state.rawValue)" }
+  }
+}
+
+private struct SprintBoardGoalView: View {
+  @EnvironmentObject private var model: AppModel
+  let plan: SprintPlan
+  @State private var requestedKey: String?
+
+  private var goal: String {
+    plan.sprint.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var generationKey: String {
+    "\(plan.sprint.id.uuidString):\(plan.sprint.planVersion)"
+  }
+
+  private var planSignature: String {
+    "\(generationKey):\(plan.sprint.state.rawValue):\(plan.sprint.goal)"
+  }
+
+
+  @ViewBuilder
+  var body: some View {
+    Group {
+      if !goal.isEmpty {
+        HStack(spacing: 6) {
+          Image(systemName: "flag")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.tertiary)
+          Text(goal)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .frame(maxWidth: 420, alignment: .trailing)
+        .help("Sprint goal: \(goal)")
+        .accessibilityLabel("Sprint goal")
+        .accessibilityValue(goal)
+      }
+    }
+    .onAppear(perform: generateIfNeeded)
+    .onChange(of: planSignature) { _, _ in
+      generateIfNeeded()
+    }
+    .onChange(of: model.canGenerateSprintGoal) { _, canGenerate in
+      if canGenerate {
+        generateIfNeeded()
+      }
+    }
+  }
+
+  private func generateIfNeeded() {
+    guard
+      SprintGoalSuggestionPolicy.shouldGenerate(existingGoal: plan.sprint.goal),
+      [.draft, .active, .paused].contains(plan.sprint.state),
+      requestedKey != generationKey,
+      model.canGenerateSprintGoal
+    else { return }
+
+    let sprintID = plan.sprint.id
+    let planVersion = plan.sprint.planVersion
+    requestedKey = generationKey
+    Task {
+      _ = try? await model.generateAndSaveSprintGoal(
+        for: sprintID,
+        planVersion: planVersion
+      )
+    }
+  }
+}
+
+private struct SprintBoardGitHubStatus: View {
+  @EnvironmentObject private var model: AppModel
+  let productID: UUID
+  let hasActiveDelivery: Bool
+  @State private var showingIncomingReview = false
+
+  private var state: GitHubRemoteRepositoryState? {
+    model.githubRemoteRepositoryStates[productID]
+  }
+
+  private var isBusy: Bool {
+    model.githubRemoteRepositoryBusyProductIDs.contains(productID)
+  }
+
+  private var presentation: SprintBoardGitHubPresentation? {
+    let relationship = state?.observation?.relationship ?? state?.connection?.latestRelationship
+    return SprintBoardGitHubPresentation.resolve(
+      error: model.githubRemoteRepositoryErrors[productID],
+      connectionStatus: state?.connection?.status,
+      relationship: relationship,
+      aheadCount: state?.observation?.aheadCount ?? state?.connection?.latestAheadCount ?? 0,
+      behindCount: state?.observation?.behindCount ?? state?.connection?.latestBehindCount ?? 0,
+      publicationStatus: state?.publication?.status,
+      hasActiveDelivery: hasActiveDelivery
+    )
+  }
+
+  var body: some View {
+    if let presentation {
+      HStack(alignment: .center, spacing: 12) {
+        Image(systemName: presentation.symbol)
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(color(for: presentation.tone))
+          .frame(width: 24)
+          .accessibilityHidden(true)
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(presentation.title)
+            .font(.callout.weight(.semibold))
+          Text(presentation.detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Spacer(minLength: 16)
+
+        if isBusy {
+          ProgressView()
+            .controlSize(.small)
+        } else if let action = presentation.action,
+          let actionTitle = presentation.actionTitle
+        {
+          Button(actionTitle) {
+            perform(action)
+          }
+          .buttonStyle(.borderedProminent)
+        }
+      }
+      .padding(.horizontal, 24)
+      .padding(.vertical, 10)
+      .background(color(for: presentation.tone).opacity(0.07))
+      .accessibilityElement(children: .contain)
+      .sheet(isPresented: $showingIncomingReview) {
+        if let sync = state?.safeSync, sync.status == .awaitingConfirmation {
+          IncomingRepositoryReviewSheet(
+            sync: sync,
+            onAccept: {
+              showingIncomingReview = false
+              Task {
+                await model.acceptIncomingRepositoryChange(
+                  productID: productID,
+                  syncID: sync.id
+                )
+              }
+            },
+            onReject: {
+              showingIncomingReview = false
+              Task {
+                await model.rejectIncomingRepositoryChange(
+                  productID: productID,
+                  syncID: sync.id
+                )
+              }
+            }
+          )
+        }
+      }
+    }
+  }
+
+  private func perform(_ action: SprintBoardGitHubAction) {
+    switch action {
+    case .check:
+      Task { await model.checkRemoteRepository(productID: productID) }
+    case .reviewIncoming:
+      Task {
+        await model.prepareIncomingRepositoryChange(productID: productID)
+        if model.githubRemoteRepositoryStates[productID]?.safeSync?.status
+          == .awaitingConfirmation
+        {
+          showingIncomingReview = true
+        }
+      }
+    }
+  }
+
+  private func color(for tone: SprintBoardGitHubPresentation.Tone) -> Color {
+    switch tone {
+    case .positive:
+      .green
+    case .informational:
+      .blue
+    case .attention:
+      .orange
+    case .critical:
+      .red
+    }
   }
 }
 
@@ -7362,9 +10188,11 @@ private struct SprintDraftOverview: View {
           .stroke(.separator.opacity(0.65), lineWidth: 1)
       }
 
-      Text("To change scope or priority, edit tickets in the Sprint or Backlog section of the Backlog view. Review does not start any agents.")
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      Text(
+        "To change scope or priority, edit tickets in the sprint or backlog section of the backlog view. Review does not start any agents."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
   }
 
@@ -7462,12 +10290,12 @@ private struct RetrospectivesView: View {
             ? "Sprint \(sprint.number) is paused"
             : "Sprint \(sprint.number) is still in progress"
         )
-          .font(.callout.weight(.semibold))
+        .font(.callout.weight(.semibold))
         Text(
           sprint.state == .paused
             ? "Existing evidence is preserved. Collection continues when the sprint resumes."
             : "Evidence will continue to accumulate until the sprint ends. "
-              + "Add action ideas whenever they occur; the Business Analyst will consider them "
+              + "Add action ideas whenever they occur; the business analyst will consider them "
               + "with the team’s evidence when preparing the final actions."
         )
         .font(.caption)
@@ -7488,7 +10316,8 @@ private struct RetrospectivesView: View {
     {
       plans.append(current)
     }
-    return plans
+    return
+      plans
       .filter { $0.sprint.state.isInProgress || $0.sprint.state == .completed }
       .sorted { $0.sprint.number > $1.sprint.number }
   }
@@ -7577,21 +10406,36 @@ private struct RetrospectivesView: View {
   private func retrospectiveThemeTitle(for body: String) -> String {
     let text = body.lowercased()
     let themes: [(String, [String])] = [
-      ("Verification & evidence", [
-        "check", "test", "verify", "verification", "candidate", "diff", "whitespace",
-      ]),
-      ("Documentation & knowledge", [
-        "document", "knowledge", "decision", "record", "wording",
-      ]),
-      ("Product scope & decisions", [
-        "approval", "requirement", "scope", "provider", "commercial", "privacy", "limit",
-      ]),
-      ("Experience & preview", [
-        "ui", "theme", "browser", "visual", "prototype", "responsive", "accessibility",
-      ]),
-      ("Integration & architecture", [
-        "integration", "adapter", "gateway", "cors", "contract", "response",
-      ]),
+      (
+        "Verification & evidence",
+        [
+          "check", "test", "verify", "verification", "candidate", "diff", "whitespace",
+        ]
+      ),
+      (
+        "Documentation & knowledge",
+        [
+          "document", "knowledge", "decision", "record", "wording",
+        ]
+      ),
+      (
+        "Product scope & decisions",
+        [
+          "approval", "requirement", "scope", "provider", "commercial", "privacy", "limit",
+        ]
+      ),
+      (
+        "Experience & preview",
+        [
+          "ui", "theme", "browser", "visual", "prototype", "responsive", "accessibility",
+        ]
+      ),
+      (
+        "Integration & architecture",
+        [
+          "integration", "adapter", "gateway", "cors", "contract", "response",
+        ]
+      ),
     ]
     return themes.first { _, keywords in
       keywords.contains { text.contains($0) }
@@ -7655,10 +10499,9 @@ private struct RetrospectivesView: View {
 
   private func retrospectiveFooter(_ plan: SprintPlan) -> some View {
     HStack(spacing: 10) {
-      if
-        plan.sprint.state.isInProgress
-          || plan.sprint.retrospectiveConcludedAt != nil
-          || !unresolvedActions.isEmpty
+      if plan.sprint.state.isInProgress
+        || plan.sprint.retrospectiveConcludedAt != nil
+        || !unresolvedActions.isEmpty
       {
         Image(
           systemName: plan.sprint.retrospectiveConcludedAt == nil
@@ -7812,7 +10655,7 @@ private struct RetrospectiveActionPanel: View {
       return "\(accepted) · \(dismissedCount) dismissed"
     case .reviewing:
       if synthesis?.status == .pending || synthesis?.status == .generating {
-        return "Business Analyst synthesis"
+        return "Business analyst synthesis"
       }
       if synthesis?.status == .failed {
         return "Needs attention"
@@ -7851,7 +10694,7 @@ private struct RetrospectiveActionPanel: View {
 
   private var emptyStateDetail: String {
     if phase == .collecting {
-      return "Add an action idea now. The Business Analyst will consider it after the sprint ends."
+      return "Add an action idea now. The business analyst will consider it after the sprint ends."
     }
     return reviewedCount == 0
       ? "The team did not suggest a change."
@@ -7963,8 +10806,8 @@ private struct RetrospectiveActionPanel: View {
               ? "clock.arrow.circlepath"
               : "checkmark.circle"
           )
-            .font(.title3)
-            .foregroundStyle(.tertiary)
+          .font(.title3)
+          .foregroundStyle(.tertiary)
           Text(emptyStateTitle)
             .font(.subheadline.weight(.medium))
           Text(emptyStateDetail)
@@ -8024,7 +10867,7 @@ private struct RetrospectiveActionPanel: View {
             RetrospectiveActionCandidateRow(
               note: note,
               allowsDeletion:
-                note.authorName == "Product Owner"
+                note.authorName == "Product owner"
                 && note.profileID == nil
             )
             if index < actionCandidateNotes.count - 1 {
@@ -8057,8 +10900,8 @@ private struct RetrospectiveActionPanel: View {
       .font(.subheadline.weight(.medium))
       Text(
         synthesis?.status == .generating
-          ? "The Business Analyst is grouping repeated observations into no more than five reviewable actions."
-          : "Spedito will ask the Business Analyst to prepare the final action list when Codex is available."
+          ? "The business analyst is grouping repeated observations into no more than five reviewable actions."
+          : "Spedito will ask the business analyst to prepare the final action list when Codex is available."
       )
       .font(.caption)
       .foregroundStyle(.secondary)
@@ -8147,7 +10990,8 @@ private struct RetrospectiveActionPanel: View {
 
   private var historicalEmptyStateDetail: String {
     if dismissedCount > 0 {
-      return "\(dismissedCount) suggested change\(dismissedCount == 1 ? " was" : "s were") dismissed."
+      return
+        "\(dismissedCount) suggested change\(dismissedCount == 1 ? " was" : "s were") dismissed."
     }
     return "No changes were proposed in this retrospective."
   }
@@ -8189,7 +11033,7 @@ private struct RetrospectiveActionCandidateRow: View {
         .font(.caption)
         .foregroundStyle(.secondary)
 
-        Label("For Business Analyst review", systemImage: "clock")
+        Label("For business analyst review", systemImage: "clock")
           .font(.caption.weight(.medium))
           .foregroundStyle(.purple)
       }
@@ -8222,7 +11066,7 @@ private struct RetrospectiveActionCandidateRow: View {
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
-        "It will not be included when the Business Analyst prepares the retrospective."
+        "It will not be included when the business analyst prepares the retrospective."
       )
     }
   }
@@ -8242,7 +11086,7 @@ private struct RetrospectiveActionIdeaView: View {
         Text("Add an action idea")
           .font(.title.bold())
         Text(
-          "Capture the idea now. The Business Analyst will consider it with the team’s evidence after the sprint ends."
+          "Capture the idea now. The business analyst will consider it with the team’s evidence after the sprint ends."
         )
         .foregroundStyle(.secondary)
       }
@@ -8260,7 +11104,7 @@ private struct RetrospectiveActionIdeaView: View {
         )
 
         Label(
-          "This is source evidence during the sprint, not an early decision. You’ll review any final action after the Business Analyst prepares the retrospective.",
+          "This is source evidence during the sprint, not an early decision. You’ll review any final action after the business analyst prepares the retrospective.",
           systemImage: "clock"
         )
         .font(.caption)
@@ -8400,7 +11244,7 @@ private struct RetrospectiveProposalView: View {
   private var proposalPrompt: String {
     switch destination {
     case .teamPractice:
-      "e.g. Confirm the preview evidence before asking for Product Owner approval."
+      "e.g. Confirm the preview evidence before asking for product owner approval."
     case .backlog:
       "e.g. Make sprint forecast changes visible in the retrospective."
     }
@@ -8411,7 +11255,7 @@ private struct RetrospectiveProposalView: View {
     case .teamPractice:
       "If accepted, this is added to Ways of working and inherited by future team runs."
     case .backlog:
-      "If accepted, this creates a backlog ticket and opens it for automatic Business Analyst refinement."
+      "If accepted, this creates a backlog ticket and opens it for automatic business analyst refinement."
     }
   }
 
@@ -8886,9 +11730,9 @@ private struct RetrospectiveColumn: View {
               ? "The team has chosen a destination for each action. Accept it or dismiss it."
               : "Suggested actions remain reviewable previews until the sprint is complete."
           )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
         }
       }
 
@@ -8985,8 +11829,7 @@ private struct RetrospectiveThemeSection: View {
 
       if isExpanded {
         VStack(alignment: .leading, spacing: 10) {
-          if
-            category == .suggestedAction,
+          if category == .suggestedAction,
             allowsActionDecisions,
             !proposedNotes.isEmpty
           {
@@ -9149,8 +11992,8 @@ private struct RetrospectiveStickyNote: View {
         actionDestination == .teamPractice ? "Added to Ways of working" : "Added to backlog",
         systemImage: destinationSymbol
       )
-        .foregroundStyle(actionDestination == .teamPractice ? .purple : .blue)
-        .font(.caption.weight(.semibold))
+      .foregroundStyle(actionDestination == .teamPractice ? .purple : .blue)
+      .font(.caption.weight(.semibold))
     case .dismissed:
       Label("Dismissed", systemImage: "xmark.circle")
         .foregroundStyle(.secondary)
@@ -9184,9 +12027,11 @@ private struct ReportsView: View {
         }
         Spacer()
         if !completedSprints.isEmpty {
-          Text("\(completedSprints.count) completed sprint\(completedSprints.count == 1 ? "" : "s")")
-            .font(.callout.monospacedDigit())
-            .foregroundStyle(.secondary)
+          Text(
+            "\(completedSprints.count) completed sprint\(completedSprints.count == 1 ? "" : "s")"
+          )
+          .font(.callout.monospacedDigit())
+          .foregroundStyle(.secondary)
         }
       }
       .workspaceHeaderLayout()
@@ -9208,7 +12053,7 @@ private struct ReportsView: View {
             VStack(alignment: .leading, spacing: 12) {
               Text("Measured delivery signals")
                 .font(.title3.bold())
-              LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
+              LazyVGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 12)], spacing: 12) {
                 ReportMetricCard(
                   title: "Delivered outcomes",
                   value: deliveredOutcomes.formatted(),
@@ -9219,7 +12064,7 @@ private struct ReportsView: View {
                 ReportMetricCard(
                   title: "Median cycle time",
                   value: medianCycleTime ?? "—",
-                  detail: "Wall time from Start Sprint to the final accepted ticket",
+                  detail: "Wall time from start sprint to the final accepted ticket",
                   symbol: "clock",
                   tint: .purple
                 )
@@ -9268,8 +12113,8 @@ private struct ReportsView: View {
                 Text(
                   "Choose one delivery signal at a time. Agent effort is normalized per delivered outcome so larger sprints do not automatically look more expensive. Select a sprint for exact values."
                 )
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 SprintPerformanceChart(
                   data: visibleSprintData,
                   selectedSprintNumber: $selectedSprintNumber
@@ -9324,7 +12169,8 @@ private struct ReportsView: View {
     }.sorted()
     guard !durations.isEmpty else { return nil }
     let middle = durations.count / 2
-    let value = durations.count.isMultiple(of: 2)
+    let value =
+      durations.count.isMultiple(of: 2)
       ? (durations[middle - 1] + durations[middle]) / 2
       : durations[middle]
     return RunDurationFormatter.duration(value)
@@ -9355,13 +12201,14 @@ private struct ReportsView: View {
   private var sprintData: [SprintReportDatum] {
     completedSprints.map { plan in
       let candidates = acceptedCandidates.filter { $0.sprintID == plan.sprint.id }
-      let cycleTime = if let started = plan.sprint.startedAt,
-        let completed = plan.sprint.completedAt
-      {
-        Optional(max(0, completed.timeIntervalSince(started)))
-      } else {
-        Optional<TimeInterval>.none
-      }
+      let cycleTime =
+        if let started = plan.sprint.startedAt,
+          let completed = plan.sprint.completedAt
+        {
+          Optional(max(0, completed.timeIntervalSince(started)))
+        } else {
+          Optional<TimeInterval>.none
+        }
       let runs = model.runs.filter { $0.sprintID == plan.sprint.id }
       return SprintReportDatum(
         sprintNumber: plan.sprint.number,
@@ -9561,12 +12408,28 @@ enum SprintReportPresentation {
     }
     return values
   }
+
+  static func retainedSelection(current: Int?, proposed: Int?) -> Int? {
+    proposed ?? current
+  }
 }
 
 private struct SprintPerformanceChart: View {
   let data: [SprintReportDatum]
   @Binding var selectedSprintNumber: Int?
   @State private var chartType: SprintReportChartType = .cycleTime
+
+  private var persistentSelectedSprintNumber: Binding<Int?> {
+    Binding(
+      get: { selectedSprintNumber },
+      set: { proposedSelection in
+        selectedSprintNumber = SprintReportPresentation.retainedSelection(
+          current: selectedSprintNumber,
+          proposed: proposedSelection
+        )
+      }
+    )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -9588,7 +12451,7 @@ private struct SprintPerformanceChart: View {
           metric: .cycleTime,
           tint: .purple,
           data: data,
-          selectedSprintNumber: $selectedSprintNumber
+          selectedSprintNumber: persistentSelectedSprintNumber
         )
       case .agentEffort:
         SprintTimeTrendChart(
@@ -9597,12 +12460,12 @@ private struct SprintPerformanceChart: View {
           metric: .agentTimePerOutcome,
           tint: .indigo,
           data: data,
-          selectedSprintNumber: $selectedSprintNumber
+          selectedSprintNumber: persistentSelectedSprintNumber
         )
       case .outcomesAndReview:
         SprintOutcomeChart(
           data: data,
-          selectedSprintNumber: $selectedSprintNumber
+          selectedSprintNumber: persistentSelectedSprintNumber
         )
       }
 
@@ -9970,11 +12833,12 @@ struct SprintReportDurationScale: Equatable {
 
   func axisLabel(_ plottedValue: Double) -> String {
     let roundedValue = plottedValue.rounded()
-    let value = if abs(plottedValue - roundedValue) < 0.01 {
-      roundedValue.formatted(.number.precision(.fractionLength(0)))
-    } else {
-      plottedValue.formatted(.number.precision(.fractionLength(1)))
-    }
+    let value =
+      if abs(plottedValue - roundedValue) < 0.01 {
+        roundedValue.formatted(.number.precision(.fractionLength(0)))
+      } else {
+        plottedValue.formatted(.number.precision(.fractionLength(1)))
+      }
     return value + unit.suffix
   }
 }
@@ -10123,8 +12987,8 @@ private struct SprintBanner: View {
         Text(plan.sprint.goal)
           .lineLimit(2)
         Text(planningSummary)
-        .font(.caption)
-        .foregroundStyle(.secondary)
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
 
       Spacer()
@@ -10193,7 +13057,8 @@ private struct SprintBanner: View {
     if !planningIsComplete {
       return "\(plan.items.count) tickets scoped · planning has not been completed"
     }
-    let tokens = plan.estimatedTokens >= 1_000
+    let tokens =
+      plan.estimatedTokens >= 1_000
       ? String(format: "%.0fk", Double(plan.estimatedTokens) / 1_000)
       : plan.estimatedTokens.formatted()
     return
@@ -10251,8 +13116,7 @@ struct SprintTicketRunTelemetryPresentation {
   }
 
   init(run: AgentRun?, hasLiveActivity: Bool) {
-    if
-      let used = run?.contextUsedTokens,
+    if let used = run?.contextUsedTokens,
       let window = run?.contextWindowTokens,
       window > 0
     {
@@ -10287,7 +13151,8 @@ struct SprintTicketRunDetailsSelection {
       return latestRun
     }
 
-    return allRuns
+    return
+      allRuns
       .filter(hasContextTelemetry)
       .max { lhs, rhs in
         if lhs.updatedAt == rhs.updatedAt {
@@ -10425,22 +13290,15 @@ private struct SprintTicketRunSummary<Status: View>: View {
     compactionCount: Int?
   ) -> some View {
     let percentage = Int((fraction * 100).rounded())
-    let compactionDescription = compactionCount.map {
-      ", \($0) compaction\($0 == 1 ? "" : "s")"
-    } ?? ""
+    let compactionDescription =
+      compactionCount.map {
+        ", \($0) compaction\($0 == 1 ? "" : "s")"
+      } ?? ""
 
-    return ZStack {
-      Circle()
-        .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 2.5)
-      Circle()
-        .trim(from: 0, to: fraction)
-        .stroke(
-          AIActivityVisualStyle.tint,
-          style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-        )
-        .rotationEffect(.degrees(-90))
-    }
-    .frame(width: 12, height: 12)
+    return CircularProgressRing(
+      fraction: fraction,
+      tint: AIActivityVisualStyle.tint
+    )
     .overlay {
       if let compactionCount {
         Text(compactionCount.formatted())
@@ -10571,8 +13429,7 @@ private struct SprintRunDetailsPopover: View {
             )
           }
         }
-        if
-          run.status != .queued,
+        if run.status != .queued,
           let used = run.contextUsedTokens,
           let window = run.contextWindowTokens,
           window > 0
@@ -10613,12 +13470,10 @@ private struct SprintRunDetailsPopover: View {
   }
 
   private func detailLine(_ label: String, value: Text) -> some View {
-    (
-      Text("\(label): ")
-        .foregroundColor(.secondary)
-      + value
-    )
-    .fixedSize(horizontal: false, vertical: true)
+    (Text("\(label): ")
+      .foregroundColor(.secondary)
+      + value)
+      .fixedSize(horizontal: false, vertical: true)
   }
 }
 
@@ -10628,12 +13483,12 @@ private struct SprintCardActivity {
   let tint: Color
 }
 
-private extension AgentRunStatus {
-  var displayTitle: String {
+extension AgentRunStatus {
+  fileprivate var displayTitle: String {
     switch self {
     case .queued: "Queued"
     case .running: "Running"
-    case .awaitingOwner: "Needs Product Owner input"
+    case .awaitingOwner: "Needs product owner input"
     case .interrupted: "Interrupted"
     case .completed: "Completed"
     case .failed: "Failed"
@@ -10647,6 +13502,7 @@ private struct SprintTicketStatusBadge: View {
   let itemState: WorkItemState
   let candidateStatus: CandidateRevisionStatus?
   let isDependencyBlocked: Bool
+  let isAcceptanceInProgress: Bool
   let planningIssue: String?
 
   private var activity: SprintCardActivity {
@@ -10655,6 +13511,13 @@ private struct SprintTicketStatusBadge: View {
         title: "Needs planning",
         symbol: "exclamationmark.triangle.fill",
         tint: .orange
+      )
+    }
+    if isAcceptanceInProgress {
+      return SprintCardActivity(
+        title: "Completing ticket",
+        symbol: "checkmark.circle.badge.clock",
+        tint: .blue
       )
     }
     if run?.status == .awaitingOwner {
@@ -10673,13 +13536,7 @@ private struct SprintTicketStatusBadge: View {
     }
     if let candidateStatus {
       switch candidateStatus {
-      case .queuedForReview:
-        return SprintCardActivity(
-          title: "Queued for review",
-          symbol: "checkmark.shield",
-          tint: .indigo
-        )
-      case .queuedForIntegration:
+      case .queuedForReview, .queuedForIntegration:
         return SprintCardActivity(
           title: "Queued to integrate",
           symbol: "text.line.first.and.arrowtriangle.forward",
@@ -10724,6 +13581,12 @@ private struct SprintTicketStatusBadge: View {
             tint: .indigo
           )
         }
+      case .promoting:
+        return SprintCardActivity(
+          title: "Completing ticket",
+          symbol: "checkmark.circle.badge.clock",
+          tint: .blue
+        )
       case .readyForDemo:
         return SprintCardActivity(
           title: "Ready for demo",
@@ -10998,7 +13861,7 @@ private struct TicketColumn: View {
           }
           .buttonStyle(.bordered)
           .controlSize(.small)
-          .help("Add ticket to Backlog")
+          .help("Add ticket to backlog")
         }
       }
       .padding(.horizontal, showsWorkflowActions ? 0 : 10)
@@ -11145,11 +14008,9 @@ private struct WorkItemCard: View {
       }
     guard let candidate else { return nil }
     if let latestRun,
-      (candidate.status == .superseded || candidate.status == .failed),
-      (
-        latestRun.status == .queued || latestRun.status == .running
-          || latestRun.status == .awaitingOwner
-      ),
+      candidate.status == .superseded || candidate.status == .failed,
+      latestRun.status == .queued || latestRun.status == .running
+        || latestRun.status == .awaitingOwner,
       latestRun.updatedAt > candidate.updatedAt
     {
       return nil
@@ -11311,6 +14172,7 @@ private struct WorkItemCard: View {
       itemState: item.state,
       candidateStatus: latestCandidate?.status,
       isDependencyBlocked: isDependencyBlocked,
+      isAcceptanceInProgress: model.ticketAcceptanceInProgressWorkItemIDs.contains(item.id),
       planningIssue: planningIssue
     )
   }
@@ -11346,8 +14208,7 @@ enum SprintTicketWorkLogHistory {
         continue
       }
 
-      if
-        comment.authorKind == .agent,
+      if comment.authorKind == .agent,
         let presentation = TicketOwnerQuestion.presentation(
           in: comment.body,
           structuredQuestion: comment.ownerQuestion
@@ -11379,9 +14240,12 @@ enum SprintTicketWorkLogHistory {
           body: questionComment.body,
           ownerQuestion: questionComment.ownerQuestion,
           answeredQuestions: [match.answer],
+          authorAvatarURL: questionComment.authorAvatarURL,
+          externalURL: questionComment.externalURL,
+          externalID: questionComment.externalID,
+          githubReviewContext: questionComment.githubReviewContext,
           createdAt: questionComment.createdAt
         )
-        continue
       }
 
       displayed.append(comment)
@@ -11395,7 +14259,8 @@ enum SprintTicketWorkLogHistory {
     permissionRequests: [AgentPermissionRequest]
   ) -> Bool {
     let body = comment.body.trimmingCharacters(in: .whitespacesAndNewlines)
-    return permissionRequests
+    return
+      permissionRequests
       .filter { $0.workItemID == comment.workItemID }
       .contains { request in
         switch comment.authorKind {
@@ -11416,7 +14281,7 @@ enum SprintTicketWorkLogHistory {
         case .system:
           body.hasPrefix("Permission requested: \(request.detail)")
             || body == "Automatically allowed by saved product access: \(request.detail)"
-        case .agent:
+        case .agent, .external:
           false
         }
       }
@@ -11464,7 +14329,8 @@ enum SprintTicketCommentRouting {
     profiles: [AgentProfile]
   ) -> AgentProfile? {
     let activeStatuses: Set<AgentRunStatus> = [.queued, .running, .awaitingOwner]
-    let activeRun = runs
+    let activeRun =
+      runs
       .filter {
         $0.workItemID == workItemID && activeStatuses.contains($0.status)
       }
@@ -11474,8 +14340,7 @@ enum SprintTicketCommentRouting {
         if lhsDate != rhsDate { return lhsDate < rhsDate }
         return $0.id.uuidString < $1.id.uuidString
       }
-    if
-      let activeRun,
+    if let activeRun,
       let activeProfile = profiles.first(where: { $0.id == activeRun.profileID })
     {
       return activeProfile
@@ -11494,7 +14359,8 @@ enum SprintTicketCommentRouting {
     since date: Date,
     comments: [TicketComment]
   ) -> TicketComment? {
-    let relevantComments = comments
+    let relevantComments =
+      comments
       .filter { $0.workItemID == workItemID && $0.createdAt >= date }
       .sorted {
         if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
@@ -11527,8 +14393,7 @@ enum SprintTicketCommentRouting {
 
     var latestParticipant: (profile: AgentProfile, date: Date)?
     for comment in comments
-    where comment.workItemID == workItemID && comment.authorKind == .agent
-    {
+    where comment.workItemID == workItemID && comment.authorKind == .agent {
       guard let profile = profiles.first(where: { $0.name == comment.authorName }) else {
         continue
       }
@@ -11552,6 +14417,42 @@ enum SprintTicketCommentRouting {
   }
 }
 
+enum SprintTicketWorkLogExternalLink {
+  static func resolve(
+    comment: TicketComment,
+    pullRequestNumber: Int?,
+    pullRequestURL: URL?
+  ) -> URL? {
+    if let externalURL = comment.externalURL {
+      return externalURL
+    }
+    guard comment.authorKind == .system,
+      comment.authorName == "Spedito",
+      let pullRequestNumber,
+      let pullRequestURL,
+      comment.body.hasPrefix("Created draft pull request #\(pullRequestNumber) ")
+    else {
+      return nil
+    }
+    return pullRequestURL
+  }
+
+  static func displayedBody(
+    comment: TicketComment,
+    externalURL: URL?
+  ) -> String {
+    guard comment.authorKind == .system,
+      comment.authorName == "Spedito",
+      comment.body.hasPrefix("Created draft pull request #"),
+      let externalURL,
+      !comment.body.contains(externalURL.absoluteString)
+    else {
+      return comment.body
+    }
+    return "\(comment.body)\n\n[View on GitHub](\(externalURL.absoluteString))"
+  }
+}
+
 enum SprintTicketWorkLogAttention {
   static func requiresProductOwnerInput(
     hasPendingPermissionRequest: Bool,
@@ -11562,10 +14463,8 @@ enum SprintTicketWorkLogAttention {
   ) -> Bool {
     hasPendingPermissionRequest
       || hasActiveOwnerQuestion
-      || (
-        requiresKnowledgeApproval
-          && knowledgeProposalStatuses.contains(.reviewed)
-      )
+      || (requiresKnowledgeApproval
+        && knowledgeProposalStatuses.contains(.reviewed))
       || ticketState == .acceptance
   }
 }
@@ -11580,7 +14479,6 @@ private struct SprintTicketDetailView: View {
   @State private var isPostingComment = false
   @State private var isAskingQuestion = false
   @State private var isResumingWork = false
-  @State private var isAcceptingTicket = false
   @State private var isDemoActionRunning = false
   @State private var decidingPermissionRequestID: UUID?
   @State private var decidingKnowledgeProposalIDs: Set<UUID> = []
@@ -11597,6 +14495,10 @@ private struct SprintTicketDetailView: View {
     model.workItems.first { $0.id == item.id } ?? item
   }
 
+  private var isAcceptingTicket: Bool {
+    model.ticketAcceptanceInProgressWorkItemIDs.contains(currentItem.id)
+  }
+
   private var currentSprintItem: SprintItem? {
     model.sprintPlan?.items.first { $0.workItemID == item.id }
   }
@@ -11605,6 +14507,21 @@ private struct SprintTicketDetailView: View {
     let sprintOwnerID = currentSprintItem?.implementerProfileID
     guard let ownerID = sprintOwnerID ?? currentItem.ownerProfileID else { return nil }
     return model.profiles.first { $0.id == ownerID }
+  }
+
+  private var ticketPullRequestPublication: RemotePublication? {
+    model.githubRemoteRepositoryStates[currentItem.productID]?.publications
+      .filter { $0.workItemID == currentItem.id }
+      .sorted { $0.updatedAt > $1.updatedAt }
+      .first
+  }
+
+  private func workLogExternalURL(for comment: TicketComment) -> URL? {
+    SprintTicketWorkLogExternalLink.resolve(
+      comment: comment,
+      pullRequestNumber: ticketPullRequestPublication?.pullRequest?.number,
+      pullRequestURL: ticketPullRequestPublication?.pullRequest?.canonicalURL
+    )
   }
 
   private var commentReplyRecipient: AgentProfile? {
@@ -11683,10 +14600,12 @@ private struct SprintTicketDetailView: View {
         let isActiveDeliveryRun =
           currentItem.state == .running
           && currentSprintItem?.implementerProfileID == run.profileID
-        guard SprintTicketRunContextVisibility.includes(
-          profile: profile,
-          isDeliveryRun: implementationRunIDs.contains(run.id) || isActiveDeliveryRun
-        ) else {
+        guard
+          SprintTicketRunContextVisibility.includes(
+            profile: profile,
+            isDeliveryRun: implementationRunIDs.contains(run.id) || isActiveDeliveryRun
+          )
+        else {
           return nil
         }
         let pageIDs = Set((pageIDsByRun[run.id] ?? []).map(\.pageID))
@@ -11757,6 +14676,13 @@ private struct SprintTicketDetailView: View {
   }
 
   private func trunkPromotionValue(for candidate: CandidateRevision) -> String {
+    if candidate.deliveryKind == .localOutcome {
+      return switch candidate.status {
+      case .accepted: "Accepted"
+      case .readyForDemo: "Awaiting your approval"
+      default: "Not accepted"
+      }
+    }
     switch candidate.status {
     case .accepted:
       return "Promoted after approval"
@@ -11768,7 +14694,12 @@ private struct SprintTicketDetailView: View {
   }
 
   private func trunkPromotionSymbol(for candidate: CandidateRevision) -> String {
-    candidate.status == .accepted
+    if candidate.deliveryKind == .localOutcome {
+      return candidate.status == .accepted
+        ? "checkmark.circle.fill"
+        : "doc.text.magnifyingglass"
+    }
+    return candidate.status == .accepted
       ? "checkmark.circle.fill"
       : "arrow.triangle.branch"
   }
@@ -11793,10 +14724,8 @@ private struct SprintTicketDetailView: View {
 
   private var knowledgeProposalsBlockCompletion: Bool {
     currentKnowledgeProposals.contains { $0.status == .proposed }
-      || (
-        model.requiresKnowledgeApproval
-          && currentKnowledgeProposals.contains { $0.status == .reviewed }
-      )
+      || (model.requiresKnowledgeApproval
+        && currentKnowledgeProposals.contains { $0.status == .reviewed })
   }
 
   private var hasPendingWorkLogAction: Bool {
@@ -11824,7 +14753,7 @@ private struct SprintTicketDetailView: View {
       Label("Latest activity", systemImage: "arrow.down.to.line")
     }
     .disabled(!hasEntries)
-    .help("Jump to the latest Work log entry")
+    .help("Jump to the latest work log entry")
   }
 
   private var boardStatusTitle: String {
@@ -11834,13 +14763,13 @@ private struct SprintTicketDetailView: View {
       {
         return "Needs planning"
       }
-      return "Ready to Pick"
+      return "Ready to pick"
     }
     return switch currentItem.state {
-    case .queued: "Ready to Pick"
-    case .running: "In Progress"
-    case .integrating, .verifying, .readyToRelease: "In Review"
-    case .acceptance: "Ready for Demo"
+    case .queued: "Ready to pick"
+    case .running: "In progress"
+    case .integrating, .verifying, .readyToRelease: "In review"
+    case .acceptance: "Ready for demo"
     case .released: "Done"
     default: currentItem.state.title
     }
@@ -11849,10 +14778,10 @@ private struct SprintTicketDetailView: View {
   private var boardStatusSymbol: String {
     switch boardStatusTitle {
     case "Needs planning": "exclamationmark.triangle.fill"
-    case "Ready to Pick": "tray.full"
-    case "In Progress": "bolt.fill"
-    case "In Review": "checkmark.shield"
-    case "Ready for Demo": "play.rectangle"
+    case "Ready to pick": "tray.full"
+    case "In progress": "bolt.fill"
+    case "In review": "checkmark.shield"
+    case "Ready for demo": "play.rectangle"
     case "Done": "checkmark.circle.fill"
     default: currentItem.state.activitySymbol
     }
@@ -11861,10 +14790,10 @@ private struct SprintTicketDetailView: View {
   private var boardStatusTint: Color {
     switch boardStatusTitle {
     case "Needs planning": .orange
-    case "Ready to Pick": Color(nsColor: .secondaryLabelColor)
-    case "In Progress": .blue
-    case "In Review": .purple
-    case "Ready for Demo": .orange
+    case "Ready to pick": Color(nsColor: .secondaryLabelColor)
+    case "In progress": .blue
+    case "In review": .purple
+    case "Ready for demo": .orange
     case "Done": .green
     default: currentItem.state.activityTint
     }
@@ -11875,7 +14804,8 @@ private struct SprintTicketDetailView: View {
     case .option(let option):
       return option
     case .custom:
-      let answer = customOwnerAnswerDraft
+      let answer =
+        customOwnerAnswerDraft
         .trimmingCharacters(in: .whitespacesAndNewlines)
       return answer.isEmpty ? nil : answer
     case nil:
@@ -11953,15 +14883,15 @@ private struct SprintTicketDetailView: View {
       from: comments,
       permissionRequests: ticketPermissionRequests
     )
-      .filter(isVisibleWorkLogComment)
-      .map(SprintWorkLogEntry.comment)
+    .filter(isVisibleWorkLogComment)
+    .map(SprintWorkLogEntry.comment)
     let eventEntries = SprintTicketWorkLogTimeline.displayedEvents(
       events: activityEvents,
       comments: comments,
       permissionRequests: ticketPermissionRequests,
       demoSubmissions: demoSubmissions
     )
-      .map(SprintWorkLogEntry.event)
+    .map(SprintWorkLogEntry.event)
     let artifactEntries =
       ticketPermissionRequests.map(SprintWorkLogEntry.permission)
       + ticketRunContexts.map(SprintWorkLogEntry.runContext)
@@ -12177,7 +15107,7 @@ private struct SprintTicketDetailView: View {
         hoveredContextPageID = nil
       }
     }
-    .help("Open \(page.title) in Product knowledge")
+    .help("Open \(page.title) in product knowledge")
   }
 
   private func deliveryRevisionSection(
@@ -12192,73 +15122,97 @@ private struct SprintTicketDetailView: View {
       showsBottomSeparator: showsBottomSeparator
     ) {
       workLogPanel(tint: .purple) {
-        SprintTicketSectionCard(title: "Delivery revision") {
+        SprintTicketSectionCard(
+          title: candidate.deliveryKind == .localOutcome ? "Delivery outcome" : "Delivery revision"
+        ) {
           VStack(alignment: .leading, spacing: 10) {
             LazyVGrid(
               columns: Array(
                 repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
-                count: 5
+                count: candidate.deliveryKind.changesRepository ? 5 : 3
               ),
               alignment: .leading,
               spacing: 12
             ) {
-            SprintTicketMetadata(
-              title: "Ticket branch",
-              value: candidate.branchName,
-              symbol: "arrow.triangle.branch",
-              tint: .indigo
-            )
-            SprintTicketMetadata(
-              title: "Candidate",
-              value: "\(candidate.shortHeadSHA) · \(candidate.commitCount) commit\(candidate.commitCount == 1 ? "" : "s")",
-              symbol: "shippingbox",
-              tint: .purple
-            )
-            if let integratedSHA = candidate.shortIntegratedSHA {
-              SprintTicketMetadata(
-                title: "Integrated revision",
-                value: integratedSHA,
-                symbol: "point.3.connected.trianglepath.dotted",
-                tint: .green
-              )
-            }
-            SprintTicketMetadata(
-              title: "Local trunk",
-              value: trunkPromotionValue(for: candidate),
-              symbol: trunkPromotionSymbol(for: candidate),
-              tint: trunkPromotionTint(for: candidate)
-            )
-            if candidate.id == currentCandidate?.id {
-              Button {
-                model.requestCodebaseFocus(workItemID: currentItem.id)
-                dismiss()
-              } label: {
-                HStack(spacing: 8) {
-                  Image(systemName: "chevron.left.forwardslash.chevron.right")
-                    .foregroundStyle(.indigo)
-                  VStack(alignment: .leading, spacing: 1) {
-                    Text("Codebase")
-                      .font(.caption2)
-                      .foregroundStyle(.secondary)
-                    HStack(spacing: 4) {
-                      Text("View changes")
-                      Image(systemName: "arrow.right")
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.indigo)
-                  }
+              if candidate.deliveryKind == .localOutcome {
+                SprintTicketMetadata(
+                  title: "Outcome",
+                  value: "Version \(candidate.version)",
+                  symbol: "doc.text.magnifyingglass",
+                  tint: .purple
+                )
+                SprintTicketMetadata(
+                  title: "Repository",
+                  value: "No changes",
+                  symbol: "arrow.triangle.branch",
+                  tint: .secondary
+                )
+                SprintTicketMetadata(
+                  title: "Review",
+                  value: trunkPromotionValue(for: candidate),
+                  symbol: trunkPromotionSymbol(for: candidate),
+                  tint: trunkPromotionTint(for: candidate)
+                )
+              } else {
+                SprintTicketMetadata(
+                  title: "Ticket branch",
+                  value: candidate.branchName,
+                  symbol: "arrow.triangle.branch",
+                  tint: .indigo
+                )
+                SprintTicketMetadata(
+                  title: "Candidate",
+                  value:
+                    "\(candidate.shortHeadSHA) · \(candidate.commitCount) commit\(candidate.commitCount == 1 ? "" : "s")",
+                  symbol: "shippingbox",
+                  tint: .purple
+                )
+                if let integratedSHA = candidate.shortIntegratedSHA {
+                  SprintTicketMetadata(
+                    title: "Integrated revision",
+                    value: integratedSHA,
+                    symbol: "point.3.connected.trianglepath.dotted",
+                    tint: .green
+                  )
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                SprintTicketMetadata(
+                  title: "Local trunk",
+                  value: trunkPromotionValue(for: candidate),
+                  symbol: trunkPromotionSymbol(for: candidate),
+                  tint: trunkPromotionTint(for: candidate)
+                )
+                if candidate.id == currentCandidate?.id {
+                  Button {
+                    model.requestCodebaseFocus(workItemID: currentItem.id)
+                    dismiss()
+                  } label: {
+                    HStack(spacing: 8) {
+                      Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .foregroundStyle(.indigo)
+                      VStack(alignment: .leading, spacing: 1) {
+                        Text("Codebase")
+                          .font(.caption2)
+                          .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                          Text("View changes")
+                          Image(systemName: "arrow.right")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.indigo)
+                      }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                  }
+                  .buttonStyle(.plain)
+                }
               }
-              .buttonStyle(.plain)
             }
-          }
-          if candidate.status != .accepted {
-            Text(deliveryRevisionExplanation(candidate.status))
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
+            if candidate.status != .accepted {
+              Text(deliveryRevisionExplanation(candidate))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
           }
           .textSelection(.enabled)
@@ -12268,9 +15222,17 @@ private struct SprintTicketDetailView: View {
   }
 
   private func deliveryRevisionExplanation(
-    _ status: CandidateRevisionStatus
+    _ candidate: CandidateRevision
   ) -> String {
-    switch status {
+    if candidate.deliveryKind == .localOutcome {
+      return switch candidate.status {
+      case .changesRequested, .superseded, .failed:
+        "This local outcome was not accepted."
+      default:
+        "This outcome is stored in Spedito and does not create or promote a repository revision."
+      }
+    }
+    return switch candidate.status {
     case .changesRequested, .superseded, .failed:
       "This candidate was not promoted to local trunk."
     default:
@@ -12288,7 +15250,8 @@ private struct SprintTicketDetailView: View {
     }
     let isActionable = pendingPermissionRequest?.id == request.id
     let presentation = SprintPermissionRequestPresentation(request: request)
-    let isSpeditoDecision = request.status == .existingAccess
+    let isSpeditoDecision =
+      request.status == .existingAccess
       || request.status == .policyDenied
     return workLogArtifactRow(
       actorName: isSpeditoDecision
@@ -12392,22 +15355,22 @@ private struct SprintTicketDetailView: View {
                 isActionable: isActionable
               )
             )
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(
-                permissionStatusTint(
-                  request.status,
-                  isActionable: isActionable
-                )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(
+              permissionStatusTint(
+                request.status,
+                isActionable: isActionable
               )
-              .padding(.horizontal, 8)
-              .padding(.vertical, 4)
-              .background(
-                permissionStatusTint(
-                  request.status,
-                  isActionable: isActionable
-                ).opacity(0.1),
-                in: Capsule()
-              )
+            )
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+              permissionStatusTint(
+                request.status,
+                isActionable: isActionable
+              ).opacity(0.1),
+              in: Capsule()
+            )
           }
 
           VStack(alignment: .leading, spacing: 5) {
@@ -12530,9 +15493,14 @@ private struct SprintTicketDetailView: View {
     let result = executionResult(for: candidate)
     let specification = result?.demo
     let session = model.currentDemoSession(for: candidate.id)
+    let localOutcomePresentation: SprintTicketLocalOutcomePresentation? =
+      candidate.deliveryKind == .localOutcome
+      ? SprintTicketLocalOutcomePresentation(result: result, status: candidate.status)
+      : nil
     let eventProfile = model.profiles.first { $0.name == demo.event.actor }
     let canOpenDemo =
-      candidate.id == currentCandidate?.id
+      candidate.deliveryKind.changesRepository
+      && candidate.id == currentCandidate?.id
       && candidate.status == .readyForDemo
       && currentItem.state == .acceptance
     return workLogArtifactRow(
@@ -12543,15 +15511,27 @@ private struct SprintTicketDetailView: View {
     ) {
       VStack(alignment: .leading, spacing: 14) {
         HStack(spacing: 10) {
-          Image(systemName: "play.rectangle.fill")
-            .font(.title3)
-            .foregroundStyle(.orange)
+          Image(
+            systemName: candidate.deliveryKind == .localOutcome
+              ? "doc.text.magnifyingglass"
+              : "play.rectangle.fill"
+          )
+          .font(.title3)
+          .foregroundStyle(.orange)
           VStack(alignment: .leading, spacing: 2) {
-            Text(specification?.title ?? "Demo")
-              .font(.headline)
-            Text(specification?.presentation.kind.title ?? "Demo setup unavailable")
-              .font(.caption)
-              .foregroundStyle(.secondary)
+            Text(
+              candidate.deliveryKind == .localOutcome
+                ? "Review outcome"
+                : specification?.title ?? "Demo"
+            )
+            .font(.headline)
+            Text(
+              localOutcomePresentation?.subtitle
+                ?? specification?.presentation.kind.title
+                ?? "Demo setup unavailable"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
           }
           Spacer()
           if canOpenDemo,
@@ -12582,22 +15562,47 @@ private struct SprintTicketDetailView: View {
         }
 
         Text(
-          demoExplanation(
-            candidate: candidate,
-            specification: specification,
-            session: session,
-            canOpenDemo: canOpenDemo
-          )
+          localOutcomePresentation?.explanation
+            ?? demoExplanation(
+              candidate: candidate,
+              specification: specification,
+              session: session,
+              canOpenDemo: canOpenDemo
+            )
         )
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+        if let outcome = localOutcomePresentation?.outcome {
+          VStack(alignment: .leading, spacing: 7) {
+            Text("Outcome to review")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+            TicketMarkdownDocument(source: outcome, baseFont: .body)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        }
+
+        if let handoff = localOutcomePresentation?.handoff {
+          WorkLogDisclosure(
+            collapsedTitle: "Read the full analysis and evidence",
+            expandedTitle: "Hide the full analysis and evidence",
+            tint: .orange
+          ) {
+            TicketMarkdownDocument(source: handoff, baseFont: .callout)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(10)
+          }
+        }
 
         if let instructions = result?.reviewInstructions,
           !instructions.isEmpty
         {
           VStack(alignment: .leading, spacing: 7) {
-            Text("Things to try")
+            Text(localOutcomePresentation == nil ? "Things to try" : "Decision and checks")
               .font(.caption.weight(.semibold))
               .foregroundStyle(.secondary)
             ForEach(instructions, id: \.self) { instruction in
@@ -12692,12 +15697,13 @@ private struct SprintTicketDetailView: View {
     canOpenDemo: Bool
   ) -> String {
     guard let specification else {
-      return "This candidate predates managed demos. Request changes so the assigned team member can add a one-click demo."
+      return
+        "This candidate predates managed demos. Request changes so the assigned team member can add a one-click demo."
     }
     guard canOpenDemo else {
       return candidate.status == .accepted
-        ? "The Product Owner approved this reviewed demo and promoted its integrated revision."
-        : "This earlier demo submission remains in the Work log as delivery history."
+        ? "The product owner approved this reviewed demo and promoted its integrated revision."
+        : "This earlier demo submission remains in the work log as delivery history."
     }
     switch session?.status {
     case .preparing:
@@ -12824,13 +15830,15 @@ private struct SprintTicketDetailView: View {
   ) -> String {
     switch status {
     case .accepted:
-      "These recommendations were published to the Backlog for individual review."
+      "These recommendations were published to the backlog for individual review."
     case .readyForDemo:
-      "Approving this research outcome will publish these as reviewable Backlog proposals. Nothing enters the Backlog until you accept each proposal."
-    case .queuedForReview, .reviewing:
-      "These recommendations are part of this candidate and remain subject to Tech Lead review."
-    case .queuedForIntegration, .integrating, .resolvingConflict:
-      "The Tech Lead approved these recommendations. They are waiting to join the integrated demo candidate."
+      "Approving this research outcome will publish these as reviewable backlog proposals. Nothing enters the backlog until you accept each proposal."
+    case .queuedForReview, .queuedForIntegration, .integrating, .resolvingConflict:
+      "These recommendations are part of this candidate and remain subject to tech lead review after integration."
+    case .reviewing:
+      "These recommendations are part of the integrated candidate under tech lead review."
+    case .promoting:
+      "This accepted outcome is being published. Its recommendations remain unpublished until acceptance completes."
     case .changesRequested, .superseded, .failed:
       "These recommendations belonged to an earlier candidate and were not published."
     }
@@ -12947,15 +15955,17 @@ private struct SprintTicketDetailView: View {
     _ proposals: [KnowledgePageProposal]
   ) -> String {
     if proposals.contains(where: { $0.status == .proposed }) {
-      return "These durable wiki changes travel with the delivery and are currently being checked by the Tech Lead."
+      return
+        "These durable wiki changes travel with the delivery and are currently being checked by the tech lead."
     }
     if proposals.contains(where: { $0.status == .reviewed }) {
       return model.requiresKnowledgeApproval
-        ? "The Tech Lead reviewed these durable wiki changes. Accept or reject each change before completing the ticket."
-        : "The Tech Lead reviewed these Product knowledge changes. They’ll be published automatically when you approve this ticket."
+        ? "The tech lead reviewed these durable wiki changes. Accept or reject each change before completing the ticket."
+        : "The tech lead reviewed these product knowledge changes. They’ll be published automatically when you approve this ticket."
     }
     if proposals.allSatisfy({ $0.status == .accepted }) {
-      return "Published after Tech Lead review. Open a page below to read the canonical result in the Knowledge Base."
+      return
+        "Published after tech lead review. Open a page below to read the canonical result in the knowledge base."
     }
     return "These proposed changes remain visible as part of the ticket’s delivery history."
   }
@@ -13035,6 +16045,7 @@ private struct SprintTicketDetailView: View {
               onOpenRelationship: openRelationship
             )
 
+
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
@@ -13072,6 +16083,7 @@ private struct SprintTicketDetailView: View {
                       case .comment(let comment):
                         SprintTicketCommentRow(
                           comment: comment,
+                          externalURL: workLogExternalURL(for: comment),
                           authorProfile: model.profiles.first { $0.name == comment.authorName },
                           mentionedProfile: mentionedProfile(
                             in: comment.body,
@@ -13098,7 +16110,7 @@ private struct SprintTicketDetailView: View {
                             : nil,
                           isRouting:
                             comment.id == unansweredPermissionComment?.id
-                              && isAskingQuestion,
+                            && isAskingQuestion,
                           onRoute:
                             comment.id == unansweredPermissionComment?.id
                             && !model.isTicketConversationMessageRunning
@@ -13199,6 +16211,12 @@ private struct SprintTicketDetailView: View {
     .sheet(item: $selectedRelationshipTicket) { relatedItem in
       SprintTicketDetailView(item: relatedItem)
     }
+    .onAppear {
+      model.setGitHubReviewTicket(item.id, isVisible: true)
+    }
+    .onDisappear {
+      model.setGitHubReviewTicket(item.id, isVisible: false)
+    }
     .task {
       while !Task.isCancelled {
         let isFirstLoad = !hasLoadedWorkLog
@@ -13217,8 +16235,7 @@ private struct SprintTicketDetailView: View {
         let latestEntryID = workLogEntries.last?.id
         if isFirstLoad, hasPendingWorkLogAction {
           workLogScrollRequest += 1
-        } else if
-          hasLoadedWorkLog,
+        } else if hasLoadedWorkLog,
           !isAcceptingTicket,
           latestEntryID != previousLastEntryID
         {
@@ -13282,14 +16299,8 @@ private struct SprintTicketDetailView: View {
 
   private func acceptTicket() {
     guard !isAcceptingTicket, !knowledgeProposalsBlockCompletion else { return }
-    isAcceptingTicket = true
-    Task {
-      let didComplete = await model.acceptSprintTicket(currentItem)
-      if didComplete {
-        dismiss()
-      } else {
-        isAcceptingTicket = false
-      }
+    if model.beginSprintTicketAcceptance(currentItem) {
+      dismiss()
     }
   }
 
@@ -13764,12 +16775,11 @@ private struct SprintTicketCommentComposer: View {
       .help(
         knowledgeProposalsBlockCompletion
           ? "Accept or reject every proposed knowledge change first."
-          : "Promote this exact reviewed revision to the accepted trunk."
+          : "Accept this exact reviewed result and complete the ticket."
       )
-    } else if
-      ticketState == .running
-        || ticketState == .integrating
-        || ticketState == .verifying
+    } else if ticketState == .running
+      || ticketState == .integrating
+      || ticketState == .verifying
     {
       commentButton(style: .bordered)
       questionButton(
@@ -13896,7 +16906,7 @@ private struct CanonicalKnowledgeProposalCard: View {
 
   private var statusTitle: String {
     switch proposal.status {
-    case .proposed: "Awaiting Tech Lead"
+    case .proposed: "Awaiting tech lead"
     case .reviewed: requiresOwnerApproval ? "Decision required" : "Ready to publish"
     case .accepted: "Published"
     case .rejected: "Rejected"
@@ -14424,6 +17434,40 @@ struct SprintTicketDemoLogItem: Identifiable {
   var createdAt: Date { event.createdAt }
 }
 
+struct SprintTicketLocalOutcomePresentation: Equatable {
+  let subtitle = "Research and decision outcome"
+  let explanation: String
+  let outcome: String?
+  let handoff: String?
+
+  init(result: TicketExecutionResult?, status: CandidateRevisionStatus) {
+    let comment = Self.nonEmpty(result?.comment)
+    let summary = Self.nonEmpty(result?.summary)
+    outcome = comment ?? summary
+    handoff = summary == outcome ? nil : summary
+
+    switch status {
+    case .accepted:
+      explanation =
+        "The product owner approved this outcome. Its recommendation and supporting analysis remain below for reference; no repository revision was created or promoted."
+    case .readyForDemo:
+      explanation =
+        "Review the recommendation, supporting analysis, and decision checks below. Then approve and complete the ticket or request changes."
+    default:
+      explanation = "This earlier reviewed outcome remains in the work log as delivery history."
+    }
+  }
+
+  private static func nonEmpty(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !value.isEmpty
+    else {
+      return nil
+    }
+    return value
+  }
+}
+
 struct SprintTicketFollowUpLogItem: Identifiable {
   let candidate: CandidateRevision
 
@@ -14551,7 +17595,8 @@ enum SprintTicketWorkLogTimeline {
       }
       return $0.createdAt < $1.createdAt
     }
-    return events
+    return
+      events
       .filter(isDemoSubmission)
       .sorted {
         if $0.createdAt == $1.createdAt {
@@ -14591,7 +17636,8 @@ enum SprintTicketWorkLogTimeline {
     else {
       return false
     }
-    let feedback = reason
+    let feedback =
+      reason
       .dropFirst("Demo feedback:".count)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !feedback.isEmpty else { return false }
@@ -14605,7 +17651,8 @@ enum SprintTicketWorkLogTimeline {
   private static func transition(
     in detail: String
   ) -> (from: WorkItemState, to: WorkItemState)? {
-    let movement = detail
+    let movement =
+      detail
       .split(separator: ":", maxSplits: 1)
       .first
       .map(String.init) ?? ""
@@ -14643,11 +17690,13 @@ enum SprintTicketWorkLogTimeline {
 
   private static func isDemoSubmission(_ event: ActivityEvent) -> Bool {
     guard event.kind == "work_item.transitioned" else { return false }
-    let movement = event.detail
+    let movement =
+      event.detail
       .split(separator: ":", maxSplits: 1)
       .first
       .map(String.init) ?? ""
-    let destination = movement
+    let destination =
+      movement
       .components(separatedBy: " -> ")
       .last?
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -14711,10 +17760,10 @@ private struct SprintTicketEventRow: View {
       return transitionDestination.replacingOccurrences(of: "_", with: " ").capitalized
     }
     return switch state {
-    case .queued: "Ready to Pick"
-    case .running: "In Progress"
-    case .integrating, .verifying, .readyToRelease: "In Review"
-    case .acceptance: "Ready for Demo"
+    case .queued: "Ready to pick"
+    case .running: "In progress"
+    case .integrating, .verifying, .readyToRelease: "In review"
+    case .acceptance: "Ready for demo"
     case .released: "Done"
     case .backlog: "Backlog"
     case .refining: "Refining"
@@ -14742,7 +17791,7 @@ private struct SprintTicketEventRow: View {
     case "work_item.archived":
       "Ticket archived"
     case "work_item.queued":
-      "Moved to Ready to Pick"
+      "Moved to ready to pick"
     case "agent_run.queued":
       "Queued to resume"
     case "agent_run.running":
@@ -14953,6 +18002,7 @@ private enum TicketOwnerAnswerSelection: Equatable {
 
 private struct SprintTicketCommentRow: View {
   let comment: TicketComment
+  let externalURL: URL?
   let authorProfile: AgentProfile?
   let mentionedProfile: AgentProfile?
   let showsBottomSeparator: Bool
@@ -14969,6 +18019,7 @@ private struct SprintTicketCommentRow: View {
     switch comment.authorKind {
     case .owner: ConversationPalette.owner
     case .agent: authorProfile?.role.tint ?? .indigo
+    case .external: .blue
     case .system: .secondary
     }
   }
@@ -14977,6 +18028,7 @@ private struct SprintTicketCommentRow: View {
     switch comment.authorKind {
     case .owner: "person.fill"
     case .agent: authorProfile?.role.symbolName ?? "sparkles"
+    case .external: "person.crop.circle.badge.checkmark"
     case .system: "gearshape.fill"
     }
   }
@@ -15010,16 +18062,36 @@ private struct SprintTicketCommentRow: View {
     return comment.answeredQuestions.first?.answer
   }
 
+  private var displayedBody: String {
+    SprintTicketWorkLogExternalLink.displayedBody(
+      comment: comment,
+      externalURL: externalURL
+    )
+  }
+
+  private var displaysExternalLinkInBody: Bool {
+    displayedBody != comment.body
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
-      ZStack {
-        Circle()
-          .fill(accent.opacity(0.12))
-        Image(systemName: symbolName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(accent)
+      Group {
+        if let avatarURL = comment.authorAvatarURL {
+          AsyncImage(url: avatarURL) { phase in
+            if let image = phase.image {
+              image
+                .resizable()
+                .scaledToFill()
+            } else {
+              externalAvatarPlaceholder
+            }
+          }
+        } else {
+          externalAvatarPlaceholder
+        }
       }
       .frame(width: 34, height: 34)
+      .clipShape(Circle())
 
       VStack(alignment: .leading, spacing: 6) {
         HStack(spacing: 8) {
@@ -15032,6 +18104,10 @@ private struct SprintTicketCommentRow: View {
           )
           .font(.caption)
           .foregroundStyle(.secondary)
+          if let externalURL, !displaysExternalLinkInBody {
+            Link("View on GitHub", destination: externalURL)
+              .font(.caption)
+          }
         }
         if let ownerQuestionPresentation {
           if !ownerQuestionPresentation.context.isEmpty {
@@ -15048,13 +18124,42 @@ private struct SprintTicketCommentRow: View {
             .padding(.top, ownerQuestionPresentation.context.isEmpty ? 0 : 10)
         } else {
           TicketMarkdownDocument(
-            source: comment.body,
+            source: displayedBody,
             baseFont: .body,
             highlightedText: mentionedProfile.map { "@\($0.name)" },
             highlightedColor: mentionedProfile?.role.tint
           )
           .textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if let context = comment.githubReviewContext {
+          VStack(alignment: .leading, spacing: 5) {
+            Text(context.path)
+              .font(.caption.monospaced().weight(.semibold))
+              .textSelection(.enabled)
+            Text(context.lineDescription)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            Text("Reviewed commit \(context.commitSHA.prefix(12))")
+              .font(.caption.monospaced())
+              .foregroundStyle(.secondary)
+              .textSelection(.enabled)
+            if !context.diffHunk.isEmpty {
+              DisclosureGroup("Reviewed code") {
+                ScrollView(.horizontal) {
+                  Text(context.diffHunk)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.top, 4)
+                }
+                .frame(maxHeight: 180)
+              }
+              .font(.caption)
+            }
+          }
+          .padding(10)
+          .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
         }
         if let routedRecipientName, let onRoute {
           Button(isRouting ? "Asking…" : "Ask \(routedRecipientName) about this") {
@@ -15077,6 +18182,16 @@ private struct SprintTicketCommentRow: View {
           .frame(height: 1)
           .padding(.leading, 46)
       }
+    }
+  }
+
+  private var externalAvatarPlaceholder: some View {
+    ZStack {
+      Circle()
+        .fill(accent.opacity(0.12))
+      Image(systemName: symbolName)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
     }
   }
 
@@ -15327,9 +18442,8 @@ private struct TicketMarkdownDocument: View {
   }
 
   private func inlineMarkdown(_ source: String) -> AttributedString {
-    var attributed = (try? AttributedString(markdown: source)) ?? AttributedString(source)
-    if
-      let highlightedText,
+    var attributed = SafeURLPolicy.markdown(source)
+    if let highlightedText,
       let highlightedColor,
       let range = attributed.range(of: highlightedText)
     {
@@ -15337,6 +18451,121 @@ private struct TicketMarkdownDocument: View {
       attributed[range].font = baseFont.bold()
     }
     return attributed
+  }
+
+  private func headingFont(_ level: Int) -> Font {
+    switch level {
+    case 1: .title3.bold()
+    case 2: .headline
+    default: .subheadline.bold()
+    }
+  }
+}
+
+private struct SelectableTicketMarkdownDocument: View {
+  let source: String
+  let baseFont: Font
+  var highlightedText: String?
+  var highlightedColor: Color?
+
+  private var document: AttributedString {
+    var document = AttributedString()
+    let blocks = KnowledgeMarkdown.blocks(in: source, removesLeadingTitle: false)
+
+    for (index, block) in blocks.enumerated() {
+      if index > 0 {
+        var separator = AttributedString("\n\n")
+        separator.font = .system(size: 4)
+        document.append(separator)
+      }
+      document.append(blockDocument(block))
+    }
+
+    if let highlightedText,
+      let highlightedColor,
+      let range = document.range(of: highlightedText)
+    {
+      document[range].foregroundColor = highlightedColor
+      document[range].font = baseFont.bold()
+    }
+    return document
+  }
+
+  var body: some View {
+    Text(document)
+      .font(baseFont)
+      .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private func blockDocument(_ block: KnowledgeMarkdown.Block) -> AttributedString {
+    switch block {
+    case .heading(let level, let text):
+      var heading = inlineMarkdown(text)
+      heading.font = headingFont(level)
+      return heading
+    case .paragraph(let lines):
+      return linesDocument(lines)
+    case .unorderedList(let items):
+      return linesDocument(items) { _ in "• " }
+    case .orderedList(let items):
+      return linesDocument(items) { index in "\(index + 1). " }
+    case .quote(let lines):
+      var quote = linesDocument(lines)
+      quote.foregroundColor = .secondary
+      return quote
+    case .code(let code):
+      var codeBlock = AttributedString(code)
+      codeBlock.font = .caption.monospaced()
+      return codeBlock
+    case .table(let table):
+      return tableDocument(table)
+    case .divider:
+      var divider = AttributedString("────────")
+      divider.foregroundColor = .secondary
+      return divider
+    }
+  }
+
+  private func linesDocument(
+    _ lines: [String],
+    prefix: ((Int) -> String)? = nil
+  ) -> AttributedString {
+    var result = AttributedString()
+    for (index, line) in lines.enumerated() {
+      if index > 0 {
+        result.append(AttributedString("\n"))
+      }
+      if let prefix {
+        result.append(AttributedString(prefix(index)))
+      }
+      result.append(inlineMarkdown(line))
+    }
+    return result
+  }
+
+  private func tableDocument(_ table: KnowledgeMarkdown.Table) -> AttributedString {
+    var result = tableRowDocument(table.header)
+    result.font = baseFont.bold()
+    for row in table.rows {
+      result.append(AttributedString("\n"))
+      result.append(tableRowDocument(row))
+    }
+    return result
+  }
+
+  private func tableRowDocument(_ cells: [String]) -> AttributedString {
+    var result = AttributedString()
+    for (index, cell) in cells.enumerated() {
+      if index > 0 {
+        result.append(AttributedString("  |  "))
+      }
+      result.append(inlineMarkdown(cell))
+    }
+    return result
+  }
+
+  private func inlineMarkdown(_ source: String) -> AttributedString {
+    SafeURLPolicy.markdown(source)
   }
 
   private func headingFont(_ level: Int) -> Font {
@@ -15420,11 +18649,8 @@ private struct IntrinsicWrappingLayout: Layout {
 }
 
 enum SprintGoalSuggestionPolicy {
-  static let defaultPlaceholder = "Next valuable increment"
-
   static func shouldGenerate(existingGoal: String) -> Bool {
-    let goal = existingGoal.trimmingCharacters(in: .whitespacesAndNewlines)
-    return goal.isEmpty || goal == defaultPlaceholder
+    existingGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 }
 
@@ -15432,11 +18658,8 @@ private struct SprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   let onSaved: (UUID) -> Void
-  @State private var goal = ""
   @State private var didPrepare = false
   @State private var isSaving = false
-  @State private var goalSuggestionError: String?
-  @State private var needsAutomaticGoalSuggestion = false
   @State private var selectedAssigneeIDs: [UUID: UUID] = [:]
 
   private var sprintNumber: Int {
@@ -15534,29 +18757,18 @@ private struct SprintPlanningView: View {
   }
 
   private var canSave: Bool {
-    !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !model.isGeneratingSprintGoal
-      && !lines.isEmpty
+    !lines.isEmpty
       && lines.allSatisfy { $0.owner != nil && !$0.item.acceptanceCriteria.isEmpty }
   }
 
-  private var goalBinding: Binding<String> {
-    Binding(
-      get: { goal },
-      set: { newGoal in
-        goal = newGoal
-        needsAutomaticGoalSuggestion = false
-      }
-    )
-  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
       HStack(alignment: .top) {
         VStack(alignment: .leading, spacing: 5) {
-          Text("Plan Sprint \(sprintNumber)")
+          Text("Plan sprint \(sprintNumber)")
             .font(.title.bold())
-          Text("Confirm the outcome, delivery order, and forecast for the sprint as a whole.")
+          Text("Confirm the delivery order and forecast for the sprint as a whole.")
             .foregroundStyle(.secondary)
         }
         Spacer()
@@ -15565,47 +18777,12 @@ private struct SprintPlanningView: View {
 
       if scopedItems.isEmpty {
         ContentUnavailableView(
-          "No tickets in Sprint \(sprintNumber)",
+          "No tickets in sprint \(sprintNumber)",
           systemImage: "checklist.unchecked",
           description: Text("Return to the backlog and drag work into the sprint first.")
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else {
-        VStack(alignment: .leading, spacing: 7) {
-          Text("Sprint goal")
-            .font(.caption.weight(.semibold))
-          HStack(spacing: 8) {
-            TextField("What valuable outcome should this sprint deliver?", text: goalBinding)
-              .textFieldStyle(.roundedBorder)
-              .font(.body)
-              .disabled(model.isGeneratingSprintGoal)
-            Button(action: suggestGoal) {
-              Group {
-                if model.isGeneratingSprintGoal {
-                  ProgressView()
-                    .controlSize(.small)
-                } else {
-                  Image(systemName: "wand.and.stars")
-                }
-              }
-              .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.purple)
-            .disabled(!model.canGenerateSprintGoal)
-            .accessibilityLabel(
-              model.isGeneratingSprintGoal
-                ? "Generating sprint goal with AI"
-                : "Generate sprint goal with AI"
-            )
-            .help("Generate a sprint goal from the ticket titles")
-          }
-          if let goalSuggestionError {
-            Label(goalSuggestionError, systemImage: "exclamationmark.triangle")
-              .font(.caption)
-              .foregroundStyle(.orange)
-          }
-        }
 
         HStack(spacing: 10) {
           SprintPlanningMetric(
@@ -15719,7 +18896,7 @@ private struct SprintPlanningView: View {
         }
         Spacer()
         Button("Cancel") { isPresented = false }
-        .disabled(isSaving)
+          .disabled(isSaving)
         Button {
           savePlan()
         } label: {
@@ -15741,27 +18918,10 @@ private struct SprintPlanningView: View {
     .frame(minWidth: 1_000, idealWidth: 1_160, minHeight: 680, idealHeight: 780)
     .onAppear {
       prepare()
-      generateGoalAutomaticallyIfNeeded()
-    }
-    .onChange(of: model.canGenerateSprintGoal) { _, canGenerate in
-      if canGenerate {
-        generateGoalAutomaticallyIfNeeded()
-      }
-    }
-    .onDisappear {
-      if model.isGeneratingSprintGoal {
-        model.cancelSprintGoalGeneration()
-      }
     }
   }
 
   private var saveBlockerText: String {
-    if model.isGeneratingSprintGoal {
-      return "Wait for AI to finish the sprint goal."
-    }
-    if goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      return "Add a sprint goal."
-    }
     if lines.contains(where: { $0.owner == nil }) {
       return "Choose an assignee for every sprint ticket."
     }
@@ -15771,12 +18931,6 @@ private struct SprintPlanningView: View {
   private func prepare() {
     guard !didPrepare else { return }
     didPrepare = true
-    goal =
-      model.candidateSprintPlan?.sprint.goal
-      ?? SprintGoalSuggestionPolicy.defaultPlaceholder
-    needsAutomaticGoalSuggestion = SprintGoalSuggestionPolicy.shouldGenerate(
-      existingGoal: goal
-    )
     selectedAssigneeIDs = scopedItems.reduce(into: [:]) { result, item in
       let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
       if let ownerID = plannedOwnerID ?? item.ownerProfileID {
@@ -15801,7 +18955,7 @@ private struct SprintPlanningView: View {
     }
     Task {
       let saved = await model.saveSprintPlan(
-        goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
+        goal: model.candidateSprintPlan?.sprint.goal ?? "",
         items: inputs
       )
       isSaving = false
@@ -15811,23 +18965,6 @@ private struct SprintPlanningView: View {
     }
   }
 
-  private func suggestGoal() {
-    guard model.canGenerateSprintGoal else { return }
-    needsAutomaticGoalSuggestion = false
-    goalSuggestionError = nil
-    Task {
-      do {
-        goal = try await model.generateSprintGoal()
-      } catch {
-        goalSuggestionError = error.localizedDescription
-      }
-    }
-  }
-
-  private func generateGoalAutomaticallyIfNeeded() {
-    guard needsAutomaticGoalSuggestion else { return }
-    suggestGoal()
-  }
 
   private func resolvedOwner(for item: WorkItem) -> AgentProfile? {
     guard let ownerID = selectedAssigneeIDs[item.id] else { return nil }
@@ -16041,7 +19178,6 @@ private struct SprintPlanningTicketRow: View {
 private struct LegacySprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
-  @State private var goal = ""
   @State private var selections: [UUID: TicketPlanSelection] = [:]
   @State private var currentIndex = 0
   @State private var showingSummary = false
@@ -16079,8 +19215,7 @@ private struct LegacySprintPlanningView: View {
   }
 
   private var canSave: Bool {
-    !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !readyItems.isEmpty
+    !readyItems.isEmpty
       && readyItems.allSatisfy { selections[$0.id]?.implementerID != nil }
       && !hasDirtyTicketDrafts
       && pendingProposals.isEmpty
@@ -16103,7 +19238,7 @@ private struct LegacySprintPlanningView: View {
     VStack(alignment: .leading, spacing: 18) {
       HStack {
         VStack(alignment: .leading, spacing: 5) {
-          Text(model.candidateSprintPlan == nil ? "Sprint Planning" : "Review Sprint Plan")
+          Text(model.candidateSprintPlan == nil ? "Sprint planning" : "Review sprint plan")
             .font(.title.bold())
           Text(
             showingSummary
@@ -16461,8 +19596,6 @@ private struct LegacySprintPlanningView: View {
   private var summaryView: some View {
     HStack(alignment: .top, spacing: 20) {
       VStack(alignment: .leading, spacing: 16) {
-        TextField("Sprint goal", text: $goal)
-          .textFieldStyle(.roundedBorder)
 
         Text("Sprint tickets")
           .font(.headline)
@@ -16525,7 +19658,7 @@ private struct LegacySprintPlanningView: View {
   private func saveAndClose() {
     Task {
       if await model.saveSprintPlan(
-        goal: goal.trimmingCharacters(in: .whitespacesAndNewlines),
+        goal: model.candidateSprintPlan?.sprint.goal ?? "",
         items: draftInputs
       ) {
         isPresented = false
@@ -16548,7 +19681,6 @@ private struct LegacySprintPlanningView: View {
     }
 
     if let plan = model.candidateSprintPlan {
-      goal = plan.sprint.goal
       for sprintItem in plan.items {
         selections[sprintItem.workItemID] = TicketPlanSelection(
           implementerID: sprintItem.implementerProfileID
@@ -16730,9 +19862,12 @@ private struct LegacySprintPlanningView: View {
       return "The proposal does not target the ticket version that was sent to the agent."
     }
     guard draftSnapshot(for: item) == pending.baseSnapshot else {
-      return "You edited the ticket after this request. Save your edits and ask again before applying the proposal."
+      return
+        "You edited the ticket after this request. Save your edits and ask again before applying the proposal."
     }
-    guard model.workItems.first(where: { $0.id == item.id })?.version == pending.baseSnapshot.version else {
+    guard
+      model.workItems.first(where: { $0.id == item.id })?.version == pending.baseSnapshot.version
+    else {
       return "The saved ticket changed after this request. Reload it before applying the proposal."
     }
     return nil
@@ -16773,7 +19908,8 @@ private struct LegacySprintPlanningView: View {
         )
       } else {
         ticketSaveErrorsByItemID[item.id] =
-          model.errorMessage ?? "The proposal could not be applied. Reload the ticket and review it again."
+          model.errorMessage
+          ?? "The proposal could not be applied. Reload the ticket and review it again."
       }
       if savingTicketItemID == item.id {
         savingTicketItemID = nil
@@ -16922,7 +20058,8 @@ private struct TicketProposalCard: View {
   private var changes: [TicketProposalChange] {
     var values: [TicketProposalChange] = []
     if currentSnapshot.title != proposal.title {
-      values.append(TicketProposalChange(field: "Title", before: currentSnapshot.title, after: proposal.title))
+      values.append(
+        TicketProposalChange(field: "Title", before: currentSnapshot.title, after: proposal.title))
     }
     if currentSnapshot.type != proposal.type {
       values.append(
@@ -17156,7 +20293,7 @@ private struct TicketEpicLink: View {
           .font(.caption)
           .foregroundStyle(.secondary)
 
-        Text(epic.title)
+        Text(epic.displayTitle)
           .font(.caption.weight(.semibold))
           .lineLimit(1)
 
@@ -17186,7 +20323,7 @@ private struct TicketEpicLink: View {
         )
     }
     .onHover { isHovered = $0 }
-    .help("Open \(epic.title) in Epic details")
+    .help("Open \(epic.displayTitle) in epic details")
     .sheet(item: $selectedEpic) { selectedEpic in
       EpicDetailView(epic: selectedEpic)
     }
@@ -17541,7 +20678,7 @@ private struct TicketDetailView: View {
   @State private var expandedRefinementFields: Set<TicketRefinementField> = []
   @State private var dismissedDependencyKeys: Set<String> = []
   @State private var conversationRefreshToken = 0
-  @State private var refinementPanelTitle = "Business Analyst review"
+  @State private var refinementPanelTitle = "Business analyst review"
   @State private var selectedRelationshipTicket: WorkItem?
 
   init(
@@ -17579,9 +20716,10 @@ private struct TicketDetailView: View {
   private var duplicateFieldNames: Set<String> {
     let names = customFields.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
-    return Set(names.filter { name in
-      names.filter { $0.caseInsensitiveCompare(name) == .orderedSame }.count > 1
-    })
+    return Set(
+      names.filter { name in
+        names.filter { $0.caseInsensitiveCompare(name) == .orderedSame }.count > 1
+      })
   }
 
   private var canSave: Bool {
@@ -17711,8 +20849,7 @@ private struct TicketDetailView: View {
               minHeight: 126
             )
 
-            if
-              let item,
+            if let item,
               let epic = TicketEpicNavigation.destination(
                 for: item,
                 in: model.epics
@@ -17905,11 +21042,10 @@ private struct TicketDetailView: View {
   private func applyRefinementSessionResult(_ result: TicketRefinementSessionResult) {
     refinementBaseSnapshot = result.base
     refinementPanelTitle =
-      (model.profiles.first { $0.role == .businessAnalyst }?.name ?? "Business Analyst")
+      (model.profiles.first { $0.role == .businessAnalyst }?.name ?? "Business analyst")
       + " review"
     refinementError = result.errorMessage
-    if
-      result.errorMessage == nil,
+    if result.errorMessage == nil,
       result.reply?.proposal.missingQuestions.isEmpty == true
     {
       syncFromLatestSavedTicket()
@@ -18027,7 +21163,7 @@ private struct TicketDetailView: View {
             .controlSize(.small)
             .tint(.purple)
           VStack(alignment: .leading, spacing: 2) {
-            Text("Business Analyst is reviewing this ticket…")
+            Text("Business analyst is reviewing this ticket…")
               .font(.subheadline.weight(.semibold))
             Text("Checking clarity, criteria, overlap, and dependencies.")
               .font(.caption)
@@ -18050,18 +21186,20 @@ private struct TicketDetailView: View {
         } label: {
           Label("Try again", systemImage: "wand.and.stars")
         }
-          .buttonStyle(.borderedProminent)
-          .tint(.purple)
-          .controlSize(.small)
+        .buttonStyle(.borderedProminent)
+        .tint(.purple)
+        .controlSize(.small)
       } else if let reply = refinementReply {
         if !reply.proposal.missingQuestions.isEmpty {
           VStack(alignment: .leading, spacing: 5) {
             Label("Waiting for your answer", systemImage: "questionmark.bubble")
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(.purple)
-            Text("Reply to the Business Analyst below. Proposed changes will appear only after the open questions are resolved.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
+            Text(
+              "Reply to the business analyst below. Proposed changes will appear only after the open questions are resolved."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
           }
           .padding(11)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -18141,9 +21279,11 @@ private struct TicketDetailView: View {
             .controlSize(.small)
           }
 
-          Text("Accepted suggestions update the form. Save changes to make them the ticket source of truth.")
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+          Text(
+            "Accepted suggestions update the form. Save changes to make them the ticket source of truth."
+          )
+          .font(.caption2)
+          .foregroundStyle(.tertiary)
         }
       }
     }
@@ -18357,7 +21497,9 @@ private struct TicketDetailView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 10)
                 .frame(width: 190, height: 36)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                  Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8)
+                )
                 .overlay {
                   RoundedRectangle(cornerRadius: 8)
                     .stroke(.separator.opacity(0.7), lineWidth: 1)
@@ -18366,7 +21508,9 @@ private struct TicketDetailView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 10)
                 .frame(height: 36)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                .background(
+                  Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8)
+                )
                 .overlay {
                   RoundedRectangle(cornerRadius: 8)
                     .stroke(.separator.opacity(0.7), lineWidth: 1)
@@ -18396,7 +21540,7 @@ private struct TicketDetailView: View {
     let base = SprintPlanningTicketSnapshot(item: item)
     refinementBaseSnapshot = base
     refinementPanelTitle =
-      (model.profiles.first { $0.role == .businessAnalyst }?.name ?? "Business Analyst")
+      (model.profiles.first { $0.role == .businessAnalyst }?.name ?? "Business analyst")
       + " review"
     refinementReply = nil
     refinementConflictMessage = nil
@@ -18612,7 +21756,8 @@ private struct TicketDetailView: View {
     let remainingFields = fieldChanges.filter {
       !acceptedRefinementFields.contains($0.field)
     }.count
-    let dependencyStates = proposal.dependencies.map { dependency -> (applied: Bool, dismissed: Bool) in
+    let dependencyStates = proposal.dependencies.map {
+      dependency -> (applied: Bool, dismissed: Bool) in
       let relatedItem = model.workItems.first { $0.key == dependency.ticketKey }
       return (
         relatedItem.map { blockerIDs.contains($0.id) } ?? false,
@@ -18714,13 +21859,16 @@ enum TicketConversationHistory {
             body: comment.body,
             ownerQuestion: comment.ownerQuestion,
             answeredQuestions: answeredQuestions,
+            authorAvatarURL: comment.authorAvatarURL,
+            externalURL: comment.externalURL,
+            externalID: comment.externalID,
+            githubReviewContext: comment.githubReviewContext,
             createdAt: comment.createdAt
           )
         }
       }
 
-      if
-        !answeredQuestions.isEmpty,
+      if !answeredQuestions.isEmpty,
         let analystName,
         let questionIndex = displayed.lastIndex(where: { comment in
           guard
@@ -18984,6 +22132,46 @@ private struct ConversationRespondingStatus: View {
   }
 }
 
+enum ConversationTimelineScrollTarget: Hashable {
+  case message(UUID)
+  case questions(UUID, [TicketRefinementQuestion])
+  case review(UUID)
+
+  static func latest(
+    scopeID: UUID,
+    lastMessageID: UUID?,
+    messageCount: Int,
+    questions: [TicketRefinementQuestion],
+    pendingQuestionInsertionIndex: Int?,
+    showsReview: Bool = false
+  ) -> Self? {
+    if showsReview {
+      return .review(scopeID)
+    }
+    if !questions.isEmpty,
+      pendingQuestionInsertionIndex == nil
+        || pendingQuestionInsertionIndex == messageCount
+    {
+      return .questions(scopeID, questions)
+    }
+    return lastMessageID.map(Self.message)
+  }
+}
+
+@MainActor
+private func scrollConversation(
+  _ proxy: ScrollViewProxy,
+  to target: ConversationTimelineScrollTarget?
+) {
+  guard let target else { return }
+  Task { @MainActor in
+    await Task.yield()
+    withAnimation(.easeOut(duration: 0.18)) {
+      proxy.scrollTo(target, anchor: .top)
+    }
+  }
+}
+
 private struct TicketConversationView<ReviewContent: View>: View {
   @EnvironmentObject private var model: AppModel
   let workItemID: UUID
@@ -19028,11 +22216,9 @@ private struct TicketConversationView<ReviewContent: View>: View {
   private var respondingRecipient: AgentProfile? {
     let activeRecipientID =
       respondingRecipientID
-      ?? (
-        model.ticketConversationWorkItemID == workItemID
-          ? model.ticketConversationRecipientID
-          : nil
-      )
+      ?? (model.ticketConversationWorkItemID == workItemID
+        ? model.ticketConversationRecipientID
+        : nil)
     guard let activeRecipientID else { return nil }
     return model.profiles.first { $0.id == activeRecipientID }
   }
@@ -19090,6 +22276,18 @@ private struct TicketConversationView<ReviewContent: View>: View {
     )
   }
 
+  private var latestScrollTarget: ConversationTimelineScrollTarget? {
+    let displayedComments = displayedComments
+    return ConversationTimelineScrollTarget.latest(
+      scopeID: workItemID,
+      lastMessageID: displayedComments.last?.id,
+      messageCount: displayedComments.count,
+      questions: isShowingRefinementChoices ? refinementQuestions : [],
+      pendingQuestionInsertionIndex: pendingRefinementInsertionIndex,
+      showsReview: showsReview
+    )
+  }
+
   private var showsEmptyConversation: Bool {
     displayedComments.isEmpty
       && !showsReview
@@ -19097,10 +22295,9 @@ private struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private var defaultRecipient: AgentProfile? {
-    if let sprintItem = (
-      model.candidateSprintPlan?.items.first(where: { $0.workItemID == workItemID })
-        ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID })
-    ),
+    if let sprintItem =
+      (model.candidateSprintPlan?.items.first(where: { $0.workItemID == workItemID })
+        ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID })),
       let implementerID = sprintItem.implementerProfileID,
       let assignedImplementer = model.profiles.first(where: {
         $0.id == implementerID
@@ -19134,25 +22331,24 @@ private struct TicketConversationView<ReviewContent: View>: View {
                 refinementQuestionCards
               }
 
-              if comment.answeredQuestions.isEmpty {
-                TicketCommentBubble(
-                  comment: comment,
-                  authorProfile: model.profiles.first { $0.name == comment.authorName },
-                  mentionedProfile: mentionedProfile(
-                    in: comment.body,
-                    profiles: model.profiles
+              Group {
+                if comment.answeredQuestions.isEmpty {
+                  TicketCommentBubble(
+                    comment: comment,
+                    authorProfile: model.profiles.first { $0.name == comment.authorName },
+                    mentionedProfile: mentionedProfile(
+                      in: comment.body,
+                      profiles: model.profiles
+                    )
                   )
-                )
-              } else {
-                answeredRefinementQuestionCards(
-                  comment.answeredQuestions,
-                  createdAt: comment.createdAt
-                )
+                } else {
+                  answeredRefinementQuestionCards(comment.answeredQuestions)
+                }
               }
+              .id(ConversationTimelineScrollTarget.message(comment.id))
             }
 
-            if
-              isShowingRefinementChoices,
+            if isShowingRefinementChoices,
               pendingRefinementInsertionIndex == nil
                 || pendingRefinementInsertionIndex == displayedComments.endIndex
             {
@@ -19161,17 +22357,16 @@ private struct TicketConversationView<ReviewContent: View>: View {
 
             if showsReview {
               reviewContent
+                .id(ConversationTimelineScrollTarget.review(workItemID))
             }
 
             Color.clear
               .frame(height: 1)
               .padding(.bottom, 14)
-              .id("ticket-conversation-bottom")
           }
           .padding(.horizontal, 14)
           .padding(.top, 14)
         }
-        .defaultScrollAnchor(.bottom)
         .overlay {
           if showsEmptyConversation {
             ConversationEmptyState(
@@ -19179,29 +22374,8 @@ private struct TicketConversationView<ReviewContent: View>: View {
             )
           }
         }
-        .onChange(of: comments.count) { _, _ in
-          Task { @MainActor in
-            await Task.yield()
-            withAnimation(.easeOut(duration: 0.18)) {
-              proxy.scrollTo("ticket-conversation-bottom", anchor: .bottom)
-            }
-          }
-        }
-        .onChange(of: showsReview) { wasShowing, isShowing in
-          if wasShowing && !isShowing {
-            proxy.scrollTo("ticket-conversation-bottom", anchor: .bottom)
-            Task { @MainActor in
-              await Task.yield()
-              proxy.scrollTo("ticket-conversation-bottom", anchor: .bottom)
-            }
-          } else {
-            Task { @MainActor in
-              await Task.yield()
-              withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo("ticket-conversation-bottom", anchor: .bottom)
-              }
-            }
-          }
+        .onChange(of: latestScrollTarget, initial: true) { _, target in
+          scrollConversation(proxy, to: target)
         }
       }
 
@@ -19213,7 +22387,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
           Image(systemName: "questionmark.bubble.fill")
             .foregroundStyle(tint)
           HStack(spacing: 0) {
-            Text(businessAnalyst?.name ?? "Business Analyst")
+            Text(businessAnalyst?.name ?? "Business analyst")
               .fontWeight(.semibold)
               .foregroundStyle(tint)
             Text(
@@ -19242,7 +22416,7 @@ private struct TicketConversationView<ReviewContent: View>: View {
         let teammate = activeStatusProfile ?? businessAnalyst
         ConversationRespondingStatus(
           profile: teammate,
-          fallbackName: "Business Analyst",
+          fallbackName: "Business analyst",
           status:
             isAgentResponding
             ? isAwaitingRefinementAnswer
@@ -19293,213 +22467,26 @@ private struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private var refinementQuestionCards: some View {
-    let tint = businessAnalyst?.role.tint ?? Color.purple
-    return HStack(alignment: .top, spacing: 9) {
-      ZStack {
-        Circle()
-          .fill(tint.opacity(0.12))
-        Image(systemName: businessAnalyst?.role.symbolName ?? "questionmark.bubble")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(tint)
-      }
-      .frame(width: 28, height: 28)
-
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 7) {
-          Text(businessAnalyst?.name ?? "Business Analyst")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(tint)
-          Image(systemName: businessAnalyst?.role.symbolName ?? "questionmark.bubble")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
-          if let pendingRefinementComment {
-            Text(pendingRefinementComment.createdAt, style: .time)
-              .font(.caption2)
-              .foregroundStyle(.tertiary)
-          }
-        }
-
-        VStack(alignment: .leading, spacing: 9) {
-          ForEach(Array(refinementQuestions.enumerated()), id: \.offset) { index, question in
-            VStack(alignment: .leading, spacing: 9) {
-              if refinementQuestions.count > 1 {
-                Text("Question \(index + 1) of \(refinementQuestions.count)")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(tint)
-              }
-              Text(question.prompt)
-                .font(.callout.weight(.medium))
-
-              VStack(spacing: 6) {
-                ForEach(question.options, id: \.self) { option in
-                  refinementChoiceRow(
-                    option,
-                    tint: tint,
-                    isSelected: selectedRefinementOptions[index] == option
-                  ) {
-                    selectedRefinementOptions[index] = option
-                  }
-                }
-                refinementChoiceRow(
-                  "Other",
-                  tint: tint,
-                  isSelected: selectedRefinementOptions[index] == otherChoiceKey
-                ) {
-                  selectedRefinementOptions[index] = otherChoiceKey
-                }
-              }
-
-              if selectedRefinementOptions[index] == otherChoiceKey {
-                TextField(
-                  "Type another answer",
-                  text: Binding(
-                    get: { otherRefinementAnswers[index] ?? "" },
-                    set: { otherRefinementAnswers[index] = $0 }
-                  )
-                )
-                .textFieldStyle(.roundedBorder)
-              }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 10)
-            .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 11))
-          }
-        }
-        .frame(maxWidth: 380, alignment: .leading)
-      }
-      Spacer(minLength: 36)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    MultipleChoiceQuestionCards(
+      questions: refinementQuestions,
+      selectedOptions: $selectedRefinementOptions,
+      otherAnswers: $otherRefinementAnswers,
+      otherChoiceKey: otherChoiceKey,
+      tint: businessAnalyst?.role.tint ?? Color.purple
+    )
+    .id(ConversationTimelineScrollTarget.questions(workItemID, refinementQuestions))
   }
 
   private func answeredRefinementQuestionCards(
-    _ answeredQuestions: [TicketAnsweredQuestion],
-    createdAt: Date
+    _ answeredQuestions: [TicketAnsweredQuestion]
   ) -> some View {
-    let tint = businessAnalyst?.role.tint ?? Color.purple
-    return HStack(alignment: .top, spacing: 9) {
-      ZStack {
-        Circle()
-          .fill(tint.opacity(0.12))
-        Image(systemName: "checkmark")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(tint)
-      }
-      .frame(width: 28, height: 28)
-
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(spacing: 7) {
-          Text("Answered")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(tint)
-          Text(createdAt, style: .time)
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-        }
-
-        VStack(alignment: .leading, spacing: 9) {
-          ForEach(Array(answeredQuestions.enumerated()), id: \.offset) {
-            index,
-            answered in
-            VStack(alignment: .leading, spacing: 9) {
-              if answeredQuestions.count > 1 {
-                Text("Question \(index + 1) of \(answeredQuestions.count)")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(tint)
-              }
-              Text(answered.question.prompt)
-                .font(.callout.weight(.medium))
-
-              VStack(spacing: 6) {
-                ForEach(answered.question.options, id: \.self) { option in
-                  readOnlyRefinementChoiceRow(
-                    option,
-                    tint: tint,
-                    isSelected: answered.selectedOption == option
-                  )
-                }
-                readOnlyRefinementChoiceRow(
-                  "Other",
-                  tint: tint,
-                  isSelected: answered.selectedOption == nil
-                )
-              }
-
-              if answered.selectedOption == nil {
-                Text(answered.answer)
-                  .font(.callout)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .padding(.horizontal, 10)
-                  .padding(.vertical, 7)
-                  .background(
-                    tint.opacity(0.08),
-                    in: RoundedRectangle(cornerRadius: 8)
-                  )
-              }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 10)
-            .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
-          }
-        }
-        .frame(maxWidth: 380, alignment: .leading)
-      }
-      Spacer(minLength: 36)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func readOnlyRefinementChoiceRow(
-    _ label: String,
-    tint: Color,
-    isSelected: Bool
-  ) -> some View {
-    HStack(spacing: 9) {
-      Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-        .font(.caption)
-        .foregroundStyle(isSelected ? tint : Color.secondary.opacity(0.65))
-      Text(label)
-        .font(.callout)
-        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-        .multilineTextAlignment(.leading)
-      Spacer()
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(
-      isSelected ? tint.opacity(0.14) : Color.primary.opacity(0.025),
-      in: RoundedRectangle(cornerRadius: 8)
+    MultipleChoiceQuestionCards(
+      answeredQuestions: answeredQuestions,
+      tint: businessAnalyst?.role.tint ?? Color.purple
     )
   }
 
-  private func refinementChoiceRow(
-    _ label: String,
-    tint: Color,
-    isSelected: Bool,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      HStack(spacing: 9) {
-        Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-          .font(.caption)
-          .foregroundStyle(isSelected ? tint : Color.secondary)
-        Text(label)
-          .font(.callout)
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(.leading)
-        Spacer()
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(
-      RefinementChoiceButtonStyle(
-        tint: tint,
-        isSelected: isSelected
-      )
-    )
-  }
+
 
   private func submitRefinementAnswers() {
     guard canSubmitRefinementAnswers else { return }
@@ -19546,7 +22533,8 @@ private struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private func send() {
-    let ownerMessage = message
+    let ownerMessage =
+      message
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard
       let recipient = selectedRecipient,
@@ -19627,6 +22615,188 @@ private struct RefinementChoiceButtonStyle: ButtonStyle {
   }
 }
 
+private struct MultipleChoiceQuestionCards: View {
+  private enum Presentation {
+    case unanswered([TicketRefinementQuestion])
+    case answered([TicketAnsweredQuestion])
+  }
+
+  private let presentation: Presentation
+  private let otherChoiceKey: String
+  private let tint: Color
+  @Binding private var selectedOptions: [Int: String]
+  @Binding private var otherAnswers: [Int: String]
+
+  init(
+    questions: [TicketRefinementQuestion],
+    selectedOptions: Binding<[Int: String]>,
+    otherAnswers: Binding<[Int: String]>,
+    otherChoiceKey: String,
+    tint: Color
+  ) {
+    presentation = .unanswered(questions)
+    _selectedOptions = selectedOptions
+    _otherAnswers = otherAnswers
+    self.otherChoiceKey = otherChoiceKey
+    self.tint = tint
+  }
+
+  init(
+    answeredQuestions: [TicketAnsweredQuestion],
+    tint: Color
+  ) {
+    presentation = .answered(answeredQuestions)
+    _selectedOptions = .constant([:])
+    _otherAnswers = .constant([:])
+    otherChoiceKey = ""
+    self.tint = tint
+  }
+
+  @ViewBuilder
+  var body: some View {
+    switch presentation {
+    case .unanswered(let questions):
+      unansweredQuestionCards(questions)
+    case .answered(let answeredQuestions):
+      answeredQuestionCards(answeredQuestions)
+    }
+  }
+
+  private func unansweredQuestionCards(
+    _ questions: [TicketRefinementQuestion]
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
+        VStack(alignment: .leading, spacing: 9) {
+          if questions.count > 1 {
+            Text("Question \(index + 1) of \(questions.count)")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(tint)
+          }
+          Text(question.prompt)
+            .font(.callout.weight(.medium))
+          VStack(spacing: 6) {
+            ForEach(question.options, id: \.self) { option in
+              choiceRow(option, selected: selectedOptions[index] == option) {
+                selectedOptions[index] = option
+              }
+            }
+            choiceRow("Other", selected: selectedOptions[index] == otherChoiceKey) {
+              selectedOptions[index] = otherChoiceKey
+            }
+          }
+          if selectedOptions[index] == otherChoiceKey {
+            TextField(
+              "Type another answer",
+              text: Binding(
+                get: { otherAnswers[index] ?? "" },
+                set: { otherAnswers[index] = $0 }
+              )
+            )
+            .textFieldStyle(.roundedBorder)
+          }
+        }
+        .padding(11)
+        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 11))
+      }
+    }
+  }
+
+  private func answeredQuestionCards(
+    _ answeredQuestions: [TicketAnsweredQuestion]
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(Array(answeredQuestions.enumerated()), id: \.offset) { index, answered in
+        VStack(alignment: .leading, spacing: 9) {
+          HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+            Text(
+              answeredQuestions.count > 1
+                ? "Question \(index + 1) of \(answeredQuestions.count)"
+                : "Answered"
+            )
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+
+          Text(answered.question.prompt)
+            .font(.callout.weight(.medium))
+
+          VStack(spacing: 6) {
+            ForEach(answered.question.options, id: \.self) { option in
+              readOnlyChoiceRow(
+                option,
+                selected: answered.selectedOption == option
+              )
+            }
+            readOnlyChoiceRow(
+              "Other",
+              selected: answered.selectedOption == nil
+            )
+          }
+
+          if answered.selectedOption == nil {
+            Text(answered.answer)
+              .font(.callout)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, 10)
+              .padding(.vertical, 7)
+              .background(
+                tint.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 8)
+              )
+          }
+        }
+        .padding(11)
+        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
+      }
+    }
+  }
+
+  private func readOnlyChoiceRow(_ label: String, selected: Bool) -> some View {
+    HStack(spacing: 9) {
+      Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+        .font(.caption)
+        .foregroundStyle(selected ? tint : Color.secondary.opacity(0.65))
+      Text(label)
+        .font(.callout)
+        .foregroundStyle(selected ? Color.primary : Color.secondary)
+      Spacer()
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 7)
+    .background(
+      selected ? tint.opacity(0.14) : Color.primary.opacity(0.025),
+      in: RoundedRectangle(cornerRadius: 8)
+    )
+  }
+
+  private func choiceRow(
+    _ label: String,
+    selected: Bool,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 9) {
+        Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+          .font(.caption)
+          .foregroundStyle(selected ? tint : Color.secondary)
+        Text(label)
+          .font(.callout)
+          .foregroundStyle(Color.primary)
+        Spacer()
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 7)
+      .background(
+        selected ? tint.opacity(0.14) : Color.primary.opacity(0.035),
+        in: RoundedRectangle(cornerRadius: 8)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
 private func mentionedProfile(
   in body: String,
   profiles: [AgentProfile]
@@ -19668,6 +22838,7 @@ private struct TeamConversationMessageBubble: View {
     switch authorKind {
     case .owner: ConversationPalette.owner
     case .agent: authorProfile?.role.tint ?? .indigo
+    case .external: .blue
     case .system: .secondary
     }
   }
@@ -19676,6 +22847,7 @@ private struct TeamConversationMessageBubble: View {
     switch authorKind {
     case .owner: "person.fill"
     case .agent: authorProfile?.role.symbolName ?? "sparkles"
+    case .external: "person.crop.circle.badge.checkmark"
     case .system: "gearshape.fill"
     }
   }
@@ -19700,7 +22872,7 @@ private struct TeamConversationMessageBubble: View {
   }
 
   private var messageDocument: some View {
-    TicketMarkdownDocument(
+    SelectableTicketMarkdownDocument(
       source: messageBody,
       baseFont: .callout,
       highlightedText: mentionedProfile.map { "@\($0.name)" },
@@ -19742,12 +22914,12 @@ private struct TeamConversationMessageBubble: View {
           .fixedSize(horizontal: true, vertical: true)
         messageDocument
       }
-        .textSelection(.enabled)
-        .multilineTextAlignment(.leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: 560, alignment: isOwner ? .trailing : .leading)
+      .textSelection(.enabled)
+      .multilineTextAlignment(.leading)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+      .frame(maxWidth: 560, alignment: isOwner ? .trailing : .leading)
     }
   }
 
@@ -19819,7 +22991,7 @@ private struct NewTicketView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("New ticket")
           .font(.title.bold())
-        Text("Describe the outcome. The Business Analyst will shape the ticket for your review.")
+        Text("Describe the outcome. The business analyst will shape the ticket for your review.")
           .foregroundStyle(.secondary)
       }
       .padding(24)
@@ -19842,7 +23014,7 @@ private struct NewTicketView: View {
             Picker("Epic", selection: $selectedEpicID) {
               Text("No epic").tag(UUID?.none)
               ForEach(model.openEpics) { epic in
-                Text(epic.title).tag(Optional(epic.id))
+                Text(epic.displayTitle).tag(Optional(epic.id))
               }
             }
             .labelsHidden()
@@ -19852,8 +23024,8 @@ private struct NewTicketView: View {
 
           Label(
             model.canRefineTicket
-              ? "The ticket is saved immediately, then the Business Analyst asks questions and proposes reviewable improvements."
-              : "The ticket is saved as a draft. The Business Analyst review starts automatically when the team connection becomes available.",
+              ? "The ticket is saved immediately, then the business analyst asks questions and proposes reviewable improvements."
+              : "The ticket is saved as a draft. The business analyst review starts automatically when the team connection becomes available.",
             systemImage: "checkmark.shield"
           )
           .font(.caption)
@@ -19929,7 +23101,7 @@ private struct NewEpicView: View {
         Text("New epic")
           .font(.title.bold())
         Text(
-          "Describe the outcome. The Business Analyst will shape the epic and its tickets for your review."
+          "Describe the outcome. The business analyst will shape the epic and its tickets for your review."
         )
         .foregroundStyle(.secondary)
       }
@@ -19994,6 +23166,21 @@ private struct NewEpicView: View {
   }
 }
 
+struct EpicDetailRefreshPolicy {
+  static func shouldSync(
+    previous: Epic,
+    current: Epic,
+    isPlanningComplete: Bool,
+    hasUnsavedOwnerChanges: Bool
+  ) -> Bool {
+    guard isPlanningComplete, !hasUnsavedOwnerChanges else { return false }
+    return previous.title != current.title
+      || previous.goal != current.goal
+      || previous.successCriteria != current.successCriteria
+      || previous.constraints != current.constraints
+  }
+}
+
 private struct EpicDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -20033,7 +23220,7 @@ private struct EpicDetailView: View {
         Text("Epic details")
           .font(.title2.bold())
         Spacer()
-        Button("Close", action: close)
+        Button("Done", action: close)
       }
       .padding(22)
       Divider()
@@ -20041,46 +23228,55 @@ private struct EpicDetailView: View {
       HStack(spacing: 0) {
         ScrollView {
           VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 16) {
-              EditableTextField(title: "Title", prompt: "Epic title", text: $title)
-                .disabled(isReadOnly)
-              VStack(alignment: .leading, spacing: 7) {
-                Text("Status")
-                  .font(.subheadline.weight(.semibold))
-                Text(displayStatus)
-                  .font(.callout.weight(.semibold))
-                  .foregroundStyle(displayStatusColor)
-                  .padding(.vertical, 5)
+            if latestEpic.hasAnalyzedMetadata {
+              HStack(alignment: .top, spacing: 16) {
+                EditableTextField(title: "Title", prompt: "Epic title", text: $title)
+                  .disabled(isReadOnly)
+                statusSummary
               }
-              .frame(width: 130, alignment: .leading)
+            } else {
+              statusSummary
             }
             EditableTextArea(
-              title: "Goal and customer value",
+              title:
+                latestEpic.hasAnalyzedMetadata
+                ? "Goal and customer value"
+                : "Requested outcome",
               prompt: "What outcome should this epic create?",
               text: $goal,
               minHeight: 110,
               isReadOnly: isReadOnly
             )
-            EpicDetailItemsEditor(
-              title: "Success criteria",
-              guidance: "Each item should describe one measurable product outcome.",
-              addLabel: "Add criterion",
-              firstItemLabel: "Add the first success criterion",
-              itemPrompt: "Describe a measurable outcome",
-              systemImage: "checklist",
-              items: $successCriteria
-            )
-            .disabled(isReadOnly)
-            EpicDetailItemsEditor(
-              title: "Constraints and context",
-              guidance: "Capture each material constraint, assumption, or relevant fact separately.",
-              addLabel: "Add item",
-              firstItemLabel: "Add the first constraint or context item",
-              itemPrompt: "Describe a constraint, assumption, or relevant fact",
-              systemImage: "slider.horizontal.3",
-              items: $constraints
-            )
-            .disabled(isReadOnly)
+            if latestEpic.hasAnalyzedMetadata {
+              EpicDetailItemsEditor(
+                title: "Success criteria",
+                guidance: "Each item should describe one measurable product outcome.",
+                addLabel: "Add criterion",
+                firstItemLabel: "Add the first success criterion",
+                itemPrompt: "Describe a measurable outcome",
+                systemImage: "checklist",
+                items: $successCriteria
+              )
+              .disabled(isReadOnly)
+              EpicDetailItemsEditor(
+                title: "Constraints and context",
+                guidance:
+                  "Capture each material constraint, assumption, or relevant fact separately.",
+                addLabel: "Add item",
+                firstItemLabel: "Add the first constraint or context item",
+                itemPrompt: "Describe a constraint, assumption, or relevant fact",
+                systemImage: "slider.horizontal.3",
+                items: $constraints
+              )
+              .disabled(isReadOnly)
+            } else {
+              Label(
+                "The business analyst will propose the title, goal, success criteria, constraints, and tickets for review.",
+                systemImage: "wand.and.stars"
+              )
+              .font(.caption)
+              .foregroundStyle(.secondary)
+            }
             EpicTicketsSection(
               epic: latestEpic,
               tickets: activeEpicTickets,
@@ -20130,14 +23326,14 @@ private struct EpicDetailView: View {
           } label: {
             Label(
               isSaving
-                ? "Closing…"
-                : (hasUnsavedChanges ? "Save and close epic" : "Close epic"),
+                ? "Completing…"
+                : (hasUnsavedChanges ? "Save and complete epic" : "Complete epic"),
               systemImage: "checkmark.circle.fill"
             )
           }
           .buttonStyle(.borderedProminent)
           .disabled(isSaving || (hasUnsavedChanges && !canSave))
-          .help("Confirm that this epic's outcome has been delivered")
+          .help("Confirm the outcome and move this epic to read-only delivery history")
         } else if hasUnsavedChanges {
           Button("Save") { save() }
             .buttonStyle(.borderedProminent)
@@ -20162,6 +23358,17 @@ private struct EpicDetailView: View {
     }
     .onChange(of: conversation?.isComplete == true) { _, isComplete in
       guard isComplete else { return }
+      syncFromLatestEpic()
+    }
+    .onChange(of: latestEpic) { previous, current in
+      guard
+        EpicDetailRefreshPolicy.shouldSync(
+          previous: previous,
+          current: current,
+          isPlanningComplete: conversation?.isComplete == true,
+          hasUnsavedOwnerChanges: hasUnsavedChanges(comparedTo: previous)
+        )
+      else { return }
       syncFromLatestEpic()
     }
     .sheet(item: $selectedTicket) { item in
@@ -20200,15 +23407,16 @@ private struct EpicDetailView: View {
 
   private var needsInitialPlanning: Bool {
     conversation?.hasStartedPlanning != true
-      && latestEpic.successCriteria.isEmpty
+      && !latestEpic.hasAnalyzedMetadata
       && activeEpicTickets.isEmpty
       && proposedEpicSuggestions.isEmpty
   }
 
   private var canSave: Bool {
     isOpen
-      && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (!latestEpic.hasAnalyzedMetadata
+        || !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
   }
 
   private var latestEpic: Epic {
@@ -20233,6 +23441,18 @@ private struct EpicDetailView: View {
 
   private var progress: EpicProgress {
     EpicProgress(tickets: activeEpicTickets)
+  }
+
+  private var statusSummary: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Text("Status")
+        .font(.subheadline.weight(.semibold))
+      Text(displayStatus)
+        .font(.callout.weight(.semibold))
+        .foregroundStyle(displayStatusColor)
+        .padding(.vertical, 5)
+    }
+    .frame(width: 130, alignment: .leading)
   }
 
   private var displayStatus: String {
@@ -20260,6 +23480,13 @@ private struct EpicDetailView: View {
       || goal != latestEpic.goal
       || criteria != latestEpic.successCriteria
       || constraintsText != latestEpic.constraints
+  }
+
+  private func hasUnsavedChanges(comparedTo epic: Epic) -> Bool {
+    title != epic.title
+      || goal != epic.goal
+      || criteria != epic.successCriteria
+      || constraintsText != epic.constraints
   }
 
   private var criteria: [String] {
@@ -20306,30 +23533,33 @@ private struct EpicDetailView: View {
       || conversation?.isGeneratingPlan == true
       || epicSuggestionBatch?.session.status == .generating
     {
-      return "The Business Analyst is preparing the proposed ticket plan."
+      return "The business analyst is preparing the proposed ticket plan."
     }
     if progress == .complete, !proposedEpicSuggestions.isEmpty {
-      return "All accepted tickets are delivered. Review the remaining proposals before closing."
+      return
+        "All accepted tickets are delivered. Review the remaining proposals before completing the epic."
     }
     if progress == .complete {
-      return "All accepted tickets are delivered. Close the epic to confirm its outcome."
+      return
+        "All accepted tickets are delivered. Completing the epic confirms the outcome and moves it to read-only delivery history."
     }
     let count = proposedEpicSuggestions.count
     if count > 0 {
-      return "\(count) proposed \(count == 1 ? "ticket needs" : "tickets need") review in Tickets."
+      return "\(count) proposed \(count == 1 ? "ticket needs" : "tickets need") review in tickets."
     }
     if conversation?.isComplete == true {
       return "The epic plan is up to date."
     }
     switch progress {
     case .created:
-      return "Resolve the outcome with the Business Analyst before tickets are proposed."
+      return "Resolve the outcome with the business analyst before tickets are proposed."
     case .planned:
       return "Tickets are planned and delivery has not started."
     case .inProgress:
       return "Delivery is in progress."
     case .complete:
-      return "All accepted tickets are delivered. Close the epic to confirm its outcome."
+      return
+        "All accepted tickets are delivered. Completing the epic confirms the outcome and moves it to read-only delivery history."
     }
   }
 
@@ -20494,7 +23724,7 @@ private struct EpicTicketsSection: View {
           TicketSuggestionBatchActions(suggestions: proposedSuggestions)
         } else if allDelivered {
           Label(
-            epic.status == .closed ? "Outcome confirmed" : "Complete",
+            epic.status == .closed ? "Outcome confirmed" : "Ready to complete",
             systemImage: "checkmark.circle.fill"
           )
           .font(.caption.weight(.semibold))
@@ -20538,7 +23768,7 @@ private struct EpicTicketsSection: View {
             Text(
               archivedCount > 0
                 ? "Archived tickets no longer count towards this epic."
-                : "The Business Analyst can propose the work needed for this outcome."
+                : "The business analyst can propose the work needed for this outcome."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -20571,7 +23801,7 @@ private struct EpicTicketsSection: View {
 
       if allDelivered, epic.status == .open {
         Text(
-          "All accepted tickets are delivered. Confirm the product outcome, then close this epic."
+          "All accepted tickets are delivered. Confirm the product outcome, then complete this epic."
         )
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -20598,7 +23828,7 @@ private struct EpicTicketsSection: View {
         .foregroundStyle(.purple)
         .frame(width: statusColumnWidth, alignment: .leading)
 
-      Text("Business Analyst")
+      Text("Business analyst")
         .padding(.horizontal, 8)
         .foregroundStyle(.secondary)
         .frame(width: ownerColumnWidth, alignment: .leading)
@@ -20718,10 +23948,10 @@ private struct EpicTicketsSection: View {
 
   private func statusTitle(for ticket: WorkItem) -> String {
     switch ticket.state {
-    case .queued: "Ready to Pick"
-    case .running: "In Progress"
-    case .integrating, .verifying, .readyToRelease: "In Review"
-    case .acceptance: "Ready for Demo"
+    case .queued: "Ready to pick"
+    case .running: "In progress"
+    case .integrating, .verifying, .readyToRelease: "In review"
+    case .acceptance: "Ready for demo"
     case .released: "Done"
     default: ticket.state.title
     }
@@ -20749,6 +23979,20 @@ enum EpicPlanningConversationTimeline {
         && $0.kind != .chat
         && $0.answeredQuestions.isEmpty
     })?.id
+  }
+
+  static func shouldAutoScroll(
+    from previousTarget: ConversationTimelineScrollTarget?,
+    to target: ConversationTimelineScrollTarget?,
+    messages: [EpicPlanningConversationMessage]
+  ) -> Bool {
+    guard let target else { return false }
+    guard
+      case .questions = previousTarget,
+      case .message(let messageID) = target,
+      let message = messages.last(where: { $0.id == messageID })
+    else { return true }
+    return message.author != .owner || message.answeredQuestions.isEmpty
   }
 }
 
@@ -20782,11 +24026,9 @@ private struct EpicPlanningConversationPanel: View {
   private var respondingRecipient: AgentProfile? {
     let activeRecipientID =
       respondingRecipientID
-      ?? (
-        model.epicConversationEpicID == epic.id
-          ? model.epicConversationRecipientID
-          : nil
-      )
+      ?? (model.epicConversationEpicID == epic.id
+        ? model.epicConversationRecipientID
+        : nil)
     guard let activeRecipientID else { return nil }
     return model.profiles.first { $0.id == activeRecipientID }
   }
@@ -20826,6 +24068,28 @@ private struct EpicPlanningConversationPanel: View {
     )
   }
 
+  private var pendingQuestionInsertionIndex: Int? {
+    guard
+      let conversation,
+      let pendingQuestionMessageID,
+      let messageIndex = conversation.messages.firstIndex(where: {
+        $0.id == pendingQuestionMessageID
+      })
+    else { return nil }
+    return conversation.messages.index(after: messageIndex)
+  }
+
+  private var latestScrollTarget: ConversationTimelineScrollTarget? {
+    guard let conversation else { return nil }
+    return ConversationTimelineScrollTarget.latest(
+      scopeID: epic.id,
+      lastMessageID: conversation.messages.last?.id,
+      messageCount: conversation.messages.count,
+      questions: conversation.questions,
+      pendingQuestionInsertionIndex: pendingQuestionInsertionIndex
+    )
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
@@ -20841,17 +24105,19 @@ private struct EpicPlanningConversationPanel: View {
           VStack(alignment: .leading, spacing: 12) {
             if let conversation {
               ForEach(conversation.messages) { message in
-                if message.answeredQuestions.isEmpty {
-                  messageRow(message)
-                } else {
-                  answeredQuestionCards(message.answeredQuestions)
+                Group {
+                  if message.answeredQuestions.isEmpty {
+                    messageRow(message)
+                  } else {
+                    answeredQuestionCards(message.answeredQuestions)
+                  }
                 }
+                .id(ConversationTimelineScrollTarget.message(message.id))
                 if message.id == pendingQuestionMessageID {
                   questionCards(conversation.questions)
                 }
               }
-              if
-                !conversation.questions.isEmpty,
+              if !conversation.questions.isEmpty,
                 pendingQuestionMessageID == nil
               {
                 questionCards(conversation.questions)
@@ -20860,12 +24126,10 @@ private struct EpicPlanningConversationPanel: View {
             Color.clear
               .frame(height: 1)
               .padding(.bottom, 14)
-              .id("epic-conversation-bottom")
           }
           .padding(.horizontal, 14)
           .padding(.top, 14)
         }
-        .defaultScrollAnchor(.bottom)
         .overlay {
           if showsEmptyConversation {
             ConversationEmptyState(
@@ -20873,13 +24137,13 @@ private struct EpicPlanningConversationPanel: View {
             )
           }
         }
-        .onChange(of: conversation?.messages.count ?? 0) { _, _ in
-          Task { @MainActor in
-            await Task.yield()
-            withAnimation(.easeOut(duration: 0.18)) {
-              proxy.scrollTo("epic-conversation-bottom", anchor: .bottom)
-            }
-          }
+        .onChange(of: latestScrollTarget, initial: true) { previousTarget, target in
+          guard EpicPlanningConversationTimeline.shouldAutoScroll(
+            from: previousTarget,
+            to: target,
+            messages: conversation?.messages ?? []
+          ) else { return }
+          scrollConversation(proxy, to: target)
         }
       }
       .frame(maxHeight: .infinity)
@@ -20925,7 +24189,7 @@ private struct EpicPlanningConversationPanel: View {
       if conversation.isRunning || conversation.isGeneratingPlan {
         ConversationRespondingStatus(
           profile: analyst,
-          fallbackName: "Business Analyst",
+          fallbackName: "Business analyst",
           status:
             conversation.isGeneratingPlan
             ? "is preparing the epic and tickets…"
@@ -20934,7 +24198,7 @@ private struct EpicPlanningConversationPanel: View {
         )
       } else if !conversation.questions.isEmpty {
         HStack {
-          Text("\(analyst?.name ?? "Business Analyst") is waiting for your response.")
+          Text("\(analyst?.name ?? "Business analyst") is waiting for your response.")
             .font(.caption)
             .foregroundStyle(.primary)
           Spacer()
@@ -20977,7 +24241,7 @@ private struct EpicPlanningConversationPanel: View {
     let displayName =
       switch message.author {
       case .owner: "Me"
-      case .businessAnalyst: analyst?.name ?? "Business Analyst"
+      case .businessAnalyst: analyst?.name ?? "Business analyst"
       case .agent: message.participantName ?? profile?.name ?? "Team member"
       case .system: "Spedito"
       }
@@ -21043,136 +24307,26 @@ private struct EpicPlanningConversationPanel: View {
   }
 
   private func questionCards(_ questions: [TicketRefinementQuestion]) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      ForEach(Array(questions.enumerated()), id: \.offset) { index, question in
-        VStack(alignment: .leading, spacing: 9) {
-          if questions.count > 1 {
-            Text("Question \(index + 1) of \(questions.count)")
-              .font(.caption2.weight(.semibold))
-              .foregroundStyle(tint)
-          }
-          Text(question.prompt)
-            .font(.callout.weight(.medium))
-          VStack(spacing: 6) {
-            ForEach(question.options, id: \.self) { option in
-              choiceRow(option, selected: selectedOptions[index] == option) {
-                selectedOptions[index] = option
-              }
-            }
-            choiceRow("Other", selected: selectedOptions[index] == otherChoice) {
-              selectedOptions[index] = otherChoice
-            }
-          }
-          if selectedOptions[index] == otherChoice {
-            TextField(
-              "Type another answer",
-              text: Binding(
-                get: { otherAnswers[index] ?? "" },
-                set: { otherAnswers[index] = $0 }
-              )
-            )
-            .textFieldStyle(.roundedBorder)
-          }
-        }
-        .padding(11)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 11))
-      }
-    }
+    MultipleChoiceQuestionCards(
+      questions: questions,
+      selectedOptions: $selectedOptions,
+      otherAnswers: $otherAnswers,
+      otherChoiceKey: otherChoice,
+      tint: tint
+    )
+    .id(ConversationTimelineScrollTarget.questions(epic.id, questions))
   }
 
   private func answeredQuestionCards(
     _ answeredQuestions: [EpicPlanningAnsweredQuestion]
   ) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      ForEach(Array(answeredQuestions.enumerated()), id: \.offset) { index, answered in
-        VStack(alignment: .leading, spacing: 9) {
-          HStack(spacing: 6) {
-            Image(systemName: "checkmark.circle.fill")
-            Text(
-              answeredQuestions.count > 1
-                ? "Question \(index + 1) of \(answeredQuestions.count)"
-                : "Answered"
-            )
-          }
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(tint)
-
-          Text(answered.question.prompt)
-            .font(.callout.weight(.medium))
-
-          VStack(spacing: 6) {
-            ForEach(answered.question.options, id: \.self) { option in
-              readOnlyChoiceRow(
-                option,
-                selected: answered.selectedOption == option
-              )
-            }
-            readOnlyChoiceRow(
-              "Other",
-              selected: answered.selectedOption == nil
-            )
-          }
-
-          if answered.selectedOption == nil {
-            Text(answered.answer)
-              .font(.callout)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.horizontal, 10)
-              .padding(.vertical, 7)
-              .background(
-                tint.opacity(0.08),
-                in: RoundedRectangle(cornerRadius: 8)
-              )
-          }
-        }
-        .padding(11)
-        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
-      }
-    }
-  }
-
-  private func readOnlyChoiceRow(_ label: String, selected: Bool) -> some View {
-    HStack(spacing: 9) {
-      Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-        .font(.caption)
-        .foregroundStyle(selected ? tint : Color.secondary.opacity(0.65))
-      Text(label)
-        .font(.callout)
-        .foregroundStyle(selected ? Color.primary : Color.secondary)
-      Spacer()
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(
-      selected ? tint.opacity(0.14) : Color.primary.opacity(0.025),
-      in: RoundedRectangle(cornerRadius: 8)
+    MultipleChoiceQuestionCards(
+      answeredQuestions: answeredQuestions,
+      tint: tint
     )
   }
 
-  private func choiceRow(
-    _ label: String,
-    selected: Bool,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      HStack(spacing: 9) {
-        Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-          .font(.caption)
-          .foregroundStyle(selected ? tint : Color.secondary)
-        Text(label)
-          .font(.callout)
-          .foregroundStyle(Color.primary)
-        Spacer()
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(
-        selected ? tint.opacity(0.14) : Color.primary.opacity(0.035),
-        in: RoundedRectangle(cornerRadius: 8)
-      )
-    }
-    .buttonStyle(.plain)
-  }
+
 
   private func send() {
     let ownerMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)

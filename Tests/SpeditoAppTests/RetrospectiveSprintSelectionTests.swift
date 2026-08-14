@@ -1,6 +1,7 @@
 import Foundation
 import SpeditoCore
 import Testing
+
 @testable import SpeditoApp
 
 @Suite("Retrospective sprint selection")
@@ -111,17 +112,17 @@ struct RetrospectiveSprintSelectionTests {
         productID: productID,
         sprintID: sprintID,
         profileID: designerID,
-        authorName: "UX Designer"
-      )
+        authorName: "UX designer"
+      ),
     ]
 
     let attribution = RetrospectiveActionAttribution.resolve(
       sourceNotes: sources,
-      fallbackAuthorName: "Business Analyst",
+      fallbackAuthorName: "Business analyst",
       fallbackProfileID: UUID()
     )
 
-    #expect(attribution.summary == "Implementer, UX Designer")
+    #expect(attribution.summary == "Implementer, UX designer")
     #expect(attribution.profileIDs == Set([implementerID, designerID]))
   }
 
@@ -130,11 +131,11 @@ struct RetrospectiveSprintSelectionTests {
     let analystID = UUID()
     let attribution = RetrospectiveActionAttribution.resolve(
       sourceNotes: [],
-      fallbackAuthorName: "Business Analyst",
+      fallbackAuthorName: "Business analyst",
       fallbackProfileID: analystID
     )
 
-    #expect(attribution.summary == "Business Analyst")
+    #expect(attribution.summary == "Business analyst")
     #expect(attribution.profileIDs == Set([analystID]))
   }
 
@@ -148,7 +149,7 @@ struct RetrospectiveSprintSelectionTests {
       sprint: Sprint(
         productID: productID,
         number: number,
-        goal: "Deliver Sprint \(number)",
+        goal: "Deliver sprint \(number)",
         state: state,
         retrospectiveConcludedAt: retrospectiveConcludedAt
       ),

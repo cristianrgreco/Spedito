@@ -39,7 +39,7 @@ public enum CodexLiveActivityUpdate: Equatable, Sendable {
 
 public struct CodexLiveActivityAccumulator: Sendable {
   private var reasoningSummariesByItemID: [String: String] = [:]
-  private var emittedReasoningSummariesByItemID: [String: String] = [:]
+  private var emittedReasoningCharacterCountsByItemID: [String: Int] = [:]
 
   public init() {}
 
@@ -55,17 +55,18 @@ public struct CodexLiveActivityAccumulator: Sendable {
       else { return nil }
       reasoningSummariesByItemID[itemID, default: ""] += delta
       guard let text = Self.displayText(reasoningSummariesByItemID[itemID]) else { return nil }
-      let previous = emittedReasoningSummariesByItemID[itemID] ?? ""
+      let previousCharacterCount =
+        emittedReasoningCharacterCountsByItemID[itemID] ?? 0
       let terminalPunctuation = text.last.map { ".!?…".contains($0) } ?? false
       let newlyVisibleCharacterCount =
-        text.hasPrefix(previous)
-        ? text.count - previous.count
-        : text.count
-      guard previous.isEmpty
-        ? text.count >= 24 || terminalPunctuation
-        : newlyVisibleCharacterCount >= 24 || terminalPunctuation
+        reasoningSummariesByItemID[itemID, default: ""].count - previousCharacterCount
+      guard
+        previousCharacterCount == 0
+          ? text.count >= 24 || terminalPunctuation
+          : newlyVisibleCharacterCount >= 24 || terminalPunctuation
       else { return nil }
-      emittedReasoningSummariesByItemID[itemID] = text
+      emittedReasoningCharacterCountsByItemID[itemID] =
+        reasoningSummariesByItemID[itemID, default: ""].count
       return .activity(CodexLiveActivity(text: text, kind: .thinking))
 
     case "turn/plan/updated":
@@ -157,7 +158,8 @@ public struct CodexLiveActivityAccumulator: Sendable {
       source = value
     }
 
-    let lines = source
+    let lines =
+      source
       .components(separatedBy: .newlines)
       .map {
         $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -174,7 +176,7 @@ public struct CodexLiveActivityAccumulator: Sendable {
       .filter { !$0.isEmpty }
     guard var text = lines.last else { return nil }
     if text.count > 150 {
-      text = String(text.prefix(147)) + "…"
+      text = "…" + String(text.suffix(149))
     }
     return text
   }

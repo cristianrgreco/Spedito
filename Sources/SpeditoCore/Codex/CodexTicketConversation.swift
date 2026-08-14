@@ -35,23 +35,23 @@ public enum TicketConversationGenerationError: Error, Equatable, LocalizedError,
 
 public enum CodexTicketConversation {
   private static let platformInstructions = """
-    You are the single team member explicitly selected by the Product Owner in a live conversation
+    You are the single team member explicitly selected by the product owner in a live conversation
     attached to one ticket. Respond only as your configured role. Do not contact, simulate, or aggregate
     replies from other team members.
 
     This is a concise workplace chat, not an implementation turn. Do not modify files, browse the web,
     or claim to update the ticket. You may use read-only local tools to query the live product database
     and inspect product Git history. Answer the owner's actual question directly from that evidence and
-    the ticket Conversation. Prefer one to four short sentences. If the requested rationale is not
+    the ticket conversation. Prefer one to four short sentences. If the requested rationale is not
     established, say that plainly rather than inventing one. Ask at most one focused follow-up question
     when it is necessary.
 
     If the conversation establishes a concrete improvement to the ticket, you may attach one complete,
-    versioned replacement snapshot for explicit Product Owner review. This is appropriate when the owner
+    versioned replacement snapshot for explicit product owner review. This is appropriate when the owner
     asks to capture an agreed choice, or when your answer directly resolves an ambiguity in the delivery
     contract. Preserve every field you do not intend to change. Never claim the proposal was applied.
     Use null when the exchange is only explanatory or exploratory. Dependency analysis, duplicate checks,
-    and broad refinement belong to the automatic Business Analyst refinement flow. Return only the JSON requested
+    and broad refinement belong to the automatic business analyst refinement flow. Return only the JSON requested
     by the output schema.
     """
 
@@ -82,29 +82,32 @@ public enum CodexTicketConversation {
     ownerMessage: String,
     allowsProposal: Bool = true
   ) -> String {
-    let criteria = item.acceptanceCriteria.isEmpty
+    let criteria =
+      item.acceptanceCriteria.isEmpty
       ? "No acceptance criteria supplied."
       : item.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
-    let blockers = prerequisites.isEmpty
+    let blockers =
+      prerequisites.isEmpty
       ? "No active ticket dependencies."
       : prerequisites.map { "- \($0.key): \($0.title) [\($0.state.title)]" }
         .joined(separator: "\n")
-    let history = previousComments.isEmpty
+    let history =
+      previousComments.isEmpty
       ? "No earlier ticket conversation."
       : previousComments.suffix(24).map { "- \($0.authorName): \($0.body)" }
         .joined(separator: "\n")
     let proposalGuidance =
       allowsProposal
       ? """
-        If your answer establishes a useful ticket edit, return the complete revised title, type,
-        context, acceptance criteria, and priority, preserving unchanged fields. Set baseVersion
-        to \(item.version). Otherwise return proposal as null.
-        """
+      If your answer establishes a useful ticket edit, return the complete revised title, type,
+      context, acceptance criteria, and priority, preserving unchanged fields. Set baseVersion
+      to \(item.version). Otherwise return proposal as null.
+      """
       : """
-        This is an explanatory question about sprint delivery. Answer it directly and return
-        proposal as null. Do not resume implementation, invalidate a reviewed candidate, or imply
-        that the ticket status changed.
-        """
+      This is an explanatory question about sprint delivery. Answer it directly and return
+      proposal as null. Do not resume implementation, invalidate a reviewed candidate, or imply
+      that the ticket status changed.
+      """
 
     return """
       Product: \(product.name)

@@ -20,14 +20,15 @@ struct ReleasePackagingTests {
       encoding: .utf8
     )
 
-    #expect(script.contains("create-dmg \\"))
+    #expect(script.contains("\"$create_dmg\" \\"))
     #expect(script.contains("--background \"$background_path\""))
     #expect(script.contains("DMGBackground.tiff"))
     #expect(script.contains("--window-size 660 468"))
     #expect(script.contains("--icon \"Spedito.app\" 180 240"))
     #expect(script.contains("--app-drop-link 480 240"))
     #expect(script.contains("--no-internet-enable"))
-    #expect(workflow.contains("brew install create-dmg"))
+    #expect(workflow.contains("CREATE_DMG_REVISION: 118f131aa57c1278aca806eb37cf5021e9064198"))
+    #expect(!workflow.contains("brew install create-dmg"))
     #expect(!script.contains("hdiutil"))
     #expect(!script.contains("osascript"))
     #expect(!script.contains("--volicon"))

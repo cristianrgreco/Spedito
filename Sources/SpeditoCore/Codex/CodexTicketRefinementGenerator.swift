@@ -31,7 +31,8 @@ public struct TicketRefinementQuestion: Codable, Hashable, Sendable {
 
   public static func parseTicketCommentBody(_ body: String) -> [Self] {
     body.components(separatedBy: "\n\n").compactMap { block in
-      let lines = block
+      let lines =
+        block
         .components(separatedBy: .newlines)
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
@@ -146,7 +147,7 @@ public enum TicketRefinementGenerationError: Error, Equatable, LocalizedError, S
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The Business Analyst returned an invalid ticket review: \(detail)"
+      "The business analyst returned an invalid ticket review: \(detail)"
     case .anotherCodexTaskIsRunning:
       "Another team response is already running. Wait for it to finish and try again."
     }
@@ -155,20 +156,20 @@ public enum TicketRefinementGenerationError: Error, Equatable, LocalizedError, S
 
 public enum CodexTicketRefinementGenerator {
   private static let platformInstructions = """
-    You are the single Business Analyst reviewing one saved backlog ticket with the Product Owner.
+    You are the single business analyst reviewing one saved backlog ticket with the product owner.
     Turn the owner's intent into a clear, executable delivery contract without silently making product
     decisions. This is analysis only: do not modify files, browse the web, or apply changes. You may use
     read-only local tools to query the live product database and inspect product Git history.
 
-    Return a complete refined ticket snapshot. Once all Product Owner questions are resolved, the
+    Return a complete refined ticket snapshot. Once all product owner questions are resolved, the
     application applies that snapshot and any new prerequisite relationships together as one
     version-checked refinement result. Preserve owner-authored content unless changing it materially
     improves clarity or testability. Suggest dependencies only when another saved ticket is a genuine
     prerequisite, and give a concrete reason for every edge. Do not use dependencies merely to express a
     preferred sequence. Identify likely duplicate or overlapping tickets, whether the work should be split,
     and no more than three focused questions whose answers materially affect scope. Recommend the future
-    delivery owner as Business Analyst for agreed research, UX Designer for experience or prototype work,
-    or Implementer for approved product changes and other general delivery.
+    delivery owner as business analyst for agreed research, UX designer for experience or prototype work,
+    or implementer for approved product changes and other general delivery.
 
     For a ticket that will build, test, prototype, demo, locally run, or prepare a deployable product,
     inspect verified Environments knowledge and repository-owned manifests, scripts, CI, and documentation.
@@ -176,17 +177,17 @@ public enum CodexTicketRefinementGenerator {
     concrete reason. If no sufficient environment or foundation ticket exists, do not bury runtime
     discovery and setup inside the feature. Ask one business-friendly question when a material technology
     or hosting preference remains, recommending the simplest suitable option when the owner has no
-    preference. Never ask a non-technical Product Owner to choose package-manager paths, temporary folders,
+    preference. Never ask a non-technical product owner to choose package-manager paths, temporary folders,
     caches, or sandbox permissions. Once the preference is resolved, use splitRecommendation to call for a
-    separate Implementer-owned environment-establishment task before this ticket can be authorised. A
-    separate Business Analyst research task is appropriate only when the Product Owner agreed that current
+    separate implementer-owned environment-establishment task before this ticket can be authorised. A
+    separate business analyst research task is appropriate only when the product owner agreed that current
     external evidence is needed for a responsible stack, hosting, licensing, cost, maintenance, or
     deployment recommendation.
 
     An environment-establishment task has a concrete reusable outcome: approved toolchain and versions;
     stable repository-owned build, test, local-run, and demo entry points; run-private temporary and cache
     locations; required filesystem, localhost, network, and service capabilities; managed readiness
-    evidence; known limitations; and verified Environments Product knowledge. Do not make production
+    evidence; known limitations; and verified Environments product knowledge. Do not make production
     accounts, credentials, signing identities, or irreversible deployment access prerequisites for
     ordinary local delivery.
 
@@ -204,11 +205,11 @@ public enum CodexTicketRefinementGenerator {
     because the application adds it. When an unlisted constraint may be the answer, tell the owner in the
     question to choose Other and describe it in the interface's text field. Distinguish a recommendation
     made from existing product and repository evidence without a research ticket from time-boxed external
-    research that creates a separate Business Analyst ticket. Do not add a preamble such as "a material
+    research that creates a separate business analyst ticket. Do not add a preamble such as "a material
     choice remains" to the prompt or message. The message, title, and rationale must never be empty.
     Preserve the exact saved ticket fields, use a short rationale explaining that clarification is needed,
     and return no dependency, overlap, or split suggestions yet. Do not write phrases such as "requires
-    Product Owner confirmation" into a proposed title, context, or acceptance criterion. Once the ticket
+    product owner confirmation" into a proposed title, context, or acceptance criterion. Once the ticket
     conversation answers every material question, return missingQuestions as an empty array and provide
     the completed refinement. Never claim that it was applied because the application must still validate
     the saved version and relationships. Return only the JSON requested by the output schema.
@@ -238,13 +239,16 @@ public enum CodexTicketRefinementGenerator {
     conversation: [TicketComment] = []
   ) -> String {
     let activeItems = existingItems.filter { $0.state != .cancelled }
-    let criteria = item.acceptanceCriteria.isEmpty
+    let criteria =
+      item.acceptanceCriteria.isEmpty
       ? "No acceptance criteria supplied."
       : item.acceptanceCriteria.map { "- \($0)" }.joined(separator: "\n")
-    let existingScope = activeItems
+    let existingScope =
+      activeItems
       .filter { $0.id != item.id }
       .map { candidate in
-        let candidateCriteria = candidate.acceptanceCriteria.isEmpty
+        let candidateCriteria =
+          candidate.acceptanceCriteria.isEmpty
           ? "no criteria"
           : candidate.acceptanceCriteria.joined(separator: " | ")
         return """
@@ -264,21 +268,23 @@ public enum CodexTicketRefinementGenerator {
       return "- \(dependent.key) depends on \(prerequisite.key)"
     }
     .joined(separator: "\n")
-    let conversationHistory = conversation.isEmpty
+    let conversationHistory =
+      conversation.isEmpty
       ? "No earlier ticket conversation."
       : conversation.suffix(24).map { "- \($0.authorName): \($0.body)" }
         .joined(separator: "\n")
     let epicContext: String
     if let epic {
-      let success = epic.successCriteria.isEmpty
+      let success =
+        epic.successCriteria.isEmpty
         ? "Not yet defined."
         : epic.successCriteria.map { "- \($0)" }.joined(separator: "\n")
       epicContext = """
-        Epic: \(epic.title)
-        Epic goal: \(epic.goal)
-        Epic success criteria:
+        Epic: \(epic.hasAnalyzedMetadata ? epic.title : "Title pending business analyst analysis")
+        epic goal: \(epic.goal)
+        epic success criteria:
         \(success)
-        Epic constraints:
+        epic constraints:
         \(epic.constraints.isEmpty ? "No additional constraints." : epic.constraints)
         """
     } else {
@@ -287,7 +293,7 @@ public enum CodexTicketRefinementGenerator {
 
     return """
       Product: \(product.name)
-      Epic context:
+      epic context:
       \(epicContext)
 
       Ticket to refine — exact saved version \(item.version):
@@ -309,7 +315,7 @@ public enum CodexTicketRefinementGenerator {
 
       Return a concise chat message and a complete refined snapshot. baseVersion must be \(item.version).
       Set role to the recommended future delivery owner. This recommendation fills an unassigned ticket;
-      it does not replace an assignee already chosen by the Product Owner.
+      it does not replace an assignee already chosen by the product owner.
       Dependency and duplicate references must use an exact ticket key listed above. An empty array means
       no suggestion. splitRecommendation must be null when the ticket should remain one ticket.
       Before returning, query verified Environments knowledge and inspect repository-owned environment
@@ -475,19 +481,15 @@ public enum CodexTicketRefinementGenerator {
     let rawRationale = proposal.rationale.trimmingCharacters(in: .whitespacesAndNewlines)
     let message =
       rawMessage.nilIfEmpty
-      ?? (
-        isAwaitingOwner
-          ? "I need your input before I can complete this review."
-          : "I completed the ticket refinement."
-      )
+      ?? (isAwaitingOwner
+        ? "I need your input before I can complete this review."
+        : "I completed the ticket refinement.")
     let title = rawTitle.nilIfEmpty ?? currentItem.title
     let rationale =
       rawRationale.nilIfEmpty
-      ?? (
-        isAwaitingOwner
-          ? "Clarification is needed before proposing ticket changes."
-          : "The refinement makes the requested outcome clearer and independently verifiable."
-      )
+      ?? (isAwaitingOwner
+        ? "Clarification is needed before proposing ticket changes."
+        : "The refinement makes the requested outcome clearer and independently verifiable.")
     guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw TicketRefinementGenerationError.invalidResponse(
         "The saved ticket and proposal are both missing a title."
@@ -503,12 +505,10 @@ public enum CodexTicketRefinementGenerator {
     let duplicateKeys = proposal.potentialDuplicates.map(\.ticketKey)
     guard
       isAwaitingOwner
-        || (
-          Set(dependencyKeys).count == dependencyKeys.count
-            && Set(duplicateKeys).count == duplicateKeys.count
-            && dependencyKeys.allSatisfy(validKeys.contains)
-            && duplicateKeys.allSatisfy(validKeys.contains)
-        )
+        || (Set(dependencyKeys).count == dependencyKeys.count
+          && Set(duplicateKeys).count == duplicateKeys.count
+          && dependencyKeys.allSatisfy(validKeys.contains)
+          && duplicateKeys.allSatisfy(validKeys.contains))
     else {
       throw TicketRefinementGenerationError.invalidResponse(
         "Dependency and overlap suggestions must reference unique saved ticket keys."
@@ -516,14 +516,12 @@ public enum CodexTicketRefinementGenerator {
     }
     guard
       isAwaitingOwner
-        || (
-          proposal.dependencies.allSatisfy({
+        || (proposal.dependencies.allSatisfy({
+          !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
+          && proposal.potentialDuplicates.allSatisfy({
             !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-          })
-            && proposal.potentialDuplicates.allSatisfy({
-              !$0.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            })
-        )
+          }))
     else {
       throw TicketRefinementGenerationError.invalidResponse(
         "Every dependency or overlap suggestion needs a reason."
@@ -590,8 +588,8 @@ private struct GeneratedTicketRefinementProposal: Decodable {
   let missingQuestions: [TicketRefinementQuestion]
 }
 
-private extension String {
-  var nilIfEmpty: String? {
+extension String {
+  fileprivate var nilIfEmpty: String? {
     isEmpty ? nil : self
   }
 }

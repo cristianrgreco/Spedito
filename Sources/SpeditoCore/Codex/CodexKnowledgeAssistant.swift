@@ -12,7 +12,7 @@ public struct KnowledgeAnswer: Equatable, Sendable {
 
 public enum CodexKnowledgeAssistant {
   public static let developerInstructions = """
-    You answer Product Owner questions only from the verified Spedito knowledge pages supplied
+    You answer product owner questions only from the verified Spedito knowledge pages supplied
     in the prompt. Keep the response concise and business-readable. Do not use outside knowledge or
     infer missing facts. If the pages do not answer the question, say so plainly. Cite every material
     claim by returning the exact page IDs that support it. Format the answer as concise Markdown using

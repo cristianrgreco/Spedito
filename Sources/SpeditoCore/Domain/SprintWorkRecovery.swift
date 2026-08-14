@@ -10,12 +10,14 @@ public struct SprintWorkRecoveryPolicy: Sendable {
   ) -> AgentRun? {
     guard
       candidate.status == .reviewing,
+      candidate.integratedSHA != nil,
       let reviewWorktreePath = candidate.integrationWorktreePath
     else {
       return nil
     }
 
-    return runs
+    return
+      runs
       .filter { run in
         guard
           run.productID == candidate.productID,
@@ -71,11 +73,9 @@ public struct SprintWorkRecoveryPolicy: Sendable {
     permissionRequests
       .filter {
         $0.agentRunID == runID
-          && (
-            $0.status == .interrupted
-              || $0.status == .allowed
-              || $0.status == .denied
-          )
+          && ($0.status == .interrupted
+            || $0.status == .allowed
+            || $0.status == .denied)
       }
       .max(by: { $0.updatedAt < $1.updatedAt })
   }
@@ -86,11 +86,13 @@ public struct SprintWorkRecoveryPolicy: Sendable {
     permissionRequests: [AgentPermissionRequest]
   ) -> AgentPermissionRequest? {
     let awaitingRunsByID = Dictionary(
-      uniqueKeysWithValues: runs
+      uniqueKeysWithValues:
+        runs
         .filter { $0.status == .awaitingOwner }
         .map { ($0.id, $0) }
     )
-    return permissionRequests
+    return
+      permissionRequests
       .filter { request in
         guard
           request.workItemID == workItemID,
@@ -100,10 +102,8 @@ public struct SprintWorkRecoveryPolicy: Sendable {
         }
         let latestMeaningfulActivity = run.lastActivityAt ?? run.updatedAt
         return request.status == .pending
-          || (
-            request.status == .interrupted
-              && request.updatedAt >= latestMeaningfulActivity
-          )
+          || (request.status == .interrupted
+            && request.updatedAt >= latestMeaningfulActivity)
       }
       .max(by: { $0.createdAt < $1.createdAt })
   }

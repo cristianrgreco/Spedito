@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct CodexRuntimeCandidate: Equatable, Sendable {
@@ -51,9 +52,17 @@ public struct CodexRuntimeResolver: Sendable {
   ]
 
   public let requiredFeatures: Set<String>
+  public let probeTimeout: TimeInterval
+  public let maximumProbeOutputBytes: Int
 
-  public init(requiredFeatures: Set<String> = Self.requiredFeatures) {
+  public init(
+    requiredFeatures: Set<String> = Self.requiredFeatures,
+    probeTimeout: TimeInterval = 10,
+    maximumProbeOutputBytes: Int = 256 * 1_024
+  ) {
     self.requiredFeatures = requiredFeatures
+    self.probeTimeout = probeTimeout
+    self.maximumProbeOutputBytes = maximumProbeOutputBytes
   }
 
   public func resolve(candidates: [CodexRuntimeCandidate]) throws -> CodexRuntimeDescriptor {
@@ -119,23 +128,8 @@ public struct CodexRuntimeResolver: Sendable {
   }
 
   private func inspectVersion(at executableURL: URL) throws -> String {
-    let process = Process()
-    let output = Pipe()
-    process.executableURL = executableURL
-    process.arguments = ["--version"]
-    process.standardOutput = output
-    process.standardError = output
-
-    do {
-      try process.run()
-      process.waitUntilExit()
-    } catch {
-      throw CodexRuntimeError.couldNotInspect(executableURL.path)
-    }
-
-    let data = output.fileHandleForReading.readDataToEndOfFile()
+    let data = try runProbe(executableURL: executableURL, arguments: ["--version"])
     guard
-      process.terminationStatus == 0,
       let text = String(data: data, encoding: .utf8),
       let version = parseVersionOutput(text)
     else {
@@ -145,32 +139,96 @@ public struct CodexRuntimeResolver: Sendable {
   }
 
   private func inspectEnabledFeatures(at executableURL: URL) throws -> Set<String> {
-    let process = Process()
-    let output = Pipe()
-    process.executableURL = executableURL
-    process.arguments = [
-      "-c",
-      CodexPermissionProfiles.requestPermissionsFeatureOverride,
-      "features",
-      "list",
-    ]
-    process.standardOutput = output
-    process.standardError = output
-
-    do {
-      try process.run()
-      process.waitUntilExit()
-    } catch {
-      throw CodexRuntimeError.couldNotInspect(executableURL.path)
-    }
-
-    let data = output.fileHandleForReading.readDataToEndOfFile()
-    guard
-      process.terminationStatus == 0,
-      let text = String(data: data, encoding: .utf8)
-    else {
+    let data = try runProbe(
+      executableURL: executableURL,
+      arguments: [
+        "-c",
+        CodexPermissionProfiles.requestPermissionsFeatureOverride,
+        "features",
+        "list",
+      ]
+    )
+    guard let text = String(data: data, encoding: .utf8) else {
       throw CodexRuntimeError.couldNotInspect(executableURL.path)
     }
     return parseEnabledFeatures(text)
+  }
+
+  private func runProbe(executableURL: URL, arguments: [String]) throws -> Data {
+    do {
+      return try CodexRuntimeProbeProcess(
+        executableURL: executableURL,
+        arguments: arguments
+      ).run(timeout: probeTimeout, maximumOutputBytes: maximumProbeOutputBytes)
+    } catch {
+      throw CodexRuntimeError.couldNotInspect(executableURL.path)
+    }
+  }
+}
+
+private enum CodexRuntimeProbeProcessError: Error {
+  case exceededLimit
+}
+
+private final class CodexRuntimeProbeProcess: @unchecked Sendable {
+  private let process = Process()
+  private let output = Pipe()
+  private let lock = NSLock()
+  private var exceededLimit = false
+
+  init(executableURL: URL, arguments: [String]) {
+    process.executableURL = executableURL
+    process.arguments = arguments
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = output
+    process.standardError = output
+  }
+
+  func run(timeout: TimeInterval, maximumOutputBytes: Int) throws -> Data {
+    try process.run()
+    let timeoutWork = DispatchWorkItem { [self] in
+      stopForLimit()
+    }
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+      deadline: .now() + timeout,
+      execute: timeoutWork
+    )
+    defer { timeoutWork.cancel() }
+
+    var data = Data()
+    do {
+      while let chunk = try output.fileHandleForReading.read(upToCount: 64 * 1_024),
+        !chunk.isEmpty
+      {
+        guard data.count + chunk.count <= maximumOutputBytes else {
+          stopForLimit()
+          break
+        }
+        data.append(chunk)
+      }
+    } catch {
+      guard didExceedLimit else { throw error }
+    }
+    process.waitUntilExit()
+    guard !didExceedLimit, process.terminationStatus == 0 else {
+      throw CodexRuntimeProbeProcessError.exceededLimit
+    }
+    return data
+  }
+
+  private var didExceedLimit: Bool {
+    lock.withLock { exceededLimit }
+  }
+
+  private func stopForLimit() {
+    let processID = lock.withLock {
+      guard !exceededLimit else { return Int32(0) }
+      exceededLimit = true
+      return process.processIdentifier
+    }
+    if processID > 0 {
+      _ = Darwin.kill(processID, SIGKILL)
+    }
+    try? output.fileHandleForReading.close()
   }
 }

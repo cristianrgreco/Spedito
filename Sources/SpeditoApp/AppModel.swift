@@ -77,8 +77,7 @@ struct EpicPlanningPolicy {
     if hasFailedPlan {
       return .retryFailedPlan
     }
-    if
-      let answeredQuestions = conversation.messages.last?.answeredQuestions,
+    if let answeredQuestions = conversation.messages.last?.answeredQuestions,
       !answeredQuestions.isEmpty
     {
       return .retryClarification(answeredQuestions)
@@ -124,6 +123,132 @@ struct ProductExecutionLifecyclePolicy {
     case .appShutdown:
       .all
     }
+  }
+}
+
+enum TicketDeliveryEvidencePolicyError: Error, LocalizedError {
+  case repositoryChangeRequired
+
+  var errorDescription: String? {
+    switch self {
+    case .repositoryChangeRequired:
+      "Completed product-changing work must create or modify an inspectable repository artefact."
+    }
+  }
+}
+
+struct TicketDeliveryEvidencePolicy {
+  static func deliveryKind(
+    assigneeRole: AgentRole,
+    changedPaths: [String]
+  ) throws -> CandidateDeliveryKind {
+    if !changedPaths.isEmpty {
+      return .repositoryChange
+    }
+    guard assigneeRole == .businessAnalyst else {
+      throw TicketDeliveryEvidencePolicyError.repositoryChangeRequired
+    }
+    return .localOutcome
+  }
+}
+
+enum GitHubRepositorySetupActivity: Equatable {
+  case inProgress(
+    progress: GitHubRemoteRepositoryInitializationProgress,
+    publishesExistingHistory: Bool
+  )
+  case completed(publishedExistingHistory: Bool)
+
+  var isInProgress: Bool {
+    if case .inProgress = self { return true }
+    return false
+  }
+
+  var isCompleted: Bool {
+    if case .completed = self { return true }
+    return false
+  }
+}
+
+struct GitHubPullRequestPollingPolicy {
+  static let foregroundPriorityInterval: Duration = .seconds(60)
+  static let foregroundInterval: Duration = .seconds(120)
+  static let backgroundInterval: Duration = .seconds(300)
+
+  static func orderedPublications(
+    _ publications: [RemotePublication],
+    workItems: [WorkItem],
+    visibleWorkItemIDs: Set<UUID>
+  ) -> [RemotePublication] {
+    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    return
+      publications
+      .filter(isPollable)
+      .sorted { lhs, rhs in
+        let lhsPriority = priority(
+          publication: lhs,
+          workItemsByID: workItemsByID,
+          visibleWorkItemIDs: visibleWorkItemIDs
+        )
+        let rhsPriority = priority(
+          publication: rhs,
+          workItemsByID: workItemsByID,
+          visibleWorkItemIDs: visibleWorkItemIDs
+        )
+        if lhsPriority != rhsPriority {
+          return lhsPriority < rhsPriority
+        }
+        if lhs.updatedAt != rhs.updatedAt {
+          return lhs.updatedAt < rhs.updatedAt
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
+      }
+  }
+
+  static func interval(
+    isApplicationActive: Bool,
+    publications: [RemotePublication],
+    workItems: [WorkItem],
+    visibleWorkItemIDs: Set<UUID>
+  ) -> Duration {
+    guard isApplicationActive else { return backgroundInterval }
+    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    let hasPriorityPullRequest = publications.contains {
+      isPollable($0)
+        && priority(
+          publication: $0,
+          workItemsByID: workItemsByID,
+          visibleWorkItemIDs: visibleWorkItemIDs
+        ) < 2
+    }
+    return hasPriorityPullRequest ? foregroundPriorityInterval : foregroundInterval
+  }
+
+  private static func isPollable(_ publication: RemotePublication) -> Bool {
+    guard publication.workItemID != nil, publication.pullRequest != nil else {
+      return false
+    }
+    switch publication.status {
+    case .open, .openOutdated, .openStale:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func priority(
+    publication: RemotePublication,
+    workItemsByID: [UUID: WorkItem],
+    visibleWorkItemIDs: Set<UUID>
+  ) -> Int {
+    guard let workItemID = publication.workItemID else { return 2 }
+    if visibleWorkItemIDs.contains(workItemID) {
+      return 0
+    }
+    if workItemsByID[workItemID]?.state == .acceptance {
+      return 1
+    }
+    return 2
   }
 }
 
@@ -320,10 +445,107 @@ struct PlanningDropPolicy {
   }
 }
 
+struct KnowledgePageReadState: Equatable {
+  private(set) var productID: UUID?
+  private(set) var seenUpdates: [UUID: Date] = [:]
+
+  mutating func load(
+    productID: UUID,
+    pages: [KnowledgePage],
+    defaults: UserDefaults = .standard
+  ) {
+    guard
+      self.productID != productID,
+      !pages.isEmpty,
+      pages.allSatisfy({ $0.productID == productID })
+    else { return }
+    self.productID = productID
+
+    if let stored = defaults.dictionary(forKey: Self.defaultsKey(productID: productID)) {
+      let pageIDs = Set(pages.map(\.id))
+      seenUpdates = stored.reduce(into: [:]) { result, entry in
+        guard
+          let pageID = UUID(uuidString: entry.key),
+          pageIDs.contains(pageID),
+          let timestamp = (entry.value as? NSNumber)?.doubleValue
+        else { return }
+        result[pageID] = Date(timeIntervalSince1970: timestamp)
+      }
+    } else {
+      seenUpdates = Dictionary(
+        uniqueKeysWithValues: pages.map { ($0.id, $0.updatedAt) }
+      )
+      persist(defaults: defaults)
+    }
+  }
+
+  mutating func reset() {
+    productID = nil
+    seenUpdates = [:]
+  }
+
+  func unreadPageIDs(in pages: [KnowledgePage]) -> Set<UUID> {
+    guard let productID else { return [] }
+    return Set(
+      pages.compactMap { page in
+        guard page.productID == productID else { return nil }
+        guard let seenAt = seenUpdates[page.id] else { return page.id }
+        return page.updatedAt > seenAt ? page.id : nil
+      }
+    )
+  }
+
+  mutating func markRead(
+    _ page: KnowledgePage,
+    defaults: UserDefaults = .standard
+  ) {
+    guard productID == page.productID else { return }
+    if let seenAt = seenUpdates[page.id], seenAt >= page.updatedAt {
+      return
+    }
+    seenUpdates[page.id] = page.updatedAt
+    persist(defaults: defaults)
+  }
+
+  static func defaultsKey(productID: UUID) -> String {
+    "Spedito.knowledge-page-seen.\(productID.uuidString)"
+  }
+
+  private func persist(defaults: UserDefaults) {
+    guard let productID else { return }
+    defaults.set(
+      Dictionary(
+        uniqueKeysWithValues: seenUpdates.map {
+          ($0.key.uuidString, $0.value.timeIntervalSince1970)
+        }
+      ),
+      forKey: Self.defaultsKey(productID: productID)
+    )
+  }
+}
+
+enum ProductCreationRequest: Equatable, Sendable {
+  case blank(name: String)
+  case importRepository(name: String, source: PublicGitRepositoryURL)
+  case importGitHubRepository(name: String, repositoryID: Int64)
+
+  var name: String {
+    switch self {
+    case .blank(let name), .importRepository(let name, _),
+      .importGitHubRepository(let name, _):
+      name
+    }
+  }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
   @Published private(set) var products: [Product] = []
   @Published private(set) var archivedProducts: [Product] = []
+  @Published private(set) var ticketAttentionsByProductID: [UUID: [TicketAttention]] = [:]
+  @Published private(set) var presentedTicketAttention: TicketAttention?
+  @Published private(set) var ticketAttentionNavigationRequest:
+    TicketAttentionNavigationRequest?
   @Published private(set) var epics: [Epic] = []
   @Published private(set) var workItems: [WorkItem] = []
   @Published private(set) var dependencies: [WorkItemDependency] = []
@@ -337,6 +559,26 @@ final class AppModel: ObservableObject {
   @Published private(set) var retrospectiveSyntheses: [RetrospectiveSynthesis] = []
   @Published private(set) var retrospectiveActionSources: [RetrospectiveActionSource] = []
   @Published private(set) var knowledgePages: [KnowledgePage] = []
+  @Published private(set) var unreadKnowledgePageIDs: Set<UUID> = []
+  @Published private(set) var productRepository: ProductRepository?
+  @Published private(set) var githubRemoteRepositoryStates: [UUID: GitHubRemoteRepositoryState] =
+    [:]
+  @Published private(set) var githubDeviceAuthorizationPrompts:
+    [UUID: GitHubDeviceAuthorizationPrompt] = [:]
+  @Published private(set) var githubRemoteRepositoryBusyProductIDs: Set<UUID> = []
+  @Published private(set) var githubRemoteRepositoryErrors: [UUID: String] = [:]
+  @Published private(set) var ticketAcceptanceInProgressWorkItemIDs: Set<UUID> = []
+  @Published private(set) var githubRepositorySetupActivities:
+    [UUID: GitHubRepositorySetupActivity] = [:]
+  @Published private(set) var githubImportRepositoryCatalog = GitHubRepositoryImportCatalog()
+  @Published private(set) var isLoadingGitHubImportRepositories = false
+  @Published private(set) var githubImportRepositoryError: String?
+  @Published private(set) var githubImportDeviceAuthorizationPrompt:
+    GitHubDeviceAuthorizationPrompt?
+  @Published private(set) var importedAppLaunch: ImportedAppLaunch?
+  @Published private(set) var repositoryKnowledgeRun: RepositoryKnowledgeRun?
+  @Published private(set) var repositoryKnowledgeDrafts: [RepositoryKnowledgeDraft] = []
+  @Published private(set) var repositoryKnowledgeActivities: [UUID: CodexLiveActivity] = [:]
   @Published private(set) var candidateRevisions: [CandidateRevision] = []
   @Published private(set) var demoSessions: [DemoSession] = []
   @Published private(set) var permissionRequests: [AgentPermissionRequest] = []
@@ -347,19 +589,23 @@ final class AppModel: ObservableObject {
   @Published private(set) var liveRunActivities: [UUID: CodexLiveActivity] = [:]
   @Published private(set) var suggestionBatch: TicketSuggestionBatch?
   @Published private(set) var conversationThreads: [ProductConversationThread] = []
-  @Published private(set) var conversationMessagesByThread:
-    [UUID: [ProductConversationMessage]] = [:]
+  @Published private(set) var conversationMessagesByThread: [UUID: [ProductConversationMessage]] =
+    [:]
   @Published private(set) var respondingConversationThreadIDs: Set<UUID> = []
-  @Published private(set) var productConversationActivities:
-    [UUID: CodexLiveActivity] = [:]
+  @Published private(set) var productConversationActivities: [UUID: CodexLiveActivity] = [:]
   @Published private(set) var conversationErrorsByThread: [UUID: String] = [:]
   @Published private(set) var codexModels: [CodexModelOption] = []
   @Published private(set) var codexConnectionState = CodexConnectionState.notChecked
+  @Published private(set) var codexRateLimits: CodexRateLimitsSnapshot?
+  @Published private(set) var codexUsageUpdatedAt: Date?
+  @Published private(set) var isRefreshingCodexUsage = false
+  @Published private(set) var isCodexUsageStale = false
   @Published private(set) var codexInstallations: [CodexInstallation] = []
   @Published private(set) var selectedCodexInstallationID: String?
   @Published var selectedProductID: UUID?
   @Published private(set) var shouldPresentProductLibraryOnLaunch = false
   @Published var errorMessage: String?
+  @Published private(set) var productCreationError: String?
   @Published private(set) var isLoading = true
   @Published private(set) var isDecidingSuggestions = false
   @Published private(set) var isPlanningMessageRunning = false
@@ -372,7 +618,8 @@ final class AppModel: ObservableObject {
   @Published private(set) var epicConversationEpicID: UUID?
   @Published private(set) var epicConversationRecipientID: UUID?
   @Published private(set) var ticketRefinementResults: [UUID: TicketRefinementSessionResult] = [:]
-  @Published private(set) var ticketConversationResults: [UUID: TicketConversationSessionResult] = [:]
+  @Published private(set) var ticketConversationResults: [UUID: TicketConversationSessionResult] =
+    [:]
   @Published private(set) var epicPlanningConversation: EpicPlanningConversationState?
   @Published private(set) var isAskingKnowledge = false
   @Published private(set) var refiningWorkItemID: UUID?
@@ -402,6 +649,26 @@ final class AppModel: ObservableObject {
     return sprintHistory.first { $0.sprint.state == .draft }
   }
 
+  var selectedGitHubRemoteRepositoryState: GitHubRemoteRepositoryState? {
+    guard let selectedProductID else { return nil }
+    return githubRemoteRepositoryStates[selectedProductID]
+  }
+
+  var selectedGitHubDeviceAuthorizationPrompt: GitHubDeviceAuthorizationPrompt? {
+    guard let selectedProductID else { return nil }
+    return githubDeviceAuthorizationPrompts[selectedProductID]
+  }
+
+  var isSelectedGitHubRemoteRepositoryBusy: Bool {
+    guard let selectedProductID else { return false }
+    return githubRemoteRepositoryBusyProductIDs.contains(selectedProductID)
+  }
+
+  var selectedGitHubRemoteRepositoryError: String? {
+    guard let selectedProductID else { return nil }
+    return githubRemoteRepositoryErrors[selectedProductID]
+  }
+
   private let storeRegistry: ProductStoreRegistry?
   private let injectedStore: SQLiteStore?
   private var store: SQLiteStore? {
@@ -409,14 +676,34 @@ final class AppModel: ObservableObject {
     guard let selectedProductID else { return nil }
     return storeRegistry?.store(for: selectedProductID)
   }
-  private let gitWorkspaceManager = GitWorkspaceManager()
+  private let gitWorkspaceManager: GitWorkspaceManager
+  private let productRepositoryImporter: ProductRepositoryImporter?
+  private let githubRemoteService: (any GitHubRemoteRepositoryServing)?
   private let demoLauncher = MacOSDemoLauncher()
+  private var githubPullRequestPollingTask: Task<Void, Never>?
+  private var githubPullRequestSyncTasks: [UUID: Task<Void, Never>] = [:]
+  private var ticketAcceptanceTasks: [UUID: Task<Void, Never>] = [:]
+  private var visibleGitHubReviewWorkItemCounts: [UUID: Int] = [:]
+  private var productsLaunchingManagedPresentation: Set<UUID> = []
   private let sprintWorkRecoveryPolicy = SprintWorkRecoveryPolicy()
   private let ticketSuggestionRecoveryPolicy = TicketSuggestionRecoveryPolicy()
+  private let repositoryKnowledgeRecoveryPolicy = RepositoryKnowledgeRecoveryPolicy()
   private let ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying
+  private let ticketAttentionSystemNotifier: any TicketAttentionSystemNotifying
   private let codexInstallationPreferences: CodexInstallationPreferences
+  private var knowledgePageReadState = KnowledgePageReadState()
   private var codexClient: CodexAppServerClient?
+  private var codexRuntimeExecutableURL: URL?
+  private var repositoryKnowledgeTasks: [UUID: Task<Void, Never>] = [:]
+  private var repositoryKnowledgeClients: [UUID: CodexAppServerClient] = [:]
+  private var activeRepositoryKnowledgeTurns: [UUID: (threadID: String, turnID: String)] = [:]
+  private var repositoryKnowledgeActivityTasks: [UUID: Task<Void, Never>] = [:]
+  private var repositoryKnowledgeActivityMonitorIDs: [UUID: UUID] = [:]
+  private var repositoryRecoveryAttemptProductIDs: Set<UUID> = []
   private var suggestionTask: Task<Void, Never>?
+  private var productImportTask: Task<ImportedProduct, Error>?
+  private var githubRemoteTasks: [UUID: Task<Void, Never>] = [:]
+  private var githubImportAuthorizationTask: Task<GitHubRepositoryImportCatalog, Error>?
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
   private var ticketConversationThreadIDs: [PlanningConversationKey: String] = [:]
   private var epicConversationThreadIDs: [PlanningConversationKey: String] = [:]
@@ -433,13 +720,9 @@ final class AppModel: ObservableObject {
   private var epicConversationPersistenceTask: Task<Void, Never>?
   private var sprintExecutionTasks: [UUID: Task<Void, Never>] = [:]
   private var sprintExecutionTaskIDs: [UUID: UUID] = [:]
-  private var sprintExecutionWakeContinuations: [
-    UUID: AsyncStream<Void>.Continuation
-  ] = [:]
+  private var sprintExecutionWakeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
   private var activeImplementationTasks: [UUID: Task<Void, Never>] = [:]
   private var activeImplementationProductIDs: [UUID: UUID] = [:]
-  private var activeReviewTasks: [UUID: Task<Void, Never>] = [:]
-  private var activeReviewProductIDs: [UUID: UUID] = [:]
   private var activeIntegrationTasks: [UUID: Task<Void, Never>] = [:]
   private var activeIntegrationProductIDs: [UUID: UUID] = [:]
 
@@ -459,6 +742,9 @@ final class AppModel: ObservableObject {
   private var liveApprovalRequests: [UUID: CodexServerRequest] = [:]
   private var liveApprovalRequestProductIDs: [UUID: UUID] = [:]
   private var approvalRoutingTask: Task<Void, Never>?
+  private var codexUsageMonitoringTask: Task<Void, Never>?
+  private var codexUsageResetTask: Task<Void, Never>?
+  private var codexUsageMonitorID: UUID?
   private var manuallyStoppedRunIDs: Set<UUID> = []
   private var pausedSprintProductIDs: Set<UUID> = []
   private var stoppingSprintProductIDs: Set<UUID> = []
@@ -466,14 +752,11 @@ final class AppModel: ObservableObject {
   private var liveActivityMonitorIDs: [UUID: UUID] = [:]
   private var liveActivityProductIDs: [UUID: UUID] = [:]
   private var retrospectiveSynthesisTasks: [UUID: Task<Void, Never>] = [:]
-  private var activeRetrospectiveSynthesisTurns: [
-    UUID: (threadID: String, turnID: String)
-  ] = [:]
-  private var activeProductConversationTurns: [
-    UUID: ActiveProductConversationTurn
-  ] = [:]
-  private var productConversationActivityTasks:
-    [UUID: Task<Void, Never>] = [:]
+  private var activeRetrospectiveSynthesisTurns: [UUID: (threadID: String, turnID: String)] = [:]
+  private var activeProductConversationTurns: [UUID: ActiveProductConversationTurn] = [:]
+  private var activeProductConversationTitleTurns: [UUID: ActiveProductConversationTurn] = [:]
+  private var productConversationTitleTasks: [UUID: Task<Void, Never>] = [:]
+  private var productConversationActivityTasks: [UUID: Task<Void, Never>] = [:]
   private var productConversationActivityMonitorIDs: [UUID: UUID] = [:]
   private var cancelledProductConversationThreadIDs: Set<UUID> = []
   private var didLoad = false
@@ -489,25 +772,57 @@ final class AppModel: ObservableObject {
   init() {
     Self.migrateLegacyDefaults()
     codexInstallationPreferences = CodexInstallationPreferences()
+    let gitWorkspaceManager = GitWorkspaceManager()
+    var remoteService: (any GitHubRemoteRepositoryServing)?
+    self.gitWorkspaceManager = gitWorkspaceManager
     ticketAttentionSoundPlayer = BundledTicketAttentionSoundPlayer()
+    ticketAttentionSystemNotifier = MacOSTicketAttentionNotifier()
     selectedProductID = UserDefaults.standard.string(
       forKey: Self.selectedProductDefaultsKey
     ).flatMap(UUID.init(uuidString:))
     do {
       let baseURL = try Self.applicationSupportURL()
-      storeRegistry = try ProductStoreRegistry(
-        productWorkspacesRootURL: baseURL.appendingPathComponent(
-          "Product Workspaces",
-          isDirectory: true
-        ),
+      let workspacesRootURL = baseURL.appendingPathComponent(
+        "Product Workspaces",
+        isDirectory: true
+      )
+      let registry = try ProductStoreRegistry(
+        productWorkspacesRootURL: workspacesRootURL,
         legacyDatabaseURL: baseURL.appendingPathComponent("storypointless.sqlite")
+      )
+      storeRegistry = registry
+      productRepositoryImporter = ProductRepositoryImporter(
+        storeRegistry: registry,
+        gitWorkspaceManager: gitWorkspaceManager,
+        stagingRootURL: baseURL.appendingPathComponent(
+          "Import Workspaces",
+          isDirectory: true
+        )
+      )
+      remoteService = GitHubRemoteRepositoryService(
+        configuration: .current(),
+        git: gitWorkspaceManager,
+        storeProvider: { productID in
+          await registry.store(for: productID)
+        },
+        storesProvider: {
+          await registry.allStores
+        },
+        workspaceProvider: { productID in
+          workspacesRootURL.appendingPathComponent(
+            productID.uuidString,
+            isDirectory: true
+          )
+        }
       )
       injectedStore = nil
     } catch {
       storeRegistry = nil
+      productRepositoryImporter = nil
       injectedStore = nil
       errorMessage = error.localizedDescription
     }
+    githubRemoteService = remoteService
     refreshCodexInstallations()
   }
 
@@ -515,13 +830,20 @@ final class AppModel: ObservableObject {
     store: SQLiteStore?,
     selectedProductID: UUID? = nil,
     ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying =
-      BundledTicketAttentionSoundPlayer()
+      BundledTicketAttentionSoundPlayer(),
+    ticketAttentionSystemNotifier: any TicketAttentionSystemNotifying =
+      MacOSTicketAttentionNotifier(),
+    githubRemoteService: (any GitHubRemoteRepositoryServing)? = nil
   ) {
     codexInstallationPreferences = CodexInstallationPreferences()
+    gitWorkspaceManager = GitWorkspaceManager()
+    productRepositoryImporter = nil
     storeRegistry = nil
     injectedStore = store
+    self.githubRemoteService = githubRemoteService
     self.selectedProductID = selectedProductID
     self.ticketAttentionSoundPlayer = ticketAttentionSoundPlayer
+    self.ticketAttentionSystemNotifier = ticketAttentionSystemNotifier
     refreshCodexInstallations()
   }
 
@@ -529,13 +851,27 @@ final class AppModel: ObservableObject {
     storeRegistry: ProductStoreRegistry,
     selectedProductID: UUID? = nil,
     ticketAttentionSoundPlayer: any TicketAttentionSoundPlaying =
-      BundledTicketAttentionSoundPlayer()
+      BundledTicketAttentionSoundPlayer(),
+    ticketAttentionSystemNotifier: any TicketAttentionSystemNotifying =
+      MacOSTicketAttentionNotifier(),
+    githubRemoteService: (any GitHubRemoteRepositoryServing)? = nil
   ) {
     codexInstallationPreferences = CodexInstallationPreferences()
+    let gitWorkspaceManager = GitWorkspaceManager()
+    self.gitWorkspaceManager = gitWorkspaceManager
     self.storeRegistry = storeRegistry
+    productRepositoryImporter = ProductRepositoryImporter(
+      storeRegistry: storeRegistry,
+      gitWorkspaceManager: gitWorkspaceManager,
+      stagingRootURL: storeRegistry.productWorkspacesRootURL
+        .deletingLastPathComponent()
+        .appendingPathComponent("Import Workspaces", isDirectory: true)
+    )
     injectedStore = nil
+    self.githubRemoteService = githubRemoteService
     self.selectedProductID = selectedProductID
     self.ticketAttentionSoundPlayer = ticketAttentionSoundPlayer
+    self.ticketAttentionSystemNotifier = ticketAttentionSystemNotifier
     refreshCodexInstallations()
   }
 
@@ -551,6 +887,111 @@ final class AppModel: ObservableObject {
     }
     guard let injectedStore else { return [] }
     return try await injectedStore.fetchProducts(status: status)
+  }
+
+  private func fetchTicketAttentions(
+    product: Product,
+    store: SQLiteStore
+  ) async throws -> [TicketAttention] {
+    let workItems = try await store.fetchWorkItems(productID: product.id)
+    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    let permissionRequests = try await store.fetchAgentPermissionRequests(productID: product.id)
+    let awaitingRuns = try await store.fetchAgentRuns(productID: product.id)
+      .filter { $0.status == .awaitingOwner }
+    let latestRunsByWorkItemID = awaitingRuns.reduce(
+      into: [UUID: AgentRun]()
+    ) { latestRuns, run in
+      if let current = latestRuns[run.workItemID], current.updatedAt >= run.updatedAt {
+        return
+      }
+      latestRuns[run.workItemID] = run
+    }
+
+    var attentions: [TicketAttention] = []
+    for run in latestRunsByWorkItemID.values {
+      guard let item = workItemsByID[run.workItemID] else { continue }
+      let latestPermissionRequest =
+        permissionRequests
+        .filter {
+          $0.agentRunID == run.id && $0.status.needsOwnerDecision
+        }
+        .max { $0.updatedAt < $1.updatedAt }
+      let comments = try await store.fetchComments(workItemID: item.id)
+      let latestQuestion =
+        comments
+        .reversed()
+        .compactMap { comment in
+          TicketOwnerQuestion.presentation(
+            in: comment.body,
+            structuredQuestion: comment.ownerQuestion
+          )?.question.prompt
+        }
+        .first
+      let summary =
+        latestPermissionRequest?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? latestPermissionRequest?.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? latestQuestion?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? item.title
+      attentions.append(
+        TicketAttention(
+          id: run.id,
+          productID: product.id,
+          productName: product.name,
+          sprintID: run.sprintID,
+          workItemID: item.id,
+          itemKey: item.key,
+          title: item.title,
+          summary: summary.isEmpty ? item.title : summary,
+          updatedAt: run.updatedAt
+        )
+      )
+    }
+    return attentions.sorted {
+      if $0.updatedAt != $1.updatedAt {
+        return $0.updatedAt > $1.updatedAt
+      }
+      return $0.itemKey.localizedStandardCompare($1.itemKey) == .orderedAscending
+    }
+  }
+
+  private func fetchTicketAttentions(
+    products: [Product]
+  ) async -> [UUID: [TicketAttention]] {
+    var attentionsByProductID: [UUID: [TicketAttention]] = [:]
+    for product in products {
+      guard
+        let productStore = store(for: product.id),
+        let attentions = try? await fetchTicketAttentions(
+          product: product,
+          store: productStore
+        )
+      else { continue }
+      if !attentions.isEmpty {
+        attentionsByProductID[product.id] = attentions
+      }
+    }
+    return attentionsByProductID
+  }
+
+  private func refreshTicketAttentions(productID: UUID) async {
+    guard
+      let product = products.first(where: { $0.id == productID }),
+      let productStore = store(for: productID)
+    else {
+      ticketAttentionsByProductID.removeValue(forKey: productID)
+      return
+    }
+    guard
+      let attentions = try? await fetchTicketAttentions(
+        product: product,
+        store: productStore
+      )
+    else { return }
+    if attentions.isEmpty {
+      ticketAttentionsByProductID.removeValue(forKey: productID)
+    } else {
+      ticketAttentionsByProductID[productID] = attentions
+    }
   }
 
   @discardableResult
@@ -582,18 +1023,100 @@ final class AppModel: ObservableObject {
       eventActor: eventActor,
       eventDetail: eventDetail
     )
-    if TicketAttentionSoundPolicy.shouldPlay(
+    let newlyNeedsAttention = TicketAttentionSoundPolicy.shouldPlay(
       previousStatus: previousRun.status,
       newStatus: updatedRun.status,
       isShuttingDown: isShuttingDown
-    ) {
+    )
+    if previousRun.status == .awaitingOwner || updatedRun.status == .awaitingOwner {
+      await refreshTicketAttentions(productID: updatedRun.productID)
+    }
+    if newlyNeedsAttention {
       ticketAttentionSoundPlayer.play()
+      if let attention = ticketAttentionsByProductID[updatedRun.productID]?
+        .first(where: { $0.workItemID == updatedRun.workItemID })
+      {
+        presentedTicketAttention = attention
+        ticketAttentionSystemNotifier.post(attention)
+      }
     }
     return updatedRun
   }
 
   var selectedProduct: Product? {
     products.first { $0.id == selectedProductID }
+  }
+
+  var ticketAttentionCount: Int {
+    ticketAttentionsByProductID.values.reduce(0) { $0 + $1.count }
+  }
+
+  func ticketAttentionCount(for productID: UUID) -> Int {
+    ticketAttentionsByProductID[productID]?.count ?? 0
+  }
+
+  func ticketAttentionCount(excluding productID: UUID?) -> Int {
+    ticketAttentionsByProductID.reduce(0) { count, entry in
+      entry.key == productID ? count : count + entry.value.count
+    }
+  }
+
+  func dismissPresentedTicketAttention(id: UUID) {
+    guard presentedTicketAttention?.id == id else { return }
+    presentedTicketAttention = nil
+  }
+
+  func openTicketAttention(_ attention: TicketAttention) async {
+    guard
+      let product = products.first(where: { $0.id == attention.productID })
+    else { return }
+    if selectedProductID != product.id {
+      await selectProduct(product)
+    } else {
+      await reloadSelectedProduct()
+    }
+    presentedTicketAttention = nil
+    ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
+      productID: attention.productID,
+      sprintID: attention.sprintID,
+      workItemIDs: [attention.workItemID],
+      openWorkItemID: attention.workItemID
+    )
+  }
+
+  func openTicketAttention(productID: UUID, workItemID: UUID) async {
+    await refreshTicketAttentions(productID: productID)
+    guard
+      let attention = ticketAttentionsByProductID[productID]?
+        .first(where: { $0.workItemID == workItemID })
+    else { return }
+    await openTicketAttention(attention)
+  }
+
+  func openTicketAttentions(for product: Product) async {
+    let attentions = ticketAttentionsByProductID[product.id] ?? []
+    if selectedProductID != product.id {
+      await selectProduct(product)
+    } else {
+      await reloadSelectedProduct()
+    }
+    guard !attentions.isEmpty else { return }
+    presentedTicketAttention = nil
+    ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
+      productID: product.id,
+      sprintID: attentions.first?.sprintID,
+      workItemIDs: Set(attentions.map(\.workItemID)),
+      openWorkItemID: attentions.count == 1 ? attentions[0].workItemID : nil
+    )
+  }
+
+  func consumeTicketAttentionNavigationRequest(id: UUID) {
+    guard ticketAttentionNavigationRequest?.id == id else { return }
+    ticketAttentionNavigationRequest = nil
+  }
+
+  var appVersions: [AppVersion] {
+    AppVersionPolicy.all(imported: importedAppLaunch, acceptedCandidates: candidateRevisions)
   }
 
   var selectedCodexInstallation: CodexInstallation? {
@@ -607,6 +1130,7 @@ final class AppModel: ObservableObject {
       && retrospectiveSynthesisTasks.isEmpty
       && activeExecutionTurns.isEmpty
       && activeProductConversationTurns.isEmpty
+      && productConversationTitleTasks.isEmpty
       && activePlanningTurn == nil
       && activeSprintGoalTurn == nil
       && activeTicketConversationTurn == nil
@@ -647,7 +1171,11 @@ final class AppModel: ObservableObject {
 
   var canGenerateSprintGoal: Bool {
     guard case .connected = codexConnectionState else { return false }
-    guard candidateSprintPlan?.items.isEmpty == false else { return false }
+    guard
+      let plan = candidateSprintPlan ?? sprintPlan,
+      [.draft, .active, .paused].contains(plan.sprint.state),
+      !plan.items.isEmpty
+    else { return false }
     guard suggestionBatch?.session.status != .generating else { return false }
     guard !isPlanningMessageRunning else { return false }
     guard !isGeneratingSprintGoal else { return false }
@@ -664,6 +1192,561 @@ final class AppModel: ObservableObject {
         || suggestionBatch?.session.sourceWorkItemID != nil
     else { return 0 }
     return suggestionBatch?.suggestions.filter { $0.status == .proposed }.count ?? 0
+  }
+
+  func connectGitHub(productID: UUID) async {
+    githubDeviceAuthorizationPrompts[productID] = nil
+    githubRepositorySetupActivities.removeValue(forKey: productID)
+    let onPrompt: @Sendable (GitHubDeviceAuthorizationPrompt) async -> Void = {
+      [weak self] prompt in
+      await self?.presentGitHubDeviceAuthorizationPrompt(prompt, productID: productID)
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.connect(productID: productID, onPrompt: onPrompt)
+    }
+    githubDeviceAuthorizationPrompts[productID] = nil
+  }
+
+  func cancelGitHubConnection(productID: UUID) async {
+    if let task = githubRemoteTasks[productID] {
+      task.cancel()
+      await task.value
+    }
+    githubDeviceAuthorizationPrompts[productID] = nil
+    githubRepositorySetupActivities.removeValue(forKey: productID)
+    await performGitHubAction(productID: productID) {
+      try await $0.cancelConnection(productID: productID)
+    }
+  }
+
+  func disconnectGitHub(productID: UUID) async {
+    githubRepositorySetupActivities.removeValue(forKey: productID)
+    await performGitHubAction(productID: productID) {
+      try await $0.disconnect(productID: productID)
+    }
+  }
+
+  func signOutGitHub(accountID: UUID, productID: UUID) async {
+    githubRepositorySetupActivities.removeValue(forKey: productID)
+    await performGitHubAction(productID: productID) { service in
+      try await service.signOut(accountID: accountID)
+      return await service.state(productID: productID)
+    }
+    guard let githubRemoteService else { return }
+    for product in products + archivedProducts {
+      githubRemoteRepositoryStates[product.id] = await githubRemoteService.state(
+        productID: product.id
+      )
+    }
+  }
+
+  func refreshGitHubImportRepositories() async {
+    guard !isShuttingDown, !isLoadingGitHubImportRepositories else { return }
+    guard let githubRemoteService else {
+      githubImportRepositoryCatalog = GitHubRepositoryImportCatalog()
+      githubImportRepositoryError = nil
+      return
+    }
+    isLoadingGitHubImportRepositories = true
+    defer { isLoadingGitHubImportRepositories = false }
+    do {
+      githubImportRepositoryCatalog = try await githubRemoteService.importRepositories()
+      githubImportRepositoryError = nil
+    } catch {
+      githubImportRepositoryCatalog = GitHubRepositoryImportCatalog()
+      githubImportRepositoryError = error.localizedDescription
+    }
+  }
+
+  func connectGitHubForImport() async {
+    guard !isShuttingDown, githubImportAuthorizationTask == nil else { return }
+    guard let githubRemoteService else {
+      githubImportRepositoryError = "This Spedito build is not configured for GitHub."
+      return
+    }
+    githubImportDeviceAuthorizationPrompt = nil
+    githubImportRepositoryError = nil
+    isLoadingGitHubImportRepositories = true
+    let onPrompt: @Sendable (GitHubDeviceAuthorizationPrompt) async -> Void = {
+      [weak self] prompt in
+      await self?.presentGitHubImportDeviceAuthorizationPrompt(prompt)
+    }
+    let task = Task {
+      try await githubRemoteService.authorizeImport(onPrompt: onPrompt)
+    }
+    githubImportAuthorizationTask = task
+    do {
+      githubImportRepositoryCatalog = try await task.value
+      if githubImportRepositoryCatalog.choices.isEmpty {
+        githubImportRepositoryError =
+          "GitHub is connected, but no repositories are available to Spedito yet."
+      }
+    } catch is CancellationError {
+      githubImportRepositoryError = nil
+    } catch {
+      githubImportRepositoryCatalog = GitHubRepositoryImportCatalog()
+      githubImportRepositoryError = error.localizedDescription
+    }
+    githubImportDeviceAuthorizationPrompt = nil
+    githubImportAuthorizationTask = nil
+    isLoadingGitHubImportRepositories = false
+  }
+
+  func cancelGitHubImportAuthorization() async {
+    githubImportAuthorizationTask?.cancel()
+    _ = try? await githubImportAuthorizationTask?.value
+    githubImportAuthorizationTask = nil
+    githubImportDeviceAuthorizationPrompt = nil
+    isLoadingGitHubImportRepositories = false
+  }
+
+  func selectLocalGitHubRepository(productID: UUID, repositoryID: Int64) async {
+    githubRepositorySetupActivities.removeValue(forKey: productID)
+    if let state = githubRemoteRepositoryStates[productID],
+      let choice = state.repositories.first(where: { $0.id == repositoryID }),
+      var connection = state.connection
+    {
+      connection.installationID = choice.installationID
+      connection.repositoryID = choice.repository.id
+      connection.owner = choice.repository.owner
+      connection.name = choice.repository.name
+      connection.fullName = choice.repository.fullName
+      connection.canonicalHTTPSURL = choice.repository.canonicalHTTPSURL
+      connection.isPrivate = choice.repository.isPrivate
+      connection.defaultBranch = choice.repository.defaultBranch
+      connection.permissions = choice.permissions
+      githubRemoteRepositoryStates[productID] = GitHubRemoteRepositoryState(
+        isConfigured: state.isConfigured,
+        connection: connection,
+        repositories: state.repositories,
+        selectedEligibility: .checking,
+        observation: state.observation,
+        safeSync: state.safeSync,
+        publications: state.publications
+      )
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.selectLocalRepository(
+        productID: productID,
+        repositoryID: repositoryID
+      )
+    }
+  }
+
+  func refreshGitHubRepositories(productID: UUID) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.refreshRepositories(productID: productID)
+    }
+  }
+
+  func resumeLocalGitHubRepositorySetup(productID: UUID) async {
+    guard githubRemoteRepositoryStates[productID]?.connection?.status == .selectingRepository,
+      let repositoryID = githubRemoteRepositoryStates[productID]?.connection?.repositoryID
+    else { return }
+    if githubRemoteRepositoryStates[productID]?.repositories.contains(
+      where: { $0.id == repositoryID }
+    ) != true {
+      await refreshGitHubRepositories(productID: productID)
+    }
+    guard let currentState = githubRemoteRepositoryStates[productID],
+      currentState.repositories.contains(where: { $0.id == repositoryID }),
+      currentState.selectedEligibility == nil
+        || currentState.selectedEligibility == .unchecked
+    else { return }
+    await selectLocalGitHubRepository(productID: productID, repositoryID: repositoryID)
+  }
+
+  func initializeLocalGitHubRepository(productID: UUID) async {
+    let publishesExistingHistory =
+      if case .empty(_, let existingHistory) =
+        githubRemoteRepositoryStates[productID]?.selectedEligibility
+      {
+        existingHistory != nil
+      } else {
+        false
+      }
+    githubRepositorySetupActivities[productID] = .inProgress(
+      progress: .validatingProduct,
+      publishesExistingHistory: publishesExistingHistory
+    )
+    let onProgress: @Sendable (GitHubRemoteRepositoryInitializationProgress) async -> Void = {
+      [weak self] progress in
+      await self?.recordGitHubRepositorySetupProgress(
+        productID: productID,
+        progress: progress,
+        publishesExistingHistory: publishesExistingHistory
+      )
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.initializeLocalRepository(
+        productID: productID,
+        onProgress: onProgress
+      )
+    }
+    if githubRemoteRepositoryErrors[productID] == nil,
+      githubRemoteRepositoryStates[productID]?.connection?.status == .connected
+    {
+      githubRepositorySetupActivities[productID] = .completed(
+        publishedExistingHistory: publishesExistingHistory
+      )
+    } else {
+      githubRepositorySetupActivities.removeValue(forKey: productID)
+    }
+  }
+
+  private func recordGitHubRepositorySetupProgress(
+    productID: UUID,
+    progress: GitHubRemoteRepositoryInitializationProgress,
+    publishesExistingHistory: Bool
+  ) {
+    githubRepositorySetupActivities[productID] = .inProgress(
+      progress: progress,
+      publishesExistingHistory: publishesExistingHistory
+    )
+  }
+
+  func confirmRemoteRepositoryTarget(
+    productID: UUID,
+    expectedVersion: Int,
+    pendingObservedAt: Date
+  ) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.confirmTarget(
+        productID: productID,
+        expectedVersion: expectedVersion,
+        pendingObservedAt: pendingObservedAt
+      )
+    }
+  }
+
+  func checkRemoteRepository(productID: UUID) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.check(productID: productID)
+    }
+  }
+
+  func prepareIncomingRepositoryChange(productID: UUID) async {
+    guard !(await productHasActiveDelivery(productID: productID)) else {
+      githubRemoteRepositoryErrors[productID] =
+        "Incoming GitHub changes cannot be reviewed while delivery work is active. Finish or stop the current sprint, then check GitHub again."
+      return
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.prepareSafeSync(productID: productID)
+    }
+  }
+
+  func acceptIncomingRepositoryChange(productID: UUID, syncID: UUID) async {
+    guard !(await productHasActiveDelivery(productID: productID)) else {
+      githubRemoteRepositoryErrors[productID] =
+        "Incoming GitHub changes cannot be accepted while delivery work is active. Finish or stop the current sprint, then check GitHub again."
+      return
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.acceptSafeSync(syncID: syncID)
+    }
+  }
+
+  func rejectIncomingRepositoryChange(productID: UUID, syncID: UUID) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.rejectSafeSync(syncID: syncID)
+    }
+  }
+
+  func prepareRemotePublication(productID: UUID) async {
+    guard !(await productHasActiveDelivery(productID: productID)) else {
+      githubRemoteRepositoryErrors[productID] =
+        "Finish or stop the current sprint before preparing a pull request."
+      return
+    }
+    await performGitHubAction(productID: productID) {
+      try await $0.preparePublication(productID: productID)
+    }
+  }
+
+  func cancelRemotePublication(productID: UUID, publicationID: UUID) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.cancelPublication(id: publicationID)
+    }
+  }
+
+  func publishRemoteChanges(
+    productID: UUID,
+    publicationID: UUID,
+    title: String,
+    body: String
+  ) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.confirmPublication(id: publicationID, title: title, body: body)
+    }
+  }
+
+  func finishRemotePullRequest(
+    productID: UUID,
+    publicationID: UUID,
+    title: String,
+    body: String
+  ) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.finishPullRequest(id: publicationID, title: title, body: body)
+    }
+  }
+
+  func refreshRemotePullRequest(productID: UUID, publicationID: UUID) async {
+    await performGitHubAction(productID: productID) {
+      try await $0.refreshPullRequest(publicationID: publicationID)
+    }
+  }
+
+  func syncTicketPullRequest(
+    productID: UUID,
+    publicationID: UUID,
+    showsProgress: Bool = true
+  ) async {
+    guard !isShuttingDown, let githubRemoteService else { return }
+    if showsProgress {
+      githubRemoteRepositoryBusyProductIDs.insert(productID)
+    }
+    defer {
+      if showsProgress {
+        githubRemoteRepositoryBusyProductIDs.remove(productID)
+      }
+    }
+    if let existingTask = githubPullRequestSyncTasks[publicationID] {
+      await existingTask.value
+      return
+    }
+    githubRemoteRepositoryErrors[productID] = nil
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let result = try await githubRemoteService.syncTicketPullRequest(
+          publicationID: publicationID
+        )
+        githubRemoteRepositoryStates[productID] = result.state
+        if result.changesRequested {
+          await handleSprintOwnerComment(
+            productID: productID,
+            workItemID: result.workItemID,
+            body: "Address the latest GitHub review feedback.",
+            actor: "GitHub reviewer",
+            reasonPrefix: "Review feedback"
+          )
+        } else if result.closedWithoutMerge {
+          githubRemoteRepositoryErrors[productID] =
+            "The pull request was closed on GitHub without being merged. Reopen it on GitHub to continue this ticket."
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        githubRemoteRepositoryErrors[productID] = error.localizedDescription
+        githubRemoteRepositoryStates[productID] = await githubRemoteService.state(
+          productID: productID
+        )
+      }
+    }
+    githubPullRequestSyncTasks[publicationID] = task
+    await task.value
+    githubPullRequestSyncTasks[publicationID] = nil
+  }
+
+  func setGitHubReviewTicket(_ workItemID: UUID, isVisible: Bool) {
+    if isVisible {
+      visibleGitHubReviewWorkItemCounts[workItemID, default: 0] += 1
+    } else if let count = visibleGitHubReviewWorkItemCounts[workItemID] {
+      if count > 1 {
+        visibleGitHubReviewWorkItemCounts[workItemID] = count - 1
+      } else {
+        visibleGitHubReviewWorkItemCounts[workItemID] = nil
+      }
+    }
+  }
+
+  private func prepareTicketPullRequestIfConnected(
+    productID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID
+  ) async throws -> RemotePublication? {
+    guard let githubRemoteService else { return nil }
+    let current = await githubRemoteService.state(productID: productID)
+    guard current.connection?.status == .connected else { return nil }
+    let state = try await githubRemoteService.prepareTicketPullRequest(
+      productID: productID,
+      workItemID: workItemID,
+      candidateRevisionID: candidateRevisionID
+    )
+    githubRemoteRepositoryStates[productID] = state
+    guard
+      let publication = state.publications.first(where: {
+        $0.workItemID == workItemID && $0.candidateRevisionID == candidateRevisionID
+      })
+    else {
+      throw PersistenceError.corruptData(
+        "GitHub did not preserve the ticket pull request."
+      )
+    }
+    if let pullRequest = publication.pullRequest,
+      let store = store(for: productID)
+    {
+      let message =
+        "Created draft pull request #\(pullRequest.number) for candidate revision \(String(publication.capturedLocalSHA.prefix(8)))."
+      let comments = try await store.fetchComments(workItemID: workItemID)
+      if !comments.contains(where: { $0.body == message }) {
+        _ = try await store.appendComment(
+          workItemID: workItemID,
+          authorKind: .system,
+          authorName: "Spedito",
+          body: message,
+          externalURL: pullRequest.canonicalURL
+        )
+      }
+    }
+    return publication
+  }
+
+  private func markTicketPullRequestReadyIfNeeded(
+    _ publication: RemotePublication?
+  ) async throws {
+    guard let publication,
+      let githubRemoteService,
+      publication.pullRequest?.isDraft == true
+    else { return }
+    let state = try await githubRemoteService.markTicketPullRequestReady(
+      publicationID: publication.id
+    )
+    githubRemoteRepositoryStates[publication.productID] = state
+  }
+
+  func clearGitHubRemoteRepositoryError(productID: UUID) {
+    githubRemoteRepositoryErrors[productID] = nil
+  }
+
+  private func performGitHubAction(
+    productID: UUID,
+    operation:
+      @escaping @Sendable (
+        any GitHubRemoteRepositoryServing
+      ) async throws -> GitHubRemoteRepositoryState
+  ) async {
+    guard !isShuttingDown, let githubRemoteService else { return }
+    while let existingTask = githubRemoteTasks[productID] {
+      await existingTask.value
+    }
+    guard !isShuttingDown else { return }
+    githubRemoteRepositoryBusyProductIDs.insert(productID)
+    githubRemoteRepositoryErrors[productID] = nil
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let state = try await operation(githubRemoteService)
+        githubRemoteRepositoryStates[productID] = state
+        githubRemoteRepositoryErrors[productID] = state.errorMessage
+      } catch is CancellationError {
+        githubRemoteRepositoryStates[productID] = await githubRemoteService.state(
+          productID: productID
+        )
+      } catch {
+        githubRemoteRepositoryErrors[productID] = error.localizedDescription
+        githubRemoteRepositoryStates[productID] = await githubRemoteService.state(
+          productID: productID
+        )
+      }
+      githubRemoteRepositoryBusyProductIDs.remove(productID)
+      githubRemoteTasks[productID] = nil
+    }
+    githubRemoteTasks[productID] = task
+    await task.value
+  }
+
+  private func productHasActiveDelivery(productID: UUID) async -> Bool {
+    guard let productStore = store(for: productID) else { return true }
+    do {
+      return try await productStore.fetchCurrentSprint(productID: productID)?
+        .sprint.state.isInProgress == true
+    } catch {
+      githubRemoteRepositoryErrors[productID] =
+        "Spedito could not verify whether delivery work is active. Try again."
+      return true
+    }
+  }
+
+
+  private func presentGitHubDeviceAuthorizationPrompt(
+    _ prompt: GitHubDeviceAuthorizationPrompt,
+    productID: UUID
+  ) {
+    guard !isShuttingDown else { return }
+    githubDeviceAuthorizationPrompts[productID] = prompt
+  }
+
+  private func presentGitHubImportDeviceAuthorizationPrompt(
+    _ prompt: GitHubDeviceAuthorizationPrompt
+  ) {
+    guard !isShuttingDown else { return }
+    githubImportDeviceAuthorizationPrompt = prompt
+  }
+
+  private func scheduleGitHubRemoteRecovery(productIDs: [UUID]) {
+    guard let githubRemoteService else { return }
+    for productID in productIDs where githubRemoteTasks[productID] == nil {
+      let task = Task { @MainActor [weak self] in
+        guard let self else { return }
+        await githubRemoteService.recover(productID: productID)
+        let state = await githubRemoteService.state(productID: productID)
+        githubRemoteRepositoryStates[productID] = state
+        githubRemoteRepositoryErrors[productID] = state.errorMessage
+        githubRemoteTasks[productID] = nil
+      }
+      githubRemoteTasks[productID] = task
+    }
+  }
+  private func scheduleGitHubPullRequestPolling() {
+    githubPullRequestPollingTask?.cancel()
+    guard let productID = selectedProductID else {
+      githubPullRequestPollingTask = nil
+      return
+    }
+    githubPullRequestPollingTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard let self, selectedProductID == productID else { return }
+        await pollGitHubPullRequestsOnce(productID: productID)
+        guard !Task.isCancelled, selectedProductID == productID else { return }
+        let visibleWorkItemIDs = Set(visibleGitHubReviewWorkItemCounts.keys)
+        let publications = GitHubPullRequestPollingPolicy.orderedPublications(
+          githubRemoteRepositoryStates[productID]?.publications ?? [],
+          workItems: workItems,
+          visibleWorkItemIDs: visibleWorkItemIDs
+        )
+        let interval = GitHubPullRequestPollingPolicy.interval(
+          isApplicationActive: NSApplication.shared.isActive,
+          publications: publications,
+          workItems: workItems,
+          visibleWorkItemIDs: visibleWorkItemIDs
+        )
+        do {
+          try await Task.sleep(for: interval)
+        } catch {
+          return
+        }
+      }
+    }
+  }
+
+  func pollGitHubPullRequestsOnce(productID: UUID) async {
+    guard !isShuttingDown, selectedProductID == productID else { return }
+    let publications = GitHubPullRequestPollingPolicy.orderedPublications(
+      githubRemoteRepositoryStates[productID]?.publications ?? [],
+      workItems: workItems,
+      visibleWorkItemIDs: Set(visibleGitHubReviewWorkItemCounts.keys)
+    )
+    for publication in publications {
+      guard !Task.isCancelled, selectedProductID == productID else { return }
+      await syncTicketPullRequest(
+        productID: productID,
+        publicationID: publication.id,
+        showsProgress: false
+      )
+    }
   }
 
   func codebaseSnapshot() async throws -> GitRepositorySnapshot {
@@ -715,10 +1798,11 @@ final class AppModel: ObservableObject {
 
   var autosuggestUnavailableReason: String {
     if pendingSuggestionCount > 0 {
-      return "Review the current \(pendingSuggestionCount) suggestion\(pendingSuggestionCount == 1 ? "" : "s") before asking for another analysis."
+      return
+        "Review the current \(pendingSuggestionCount) suggestion\(pendingSuggestionCount == 1 ? "" : "s") before asking for another analysis."
     }
     if isPlanningMessageRunning {
-      return "A team member is replying in Sprint Planning."
+      return "A team member is replying in sprint planning."
     }
     if isTicketConversationMessageRunning {
       return "A team member is replying in a ticket conversation."
@@ -727,11 +1811,11 @@ final class AppModel: ObservableObject {
       return "A team member is replying in an epic conversation."
     }
     if refiningWorkItemID != nil {
-      return "The Business Analyst is reviewing a ticket."
+      return "The business analyst is reviewing a ticket."
     }
     switch codexConnectionState {
     case .connected:
-      return "The Business Analyst is already preparing suggestions."
+      return "The business analyst is already preparing suggestions."
     default:
       return "Ticket suggestions require the Codex team connection."
     }
@@ -742,7 +1826,11 @@ final class AppModel: ObservableObject {
     didLoad = true
     do {
       try await storeRegistry?.prepare()
+      try productRepositoryImporter?.prepare()
       let stores = storeRegistry?.allStores ?? injectedStore.map { [$0] } ?? []
+      try GitWorkspaceManager.cleanupRepositoryAnalysisSnapshots(
+        rootURL: try Self.repositoryAnalysisRootURL()
+      )
       for productStore in stores {
         try await productStore.interruptPendingAgentPermissionRequests()
         try await productStore.interruptWorkingConversationThreads()
@@ -752,58 +1840,138 @@ final class AppModel: ObservableObject {
       errorMessage = error.localizedDescription
     }
     await reload()
+    await recoverInterruptedTicketAcceptances()
+    scheduleGitHubRemoteRecovery(productIDs: (products + archivedProducts).map(\.id))
     for product in products + archivedProducts {
-      if let workspace = try? Self.productWorkspaceURL(productID: product.id) {
-        try? Self.excludeProductControlDirectoryFromGit(at: workspace)
+      if let workspace = try? repositoryWorkspaceURL(productID: product.id) {
+        try? await gitWorkspaceManager.ensureControlDirectoryExcluded(at: workspace)
       }
     }
     await recoverDemoSessions()
     await connectCodex()
     await recoverTicketSuggestionSessionIfNeeded()
     scheduleRetrospectiveSyntheses()
+    scheduleRepositoryKnowledgeRuns()
     scheduleSprintExecutions()
   }
 
-  func createProduct(name: String) {
-    Task {
-      _ = await createProductAndSelect(name: name)
+  func createProductAndSelect(_ request: ProductCreationRequest) async -> Bool {
+    productCreationError = nil
+    errorMessage = nil
+    let trimmedName = request.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedName.isEmpty else {
+      productCreationError = ProductRepositoryImportError.missingName.localizedDescription
+      return false
+    }
+    do {
+      let product: Product
+      switch request {
+      case .blank:
+        product = try await createBlankProduct(name: trimmedName)
+      case .importRepository(_, let source):
+        guard productImportTask == nil, let productRepositoryImporter else {
+          return false
+        }
+        let task = Task {
+          try await productRepositoryImporter.importProduct(
+            name: trimmedName,
+            from: source
+          )
+        }
+        productImportTask = task
+        do {
+          product = try await task.value.product
+          productImportTask = nil
+        } catch {
+          productImportTask = nil
+          throw error
+        }
+      case .importGitHubRepository(_, let repositoryID):
+        guard productImportTask == nil,
+          let productRepositoryImporter,
+          let githubRemoteService
+        else {
+          return false
+        }
+        let task = Task {
+          try await githubRemoteService.importProduct(
+            name: trimmedName,
+            repositoryID: repositoryID
+          ) { source, credential in
+            try await productRepositoryImporter.importProduct(
+              name: trimmedName,
+              from: source,
+              credentialConfiguration: credential
+            )
+          }
+        }
+        productImportTask = task
+        do {
+          product = try await task.value.product
+          productImportTask = nil
+        } catch ProductRepositoryImportError.emptyDefaultBranch {
+          productImportTask = nil
+          product = try await createBlankProduct(name: trimmedName)
+          do {
+            let state = try await githubRemoteService.connectLocalProduct(
+              productID: product.id,
+              repositoryID: repositoryID
+            )
+            githubRemoteRepositoryStates[product.id] = state
+            githubRemoteRepositoryErrors[product.id] = state.errorMessage
+          } catch {
+            let message =
+              "The Product was created, but its GitHub repository connection needs attention. \(error.localizedDescription)"
+            githubRemoteRepositoryErrors[product.id] = message
+            errorMessage = message
+          }
+        } catch {
+          productImportTask = nil
+          throw error
+        }
+      }
+      products = try await fetchProducts()
+      archivedProducts = try await fetchProducts(status: .archived)
+      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      selectedProductID = product.id
+      rememberSelectedProduct(product.id)
+      await reloadSelectedProduct()
+      scheduleGitHubPullRequestPolling()
+      scheduleRepositoryKnowledgeRuns()
+      return true
+    } catch is CancellationError {
+      return false
+    } catch {
+      productCreationError = error.localizedDescription
+      return false
     }
   }
 
-  func createProductAndSelect(name: String) async -> Bool {
-    do {
-      let product: Product
-      let productStore: SQLiteStore
-      if let storeRegistry {
-        product = try await storeRegistry.createProduct(name: name)
-        guard let createdStore = storeRegistry.store(for: product.id) else {
-          throw PersistenceError.recordNotFound("product database \(product.id)")
-        }
-        productStore = createdStore
-      } else if let injectedStore {
-        product = try await injectedStore.createProduct(name: name)
-        productStore = injectedStore
-      } else {
-        return false
+  private func createBlankProduct(name: String) async throws -> Product {
+    let product: Product
+    let productStore: SQLiteStore
+    let workspace: URL
+    if let storeRegistry {
+      product = try await storeRegistry.createProduct(name: name)
+      guard let createdStore = storeRegistry.store(for: product.id) else {
+        throw PersistenceError.recordNotFound("product database \(product.id)")
       }
-      _ = try await productStore.seedDefaultProfiles(productID: product.id)
-      _ = try await productStore.seedKnowledgeBase(productID: product.id)
-      selectedProductID = product.id
-      rememberSelectedProduct(product.id)
-      products = try await fetchProducts()
-      archivedProducts = try await fetchProducts(status: .archived)
-      await reloadSelectedProduct()
-      let workspace = try Self.productWorkspaceURL(productID: product.id)
-      _ = try await gitWorkspaceManager.ensureRepository(
-        at: workspace,
-        rootIgnoreEntries: ["/.spedito/"]
+      productStore = createdStore
+      workspace = storeRegistry.productWorkspacesRootURL.appendingPathComponent(
+        product.id.uuidString,
+        isDirectory: true
       )
-      try Self.excludeProductControlDirectoryFromGit(at: workspace)
-      return true
-    } catch {
-      errorMessage = error.localizedDescription
-      return false
+    } else if let injectedStore {
+      product = try await injectedStore.createProduct(name: name)
+      productStore = injectedStore
+      workspace = try Self.productWorkspaceURL(productID: product.id)
+    } else {
+      throw PersistenceError.recordNotFound("Product database")
     }
+    _ = try await productStore.seedDefaultProfiles(productID: product.id)
+    _ = try await productStore.seedKnowledgeBase(productID: product.id)
+    _ = try await gitWorkspaceManager.ensureRepository(at: workspace)
+    return product
   }
 
   func selectProduct(_ product: Product) async {
@@ -822,6 +1990,7 @@ final class AppModel: ObservableObject {
     selectedProductID = product.id
     rememberSelectedProduct(product.id)
     await reloadSelectedProduct()
+    scheduleGitHubPullRequestPolling()
     await recoverTicketSuggestionSessionIfNeeded()
     scheduleRetrospectiveSyntheses()
     scheduleSprintExecution(productID: product.id)
@@ -835,6 +2004,7 @@ final class AppModel: ObservableObject {
     else { return false }
 
     await stopDemoSessions(productID: product.id, includesPreparation: true)
+    await cancelRepositoryKnowledge(productID: product.id)
     await applyExecutionLifecycle(.productArchived(product.id))
     let interruptedSuggestionTask = suggestionTask
     let interruptedEpicPlanningTask = epicPlanningTask
@@ -859,6 +2029,7 @@ final class AppModel: ObservableObject {
       _ = try await store.archiveProduct(id: product.id)
       products = try await fetchProducts()
       archivedProducts = try await fetchProducts(status: .archived)
+      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
       selectedProductID = products.first?.id
       if let selectedProductID {
         rememberSelectedProduct(selectedProductID)
@@ -866,6 +2037,7 @@ final class AppModel: ObservableObject {
         forgetSelectedProduct()
       }
       await reloadSelectedProduct()
+      scheduleGitHubPullRequestPolling()
       await recoverTicketSuggestionSessionIfNeeded()
       scheduleSprintExecution()
       return true
@@ -877,14 +2049,18 @@ final class AppModel: ObservableObject {
   }
 
   func restoreProductAndSelect(_ product: Product) async -> Bool {
-    guard
-      let store = store(for: product.id),
-      product.status == .archived
-    else { return false }
+    guard product.status == .archived else { return false }
     do {
-      _ = try await store.restoreProduct(id: product.id)
+      if let storeRegistry {
+        _ = try await storeRegistry.restoreProduct(id: product.id)
+      } else if let store = store(for: product.id) {
+        _ = try await store.restoreProduct(id: product.id)
+      } else {
+        return false
+      }
       products = try await fetchProducts()
       archivedProducts = try await fetchProducts(status: .archived)
+      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
       guard let restored = products.first(where: { $0.id == product.id }) else {
         throw PersistenceError.recordNotFound("restored product \(product.id)")
       }
@@ -1152,7 +2328,7 @@ final class AppModel: ObservableObject {
         workItemID: item.id,
         authorKind: .system,
         authorName: "Spedito",
-        body: "The Business Analyst couldn't refine this ticket: \(error.localizedDescription)"
+        body: "The business analyst couldn't refine this ticket: \(error.localizedDescription)"
       )
       ticketRefinementResults[item.id] = TicketRefinementSessionResult(
         base: refinementBase,
@@ -1170,7 +2346,7 @@ final class AppModel: ObservableObject {
   ) async throws -> WorkItem {
     guard proposal.missingQuestions.isEmpty else {
       throw TicketRefinementGenerationError.invalidResponse(
-        "The ticket cannot be updated while Product Owner questions remain."
+        "The ticket cannot be updated while product owner questions remain."
       )
     }
     guard let store = store(for: item.productID) else {
@@ -1221,8 +2397,7 @@ final class AppModel: ObservableObject {
     let currentPlan = try await store.fetchCurrentSprint(productID: item.productID)
     let draftPlan = currentPlan?.sprint.state == .draft ? currentPlan : nil
     let draftItem = draftPlan?.items.first { $0.workItemID == item.id }
-    if
-      updated.ownerProfileID == nil,
+    if updated.ownerProfileID == nil,
       draftItem?.implementerProfileID == nil,
       let owner = TicketOwnerRouter.owner(
         for: updated,
@@ -1311,8 +2486,9 @@ final class AppModel: ObservableObject {
 
     let comments = try await store.fetchComments(workItemID: item.id)
     let currentMessageBody = "@\(recipient.name) \(trimmedMessage)"
-    let priorComments = comments.last?.authorKind == .owner
-      && comments.last?.body == currentMessageBody
+    let priorComments =
+      comments.last?.authorKind == .owner
+        && comments.last?.body == currentMessageBody
       ? Array(comments.dropLast())
       : comments
     let productItems = try await store.fetchWorkItems(productID: product.id)
@@ -1377,7 +2553,8 @@ final class AppModel: ObservableObject {
         response,
         currentItem: item
       )
-      let reply = allowsProposal
+      let reply =
+        allowsProposal
         ? generatedReply
         : TicketConversationReply(message: generatedReply.message)
       _ = try await store.appendComment(
@@ -1602,7 +2779,7 @@ final class AppModel: ObservableObject {
         _ = try await store.transitionWorkItem(
           id: workItem.id,
           to: state,
-          actor: "Product Owner",
+          actor: "Product owner",
           reason: "Advanced from the board"
         )
         await reloadSelectedProductIfCurrent(productID: workItem.productID)
@@ -1733,6 +2910,15 @@ final class AppModel: ObservableObject {
     }
   }
 
+  func markKnowledgePageRead(_ page: KnowledgePage) {
+    guard
+      selectedProductID == page.productID,
+      knowledgePages.contains(where: { $0.id == page.id })
+    else { return }
+    knowledgePageReadState.markRead(page)
+    unreadKnowledgePageIDs = knowledgePageReadState.unreadPageIDs(in: knowledgePages)
+  }
+
   func knowledgeRevisions(
     productID: UUID,
     for pageID: UUID
@@ -1856,8 +3042,10 @@ final class AppModel: ObservableObject {
 
     let thread: ProductConversationThread
     let turnPrompt: String
+    let provisionalSubject: String?
     do {
       if let threadID {
+        provisionalSubject = nil
         guard
           let existingThread = conversationThreads.first(where: {
             $0.id == threadID && $0.productID == product.id
@@ -1905,6 +3093,7 @@ final class AppModel: ObservableObject {
           createdAt: now,
           updatedAt: now
         )
+        provisionalSubject = createdThread.subject
         let ownerMessage = ProductConversationMessage(
           threadID: createdThread.id,
           authorKind: .owner,
@@ -1937,6 +3126,18 @@ final class AppModel: ObservableObject {
 
     do {
       let workspace = try Self.productWorkspaceURL(productID: product.id)
+      if let provisionalSubject {
+        startProductConversationTitleGeneration(
+          conversationThreadID: thread.id,
+          productID: product.id,
+          ownerMessage: messageBody,
+          provisionalSubject: provisionalSubject,
+          recipient: recipient,
+          store: store,
+          client: client,
+          workspace: workspace
+        )
+      }
       let developerInstructions = CodexProductConversation.developerInstructions(
         productInstructions: inheritedAgentInstructions(for: product),
         customInstructions: recipient.customInstructionText,
@@ -1978,11 +3179,10 @@ final class AppModel: ObservableObject {
       if cancelledProductConversationThreadIDs.contains(thread.id) {
         throw CancellationError()
       }
-      let turnID = try await client.startStructuredTurn(
+      let turnID = try await client.startTurn(
         threadID: codexThreadID,
         prompt: prompt,
-        effort: recipient.reasoningEffort,
-        outputSchema: CodexProductConversation.outputSchema
+        effort: recipient.reasoningEffort
       )
       activeProductConversationTurns[thread.id] = ActiveProductConversationTurn(
         productID: product.id,
@@ -2006,17 +3206,16 @@ final class AppModel: ObservableObject {
         turnID: turnID,
         timeout: .seconds(300)
       )
-      let reply = try CodexProductConversation.decode(response)
+      let reply = try CodexProductConversation.decodeMessage(response)
       cancelledProductConversationThreadIDs.remove(thread.id)
       _ = try await store.appendConversationMessage(
         ProductConversationMessage(
           threadID: thread.id,
           authorKind: .agent,
           authorName: recipient.name,
-          body: reply.message
+          body: reply
         ),
-        threadStatus: .complete,
-        threadSubject: reply.threadTitle
+        threadStatus: .complete
       )
       try await reloadProductConversations(productID: product.id, store: store)
       return thread.id
@@ -2044,6 +3243,116 @@ final class AppModel: ObservableObject {
       try? await reloadProductConversations(productID: product.id, store: store)
       return thread.id
     }
+  }
+
+  private func startProductConversationTitleGeneration(
+    conversationThreadID: UUID,
+    productID: UUID,
+    ownerMessage: String,
+    provisionalSubject: String,
+    recipient: AgentProfile,
+    store: SQLiteStore,
+    client: CodexAppServerClient,
+    workspace: URL
+  ) {
+    let supportedEfforts =
+      modelOption(for: recipient)?
+      .supportedReasoningEfforts
+      .map(\.id) ?? []
+    let reasoningEffort = CodexSprintGoalGenerator.lightestReasoningEffort(
+      supportedEfforts: supportedEfforts,
+      fallback: recipient.reasoningEffort
+    )
+    productConversationTitleTasks[conversationThreadID] = Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer {
+        self.productConversationTitleTasks.removeValue(forKey: conversationThreadID)
+      }
+      await self.generateProductConversationTitle(
+        conversationThreadID: conversationThreadID,
+        productID: productID,
+        ownerMessage: ownerMessage,
+        provisionalSubject: provisionalSubject,
+        recipient: recipient,
+        reasoningEffort: reasoningEffort,
+        store: store,
+        client: client,
+        workspace: workspace
+      )
+    }
+  }
+
+  private func generateProductConversationTitle(
+    conversationThreadID: UUID,
+    productID: UUID,
+    ownerMessage: String,
+    provisionalSubject: String,
+    recipient: AgentProfile,
+    reasoningEffort: String,
+    store: SQLiteStore,
+    client: CodexAppServerClient,
+    workspace: URL
+  ) async {
+    let deadline = ContinuousClock.now + CodexProductConversation.titleGenerationTimeout
+    var activeTurn: ActiveProductConversationTurn?
+    defer {
+      activeProductConversationTitleTurns.removeValue(forKey: conversationThreadID)
+    }
+    do {
+      let codexThreadID = try await client.startReadOnlyThread(
+        workingDirectory: workspace,
+        developerInstructions: CodexProductConversation.titleDeveloperInstructions,
+        model: recipient.model,
+        ephemeral: true,
+        responseTimeout: try remainingProductConversationTitleGenerationTime(until: deadline)
+      )
+      try Task.checkCancellation()
+      let turnID = try await client.startStructuredTurn(
+        threadID: codexThreadID,
+        prompt: CodexProductConversation.titlePrompt(ownerMessage: ownerMessage),
+        effort: reasoningEffort,
+        outputSchema: CodexProductConversation.titleOutputSchema,
+        responseTimeout: try remainingProductConversationTitleGenerationTime(until: deadline)
+      )
+      let turn = ActiveProductConversationTurn(
+        productID: productID,
+        threadID: codexThreadID,
+        turnID: turnID
+      )
+      activeTurn = turn
+      activeProductConversationTitleTurns[conversationThreadID] = turn
+      let response = try await client.waitForFinalAgentMessage(
+        threadID: codexThreadID,
+        turnID: turnID,
+        timeout: CodexProductConversation.titleGenerationTimeout,
+        totalTimeout: try remainingProductConversationTitleGenerationTime(until: deadline)
+      )
+      try Task.checkCancellation()
+      let title = try CodexProductConversation.decodeTitle(response)
+      _ = try await store.updateConversationThreadSubject(
+        id: conversationThreadID,
+        subject: title,
+        replacing: provisionalSubject
+      )
+      if selectedProductID == productID {
+        try await reloadProductConversations(productID: productID, store: store)
+      }
+    } catch {
+      if let activeTurn {
+        try? await client.interruptTurn(
+          threadID: activeTurn.threadID,
+          turnID: activeTurn.turnID
+        )
+      }
+    }
+  }
+
+  private func remainingProductConversationTitleGenerationTime(
+    until deadline: ContinuousClock.Instant
+  ) throws -> Duration {
+    let remaining = ContinuousClock.now.duration(to: deadline)
+    guard remaining > .zero else { throw CancellationError() }
+    return remaining
   }
 
   func cancelProductConversation(threadID: UUID) {
@@ -2221,7 +3530,8 @@ final class AppModel: ObservableObject {
   }
 
   private static func conversationSubject(from message: String) -> String {
-    let firstLine = message
+    let firstLine =
+      message
       .split(whereSeparator: \.isNewline)
       .first
       .map(String.init)?
@@ -2313,7 +3623,8 @@ final class AppModel: ObservableObject {
         .filter { $0.actionNoteID == actionNoteID }
         .map(\.sourceNoteID)
     )
-    return retrospectiveNotes
+    return
+      retrospectiveNotes
       .filter { sourceIDs.contains($0.id) }
       .sorted {
         if $0.createdAt == $1.createdAt {
@@ -2492,7 +3803,7 @@ final class AppModel: ObservableObject {
       _ = try await updateAgentRun(
         id: run.id,
         status: .interrupted,
-        eventActor: "Product Owner",
+        eventActor: "Product owner",
         eventDetail: "Stopped manually; ticket workspace preserved"
       )
       await reloadSelectedProduct()
@@ -2558,15 +3869,16 @@ final class AppModel: ObservableObject {
       return false
     }
 
-    let reviewerName = profiles.first { profile in
-      guard profile.role == .lead else { return false }
-      return runs.contains {
-        $0.workItemID == workItemID
-          && $0.profileID == profile.id
-          && $0.status == .completed
-          && $0.worktreePath == recoverableCandidate.integrationWorktreePath
-      }
-    }?.name ?? "Tech Lead"
+    let reviewerName =
+      profiles.first { profile in
+        guard profile.role == .lead else { return false }
+        return runs.contains {
+          $0.workItemID == workItemID
+            && $0.profileID == profile.id
+            && $0.status == .completed
+            && $0.worktreePath == recoverableCandidate.integrationWorktreePath
+        }
+      }?.name ?? "Tech lead"
 
     do {
       let candidate = try await store.fetchCandidateRevision(
@@ -2604,6 +3916,11 @@ final class AppModel: ObservableObject {
         reason: "Re-running demo preparation against the reviewed revision"
       )
       await reloadSelectedProductIfCurrent(productID: recoverableCandidate.productID)
+      let ticketPublication = try await prepareTicketPullRequestIfConnected(
+        productID: candidate.productID,
+        workItemID: item.id,
+        candidateRevisionID: candidate.id
+      )
 
       try await prepareDemoForAcceptance(
         candidate: candidate,
@@ -2614,6 +3931,7 @@ final class AppModel: ObservableObject {
         id: candidate.id,
         status: .readyForDemo
       )
+      try await markTicketPullRequestReadyIfNeeded(ticketPublication)
       _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .completed,
@@ -2624,19 +3942,19 @@ final class AppModel: ObservableObject {
         id: item.id,
         to: .acceptance,
         actor: reviewerName,
-        reason: "Reviewed candidate prepared successfully for Product Owner demo"
+        reason: "Reviewed candidate prepared successfully for product owner demo"
       )
       _ = try? await store.appendComment(
         workItemID: item.id,
         authorKind: .system,
         authorName: "Spedito",
-        body: "Demo preparation succeeded on retry. The already reviewed candidate was preserved; implementation and Tech Lead review were not repeated."
+        body:
+          "Demo preparation succeeded on retry. The already reviewed candidate was preserved; implementation and tech lead review were not repeated."
       )
       await reloadSelectedProductIfCurrent(productID: recoverableCandidate.productID)
       return true
     } catch {
-      if
-        DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate,
+      if DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate,
         let item = try? await store.fetchWorkItems(
           productID: recoverableCandidate.productID
         ).first(where: { $0.id == workItemID })
@@ -2663,10 +3981,9 @@ final class AppModel: ObservableObject {
         eventActor: "Spedito",
         eventDetail: "Demo preparation retry could not complete"
       )
-      if
-        let item = try? await store.fetchWorkItems(
-          productID: recoverableCandidate.productID
-        ).first(where: { $0.id == workItemID }),
+      if let item = try? await store.fetchWorkItems(
+        productID: recoverableCandidate.productID
+      ).first(where: { $0.id == workItemID }),
         item.state == .integrating || item.state == .verifying
       {
         _ = try? await store.transitionWorkItem(
@@ -2680,7 +3997,8 @@ final class AppModel: ObservableObject {
         workItemID: workItemID,
         authorKind: .system,
         authorName: "Spedito",
-        body: "Demo preparation stopped unexpectedly again: \(error.localizedDescription)\n\nChoose Retry demo preparation to try the preserved reviewed candidate again."
+        body:
+          "Demo preparation stopped unexpectedly again: \(error.localizedDescription)\n\nChoose Retry demo preparation to try the preserved reviewed candidate again."
       )
       errorMessage = error.localizedDescription
       await reloadSelectedProductIfCurrent(productID: recoverableCandidate.productID)
@@ -2689,11 +4007,12 @@ final class AppModel: ObservableObject {
   }
 
   func launchDemo(for candidate: CandidateRevision) async -> Bool {
-    guard
-      let store = store(for: candidate.productID),
+    guard candidate.deliveryKind.changesRepository,
       candidate.status == .readyForDemo,
-      let integratedSHA = candidate.integratedSHA
-    else { return false }
+      candidate.integratedSHA != nil
+    else {
+      return false
+    }
     do {
       let result = try CodexTicketExecutor.decode(candidate.executionResultJSON)
       guard let specification = result.demo else {
@@ -2702,15 +4021,109 @@ final class AppModel: ObservableObject {
         )
       }
       try DemoLaunchSpecificationValidator.validate(specification)
-      let previewURL = try await prepareCandidatePreview(
-        candidate: candidate,
-        integratedSHA: integratedSHA
+      return await launchManagedPresentation(
+        for: candidate,
+        specification: specification
       )
-      var session = currentDemoSession(for: candidate.id) ?? DemoSession(
-        productID: candidate.productID,
-        candidateRevisionID: candidate.id,
-        status: .preparing
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  func openAppVersion(id: UUID) async -> Bool {
+    guard
+      let selectedProductIDAtLaunch = selectedProductID,
+      let version = appVersions.first(where: { $0.id == id }),
+      version.productID == selectedProductIDAtLaunch
+    else { return false }
+
+    guard selectedProductID == selectedProductIDAtLaunch else { return false }
+
+    let didLaunch = await launchManagedPresentation(
+      productID: version.productID,
+      sourceKind: version.sessionSourceKind,
+      launchID: version.id,
+      revisionSHA: version.revisionSHA,
+      specification: version.specification
+    )
+    guard selectedProductID == selectedProductIDAtLaunch else {
+      await stopManagedSession(
+        productID: version.productID,
+        sourceKind: version.sessionSourceKind,
+        launchID: version.id,
+        removesPreview: false
       )
+      return false
+    }
+    return didLaunch
+  }
+
+  func stopAppVersion(id: UUID) async {
+    guard
+      let version = appVersions.first(where: { $0.id == id }),
+      version.productID == selectedProductID
+    else { return }
+    await stopManagedSession(
+      productID: version.productID,
+      sourceKind: version.sessionSourceKind,
+      launchID: version.id,
+      removesPreview: false
+    )
+  }
+
+  private func launchManagedPresentation(
+    for candidate: CandidateRevision,
+    specification: DemoLaunchSpecification
+  ) async -> Bool {
+    guard let integratedSHA = candidate.integratedSHA else { return false }
+    return await launchManagedPresentation(
+      productID: candidate.productID,
+      sourceKind: .acceptedCandidate,
+      launchID: candidate.id,
+      revisionSHA: integratedSHA,
+      specification: specification
+    )
+  }
+
+  private func launchManagedPresentation(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    revisionSHA: String,
+    specification: DemoLaunchSpecification
+  ) async -> Bool {
+    guard let store = store(for: productID) else { return false }
+    guard productsLaunchingManagedPresentation.insert(productID).inserted else { return false }
+    defer { productsLaunchingManagedPresentation.remove(productID) }
+    let activeStatuses: Set<DemoSessionStatus> = [.preparing, .starting, .ready]
+    let productSessions = (try? await store.fetchDemoSessions(productID: productID)) ?? []
+    for session in productSessions
+    where activeStatuses.contains(session.status)
+      && (session.sourceKind != sourceKind || session.launchID != launchID)
+    {
+      await stopManagedSession(
+        productID: productID,
+        sourceKind: session.sourceKind,
+        launchID: session.launchID,
+        removesPreview: false
+      )
+    }
+    do {
+      let previewURL = try await prepareLaunchPreview(
+        productID: productID,
+        sourceKind: sourceKind,
+        launchID: launchID,
+        revisionSHA: revisionSHA
+      )
+      var session =
+        currentDemoSession(sourceKind: sourceKind, launchID: launchID)
+        ?? DemoSession(
+          productID: productID,
+          sourceKind: sourceKind,
+          launchID: launchID,
+          status: .preparing
+        )
       session.status = .preparing
       session.previewWorktreePath = previewURL.path
       session.errorMessage = nil
@@ -2724,7 +4137,7 @@ final class AppModel: ObservableObject {
       replaceDemoSession(session)
 
       let outcome = try await demoLauncher.launch(
-        candidateID: candidate.id,
+        candidateID: launchID,
         specification: specification,
         workspaceURL: previewURL
       )
@@ -2737,11 +4150,14 @@ final class AppModel: ObservableObject {
       replaceDemoSession(session)
       return true
     } catch {
-      var session = currentDemoSession(for: candidate.id) ?? DemoSession(
-        productID: candidate.productID,
-        candidateRevisionID: candidate.id,
-        status: .failed
-      )
+      var session =
+        currentDemoSession(sourceKind: sourceKind, launchID: launchID)
+        ?? DemoSession(
+          productID: productID,
+          sourceKind: sourceKind,
+          launchID: launchID,
+          status: .failed
+        )
       session.status = .failed
       session.errorMessage = error.localizedDescription
       session.updatedAt = Date()
@@ -2758,35 +4174,77 @@ final class AppModel: ObservableObject {
   }
 
   func currentDemoSession(for candidateRevisionID: UUID) -> DemoSession? {
-    demoSessions.first { $0.candidateRevisionID == candidateRevisionID }
+    currentDemoSession(sourceKind: .acceptedCandidate, launchID: candidateRevisionID)
+  }
+
+  func currentAppVersionSession(id: UUID) -> DemoSession? {
+    guard let version = appVersions.first(where: { $0.id == id }) else { return nil }
+    return currentDemoSession(sourceKind: version.sessionSourceKind, launchID: version.id)
+  }
+
+  private func currentDemoSession(
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID
+  ) -> DemoSession? {
+    demoSessions.first { $0.sourceKind == sourceKind && $0.launchID == launchID }
   }
 
   private func replaceDemoSession(_ session: DemoSession) {
     guard selectedProductID == session.productID else { return }
-    demoSessions.removeAll { $0.candidateRevisionID == session.candidateRevisionID }
+    demoSessions.removeAll {
+      $0.sourceKind == session.sourceKind && $0.launchID == session.launchID
+    }
     demoSessions.append(session)
     demoSessions.sort { $0.createdAt < $1.createdAt }
   }
 
+  private func storedDemoSession(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID
+  ) async -> DemoSession? {
+    guard let store = store(for: productID) else { return nil }
+    return try? await store.fetchDemoSession(sourceKind: sourceKind, launchID: launchID)
+  }
+
   private func storedDemoSession(for candidate: CandidateRevision) async -> DemoSession? {
-    guard let store = store(for: candidate.productID) else { return nil }
-    return try? await store.fetchDemoSessions(productID: candidate.productID)
-      .first { $0.candidateRevisionID == candidate.id }
+    await storedDemoSession(
+      productID: candidate.productID,
+      sourceKind: .acceptedCandidate,
+      launchID: candidate.id
+    )
   }
 
   private func stopDemoSession(
     _ candidate: CandidateRevision,
     removesPreview: Bool
   ) async {
-    await demoLauncher.stop(candidateID: candidate.id)
+    await stopManagedSession(
+      productID: candidate.productID,
+      sourceKind: .acceptedCandidate,
+      launchID: candidate.id,
+      removesPreview: removesPreview
+    )
+  }
+
+  private func stopManagedSession(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    removesPreview: Bool
+  ) async {
+    await demoLauncher.stop(candidateID: launchID)
     guard
-      let store = store(for: candidate.productID),
-      var session = await storedDemoSession(for: candidate)
+      let store = store(for: productID),
+      var session = await storedDemoSession(
+        productID: productID,
+        sourceKind: sourceKind,
+        launchID: launchID
+      )
     else { return }
-    if
-      removesPreview,
+    if removesPreview,
       let previewPath = session.previewWorktreePath,
-      let repositoryURL = try? Self.productWorkspaceURL(productID: candidate.productID)
+      let repositoryURL = try? Self.productWorkspaceURL(productID: productID)
     {
       try? await gitWorkspaceManager.removeWorktree(
         repositoryURL: repositoryURL,
@@ -2810,11 +4268,12 @@ final class AppModel: ObservableObject {
     guard let store = store(for: productID) else { return }
     let productSessions =
       (try? await store.fetchDemoSessions(productID: productID)) ?? []
-    let stoppableStatuses: [DemoSessionStatus] = includesPreparation
+    let stoppableStatuses: [DemoSessionStatus] =
+      includesPreparation
       ? [.preparing, .starting, .ready]
       : [.starting, .ready]
     for var session in productSessions where stoppableStatuses.contains(session.status) {
-      await demoLauncher.stop(candidateID: session.candidateRevisionID)
+      await demoLauncher.stop(candidateID: session.launchID)
       session.status = .stopped
       session.allocatedPort = nil
       session.errorMessage = nil
@@ -2850,16 +4309,31 @@ final class AppModel: ObservableObject {
     candidate: CandidateRevision,
     integratedSHA: String
   ) async throws -> URL {
-    let repositoryURL = try Self.productWorkspaceURL(productID: candidate.productID)
-    let previewsRootURL = try Self.previewWorktreesRootURL(
-      productID: candidate.productID
+    try await prepareLaunchPreview(
+      productID: candidate.productID,
+      sourceKind: .acceptedCandidate,
+      launchID: candidate.id,
+      revisionSHA: integratedSHA
     )
+  }
+
+  private func prepareLaunchPreview(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    revisionSHA: String
+  ) async throws -> URL {
+    let repositoryURL = try Self.productWorkspaceURL(productID: productID)
+    let previewsRootURL = try Self.previewWorktreesRootURL(productID: productID)
     let expectedPreviewURL = previewsRootURL.appendingPathComponent(
-      candidate.id.uuidString.lowercased(),
+      launchID.uuidString.lowercased(),
       isDirectory: true
     )
-    if
-      let existingPath = await storedDemoSession(for: candidate)?.previewWorktreePath,
+    if let existingPath = await storedDemoSession(
+      productID: productID,
+      sourceKind: sourceKind,
+      launchID: launchID
+    )?.previewWorktreePath,
       URL(fileURLWithPath: existingPath).standardizedFileURL
         != expectedPreviewURL.standardizedFileURL
     {
@@ -2871,8 +4345,8 @@ final class AppModel: ObservableObject {
     return try await gitWorkspaceManager.preparePreviewWorkspace(
       repositoryURL: repositoryURL,
       previewsRootURL: previewsRootURL,
-      candidateID: candidate.id,
-      integratedSHA: integratedSHA
+      candidateID: launchID,
+      integratedSHA: revisionSHA
     )
   }
 
@@ -2888,11 +4362,13 @@ final class AppModel: ObservableObject {
       candidate: candidate,
       integratedSHA: integratedSHA
     )
-    var session = await storedDemoSession(for: candidate) ?? DemoSession(
-      productID: candidate.productID,
-      candidateRevisionID: candidate.id,
-      status: .preparing
-    )
+    var session =
+      await storedDemoSession(for: candidate)
+      ?? DemoSession(
+        productID: candidate.productID,
+        launchID: candidate.id,
+        status: .preparing
+      )
     session.status = .preparing
     session.previewWorktreePath = previewURL.path
     session.output = nil
@@ -2921,79 +4397,272 @@ final class AppModel: ObservableObject {
     }
   }
 
-  func acceptSprintTicket(_ item: WorkItem) async -> Bool {
-    guard let store = store(for: item.productID) else { return false }
+  @discardableResult
+  func beginSprintTicketAcceptance(_ item: WorkItem) -> Bool {
+    guard item.state == .acceptance || item.state == .readyToRelease else {
+      return false
+    }
+    if ticketAcceptanceTasks[item.id] != nil {
+      return true
+    }
+    ticketAcceptanceInProgressWorkItemIDs.insert(item.id)
+    ticketAcceptanceTasks[item.id] = Task { [weak self] in
+      guard let self else { return }
+      _ = await completeSprintTicketAcceptance(
+        workItemID: item.id,
+        productID: item.productID
+      )
+      ticketAcceptanceTasks.removeValue(forKey: item.id)
+      ticketAcceptanceInProgressWorkItemIDs.remove(item.id)
+    }
+    return true
+  }
+
+  private func recoverInterruptedTicketAcceptances() async {
+    for product in products {
+      guard let store = store(for: product.id) else { continue }
+      do {
+        let itemsByID = Dictionary(
+          uniqueKeysWithValues: try await store.fetchWorkItems(productID: product.id).map {
+            ($0.id, $0)
+          }
+        )
+        let interrupted = try await store.fetchCandidateRevisions(productID: product.id)
+          .filter { candidate in
+            guard candidate.status == .promoting || candidate.status == .accepted,
+              let item = itemsByID[candidate.workItemID]
+            else {
+              return false
+            }
+            return item.state == .acceptance || item.state == .readyToRelease
+          }
+        for candidate in interrupted {
+          guard let item = itemsByID[candidate.workItemID] else { continue }
+          _ = beginSprintTicketAcceptance(item)
+        }
+      } catch {
+        errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func completeSprintTicketAcceptance(
+    workItemID: UUID,
+    productID: UUID
+  ) async -> Bool {
+    guard let store = store(for: productID) else { return false }
     do {
-      let current = try await store.fetchWorkItems(productID: item.productID)
-        .first { $0.id == item.id }
-      guard let current, current.state == .acceptance else { return false }
-      let candidates = try await store.fetchCandidateRevisions(productID: item.productID)
-      let readyCandidates = candidates.filter { candidate in
-        candidate.workItemID == item.id && candidate.status == .readyForDemo
+      guard
+        let current = try await store.fetchWorkItems(productID: productID)
+          .first(where: { $0.id == workItemID }),
+        current.state == .acceptance || current.state == .readyToRelease
+      else {
+        return false
+      }
+      let candidates = try await store.fetchCandidateRevisions(productID: productID)
+      let resumableCandidates = candidates.filter { candidate in
+        candidate.workItemID == workItemID
+          && (candidate.status == .readyForDemo
+            || candidate.status == .promoting
+            || candidate.status == .accepted)
       }
       guard
-        let candidate = readyCandidates.max(by: { $0.version < $1.version }),
-        let integratedSHA = candidate.integratedSHA
+        let candidate = resumableCandidates.max(by: { $0.version < $1.version })
       else {
         throw PersistenceError.corruptData(
           "This ticket has no reviewed candidate revision ready to promote."
         )
       }
-      let executionResult = try CodexTicketExecutor.decode(candidate.executionResultJSON)
-      let allProposals = try await store.fetchKnowledgePageProposals(
-        productID: item.productID
-      )
-      let proposals = allProposals.filter { proposal in
-        proposal.candidateRevisionID == candidate.id
+      var ticketPublication: RemotePublication?
+      if candidate.deliveryKind.changesRepository, let githubRemoteService {
+        let remoteState = await githubRemoteService.state(productID: productID)
+        if remoteState.connection?.status == .connected {
+          guard
+            let publication = remoteState.publications.first(where: {
+              $0.workItemID == workItemID && $0.candidateRevisionID == candidate.id
+                && ($0.status.isActive || $0.status == .merged)
+            })
+          else {
+            throw PersistenceError.corruptData(
+              "This reviewed ticket has no GitHub pull request."
+            )
+          }
+          if publication.status == .merged {
+            ticketPublication = publication
+          } else {
+            let sync = try await githubRemoteService.syncTicketPullRequest(
+              publicationID: publication.id
+            )
+            githubRemoteRepositoryStates[productID] = sync.state
+            if sync.changesRequested {
+              await handleSprintOwnerComment(
+                productID: productID,
+                workItemID: workItemID,
+                body: "Address the latest GitHub review feedback.",
+                actor: "GitHub reviewer",
+                reasonPrefix: "Review feedback"
+              )
+              return false
+            }
+            guard !sync.closedWithoutMerge,
+              let refreshed = sync.state.publications.first(where: { $0.id == publication.id }),
+              refreshed.status == .open,
+              refreshed.pullRequest?.isDraft == false
+            else {
+              throw PersistenceError.corruptData(
+                "The GitHub pull request must be open and ready for review before approval."
+              )
+            }
+            ticketPublication = refreshed
+          }
+        }
       }
+      let executionResult = try CodexTicketExecutor.decode(candidate.executionResultJSON)
+      let allProposals = try await store.fetchKnowledgePageProposals(productID: productID)
+      let proposals = allProposals.filter { $0.candidateRevisionID == candidate.id }
       let publishableProposals: [KnowledgePageProposal]
       if requiresKnowledgeApproval {
-        guard !proposals.contains(where: {
-          $0.status == .proposed || $0.status == .reviewed
-        }) else {
+        guard
+          !proposals.contains(where: {
+            $0.status == .proposed || $0.status == .reviewed
+          })
+        else {
           throw PersistenceError.corruptData(
-            "Accept or reject every Product knowledge proposal before completing the ticket."
+            "Accept or reject every product knowledge proposal before completing the ticket."
           )
         }
         publishableProposals = proposals.filter { $0.status == .accepted }
       } else {
         guard !proposals.contains(where: { $0.status == .proposed }) else {
           throw PersistenceError.corruptData(
-            "Tech Lead review must finish every Product knowledge proposal before completing the ticket."
+            "Tech lead review must finish every product knowledge proposal before completing the ticket."
           )
         }
         publishableProposals = proposals.filter {
           $0.status == .reviewed || $0.status == .accepted
         }
       }
-      let canonicalPages = try await store.fetchKnowledgePages(
-        productID: item.productID
-      )
+      let canonicalPages = try await store.fetchKnowledgePages(productID: productID)
       _ = try KnowledgePageProposalMaterializer.applying(
         publishableProposals,
         to: canonicalPages
       )
-      await stopDemoSession(candidate, removesPreview: true)
-      let repositoryURL = try Self.productWorkspaceURL(productID: item.productID)
-      guard
-        try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
-          repositoryURL: repositoryURL,
-          integratedSHA: integratedSHA
-        )
-      else {
-        try await requeueStaleReadyCandidate(
-          candidate,
-          reason:
-            "Accepted trunk advanced after this demo revision was prepared."
-        )
-        await reloadSelectedProductIfCurrent(productID: item.productID)
-        scheduleSprintExecution(productID: item.productID)
-        return false
+
+      if candidate.status == .readyForDemo {
+        _ = try await store.updateCandidateRevision(id: candidate.id, status: .promoting)
       }
-      try await gitWorkspaceManager.promote(
-        repositoryURL: repositoryURL,
-        integratedSHA: integratedSHA
-      )
+      await stopDemoSession(candidate, removesPreview: true)
+      let repositoryURL = try Self.productWorkspaceURL(productID: productID)
+      if candidate.deliveryKind.changesRepository {
+        guard let integratedSHA = candidate.integratedSHA else {
+          throw PersistenceError.corruptData(
+            "This repository-changing ticket has no reviewed integrated revision."
+          )
+        }
+      if let ticketPublication, let githubRemoteService {
+        let mergedSHA: String
+        if ticketPublication.status == .merged,
+          let existingMergedSHA = ticketPublication.pullRequest?.mergedSHA
+        {
+          let checked = try await githubRemoteService.check(productID: productID)
+          if let sync = checked.safeSync, sync.status == .awaitingConfirmation {
+            let reconciled = try await githubRemoteService.acceptSafeSync(syncID: sync.id)
+            githubRemoteRepositoryStates[productID] = reconciled
+          } else {
+            githubRemoteRepositoryStates[productID] = checked
+          }
+          mergedSHA = existingMergedSHA
+        } else {
+          do {
+            let result = try await githubRemoteService.mergeTicketPullRequest(
+              publicationID: ticketPublication.id
+            )
+            githubRemoteRepositoryStates[productID] = result.state
+            mergedSHA = result.mergedSHA
+          } catch GitHubRemoteRepositoryServiceError.ticketIntegrationRequired {
+            if ticketPublication.pullRequest?.isDraft == false {
+              let draftState = try await githubRemoteService.returnTicketPullRequestToDraft(
+                publicationID: ticketPublication.id
+              )
+              githubRemoteRepositoryStates[productID] = draftState
+            }
+            try await requeueStaleReadyCandidate(
+              candidate,
+              reason:
+                "GitHub changed after this demo revision was prepared. Spedito will integrate the latest verified changes and review the ticket again."
+            )
+            await reloadSelectedProductIfCurrent(productID: productID)
+            scheduleSprintExecution(productID: productID)
+            return false
+          }
+        }
+        let acceptedSHA = try await gitWorkspaceManager.acceptedTrunkSHA(at: repositoryURL)
+        let acceptedTree = try await gitWorkspaceManager.revisionTreeSHA(
+          repositoryURL: repositoryURL,
+          revisionSHA: acceptedSHA
+        )
+        let integratedTree = try await gitWorkspaceManager.revisionTreeSHA(
+          repositoryURL: repositoryURL,
+          revisionSHA: integratedSHA
+        )
+        guard acceptedSHA == mergedSHA, acceptedTree == integratedTree else {
+          throw PersistenceError.corruptData(
+            "The merged GitHub revision did not reconcile to the reviewed ticket result."
+          )
+        }
+      } else {
+        let acceptedTrunkSHA = try await gitWorkspaceManager.acceptedTrunkSHA(at: repositoryURL)
+        if acceptedTrunkSHA != integratedSHA {
+          guard
+            try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+              repositoryURL: repositoryURL,
+              integratedSHA: integratedSHA
+            )
+          else {
+            try await requeueStaleReadyCandidate(
+              candidate,
+              reason: "Accepted trunk advanced after this demo revision was prepared."
+            )
+            await reloadSelectedProductIfCurrent(productID: productID)
+            scheduleSprintExecution(productID: productID)
+            return false
+          }
+          try await gitWorkspaceManager.promote(
+            repositoryURL: repositoryURL,
+            integratedSHA: integratedSHA
+          )
+        }
+      }
+      }
+
+      if let specification = executionResult.demo,
+        specification.presentation.kind == .browser
+          || specification.presentation.kind == .macApplication,
+        (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
+      {
+        let previousLatestCandidateID = AcceptedAppLaunchPolicy.latest(in: candidates)?.candidate.id
+        if let previousLatestCandidateID {
+          await stopManagedSession(
+            productID: productID,
+            sourceKind: .acceptedCandidate,
+            launchID: previousLatestCandidateID,
+            removesPreview: true
+          )
+        }
+        let activeStatuses: Set<DemoSessionStatus> = [.preparing, .starting, .ready]
+        for session in demoSessions
+        where activeStatuses.contains(session.status)
+          && !(session.sourceKind == .acceptedCandidate
+            && session.launchID == previousLatestCandidateID)
+        {
+          await stopManagedSession(
+            productID: session.productID,
+            sourceKind: session.sourceKind,
+            launchID: session.launchID,
+            removesPreview: false
+          )
+        }
+      }
       for proposal in publishableProposals {
         _ = try await store.publishKnowledgePageProposal(
           id: proposal.id,
@@ -3006,7 +4675,7 @@ final class AppModel: ObservableObject {
           authorKind: .system,
           authorName: "Spedito",
           body:
-            "Published \(publishableProposals.count) approved Product knowledge change\(publishableProposals.count == 1 ? "" : "s") with the accepted candidate."
+            "Published \(publishableProposals.count) approved product knowledge change\(publishableProposals.count == 1 ? "" : "s") to this Product's local knowledge."
         )
       }
       if !executionResult.followUpTicketProposals.isEmpty {
@@ -3019,39 +4688,71 @@ final class AppModel: ObservableObject {
         )
       }
       _ = try await store.updateCandidateRevision(id: candidate.id, status: .accepted)
-      _ = try await store.transitionWorkItem(
-        id: current.id,
-        to: .readyToRelease,
-        actor: "Product Owner",
-        reason: "Demo approved"
-      )
-      _ = try await store.transitionWorkItem(
-        id: current.id,
-        to: .released,
-        actor: "Product Owner",
-        reason: "Accepted outcome completed"
-      )
-      _ = try await store.appendComment(
-        workItemID: current.id,
-        authorKind: .system,
-        authorName: "Spedito",
-        body:
-          "Product Owner approved candidate v\(candidate.version). Integrated revision "
+
+      var latest = try await store.fetchWorkItems(productID: productID)
+        .first(where: { $0.id == current.id })
+      if latest?.state == .acceptance {
+        latest = try await store.transitionWorkItem(
+          id: current.id,
+          to: .readyToRelease,
+          actor: "Product owner",
+          reason:
+            candidate.deliveryKind == .localOutcome
+            ? "Reviewed outcome approved"
+            : "Demo approved"
+        )
+      }
+      if latest?.state == .readyToRelease {
+        latest = try await store.transitionWorkItem(
+          id: current.id,
+          to: .released,
+          actor: "Product owner",
+          reason: "Accepted outcome completed"
+        )
+      }
+      guard latest?.state == .released else {
+        throw PersistenceError.corruptData(
+          "The accepted ticket could not complete its workflow transitions."
+        )
+      }
+
+      let followUpSuffix =
+        executionResult.followUpTicketProposals.isEmpty
+        ? ""
+        : " \(executionResult.followUpTicketProposals.count) follow-up "
+          + (executionResult.followUpTicketProposals.count == 1
+            ? "ticket is"
+            : "tickets are")
+          + " ready for review in the backlog."
+      let completionComment: String
+      if candidate.deliveryKind == .localOutcome {
+        completionComment =
+          "Product owner approved local outcome v\(candidate.version). No repository revision was created or promoted."
+          + followUpSuffix
+      } else if let integratedSHA = candidate.integratedSHA {
+        completionComment =
+          "Product owner approved candidate v\(candidate.version). Integrated revision "
           + "\(String(integratedSHA.prefix(8))) is now the accepted trunk."
-          + (executionResult.followUpTicketProposals.isEmpty
-            ? ""
-            : " \(executionResult.followUpTicketProposals.count) follow-up "
-              + (executionResult.followUpTicketProposals.count == 1
-                ? "ticket is"
-                : "tickets are")
-              + " ready for review in the Backlog.")
-      )
+          + followUpSuffix
+      } else {
+        throw PersistenceError.corruptData(
+          "The accepted repository candidate has no integrated revision."
+        )
+      }
+      let existingComments = try await store.fetchComments(workItemID: current.id)
+      if !existingComments.contains(where: { $0.body == completionComment }) {
+        _ = try await store.appendComment(
+          workItemID: current.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body: completionComment
+        )
+      }
       try await requeueStaleReadyCandidates(
-        productID: item.productID,
+        productID: productID,
         excluding: candidate.id
       )
-      if
-        let activePlan = try await store.fetchCurrentSprint(productID: item.productID),
+      if let activePlan = try await store.fetchCurrentSprint(productID: productID),
         activePlan.sprint.state.isInProgress,
         activePlan.items.contains(where: { $0.workItemID == current.id })
       {
@@ -3068,13 +4769,31 @@ final class AppModel: ObservableObject {
         worktreeURL: URL(fileURLWithPath: candidate.worktreePath, isDirectory: true),
         branchName: candidate.branchName
       )
-      await reloadSelectedProductIfCurrent(productID: item.productID)
+      await reloadSelectedProductIfCurrent(productID: productID)
       scheduleRetrospectiveSyntheses()
-      scheduleSprintExecution(productID: item.productID)
+      scheduleSprintExecution(productID: productID)
       return true
     } catch {
+      if let candidate = try? await store.fetchCandidateRevisions(productID: productID)
+        .filter({
+          $0.workItemID == workItemID && $0.status == .promoting
+        })
+        .max(by: { $0.version < $1.version })
+      {
+        _ = try? await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .readyForDemo
+        )
+      }
+      _ = try? await store.appendComment(
+        workItemID: workItemID,
+        authorKind: .system,
+        authorName: "Spedito",
+        body:
+          "Ticket completion stopped: \(error.localizedDescription)\n\nThe reviewed result remains ready for approval. Choose Approve and complete to retry."
+      )
       errorMessage = error.localizedDescription
-      await reloadSelectedProductIfCurrent(productID: item.productID)
+      await reloadSelectedProductIfCurrent(productID: productID)
       return false
     }
   }
@@ -3117,33 +4836,6 @@ final class AppModel: ObservableObject {
         accept: accept,
         authorName: "Me"
       )
-      if accept {
-        do {
-          let currentCandidate = try await store.fetchCandidateRevision(
-            id: proposal.candidateRevisionID
-          )
-          guard let item = try await store.fetchWorkItems(
-            productID: proposal.productID
-          ).first(where: {
-            $0.id == proposal.workItemID
-          }) else {
-            throw PersistenceError.recordNotFound(
-              "work item \(proposal.workItemID)"
-            )
-          }
-          _ = try await materializeKnowledgePageProposals(
-            candidate: currentCandidate,
-            statuses: [.accepted],
-            commitMessage: "\(item.key): stage approved Product knowledge"
-          )
-        } catch {
-          _ = try? await store.updateCandidateRevision(
-            id: proposal.candidateRevisionID,
-            status: .failed
-          )
-          throw error
-        }
-      }
       await reloadSelectedProductIfCurrent(productID: proposal.productID)
       return true
     } catch {
@@ -3153,49 +4845,6 @@ final class AppModel: ObservableObject {
     }
   }
 
-  @discardableResult
-  private func materializeKnowledgePageProposals(
-    candidate: CandidateRevision,
-    statuses: [KnowledgePageProposalStatus],
-    commitMessage: String
-  ) async throws -> Int {
-    guard let store = store(for: candidate.productID) else { return 0 }
-    let proposals = try await store.fetchKnowledgePageProposals(
-      productID: candidate.productID
-    ).filter {
-      $0.candidateRevisionID == candidate.id && statuses.contains($0.status)
-    }
-    guard !proposals.isEmpty else { return 0 }
-    guard let integrationPath = candidate.integrationWorktreePath else {
-      throw PersistenceError.corruptData(
-        "Reviewed knowledge changes have no integration workspace."
-      )
-    }
-
-    let canonicalPages = try await store.fetchKnowledgePages(
-      productID: candidate.productID
-    )
-    let candidatePages = try KnowledgePageProposalMaterializer.applying(
-      proposals,
-      to: canonicalPages
-    )
-    let integrationURL = URL(fileURLWithPath: integrationPath, isDirectory: true)
-    try Self.syncKnowledgeMarkdownFiles(
-      at: integrationURL,
-      pages: candidatePages
-    )
-    let integratedSHA = try await gitWorkspaceManager.checkpointWorkspace(
-      at: integrationURL,
-      message: commitMessage
-    )
-    let currentCandidate = try await store.fetchCandidateRevision(id: candidate.id)
-    _ = try await store.updateCandidateRevision(
-      id: candidate.id,
-      status: currentCandidate.status,
-      integratedSHA: integratedSHA
-    )
-    return proposals.count
-  }
 
   func sendSprintPlanningMessage(
     for item: WorkItem,
@@ -3221,7 +4870,8 @@ final class AppModel: ObservableObject {
     else {
       throw CodexClientError.notConnected
     }
-    guard recipient.productID == product.id, profiles.contains(where: { $0.id == recipient.id }) else {
+    guard recipient.productID == product.id, profiles.contains(where: { $0.id == recipient.id })
+    else {
       throw CodexClientError.notConnected
     }
     let trimmedMessage = ownerMessage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3237,8 +4887,9 @@ final class AppModel: ObservableObject {
 
     let comments = try await store.fetchComments(workItemID: item.id)
     let currentMessageBody = "@\(recipient.name) \(trimmedMessage)"
-    let priorComments = comments.last?.authorKind == .owner
-      && comments.last?.body == currentMessageBody
+    let priorComments =
+      comments.last?.authorKind == .owner
+        && comments.last?.body == currentMessageBody
       ? Array(comments.dropLast())
       : comments
     let prerequisiteIDs = Set(
@@ -3323,7 +4974,7 @@ final class AppModel: ObservableObject {
     }
   }
 
-  func generateSprintGoal() async throws -> String {
+  func generateAndSaveSprintGoal(for sprintID: UUID, planVersion: Int) async throws -> String {
     guard
       !isGeneratingSprintGoal,
       suggestionBatch?.session.status != .generating,
@@ -3343,11 +4994,15 @@ final class AppModel: ObservableObject {
     else {
       throw CodexClientError.notConnected
     }
-    guard let plan = candidateSprintPlan else {
-      throw SprintGoalGenerationError.noTickets
+    guard
+      let plan = sprintPlanForGoalGeneration(id: sprintID),
+      plan.sprint.planVersion == planVersion
+    else {
+      throw SprintPlanningError.planChanged
     }
     let scopedIDs = Set(plan.items.map(\.workItemID))
-    let titles = workItems
+    let titles =
+      workItems
       .filter { scopedIDs.contains($0.id) }
       .sorted {
         if $0.rank == $1.rank { return $0.key < $1.key }
@@ -3359,7 +5014,8 @@ final class AppModel: ObservableObject {
     guard !titles.isEmpty else {
       throw SprintGoalGenerationError.noTickets
     }
-    let supportedEfforts = modelOption(for: analyst)?
+    let supportedEfforts =
+      modelOption(for: analyst)?
       .supportedReasoningEfforts
       .map(\.id) ?? []
     let reasoningEffort = CodexSprintGoalGenerator.lightestReasoningEffort(
@@ -3400,7 +5056,21 @@ final class AppModel: ObservableObject {
         timeout: .seconds(180),
         totalTimeout: try remainingSprintGoalGenerationTime(until: deadline)
       )
-      return try CodexSprintGoalGenerator.decode(response)
+      let suggestion = try CodexSprintGoalGenerator.decode(response)
+      guard
+        let currentPlan = sprintPlanForGoalGeneration(id: sprintID),
+        currentPlan.sprint.planVersion == planVersion,
+        let store = store(for: currentPlan.sprint.productID)
+      else {
+        throw SprintPlanningError.planChanged
+      }
+      let savedPlan = try await store.saveGeneratedSprintGoal(
+        id: sprintID,
+        goal: suggestion,
+        expectedPlanVersion: planVersion
+      )
+      await reloadSelectedProductIfCurrent(productID: currentPlan.sprint.productID)
+      return savedPlan.sprint.goal
     } catch let error as SprintGoalGenerationError {
       if error == .timedOut, let activeSprintGoalTurn {
         try? await client.interruptTurn(
@@ -3418,6 +5088,18 @@ final class AppModel: ObservableObject {
     }
   }
 
+  private func sprintPlanForGoalGeneration(id: UUID) -> SprintPlan? {
+    if let candidateSprintPlan, candidateSprintPlan.sprint.id == id {
+      return candidateSprintPlan
+    }
+    if let sprintPlan, sprintPlan.sprint.id == id {
+      return sprintPlan
+    }
+    return sprintHistory.first {
+      $0.sprint.id == id && [.draft, .active, .paused].contains($0.sprint.state)
+    }
+  }
+
   private func remainingSprintGoalGenerationTime(
     until deadline: ContinuousClock.Instant
   ) throws -> Duration {
@@ -3428,15 +5110,6 @@ final class AppModel: ObservableObject {
     return remaining
   }
 
-  func cancelSprintGoalGeneration() {
-    guard let client = codexClient, let activeSprintGoalTurn else { return }
-    Task {
-      try? await client.interruptTurn(
-        threadID: activeSprintGoalTurn.threadID,
-        turnID: activeSprintGoalTurn.turnID
-      )
-    }
-  }
 
   func addToCandidateSprint(_ workItem: WorkItem) {
     addToCandidateSprint([workItem])
@@ -3455,7 +5128,8 @@ final class AppModel: ObservableObject {
     let existingIDs = Set(candidatePlan?.items.map(\.workItemID) ?? [])
     let selectedIDs = Set(selectedItems.map(\.id)).subtracting(existingIDs)
     guard !selectedIDs.isEmpty else { return }
-    let availableIDs = existingIDs
+    let availableIDs =
+      existingIDs
       .union(selectedIDs)
       .union(externalCandidatePrerequisiteIDs)
     if let missingEdge = dependencies.first(where: {
@@ -3468,17 +5142,19 @@ final class AppModel: ObservableObject {
       return
     }
 
-    let currentInputs: [SprintDraftItemInput] = candidatePlan?.items.map { sprintItem in
-      let workItem = workItems.first { $0.id == sprintItem.workItemID }
-      return SprintDraftItemInput(
-        workItemID: sprintItem.workItemID,
-        implementerProfileID: sprintItem.implementerProfileID
-          ?? workItem?.ownerProfileID,
-        reviewerProfileID: sprintItem.reviewerProfileID,
-        estimatedTokens: sprintItem.estimatedTokens
-      )
-    } ?? []
-    let newInputs: [SprintDraftItemInput] = workItems
+    let currentInputs: [SprintDraftItemInput] =
+      candidatePlan?.items.map { sprintItem in
+        let workItem = workItems.first { $0.id == sprintItem.workItemID }
+        return SprintDraftItemInput(
+          workItemID: sprintItem.workItemID,
+          implementerProfileID: sprintItem.implementerProfileID
+            ?? workItem?.ownerProfileID,
+          reviewerProfileID: sprintItem.reviewerProfileID,
+          estimatedTokens: sprintItem.estimatedTokens
+        )
+      } ?? []
+    let newInputs: [SprintDraftItemInput] =
+      workItems
       .filter { selectedIDs.contains($0.id) }
       .map { item in
         return SprintDraftItemInput(
@@ -3493,7 +5169,7 @@ final class AppModel: ObservableObject {
       do {
         _ = try await store.saveDraftSprint(
           productID: productID,
-          goal: candidatePlan?.sprint.goal ?? "Next valuable increment",
+          goal: candidatePlan?.sprint.goal ?? "",
           tokenBudgetLimit: nil,
           items: inputs
         )
@@ -3580,7 +5256,8 @@ final class AppModel: ObservableObject {
     guard evaluation.isValid, let rankAction = evaluation.rankAction else {
       return
     }
-    let desiredCandidateIDs = intoCandidateSprint
+    let desiredCandidateIDs =
+      intoCandidateSprint
       ? existingCandidateIDs.union(movingIDs)
       : existingCandidateIDs.subtracting(movingIDs)
 
@@ -3616,7 +5293,7 @@ final class AppModel: ObservableObject {
           }
           _ = try await store.saveDraftSprint(
             productID: productID,
-            goal: candidatePlan?.sprint.goal ?? "Next valuable increment",
+            goal: candidatePlan?.sprint.goal ?? "",
             tokenBudgetLimit: nil,
             items: inputs
           )
@@ -3877,7 +5554,7 @@ final class AppModel: ObservableObject {
         activeEpicPlanningTurn = nil
         updateEpicPlanningConversation(for: epic.id) {
           $0.isRunning = false
-          $0.errorMessage = "The Business Analyst stopped. Your answers are still visible."
+          $0.errorMessage = "The business analyst stopped. Your answers are still visible."
         }
       } catch {
         activeEpicPlanningTurn = nil
@@ -4057,7 +5734,8 @@ final class AppModel: ObservableObject {
       suggestionBatch?.session.epicID == epic.id
       ? suggestionBatch?.suggestions.filter { $0.status == .rejected } ?? []
       : []
-    let durableMessages = epicPlanningConversation?.epicID == epic.id
+    let durableMessages =
+      epicPlanningConversation?.epicID == epic.id
       ? epicPlanningConversation?.messages ?? []
       : []
     updateEpicPlanningConversation(for: epic.id) {
@@ -4137,13 +5815,13 @@ final class AppModel: ObservableObject {
           suggestionBatch = completedBatch
         }
         activeEpicPlanningTurn = nil
+        await reloadSelectedProductIfCurrent(productID: product.id)
         try await completeEpicPlanningConversation(
           for: epic,
           proposalCount: plan.ticketSuggestions.count,
           threadID: completedBatch.session.codexThreadID,
           fallbackMessages: durableMessages
         )
-        await reloadSelectedProductIfCurrent(productID: product.id)
       } catch is CancellationError {
         activeEpicPlanningTurn = nil
         if let session, !isShuttingDown {
@@ -4322,7 +6000,8 @@ final class AppModel: ObservableObject {
       throw PersistenceError.recordNotFound("product store \(epic.productID)")
     }
 
-    var snapshot = try await store.fetchEpicPlanningConversation(epicID: epic.id)
+    var snapshot =
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
       ?? EpicPlanningConversationSnapshot(
         epicID: epic.id,
         messages: fallbackMessages,
@@ -4337,7 +6016,7 @@ final class AppModel: ObservableObject {
           body:
             "I’ve prepared the epic and \(proposalCount) proposed "
             + (proposalCount == 1 ? "ticket" : "tickets")
-            + " for you to review in the Tickets section."
+            + " for you to review in the tickets section."
         )
       )
     }
@@ -4432,7 +6111,7 @@ final class AppModel: ObservableObject {
         guard selectedProductID == failedSession.productID else {
           try? await store.failTicketSuggestionSession(
             sessionID: restartedSession.id,
-            message: "Epic planning was interrupted by a Product change. You can safely try again."
+            message: "Epic planning was interrupted by a product change. You can safely try again."
           )
           return
         }
@@ -4453,9 +6132,10 @@ final class AppModel: ObservableObject {
       let product = selectedProduct
     else { return }
 
-    let previouslyRejectedSuggestions = suggestionBatch?.suggestions.filter {
-      $0.status == .rejected
-    } ?? []
+    let previouslyRejectedSuggestions =
+      suggestionBatch?.suggestions.filter {
+        $0.status == .rejected
+      } ?? []
     let existingItems = workItems.filter { $0.state != .cancelled }
     let analyst = profiles.first { $0.role == .businessAnalyst }
     let verifiedKnowledge = KnowledgeContextSelector.mandatoryPages(in: knowledgePages)
@@ -4691,7 +6371,8 @@ final class AppModel: ObservableObject {
         .filter { $0.status == .proposed }
         .map(\.id) ?? []
     )
-    let decisions = suggestions
+    let decisions =
+      suggestions
       .filter { proposedIDs.contains($0.id) }
       .sorted { $0.position < $1.position }
     guard !decisions.isEmpty else { return }
@@ -4903,7 +6584,8 @@ final class AppModel: ObservableObject {
     guard let store, let productID = selectedProductID else { return false }
     do {
       for input in items {
-        let savedOwnerID = workItems
+        let savedOwnerID =
+          workItems
           .first(where: { $0.id == input.workItemID })?
           .ownerProfileID
         guard savedOwnerID != input.implementerProfileID else { continue }
@@ -4934,6 +6616,7 @@ final class AppModel: ObservableObject {
     }
   }
 
+
   func reassignDraftTicket(
     productID: UUID,
     workItemID: UUID,
@@ -4947,9 +6630,11 @@ final class AppModel: ObservableObject {
     else { return false }
     if let profileID {
       let productProfiles = (try? await store.fetchAgentProfiles(productID: productID)) ?? []
-      guard productProfiles.contains(where: {
-        $0.id == profileID && $0.role.canOwnDelivery
-      }) else { return false }
+      guard
+        productProfiles.contains(where: {
+          $0.id == profileID && $0.role.canOwnDelivery
+        })
+      else { return false }
     }
     let inputs = plan.items.map { sprintItem in
       SprintDraftItemInput(
@@ -4984,8 +6669,7 @@ final class AppModel: ObservableObject {
   ) async -> Bool {
     guard let store = store(for: productID) else { return false }
     do {
-      if
-        let draft = try await store.fetchCurrentSprint(productID: productID),
+      if let draft = try await store.fetchCurrentSprint(productID: productID),
         draft.sprint.state == .draft,
         draft.items.contains(where: { $0.workItemID == workItemID })
       {
@@ -4997,9 +6681,11 @@ final class AppModel: ObservableObject {
       }
       if let profileID {
         let productProfiles = try await store.fetchAgentProfiles(productID: productID)
-        guard productProfiles.contains(where: {
-          $0.id == profileID && $0.role.canOwnDelivery
-        }) else { return false }
+        guard
+          productProfiles.contains(where: {
+            $0.id == profileID && $0.role.canOwnDelivery
+          })
+        else { return false }
       }
       _ = try await store.assignWorkItemOwner(id: workItemID, profileID: profileID)
       await reloadSelectedProductIfCurrent(productID: productID)
@@ -5024,6 +6710,7 @@ final class AppModel: ObservableObject {
         sprintReadinessIssues = issues
       }
       guard issues.isEmpty else { return false }
+
 
       let startedPlan = try await store.startSprint(id: sprintID)
       if selectedProductID == productID {
@@ -5160,80 +6847,18 @@ final class AppModel: ObservableObject {
         }
       }
 
-      let reviewCandidates = SprintCandidateAdmission.reviewQueue(
-        candidates: context.candidates,
-        sprintID: context.plan.sprint.id,
-        workItems: context.workItems
-      )
-      for candidate in reviewCandidates where activeReviewTasks[candidate.id] == nil {
-        activeReviewProductIDs[candidate.id] = productID
-        activeReviewTasks[candidate.id] = Task { [weak self] in
-          guard let self else { return }
-          defer {
-            activeReviewTasks.removeValue(forKey: candidate.id)
-            activeReviewProductIDs.removeValue(forKey: candidate.id)
-            sprintExecutionWakeContinuations[productID]?.yield()
-          }
-          await executeCandidateReview(candidate, context: context)
-        }
-      }
-      let reviewerProfileIDs = Set(
-        context.profiles.filter { $0.role == .lead }.map(\.id)
-      )
-      let resumableCandidateReviews: [(CandidateRevision, AgentRun)] =
-        context.candidates.compactMap { candidate in
-          guard
-            candidate.sprintID == context.plan.sprint.id,
-            candidate.status == .reviewing,
-            candidate.integratedSHA == nil,
-            let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
-              for: candidate,
-              runs: context.runs,
-              reviewerProfileIDs: reviewerProfileIDs
-            ),
-            reviewRun.status == .queued
-              || reviewRun.status == .running
-              || reviewRun.status == .completed
-          else { return nil }
-          return (candidate, reviewRun)
-        }
-      for (candidate, reviewRun) in resumableCandidateReviews
-      where activeReviewTasks[candidate.id] == nil {
-        activeReviewProductIDs[candidate.id] = productID
-        activeReviewTasks[candidate.id] = Task { [weak self] in
-          guard let self else { return }
-          defer {
-            activeReviewTasks.removeValue(forKey: candidate.id)
-            activeReviewProductIDs.removeValue(forKey: candidate.id)
-            sprintExecutionWakeContinuations[productID]?.yield()
-          }
-          await resumeTechLeadReview(
-            candidate: candidate,
-            reviewRun: reviewRun,
-            plan: context.plan
-          )
-        }
-      }
 
       let startedIntegration = await processIntegrationCandidates(context: context)
       let hasActiveImplementation = activeImplementationProductIDs.values.contains(productID)
-      let hasActiveReview = activeReviewProductIDs.values.contains(productID)
       let hasActiveIntegration = activeIntegrationProductIDs.values.contains(productID)
-      if
-        !hasActiveImplementation,
-        !hasActiveReview,
+      if !hasActiveImplementation,
         !hasActiveIntegration,
         eligibleRuns.isEmpty,
-        reviewCandidates.isEmpty,
-        resumableCandidateReviews.isEmpty,
         !startedIntegration
       {
         return
       }
-      if
-        (hasActiveImplementation || hasActiveReview || hasActiveIntegration)
-          && !startedIntegration
-      {
+      if (hasActiveImplementation || hasActiveIntegration) && !startedIntegration {
         guard await wakeIterator.next() != nil else { return }
       }
     }
@@ -5314,7 +6939,8 @@ final class AppModel: ObservableObject {
     var expiredPermissionRunIDs = Set(expiredPermissionRuns.map(\.id))
     for run in expiredPermissionRuns {
       let isImplementer = implementerByItemID[run.workItemID] == run.profileID
-      let latestCandidate = storedCandidates
+      let latestCandidate =
+        storedCandidates
         .filter { $0.workItemID == run.workItemID }
         .max(by: { $0.version < $1.version })
       let canResumeConflict =
@@ -5341,7 +6967,8 @@ final class AppModel: ObservableObject {
             workItemID: run.workItemID,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The earlier Tech Lead permission request is no longer needed. Review will continue as a read-only inspection of the existing candidate and delivery evidence."
+            body:
+              "The earlier tech lead permission request is no longer needed. Review will continue as a read-only inspection of the existing candidate and delivery evidence."
           )
         }
         continue
@@ -5354,10 +6981,11 @@ final class AppModel: ObservableObject {
           status: recoveredStatus,
           eventActor: "Spedito",
           eventDetail: canResume
-            ? "Expired permission request remains paused for Product Owner input"
+            ? "Expired permission request remains paused for product owner input"
             : "Permission request expired when the app stopped"
         )
-        let latestRequest = permissionRequests
+        let latestRequest =
+          permissionRequests
           .filter { $0.agentRunID == run.id }
           .max(by: { $0.updatedAt < $1.updatedAt })
         if canResume,
@@ -5374,7 +7002,7 @@ final class AppModel: ObservableObject {
           authorKind: .system,
           authorName: "Spedito",
           body: canResume
-            ? "The live permission request expired when Spedito stopped. The Conversation and workspace are preserved, and the request remains above for your decision. Work will resume only after you choose Allow or Deny."
+            ? "The live permission request expired when Spedito stopped. The conversation and workspace are preserved, and the request remains above for your decision. Work will resume only after you choose Allow or Deny."
             : "The previous permission request expired when Spedito stopped. This run cannot continue automatically."
         )
       }
@@ -5393,13 +7021,19 @@ final class AppModel: ObservableObject {
           in: result,
           assignee: assignee
         )
-        try await validateDeliveryEvidence(
+        let deliveryKind = try await validateDeliveryEvidence(
           result,
+          assignee: assignee,
           workspaceURL: URL(
             fileURLWithPath: candidate.worktreePath,
             isDirectory: true
           )
         )
+        guard deliveryKind == candidate.deliveryKind else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "The persisted candidate delivery kind no longer matches its evidence."
+          )
+        }
         if item.state == .integrating {
           _ = try? await store.transitionWorkItem(
             id: item.id,
@@ -5413,7 +7047,7 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .acceptance,
             actor: "Spedito",
-            reason: "Recovered the completed Tech Lead review"
+            reason: "Recovered the completed tech lead review"
           )
         }
         continue
@@ -5450,16 +7084,18 @@ final class AppModel: ObservableObject {
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "Candidate v\(candidate.version) contained no inspectable ticket artefact or meaningful review evidence. I returned the preserved workspace to the assigned specialist to complete the actual delivery."
+          body:
+            "Candidate v\(candidate.version) contained no inspectable ticket artefact or meaningful review evidence. I returned the preserved workspace to the assigned specialist to complete the actual delivery."
         )
       } catch {
         continue
       }
     }
-    for run in runs where
+    for run in runs
+    where
       run.productID == productID
-        && (run.status == .running || run.status == .failed)
-        && implementerByItemID[run.workItemID] == run.profileID
+      && (run.status == .running || run.status == .failed)
+      && implementerByItemID[run.workItemID] == run.profileID
     {
       guard
         let threadID = run.codexThreadID,
@@ -5495,12 +7131,14 @@ final class AppModel: ObservableObject {
           in: result,
           assignee: assignee
         )
-        try await validateDeliveryEvidence(
+        let deliveryKind = try await validateDeliveryEvidence(
           result,
+          assignee: assignee,
           workspaceURL: workspace
         )
         await processExecutionResult(
           result,
+          deliveryKind: deliveryKind,
           implementationRunID: run.id,
           reviewCycle: 0,
           plan: plan
@@ -5515,7 +7153,8 @@ final class AppModel: ObservableObject {
           $0.workItemID == run.workItemID
         }
         if let candidate = runCandidates.max(by: { $0.version < $1.version }),
-          candidate.status == .resolvingConflict {
+          candidate.status == .resolvingConflict
+        {
           _ = try? await updateAgentRun(
             id: run.id,
             status: .queued,
@@ -5536,7 +7175,7 @@ final class AppModel: ObservableObject {
             id: run.id,
             status: .queued,
             eventActor: "Spedito",
-            eventDetail: "Interrupted Tech Lead review queued to continue"
+            eventDetail: "Interrupted tech lead review queued to continue"
           )
           continue
         }
@@ -5597,12 +7236,6 @@ final class AppModel: ObservableObject {
             actor: "Spedito",
             reason: "Candidate restored to the integration queue"
           )
-          _ = try? await store.transitionWorkItem(
-            id: item.id,
-            to: .verifying,
-            actor: "Spedito",
-            reason: "The reviewed candidate is waiting to integrate"
-          )
         default:
           break
         }
@@ -5616,30 +7249,70 @@ final class AppModel: ObservableObject {
         continue
       }
 
-      do {
-        let repositoryURL = try Self.productWorkspaceURL(productID: productID)
-        let reviewWorkspace: GitIntegrationSnapshot
-        if let integratedSHA = candidate.integratedSHA {
-          reviewWorkspace = try await gitWorkspaceManager.prepareIntegratedWorkspace(
+      guard let integratedSHA = candidate.integratedSHA else {
+        let repositoryURL = try? Self.productWorkspaceURL(productID: productID)
+        if let integrationPath = candidate.integrationWorktreePath, let repositoryURL {
+          try? await gitWorkspaceManager.removeWorktree(
             repositoryURL: repositoryURL,
-            integrationsRootURL: Self.integrationWorktreesRootURL(productID: productID),
-            candidateID: candidate.id,
-            candidateHeadSHA: candidate.headSHA,
-            integratedSHA: integratedSHA
-          )
-        } else {
-          reviewWorkspace = try await gitWorkspaceManager.prepareCandidateReviewWorkspace(
-            repositoryURL: repositoryURL,
-            reviewsRootURL: Self.integrationWorktreesRootURL(productID: productID),
-            candidateID: candidate.id,
-            candidateHeadSHA: candidate.headSHA
+            worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
           )
         }
+        if let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
+          for: candidate,
+          runs: runs,
+          reviewerProfileIDs: reviewerProfileIDs
+        ) {
+          _ = try? await updateAgentRun(
+            id: reviewRun.id,
+            status: .interrupted,
+            eventActor: "Spedito",
+            eventDetail: "Review retired so integration can complete first"
+          )
+        }
+        _ = try? await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .queuedForIntegration
+        )
+        if item.state == .verifying {
+          _ = try? await store.transitionWorkItem(
+            id: item.id,
+            to: .running,
+            actor: "Spedito",
+            reason: "Preparing the candidate for integration before review"
+          )
+        }
+        if item.state == .verifying || item.state == .running {
+          _ = try? await store.transitionWorkItem(
+            id: item.id,
+            to: .integrating,
+            actor: "Spedito",
+            reason: "Candidate queued for integration before review"
+          )
+        }
+        _ = try? await store.appendComment(
+          workItemID: item.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body:
+            "Spedito preserved this candidate and will integrate the latest accepted local and GitHub changes before restarting tech lead review."
+        )
+        continue
+      }
+
+      do {
+        let repositoryURL = try Self.productWorkspaceURL(productID: productID)
+        let reviewWorkspace = try await gitWorkspaceManager.prepareIntegratedWorkspace(
+          repositoryURL: repositoryURL,
+          integrationsRootURL: Self.integrationWorktreesRootURL(productID: productID),
+          candidateID: candidate.id,
+          candidateHeadSHA: candidate.headSHA,
+          integratedSHA: integratedSHA
+        )
         if candidate.integrationWorktreePath != reviewWorkspace.url.path {
           _ = try await store.updateCandidateRevision(
             id: candidate.id,
             status: .reviewing,
-            integratedSHA: candidate.integratedSHA,
+            integratedSHA: integratedSHA,
             integrationWorktreePath: reviewWorkspace.url.path
           )
         }
@@ -5649,7 +7322,7 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .integrating,
             actor: "Spedito",
-            reason: "Recovered the immutable review candidate"
+            reason: "Recovered the integrated review candidate"
           )
         }
         if item.state == .running || item.state == .integrating {
@@ -5657,7 +7330,7 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .verifying,
             actor: "Spedito",
-            reason: "Continuing Tech Lead review after restart"
+            reason: "Continuing tech lead review after restart"
           )
         }
 
@@ -5678,7 +7351,7 @@ final class AppModel: ObservableObject {
               status: .queued,
               worktreePath: reviewWorkspace.url.path,
               eventActor: "Spedito",
-              eventDetail: "Tech Lead review queued to continue against the same revision"
+              eventDetail: "Tech lead review queued to continue against the same revision"
             )
           }
         } else if let techLead = profiles.first(where: { $0.role == .lead }) {
@@ -5695,18 +7368,12 @@ final class AppModel: ObservableObject {
           )
         }
       } catch {
-        if candidate.integratedSHA != nil {
-          await restoreCandidateToIntegrationQueue(
-            candidate,
-            context: context,
-            reason: "The exact integrated revision could not be restored: \(error.localizedDescription)"
-          )
-        } else {
-          _ = try? await store.updateCandidateRevision(
-            id: candidate.id,
-            status: .queuedForReview
-          )
-        }
+        await restoreCandidateToIntegrationQueue(
+          candidate,
+          context: context,
+          reason:
+            "The exact integrated revision could not be restored: \(error.localizedDescription)"
+        )
       }
     }
 
@@ -5716,10 +7383,11 @@ final class AppModel: ObservableObject {
     ).compactMapValues { candidates in
       candidates.max { $0.version < $1.version }
     }
-    for run in runs where
+    for run in runs
+    where
       run.productID == productID
-        && run.status == .awaitingOwner
-        && implementerByItemID[run.workItemID] == run.profileID
+      && run.status == .awaitingOwner
+      && implementerByItemID[run.workItemID] == run.profileID
     {
       guard
         let failedCandidate = latestCandidateByWorkItemID[run.workItemID],
@@ -5747,24 +7415,24 @@ final class AppModel: ObservableObject {
         )
         _ = try? await store.updateCandidateRevision(
           id: failedCandidate.id,
-          status: .queuedForReview
+          status: .queuedForIntegration
         )
-        if
-          let item = workItems.first(where: { $0.id == run.workItemID }),
+        if let item = workItems.first(where: { $0.id == run.workItemID }),
           item.state == .running
         {
           _ = try? await store.transitionWorkItem(
             id: item.id,
             to: .integrating,
             actor: "Spedito",
-            reason: "Retrying a malformed Tech Lead review against the preserved candidate"
+            reason: "Retrying a malformed tech lead review against the preserved candidate"
           )
         }
         _ = try? await store.appendComment(
           workItemID: run.workItemID,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The implementation was valid; the Tech Lead’s structured response was malformed. Candidate v\(failedCandidate.version) has been preserved and queued for review again without repeating the delivery work."
+          body:
+            "The implementation was valid; the tech lead’s structured response was malformed. Candidate v\(failedCandidate.version) has been preserved and queued for integration and review again without repeating the delivery work."
         )
         continue
       }
@@ -5780,7 +7448,8 @@ final class AppModel: ObservableObject {
         workItemID: run.workItemID,
         authorKind: .system,
         authorName: "Spedito",
-        body: "The previous failure was caused by an expired Codex session rather than the ticket work. Recovery has been queued automatically in the preserved workspace."
+        body:
+          "The previous failure was caused by an expired Codex session rather than the ticket work. Recovery has been queued automatically in the preserved workspace."
       )
     }
 
@@ -5878,7 +7547,8 @@ final class AppModel: ObservableObject {
       workItemID: candidate.workItemID,
       authorKind: .system,
       authorName: "Spedito",
-      body: "\(reason)\n\nCandidate v\(candidate.version) will be integrated and reviewed again so the Product Owner never receives an unverified revision."
+      body:
+        "\(reason)\n\nCandidate v\(candidate.version) will be integrated and reviewed again so the product owner never receives an unverified revision."
     )
   }
 
@@ -5913,7 +7583,8 @@ final class AppModel: ObservableObject {
           .filter { $0.role == .lead }
           .map(\.id)
       )
-      let reviewingCandidates = candidates
+      let reviewingCandidates =
+        candidates
         .filter {
           $0.sprintID == plan.sprint.id
             && $0.status == .reviewing
@@ -5948,21 +7619,22 @@ final class AppModel: ObservableObject {
         }
         startedTask = true
       }
-      let resolvingCandidates = candidates
+      let resolvingCandidates =
+        candidates
         .filter {
           $0.sprintID == plan.sprint.id && $0.status == .resolvingConflict
         }
         .sorted { $0.createdAt < $1.createdAt }
       for resolvingCandidate in resolvingCandidates
       where activeIntegrationTasks[resolvingCandidate.id] == nil {
-        let resolutionRuns = runs
+        let resolutionRuns =
+          runs
           .filter {
             $0.workItemID == resolvingCandidate.workItemID
               && $0.profileID == techLeadID
               && $0.worktreePath == resolvingCandidate.integrationWorktreePath
           }
-        if
-          let resolutionRun = resolutionRuns.max(by: { $0.createdAt < $1.createdAt }),
+        if let resolutionRun = resolutionRuns.max(by: { $0.createdAt < $1.createdAt }),
           let worktreePath = resolvingCandidate.integrationWorktreePath,
           try await gitWorkspaceManager.conflictResolutionIsReadyToCommit(
             integrationWorkspaceURL: URL(
@@ -5988,10 +7660,10 @@ final class AppModel: ObservableObject {
           startedTask = true
           continue
         }
-        if
-          let resolutionRun = resolutionRuns
-            .filter({ $0.status == .queued })
-            .max(by: { $0.createdAt < $1.createdAt })
+        if let resolutionRun =
+          resolutionRuns
+          .filter({ $0.status == .queued })
+          .max(by: { $0.createdAt < $1.createdAt })
         {
           activeIntegrationProductIDs[resolvingCandidate.id] = productID
           activeIntegrationTasks[resolvingCandidate.id] = Task { [weak self] in
@@ -6029,7 +7701,7 @@ final class AppModel: ObservableObject {
             activeIntegrationProductIDs.removeValue(forKey: candidate.id)
             sprintExecutionWakeContinuations[productID]?.yield()
           }
-          await integrateReviewedCandidate(candidate, plan: plan)
+          await integrateCandidateBeforeReview(candidate, plan: plan)
         }
         startedTask = true
       }
@@ -6053,7 +7725,8 @@ final class AppModel: ObservableObject {
     for candidate in candidates
     where
       candidate.id != excludedCandidateID
-        && candidate.status == .readyForDemo
+      && candidate.deliveryKind.changesRepository
+      && candidate.status == .readyForDemo
     {
       guard
         let integratedSHA = candidate.integratedSHA,
@@ -6080,16 +7753,15 @@ final class AppModel: ObservableObject {
       id: candidate.id,
       status: .queuedForIntegration
     )
-    if
-      let item = try await store.fetchWorkItems(productID: candidate.productID)
-        .first(where: { $0.id == candidate.workItemID })
+    if let item = try await store.fetchWorkItems(productID: candidate.productID)
+      .first(where: { $0.id == candidate.workItemID })
     {
       if item.state == .acceptance {
         _ = try await store.transitionWorkItem(
           id: item.id,
           to: .running,
           actor: "Spedito",
-          reason: "The accepted trunk changed after demo preparation"
+          reason: String(reason.prefix(160))
         )
         _ = try await store.transitionWorkItem(
           id: item.id,
@@ -6117,7 +7789,7 @@ final class AppModel: ObservableObject {
       authorKind: .system,
       authorName: "Spedito",
       body:
-        "\(reason)\n\nCandidate v\(candidate.version) kept its Tech Lead approval and returned to the integration queue. A clean merge will only repeat demo preparation; a conflict will receive focused Tech Lead re-review."
+        "\(reason)\n\nCandidate v\(candidate.version) kept its tech lead approval and returned to the integration queue. A clean local merge will only repeat demo preparation; incorporated GitHub changes or a conflict will receive focused tech lead re-review."
     )
   }
 
@@ -6143,8 +7815,7 @@ final class AppModel: ObservableObject {
       let productWorkspace = try Self.productWorkspaceURL(productID: product.id)
       var recoveredExistingWorkspace = false
       let workspace: URL
-      if
-        let storedPath = run.worktreePath,
+      if let storedPath = run.worktreePath,
         storedPath != productWorkspace.path,
         FileManager.default.fileExists(atPath: storedPath)
       {
@@ -6157,7 +7828,8 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The previous ticket workspace was unavailable. Spedito prepared a fresh isolated \(item.key) workspace, so work that was not captured in a durable candidate could not be recovered."
+            body:
+              "The previous ticket workspace was unavailable. Spedito prepared a fresh isolated \(item.key) workspace, so work that was not captured in a durable candidate could not be recovered."
           )
         }
         let prepared = try await gitWorkspaceManager.prepareTicketWorkspace(
@@ -6171,7 +7843,7 @@ final class AppModel: ObservableObject {
       }
       let isContinuation =
         recoveredExistingWorkspace
-          && (item.state == .running || run.codexThreadID != nil || run.worktreePath != nil)
+        && (item.state == .running || run.codexThreadID != nil || run.worktreePath != nil)
       try await gitWorkspaceManager.configureAgentIdentity(
         at: workspace,
         authorName: assignee.name
@@ -6179,12 +7851,12 @@ final class AppModel: ObservableObject {
       let currentCandidates = try await store.fetchCandidateRevisions(
         productID: product.id
       )
-      let latestCandidate = currentCandidates
+      let latestCandidate =
+        currentCandidates
         .filter { $0.workItemID == item.id }
         .max(by: { $0.version < $1.version })
       let adoptedBaseline: TicketRevisionBaseline? =
-        if
-          let latestCandidate,
+        if let latestCandidate,
           let integratedSHA = latestCandidate.integratedSHA,
           (try? await gitWorkspaceManager.currentSHA(at: workspace)) == integratedSHA
         {
@@ -6244,7 +7916,8 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The previous Conversation could not be recovered. I started a replacement in the preserved ticket workspace and continued the work."
+            body:
+              "The previous conversation could not be recovered. I started a replacement in the preserved ticket workspace and continued the work."
           )
         }
       } else {
@@ -6265,7 +7938,7 @@ final class AppModel: ObservableObject {
         worktreePath: workspace.path,
         eventActor: replacedUnavailableThread ? "Spedito" : nil,
         eventDetail: replacedUnavailableThread
-          ? "Replaced an unavailable Conversation and preserved the ticket workspace"
+          ? "Replaced an unavailable conversation and preserved the ticket workspace"
           : nil
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
@@ -6345,8 +8018,8 @@ final class AppModel: ObservableObject {
       var activeThreadID = threadID
       var turnPrompt =
         existingThreadID != nil && !replacedUnavailableThread
-          ? continuationPrompt
-          : executionPrompt
+        ? continuationPrompt
+        : executionPrompt
       let turnID: String
       do {
         turnID = try await client.startStructuredTurn(
@@ -6381,7 +8054,8 @@ final class AppModel: ObservableObject {
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The previous Codex session was no longer available. I started a replacement session in the preserved ticket workspace and continued the work."
+          body:
+            "The previous Codex session was no longer available. I started a replacement session in the preserved ticket workspace and continued the work."
         )
         turnPrompt = executionPrompt
         turnID = try await client.startStructuredTurn(
@@ -6417,7 +8091,7 @@ final class AppModel: ObservableObject {
       )
       stopLiveActivityMonitoring(runID: run.id)
       activeExecutionTurns.removeValue(forKey: run.id)
-      let result = try await validatedExecutionResult(
+      let validated = try await validatedExecutionResult(
         response,
         client: client,
         threadID: activeThreadID,
@@ -6428,7 +8102,8 @@ final class AppModel: ObservableObject {
         canonicalKnowledgePages: knowledgeSelection.directoryPages
       )
       await processExecutionResult(
-        result,
+        validated.result,
+        deliveryKind: validated.deliveryKind,
         implementationRunID: run.id,
         reviewCycle: 0,
         plan: plan
@@ -6467,34 +8142,34 @@ final class AppModel: ObservableObject {
         }
       let wasSuspendedByApp =
         Task.isCancelled && !wasManuallyStopped && !wasPausedBySprint
-          && !wasStoppedBySprint
+        && !wasStoppedBySprint
       let wasSuspendedAtPermission = wasSuspendedByApp && wasAwaitingPermission
       let eventDetail: String
       let workLogBody: String
       if wasStoppedBySprint {
         eventDetail = "Sprint stopped; ticket workspace preserved"
         workLogBody =
-          "The Product Owner stopped this sprint. This run will not continue automatically. Its Conversation and ticket workspace are preserved for audit, and the ticket will return to Ready for replanning."
+          "The product owner stopped this sprint. This run will not continue automatically. Its conversation and ticket workspace are preserved for audit, and the ticket will return to ready for replanning."
       } else if wasPausedBySprint && wasAwaitingPermission {
-        eventDetail = "Sprint paused; permission request remains paused for Product Owner input"
+        eventDetail = "Sprint paused; permission request remains paused for product owner input"
         workLogBody =
-          "The Product Owner paused this sprint while this run was waiting for a permission decision. Its Conversation and ticket workspace are preserved. The decision remains available, but work will not continue until the sprint resumes."
+          "The product owner paused this sprint while this run was waiting for a permission decision. Its conversation and ticket workspace are preserved. The decision remains available, but work will not continue until the sprint resumes."
       } else if wasPausedBySprint {
         eventDetail = "Sprint paused; preserved work queued to continue"
         workLogBody =
-          "The Product Owner paused this sprint. This run's Conversation and ticket workspace are preserved, and work is queued to continue when the sprint resumes."
+          "The product owner paused this sprint. This run's conversation and ticket workspace are preserved, and work is queued to continue when the sprint resumes."
       } else if wasSuspendedAtPermission {
-        eventDetail = "App stopped; permission request remains paused for Product Owner input"
+        eventDetail = "App stopped; permission request remains paused for product owner input"
         workLogBody =
-          "Spedito stopped while this run was waiting for a permission decision. Its Conversation and ticket workspace are preserved, and work will remain paused after relaunch until the Product Owner chooses Allow or Deny."
+          "Spedito stopped while this run was waiting for a permission decision. Its conversation and ticket workspace are preserved, and work will remain paused after relaunch until the product owner chooses Allow or Deny."
       } else if wasSuspendedByApp {
         eventDetail = "App stopped; preserved work queued to continue"
         workLogBody =
-          "Spedito paused this run while stopping. Its Conversation and ticket workspace are preserved, and it is queued to continue automatically."
+          "Spedito paused this run while stopping. Its conversation and ticket workspace are preserved, and it is queued to continue automatically."
       } else if wasManuallyStopped {
         eventDetail = "Stopped manually; ticket workspace preserved"
         workLogBody =
-          "This run was stopped by the Product Owner. Its ticket workspace has been preserved and can be resumed with a new comment."
+          "This run was stopped by the product owner. Its ticket workspace has been preserved and can be resumed with a new comment."
       } else {
         eventDetail = error.localizedDescription
         workLogBody = "The agent run stopped unexpectedly: \(error.localizedDescription)"
@@ -6527,7 +8202,7 @@ final class AppModel: ObservableObject {
     assignee: AgentProfile,
     workspaceURL: URL,
     canonicalKnowledgePages: [KnowledgePage]
-  ) async throws -> TicketExecutionResult {
+  ) async throws -> (result: TicketExecutionResult, deliveryKind: CandidateDeliveryKind) {
     do {
       let result = try CodexTicketExecutor.decode(response)
       try CodexTicketExecutor.validateKnowledgePageProposals(
@@ -6538,8 +8213,12 @@ final class AppModel: ObservableObject {
         in: result,
         assignee: assignee
       )
-      try await validateDeliveryEvidence(result, workspaceURL: workspaceURL)
-      return result
+      let deliveryKind = try await validateDeliveryEvidence(
+        result,
+        assignee: assignee,
+        workspaceURL: workspaceURL
+      )
+      return (result, deliveryKind)
     } catch let validationError as TicketExecutionGenerationError {
       let repairTurnID = try await client.startStructuredTurn(
         threadID: threadID,
@@ -6583,8 +8262,12 @@ final class AppModel: ObservableObject {
           in: repairedResult,
           assignee: assignee
         )
-        try await validateDeliveryEvidence(repairedResult, workspaceURL: workspaceURL)
-        return repairedResult
+        let deliveryKind = try await validateDeliveryEvidence(
+          repairedResult,
+          assignee: assignee,
+          workspaceURL: workspaceURL
+        )
+        return (repairedResult, deliveryKind)
       } catch {
         stopLiveActivityMonitoring(runID: runID)
         activeExecutionTurns.removeValue(forKey: runID)
@@ -6595,8 +8278,9 @@ final class AppModel: ObservableObject {
 
   private func validateDeliveryEvidence(
     _ result: TicketExecutionResult,
+    assignee: AgentProfile,
     workspaceURL: URL
-  ) async throws {
+  ) async throws -> CandidateDeliveryKind {
     let actualChangePaths: [String]
     if result.status == .completed || result.decisionArtifact != nil {
       actualChangePaths = try await gitWorkspaceManager.ticketChangePaths(
@@ -6616,10 +8300,38 @@ final class AppModel: ObservableObject {
         )
       }
     }
-    guard result.status == .completed else { return }
+    guard result.status == .completed else { return .repositoryChange }
+    let reportedChangePaths = Set(
+      result.changedFiles.map {
+        $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0
+      }
+    )
+    guard reportedChangePaths.isSubset(of: Set(actualChangePaths)) else {
+      let missing = reportedChangePaths.subtracting(actualChangePaths).sorted()
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Reported changed files were not present in the ticket workspace: \(missing.joined(separator: ", "))."
+      )
+    }
+    let deliveryKind: CandidateDeliveryKind
+    do {
+      deliveryKind = try TicketDeliveryEvidencePolicy.deliveryKind(
+        assigneeRole: assignee.role,
+        changedPaths: actualChangePaths
+      )
+    } catch {
+      throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
+    }
+    if deliveryKind == .localOutcome {
+      guard result.demo == nil else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "Repository-free research uses its in-app outcome review and must not supply a managed demo."
+        )
+      }
+      return deliveryKind
+    }
     guard let demo = result.demo else {
       throw TicketExecutionGenerationError.invalidResponse(
-        "Completed work needs a managed demo recipe for the Product Owner."
+        "Repository-changing work needs a managed demo recipe for the product owner."
       )
     }
     do {
@@ -6643,36 +8355,17 @@ final class AppModel: ObservableObject {
     } catch {
       throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
     }
-    let substantiveChangePaths = Set(
-      actualChangePaths.filter {
-        !$0.hasPrefix("knowledge/delivery-history/")
-      }
-    )
-    guard !substantiveChangePaths.isEmpty else {
+    guard !reportedChangePaths.isDisjoint(with: Set(actualChangePaths)) else {
       throw TicketExecutionGenerationError.invalidResponse(
-        "Completed work did not create or modify a durable ticket artefact. The generated delivery note does not count as the delivery."
+        "The reported changed files do not identify an inspectable ticket artefact."
       )
     }
-    let reportedChangePaths = Set(
-      result.changedFiles.map {
-        $0.hasPrefix("./") ? String($0.dropFirst(2)) : $0
-      }
-    )
-    guard reportedChangePaths.isSubset(of: Set(actualChangePaths)) else {
-      let missing = reportedChangePaths.subtracting(actualChangePaths).sorted()
-      throw TicketExecutionGenerationError.invalidResponse(
-        "Reported changed files were not present in the ticket workspace: \(missing.joined(separator: ", "))."
-      )
-    }
-    guard !reportedChangePaths.isDisjoint(with: substantiveChangePaths) else {
-      throw TicketExecutionGenerationError.invalidResponse(
-        "The reported changed files contain only generated delivery history, not an inspectable ticket artefact."
-      )
-    }
+    return deliveryKind
   }
 
   private func processExecutionResult(
     _ result: TicketExecutionResult,
+    deliveryKind: CandidateDeliveryKind,
     implementationRunID: UUID,
     reviewCycle: Int,
     plan: SprintPlan
@@ -6723,7 +8416,7 @@ final class AppModel: ObservableObject {
         id: run.id,
         status: .awaitingOwner,
         eventActor: assignee.name,
-        eventDetail: "Waiting for Product Owner input"
+        eventDetail: "Waiting for product owner input"
       )
       await reloadSelectedProductIfCurrent(productID: productID)
     case .completed:
@@ -6736,12 +8429,6 @@ final class AppModel: ObservableObject {
           result: result,
           authorName: assignee.name
         )
-        try Self.writeDeliveryNoteMarkdown(
-          deliveryNote,
-          sprintNumber: plan.sprint.number,
-          item: item,
-          workspaceURL: URL(fileURLWithPath: worktreePath, isDirectory: true)
-        )
         _ = try await store.upsertDeliveryNote(
           productID: item.productID,
           sprint: plan.sprint,
@@ -6751,18 +8438,27 @@ final class AppModel: ObservableObject {
         )
 
         let version = try await store.nextCandidateRevisionVersion(workItemID: item.id)
-        let snapshot = try await gitWorkspaceManager.createCandidate(
-          ticketWorkspaceURL: URL(fileURLWithPath: worktreePath, isDirectory: true),
-          ticketKey: item.key,
-          version: version,
-          authorName: assignee.name,
-          summary: result.summary
-        )
+        let workspaceURL = URL(fileURLWithPath: worktreePath, isDirectory: true)
+        let snapshot =
+          if deliveryKind.changesRepository {
+            try await gitWorkspaceManager.createCandidate(
+              ticketWorkspaceURL: workspaceURL,
+              ticketKey: item.key,
+              version: version,
+              authorName: assignee.name,
+              summary: result.summary
+            )
+          } else {
+            try await gitWorkspaceManager.snapshotLocalOutcomeCandidate(
+              ticketWorkspaceURL: workspaceURL
+            )
+          }
         let resultData = try JSONEncoder().encode(result)
         guard let resultJSON = String(data: resultData, encoding: .utf8) else {
           throw CocoaError(.fileWriteInapplicableStringEncoding)
         }
-        let sprintItemID = run.sprintItemID
+        let sprintItemID =
+          run.sprintItemID
           ?? plan.items.first(where: { $0.workItemID == item.id })?.id
         guard let sprintItemID else {
           throw PersistenceError.corruptData("Candidate revision has no sprint item.")
@@ -6775,6 +8471,7 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             implementationRunID: run.id,
             version: version,
+            deliveryKind: deliveryKind,
             branchName: snapshot.branchName,
             baseSHA: snapshot.baseSHA,
             headSHA: snapshot.headSHA,
@@ -6796,14 +8493,18 @@ final class AppModel: ObservableObject {
             id: item.id,
             to: .integrating,
             actor: assignee.name,
-            reason: "Candidate v\(candidate.version) queued for Tech Lead review"
+            reason: deliveryKind.changesRepository
+              ? "Candidate v\(candidate.version) queued for integration"
+              : "Outcome v\(candidate.version) queued for review"
           )
         }
         _ = try await updateAgentRun(
           id: run.id,
           status: .completed,
           eventActor: assignee.name,
-          eventDetail: "Candidate v\(candidate.version) queued for Tech Lead review"
+          eventDetail: deliveryKind.changesRepository
+            ? "Candidate v\(candidate.version) queued for integration"
+            : "Outcome v\(candidate.version) queued for review"
         )
         await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
@@ -6817,7 +8518,8 @@ final class AppModel: ObservableObject {
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The work is preserved, but Spedito could not prepare it for review: \(error.localizedDescription)"
+          body:
+            "The work is preserved, but Spedito could not prepare it for review: \(error.localizedDescription)"
         )
         presentExecutionError(error, productID: productID)
         await reloadSelectedProductIfCurrent(productID: productID)
@@ -6903,11 +8605,10 @@ final class AppModel: ObservableObject {
             ).deletingLastPathComponent()
           )
           resumedReviewThreadID = resumedThreadID
-          if
-            let recoveredResponse = try? await client.latestCompletedAgentMessage(
-              threadID: resumedThreadID,
-              notBefore: reviewRun.createdAt.addingTimeInterval(-30)
-            ),
+          if let recoveredResponse = try? await client.latestCompletedAgentMessage(
+            threadID: resumedThreadID,
+            notBefore: reviewRun.createdAt.addingTimeInterval(-30)
+          ),
             let recoveredReview = try? CodexTechLeadReviewer.decode(recoveredResponse)
           {
             try await applyTechLeadReviewResult(
@@ -6947,6 +8648,7 @@ final class AppModel: ObservableObject {
         reviewCycle: reviewCycle,
         priorReviewFeedback: priorReviewFeedback,
         recentComments: reviewComments,
+        deliveryKind: candidate.deliveryKind,
         baseSHA: candidate.baseSHA,
         candidateHeadSHA: candidate.headSHA,
         integratedSHA: integration?.integratedSHA
@@ -6970,7 +8672,7 @@ final class AppModel: ObservableObject {
 
           AUTHORITATIVE CANDIDATE REVIEW CONTEXT
           Re-read this complete immutable context before deciding. It supersedes any incomplete
-          candidate context from an earlier turn in this Conversation.
+          candidate context from an earlier turn in this conversation.
 
           \(fullReviewPrompt)
           """
@@ -6990,7 +8692,8 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
+            body:
+              "The previous tech lead conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
           )
         }
       }
@@ -7002,8 +8705,8 @@ final class AppModel: ObservableObject {
         worktreePath: reviewWorkspace.url.path,
         eventActor: "Spedito",
         eventDetail: replacedUnavailableThread
-          ? "Replaced an unavailable review Conversation"
-          : "Continuing Tech Lead review against the same immutable revision"
+          ? "Replaced an unavailable review conversation"
+          : "Continuing tech lead review against the same immutable revision"
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
 
@@ -7036,13 +8739,14 @@ final class AppModel: ObservableObject {
           codexThreadID: threadID,
           worktreePath: reviewWorkspace.url.path,
           eventActor: "Spedito",
-          eventDetail: "Replaced an unavailable review Conversation"
+          eventDetail: "Replaced an unavailable review conversation"
         )
         _ = try await store.appendComment(
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The previous Tech Lead Conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
+          body:
+            "The previous tech lead conversation was unavailable. I started a replacement against the same immutable revision; implementation was not repeated."
         )
         turnID = try await client.startStructuredTurn(
           threadID: threadID,
@@ -7067,7 +8771,7 @@ final class AppModel: ObservableObject {
         client: client,
         threadID: threadID,
         turnID: turnID,
-        initialText: "Continuing the Tech Lead review…"
+        initialText: "Continuing the tech lead review…"
       )
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
@@ -7084,11 +8788,11 @@ final class AppModel: ObservableObject {
         let repairTurnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: """
-            Your previous review selected changes_requested but did not identify a blocking finding.
-            Correct the structured review now. If there is no concrete material blocker under the
-            supplied review policy, approve. Otherwise include one to three small, actionable
-            findings that name the violated criterion or defect. Return only the required JSON.
-          """,
+              Your previous review selected changes_requested but did not identify a blocking finding.
+              Correct the structured review now. If there is no concrete material blocker under the
+              supplied review policy, approve. Otherwise include one to three small, actionable
+              findings that name the violated criterion or defect. Return only the required JSON.
+            """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
           runtimeWorkspaceRoots: [
@@ -7138,7 +8842,7 @@ final class AppModel: ObservableObject {
           id: reviewRun.id,
           status: .interrupted,
           eventActor: "Spedito",
-          eventDetail: "Tech Lead review paused when the app stopped"
+          eventDetail: "Tech lead review paused when the app stopped"
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
         return
@@ -7179,44 +8883,22 @@ final class AppModel: ObservableObject {
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "Spedito",
-        eventDetail: "Tech Lead review continuation could not complete"
+        eventDetail: "Tech lead review continuation could not complete"
       )
       _ = try? await store.appendComment(
         workItemID: item.id,
         authorKind: .system,
         authorName: "Spedito",
-        body: "Tech Lead review continuation stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved implementation workspace."
+        body:
+          "Tech lead review continuation stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved implementation workspace."
       )
       presentExecutionError(error, productID: product.id)
       await reloadSelectedProductIfCurrent(productID: product.id)
     }
   }
 
-  private func executeCandidateReview(
-    _ candidate: CandidateRevision,
-    context: SprintExecutionContext
-  ) async {
-    guard let store = store(for: candidate.productID) else { return }
-    do {
-      let implementation = try CodexTicketExecutor.decode(
-        candidate.executionResultJSON
-      )
-      let implementationRun = try await store.fetchAgentRun(
-        id: candidate.implementationRunID
-      )
-      await reviewCompletedImplementation(
-        implementation,
-        candidate: candidate,
-        implementationRun: implementationRun,
-        reviewCycle: max(0, candidate.version - 1),
-        plan: context.plan
-      )
-    } catch {
-      presentExecutionError(error, productID: context.product.id)
-    }
-  }
 
-  private func integrateReviewedCandidate(
+  private func integrateCandidateBeforeReview(
     _ candidate: CandidateRevision,
     plan: SprintPlan
   ) async {
@@ -7230,8 +8912,19 @@ final class AppModel: ObservableObject {
     else { return }
     let product = context.product
     do {
+      if candidate.deliveryKind == .localOutcome {
+        let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
+        await reviewCompletedImplementation(
+          implementation,
+          candidate: candidate,
+          implementationRun: implementationRun,
+          reviewCycle: max(0, candidate.version - 1),
+          plan: plan
+        )
+        return
+      }
       let repositoryURL = try Self.productWorkspaceURL(productID: product.id)
-      let integration: GitIntegrationSnapshot
+      var integration: GitIntegrationSnapshot
       do {
         integration = try await gitWorkspaceManager.integrateCandidate(
           repositoryURL: repositoryURL,
@@ -7251,7 +8944,8 @@ final class AppModel: ObservableObject {
           reviewCycle: max(0, candidate.version - 1),
           plan: plan,
           worktreePath: worktreePath,
-          conflictedFiles: conflictedFiles
+          conflictedFiles: conflictedFiles,
+          includesGitHubChanges: false
         )
         return
       }
@@ -7262,16 +8956,64 @@ final class AppModel: ObservableObject {
         integratedSHA: integration.integratedSHA,
         integrationWorktreePath: integration.url.path
       )
+
+      let remoteIntegration: (
+        snapshot: GitIntegrationSnapshot,
+        incorporatedChanges: Bool,
+        remoteSHA: String?
+      )
+      do {
+        remoteIntegration = try await integrateLatestGitHubChanges(
+          candidate: candidate,
+          integration: integration
+        )
+      } catch GitWorkspaceError.mergeConflict(
+        let worktreePath,
+        let conflictedFiles,
+        _
+      ) {
+        await beginIntegrationConflictResolution(
+          candidate: candidate,
+          implementationRun: implementationRun,
+          reviewCycle: max(0, candidate.version - 1),
+          plan: plan,
+          worktreePath: worktreePath,
+          conflictedFiles: conflictedFiles,
+          includesGitHubChanges: true
+        )
+        return
+      }
+      integration = remoteIntegration.snapshot
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: .integrating,
+        integratedSHA: integration.integratedSHA,
+        integrationWorktreePath: integration.url.path
+      )
+
       let implementation = try CodexTicketExecutor.decode(
         candidate.executionResultJSON
       )
-      try await finalizeReviewedIntegration(
-        candidateID: candidate.id,
-        implementation: implementation,
+      if remoteIntegration.incorporatedChanges, let remoteSHA = remoteIntegration.remoteSHA {
+        let message =
+          "Integrated verified GitHub changes at \(String(remoteSHA.prefix(8))) into this ticket before final review."
+        let comments = try await store.fetchComments(workItemID: item.id)
+        if !comments.contains(where: { $0.body == message }) {
+          _ = try await store.appendComment(
+            workItemID: item.id,
+            authorKind: .system,
+            authorName: "Spedito",
+            body: message
+          )
+        }
+      }
+      await reviewCompletedImplementation(
+        implementation,
+        candidate: candidate,
         implementationRun: implementationRun,
-        workItem: item,
-        reviewerName: context.profiles.first(where: { $0.role == .lead })?.name
-          ?? "Tech Lead"
+        reviewCycle: max(0, candidate.version - 1),
+        plan: plan,
+        preparedIntegration: integration
       )
     } catch {
       if Task.isCancelled {
@@ -7286,29 +9028,77 @@ final class AppModel: ObservableObject {
         id: implementationRun.id,
         status: .awaitingOwner,
         eventActor: "Spedito",
-        eventDetail: "Reviewed candidate integration could not complete"
+        eventDetail: "Candidate integration could not complete"
       )
-      if
-        let currentState = try? await store.fetchWorkItems(productID: product.id)
-          .first(where: { $0.id == item.id })?.state,
+      if let currentState = try? await store.fetchWorkItems(productID: product.id)
+        .first(where: { $0.id == item.id })?.state,
         currentState == .integrating || currentState == .verifying
       {
         _ = try? await store.transitionWorkItem(
           id: item.id,
           to: .running,
           actor: "Spedito",
-          reason: "Integration stopped; preserving the reviewed candidate"
+          reason: "Integration stopped; preserving the candidate"
         )
       }
       _ = try? await store.appendComment(
         workItemID: item.id,
         authorKind: .system,
         authorName: "Spedito",
-        body: "The reviewed candidate could not be integrated or prepared for demo: \(error.localizedDescription)\n\nThe reviewed revision and ticket workspace are preserved for retry."
+        body:
+          "The candidate could not be integrated or prepared for review: \(error.localizedDescription)\n\nThe candidate revision and ticket workspace are preserved for retry."
       )
       presentExecutionError(error, productID: product.id)
       await reloadSelectedProductIfCurrent(productID: product.id)
     }
+  }
+
+  private func integrateLatestGitHubChanges(
+    candidate: CandidateRevision,
+    integration: GitIntegrationSnapshot
+  ) async throws -> (
+    snapshot: GitIntegrationSnapshot,
+    incorporatedChanges: Bool,
+    remoteSHA: String?
+  ) {
+    guard let githubRemoteService else {
+      return (integration, false, nil)
+    }
+    let current = await githubRemoteService.state(productID: candidate.productID)
+    guard let connection = current.connection else {
+      return (integration, false, nil)
+    }
+    switch connection.status {
+    case .disconnected, .selectingRepository:
+      return (integration, false, nil)
+    case .connected:
+      break
+    case .needsAuthorization, .needsInstallation, .needsTargetReview, .unavailable,
+      .initializingRemote:
+      throw GitHubRemoteRepositoryServiceError.unavailable(
+        "Reconnect this Product to GitHub before this ticket can finish review."
+      )
+    }
+
+    let preparation = try await githubRemoteService.prepareTicketIntegration(
+      productID: candidate.productID
+    )
+    githubRemoteRepositoryStates[candidate.productID] = preparation.state
+    guard let base = preparation.base else {
+      return (integration, false, nil)
+    }
+    let updated = try await gitWorkspaceManager.integrateVerifiedRemote(
+      repositoryURL: Self.productWorkspaceURL(productID: candidate.productID),
+      integrationWorkspaceURL: integration.url,
+      observationRef: base.observationRef,
+      expectedRemoteSHA: base.remoteSHA,
+      candidateHeadSHA: candidate.headSHA
+    )
+    return (
+      updated,
+      updated.integratedSHA != integration.integratedSHA,
+      base.remoteSHA
+    )
   }
 
   private func finalizeReviewedIntegration(
@@ -7319,23 +9109,6 @@ final class AppModel: ObservableObject {
     reviewerName: String
   ) async throws {
     guard let store = store(for: workItem.productID) else { return }
-    if !requiresKnowledgeApproval {
-      let candidate = try await store.fetchCandidateRevision(id: candidateID)
-      let preparedCount = try await materializeKnowledgePageProposals(
-        candidate: candidate,
-        statuses: [.reviewed, .accepted],
-        commitMessage: "\(workItem.key): stage reviewed Product knowledge"
-      )
-      if preparedCount > 0 {
-        _ = try await store.appendComment(
-          workItemID: workItem.id,
-          authorKind: .system,
-          authorName: "Spedito",
-          body:
-            "Prepared \(preparedCount) Tech Lead-reviewed Product knowledge change\(preparedCount == 1 ? "" : "s") in candidate v\(candidate.version). They will become current Product knowledge when the Product Owner approves this ticket."
-        )
-      }
-    }
     let integratedCandidate = try await store.fetchCandidateRevision(id: candidateID)
     guard
       let integratedSHA = integratedCandidate.integratedSHA,
@@ -7344,6 +9117,23 @@ final class AppModel: ObservableObject {
       throw DemoLaunchValidationError.invalid(
         "the reviewed candidate has no managed demo recipe."
       )
+    }
+    let ticketPublication: RemotePublication?
+    do {
+      ticketPublication = try await prepareTicketPullRequestIfConnected(
+        productID: workItem.productID,
+        workItemID: workItem.id,
+        candidateRevisionID: integratedCandidate.id
+      )
+    } catch GitHubRemoteRepositoryServiceError.ticketIntegrationRequired {
+      try await requeueStaleReadyCandidate(
+        integratedCandidate,
+        reason:
+          "GitHub changed while this ticket was being prepared for review. Spedito will integrate the latest verified changes and review the ticket again."
+      )
+      await reloadSelectedProductIfCurrent(productID: workItem.productID)
+      scheduleSprintExecution(productID: workItem.productID)
+      return
     }
     do {
       try await prepareDemoForAcceptance(
@@ -7382,6 +9172,7 @@ final class AppModel: ObservableObject {
       id: candidateID,
       status: .readyForDemo
     )
+    try await markTicketPullRequestReadyIfNeeded(ticketPublication)
     _ = try await updateAgentRun(
       id: implementationRun.id,
       status: .completed,
@@ -7404,7 +9195,47 @@ final class AppModel: ObservableObject {
           id: workItem.id,
           to: .acceptance,
           actor: reviewerName,
-          reason: "Reviewed candidate integrated; ready for Product Owner demo"
+          reason: "Reviewed candidate integrated; ready for product owner demo"
+        )
+      }
+    }
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+  }
+
+  private func finalizeReviewedLocalOutcome(
+    candidate: CandidateRevision,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    reviewerName: String
+  ) async throws {
+    guard let store = store(for: workItem.productID) else { return }
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .readyForDemo
+    )
+    _ = try await updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      eventActor: reviewerName,
+      eventDetail: "Reviewed local outcome ready for product owner review"
+    )
+    if let currentState = try await store.fetchWorkItems(productID: workItem.productID)
+      .first(where: { $0.id == workItem.id })?.state
+    {
+      if currentState == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .verifying,
+          actor: reviewerName,
+          reason: "Recovered the reviewed local outcome"
+        )
+      }
+      if currentState == .integrating || currentState == .verifying {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .acceptance,
+          actor: reviewerName,
+          reason: "Reviewed local outcome ready for product owner review"
         )
       }
     }
@@ -7445,10 +9276,9 @@ final class AppModel: ObservableObject {
         worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
       )
     }
-    if
-      let currentState = try await store.fetchWorkItems(
-        productID: workItem.productID
-      ).first(where: { $0.id == workItem.id })?.state,
+    if let currentState = try await store.fetchWorkItems(
+      productID: workItem.productID
+    ).first(where: { $0.id == workItem.id })?.state,
       currentState == .integrating || currentState == .verifying
     {
       _ = try await store.transitionWorkItem(
@@ -7468,7 +9298,7 @@ final class AppModel: ObservableObject {
       status: automaticallyRevises ? .queued : .awaitingOwner,
       eventActor: "Spedito",
       eventDetail: automaticallyRevises
-        ? "Demo verification failed; correction queued for the Implementer"
+        ? "Demo verification failed; correction queued for the implementer"
         : "Automatic corrections paused after repeated demo verification failures"
     )
     _ = try await store.appendComment(
@@ -7478,20 +9308,20 @@ final class AppModel: ObservableObject {
       body:
         automaticallyRevises
         ? """
-          The reviewed candidate failed its managed demo verification, so I returned it to the Implementer automatically. No Product Owner decision is needed.
+        The reviewed candidate failed its managed demo verification, so I returned it to the implementer automatically. No product owner decision is needed.
 
-          Error:
-          \(errorDetail)
+        Error:
+        \(errorDetail)
 
-          The reviewed integrated revision is now the ticket workspace baseline. The correction must produce a new candidate and pass Tech Lead review again.
-          """
+        The reviewed integrated revision is now the ticket workspace baseline. The correction must produce a new candidate and pass tech lead review again.
+        """
         : """
-          The reviewed candidate failed its managed demo verification:
+        The reviewed candidate failed its managed demo verification:
 
-          \(errorDetail)
+        \(errorDetail)
 
-          I preserved the integrated revision but paused automatic correction after \(SprintReviewCorrectionPolicy.changeRequestNumber(reviewCycle: reviewCycle)) revision attempts. Add Product Owner direction to resume the Implementer.
-          """
+        I preserved the integrated revision but paused automatic correction after \(SprintReviewCorrectionPolicy.changeRequestNumber(reviewCycle: reviewCycle)) revision attempts. Add product owner direction to resume the implementer.
+        """
     )
     await reloadSelectedProductIfCurrent(productID: workItem.productID)
     if automaticallyRevises {
@@ -7521,7 +9351,7 @@ final class AppModel: ObservableObject {
     else { return }
     let product = context.product
 
-    var failureStage = "Tech Lead review"
+    var failureStage = "Tech lead review"
     var activeReviewRunID: UUID?
     do {
       let currentState = (try await store.fetchWorkItems(productID: product.id))
@@ -7538,7 +9368,9 @@ final class AppModel: ObservableObject {
         id: implementationRun.id,
         status: .completed,
         eventActor: implementer.name,
-        eventDetail: "Implementation complete; waiting for Tech Lead review"
+        eventDetail: preparedIntegration == nil
+          ? "Implementation complete; waiting for tech lead review"
+          : "Integrated candidate ready for tech lead review"
       )
       let repositoryURL = try Self.productWorkspaceURL(productID: product.id)
       let reviewWorkspace: GitIntegrationSnapshot
@@ -7568,7 +9400,7 @@ final class AppModel: ObservableObject {
           id: item.id,
           to: .verifying,
           actor: techLead.name,
-          reason: "Independent Tech Lead review started"
+          reason: "Independent tech lead review started"
         )
       }
 
@@ -7636,6 +9468,7 @@ final class AppModel: ObservableObject {
           reviewCycle: reviewCycle,
           priorReviewFeedback: priorReviewFeedback,
           recentComments: reviewComments,
+          deliveryKind: candidate.deliveryKind,
           baseSHA: candidate.baseSHA,
           candidateHeadSHA: candidate.headSHA,
           integratedSHA: preparedIntegration?.integratedSHA
@@ -7674,11 +9507,11 @@ final class AppModel: ObservableObject {
         let repairTurnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: """
-            Your previous review selected changes_requested but did not identify a blocking finding.
-            Correct the structured review now. If there is no concrete material blocker under the
-            supplied review policy, approve. Otherwise include one to three small, actionable
-            findings that name the violated criterion or defect. Return only the required JSON.
-          """,
+              Your previous review selected changes_requested but did not identify a blocking finding.
+              Correct the structured review now. If there is no concrete material blocker under the
+              supplied review policy, approve. Otherwise include one to three small, actionable
+              findings that name the violated criterion or defect. Return only the required JSON.
+            """,
           effort: techLead.reasoningEffort,
           outputSchema: CodexTechLeadReviewer.outputSchema,
           runtimeWorkspaceRoots: [
@@ -7730,7 +9563,7 @@ final class AppModel: ObservableObject {
             id: activeReviewRunID,
             status: .interrupted,
             eventActor: "Spedito",
-            eventDetail: "Tech Lead review paused when the app stopped"
+            eventDetail: "Tech lead review paused when the app stopped"
           )
         }
         stopLiveActivityMonitoring(runID: implementationRun.id)
@@ -7759,8 +9592,7 @@ final class AppModel: ObservableObject {
         candidateRevisionID: candidate.id,
         status: .superseded
       )
-      if
-        let failedCandidate = try? await store.fetchCandidateRevision(id: candidate.id),
+      if let failedCandidate = try? await store.fetchCandidateRevision(id: candidate.id),
         let integrationPath = failedCandidate.integrationWorktreePath
       {
         try? await gitWorkspaceManager.removeWorktree(
@@ -7789,7 +9621,8 @@ final class AppModel: ObservableObject {
         workItemID: item.id,
         authorKind: .system,
         authorName: "Spedito",
-        body: "\(failureStage) stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved workspace."
+        body:
+          "\(failureStage) stopped unexpectedly: \(error.localizedDescription)\n\nComment on this ticket to retry from the preserved workspace."
       )
       presentExecutionError(error, productID: product.id)
       await reloadSelectedProductIfCurrent(productID: product.id)
@@ -7861,6 +9694,19 @@ final class AppModel: ObservableObject {
         candidateRevisionID: candidate.id,
         status: .reviewed
       )
+      if candidate.deliveryKind == .localOutcome {
+        try? await gitWorkspaceManager.removeWorktree(
+          repositoryURL: repositoryURL,
+          worktreeURL: reviewWorkspace.url
+        )
+        try await finalizeReviewedLocalOutcome(
+          candidate: candidate,
+          implementationRun: implementationRun,
+          workItem: item,
+          reviewerName: techLead.name
+        )
+        return
+      }
       guard integration != nil else {
         try? await gitWorkspaceManager.removeWorktree(
           repositoryURL: repositoryURL,
@@ -7874,7 +9720,7 @@ final class AppModel: ObservableObject {
           id: implementationRun.id,
           status: .completed,
           eventActor: techLead.name,
-          eventDetail: "Tech Lead review passed; candidate queued for integration"
+          eventDetail: "Tech lead review passed; candidate queued for integration"
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
         return
@@ -7922,9 +9768,11 @@ final class AppModel: ObservableObject {
       let changeRequestNumber = SprintReviewCorrectionPolicy.changeRequestNumber(
         reviewCycle: reviewCycle
       )
-      guard SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(
-        reviewCycle: reviewCycle
-      ) else {
+      guard
+        SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(
+          reviewCycle: reviewCycle
+        )
+      else {
         let remainingFindings = review.findings.prefix(3)
           .map { "- \($0)" }
           .joined(separator: "\n")
@@ -7944,7 +9792,7 @@ final class AppModel: ObservableObject {
 
             \(remainingFindings.isEmpty ? "- The review did not provide a concrete finding." : remainingFindings)
 
-            Ask the assigned specialist a question without restarting work, or add Product Owner direction and choose Submit answers.
+            Ask the assigned specialist a question without restarting work, or add product owner direction and choose Submit answers.
             """
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
@@ -8002,7 +9850,8 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The delivery agent’s previous Conversation was unavailable. I started a replacement in the preserved ticket workspace and passed it the Tech Lead’s feedback."
+            body:
+              "The delivery agent’s previous conversation was unavailable. I started a replacement in the preserved ticket workspace and passed it the tech lead’s feedback."
           )
         }
       } else {
@@ -8057,7 +9906,8 @@ final class AppModel: ObservableObject {
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The delivery agent’s previous Codex session was unavailable. I started a replacement session in the preserved ticket workspace and passed it the Tech Lead’s feedback."
+          body:
+            "The delivery agent’s previous Codex session was unavailable. I started a replacement session in the preserved ticket workspace and passed it the tech lead’s feedback."
         )
         turnID = try await client.startStructuredTurn(
           threadID: revisionThreadID,
@@ -8101,7 +9951,8 @@ final class AppModel: ObservableObject {
         canonicalKnowledgePages: context.knowledgePages
       )
       await processExecutionResult(
-        revision,
+        revision.result,
+        deliveryKind: revision.deliveryKind,
         implementationRunID: implementationRun.id,
         reviewCycle: reviewCycle + 1,
         plan: plan
@@ -8134,7 +9985,8 @@ final class AppModel: ObservableObject {
     reviewCycle: Int,
     plan: SprintPlan,
     worktreePath: String,
-    conflictedFiles: [String]
+    conflictedFiles: [String],
+    includesGitHubChanges: Bool
   ) async {
     guard
       let store = store(for: plan.sprint.productID),
@@ -8172,7 +10024,10 @@ final class AppModel: ObservableObject {
         workItemID: item.id,
         authorKind: .system,
         authorName: "Integrator",
-        body: "The candidate overlaps newer accepted work in \(conflictedFiles.count) file(s). I’m resolving the integration before Tech Lead review."
+        body:
+          includesGitHubChanges
+          ? "The ticket overlaps verified GitHub changes in \(conflictedFiles.count) file(s). I’m resolving the integration before final tech lead review."
+          : "The ticket overlaps newer accepted work in \(conflictedFiles.count) file(s). I’m resolving the integration before final tech lead review."
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
       await runIntegrationConflictResolution(
@@ -8214,7 +10069,7 @@ final class AppModel: ObservableObject {
         id: resolutionRun.id,
         status: .running,
         eventActor: "Integrator",
-        eventDetail: "Product Owner response received; conflict resolution resumed"
+        eventDetail: "Product owner response received; conflict resolution resumed"
       )
       await reloadSelectedProductIfCurrent(productID: plan.sprint.productID)
       await runIntegrationConflictResolution(
@@ -8224,7 +10079,8 @@ final class AppModel: ObservableObject {
         reviewCycle: max(0, candidate.version - 1),
         plan: plan,
         conflictedFiles: conflictedFiles,
-        continuationMessage: "Use the latest Product Owner comment to resolve the open integration decision."
+        continuationMessage:
+          "Use the latest product owner comment to resolve the open integration decision."
       )
     } catch {
       await recordIntegrationResolutionFailure(
@@ -8292,7 +10148,8 @@ final class AppModel: ObservableObject {
             workItemID: item.id,
             authorKind: .system,
             authorName: "Spedito",
-            body: "The Integrator’s previous Conversation was unavailable. I started a replacement in the preserved conflict workspace."
+            body:
+              "The integrator’s previous conversation was unavailable. I started a replacement in the preserved conflict workspace."
           )
         }
       } else {
@@ -8310,7 +10167,7 @@ final class AppModel: ObservableObject {
         worktreePath: workspace.path,
         eventActor: replacedUnavailableThread ? "Spedito" : nil,
         eventDetail: replacedUnavailableThread
-          ? "Replaced an unavailable Integrator Conversation"
+          ? "Replaced an unavailable integrator conversation"
           : nil
       )
       let comments = try await store.fetchComments(workItemID: item.id)
@@ -8346,13 +10203,14 @@ final class AppModel: ObservableObject {
           codexThreadID: threadID,
           worktreePath: workspace.path,
           eventActor: "Spedito",
-          eventDetail: "Replaced a stale Integrator Codex thread"
+          eventDetail: "Replaced a stale integrator Codex thread"
         )
         _ = try await store.appendComment(
           workItemID: item.id,
           authorKind: .system,
           authorName: "Spedito",
-          body: "The Integrator’s previous Codex session was unavailable. I started a replacement session in the preserved conflict workspace."
+          body:
+            "The integrator’s previous Codex session was unavailable. I started a replacement session in the preserved conflict workspace."
         )
         turnID = try await client.startStructuredTurn(
           threadID: threadID,
@@ -8405,7 +10263,7 @@ final class AppModel: ObservableObject {
           id: resolutionRun.id,
           status: .awaitingOwner,
           eventActor: "Integrator",
-          eventDetail: "Waiting for Product Owner input"
+          eventDetail: "Waiting for product owner input"
         )
         await reloadSelectedProductIfCurrent(productID: product.id)
       case .resolved:
@@ -8470,7 +10328,7 @@ final class AppModel: ObservableObject {
     workspace: URL
   ) async throws {
     guard let store = store(for: candidate.productID) else { return }
-    let integration = try await gitWorkspaceManager.completeConflictResolution(
+    var integration = try await gitWorkspaceManager.completeConflictResolution(
       integrationWorkspaceURL: workspace,
       candidateHeadSHA: candidate.headSHA
     )
@@ -8486,6 +10344,53 @@ final class AppModel: ObservableObject {
       integratedSHA: integration.integratedSHA,
       integrationWorktreePath: integration.url.path
     )
+
+    let remoteIntegration: (
+      snapshot: GitIntegrationSnapshot,
+      incorporatedChanges: Bool,
+      remoteSHA: String?
+    )
+    do {
+      remoteIntegration = try await integrateLatestGitHubChanges(
+        candidate: candidate,
+        integration: integration
+      )
+    } catch GitWorkspaceError.mergeConflict(
+      let worktreePath,
+      let conflictedFiles,
+      _
+    ) {
+      await beginIntegrationConflictResolution(
+        candidate: candidate,
+        implementationRun: implementationRun,
+        reviewCycle: reviewCycle,
+        plan: plan,
+        worktreePath: worktreePath,
+        conflictedFiles: conflictedFiles,
+        includesGitHubChanges: true
+      )
+      return
+    }
+    integration = remoteIntegration.snapshot
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .integrating,
+      integratedSHA: integration.integratedSHA,
+      integrationWorktreePath: integration.url.path
+    )
+    if remoteIntegration.incorporatedChanges, let remoteSHA = remoteIntegration.remoteSHA {
+      let message =
+        "Integrated verified GitHub changes at \(String(remoteSHA.prefix(8))) into this ticket before final review."
+      let comments = try await store.fetchComments(workItemID: candidate.workItemID)
+      if !comments.contains(where: { $0.body == message }) {
+        _ = try await store.appendComment(
+          workItemID: candidate.workItemID,
+          authorKind: .system,
+          authorName: "Spedito",
+          body: message
+        )
+      }
+    }
     let implementation = try CodexTicketExecutor.decode(candidate.executionResultJSON)
     await reloadSelectedProductIfCurrent(productID: candidate.productID)
     await reviewCompletedImplementation(
@@ -8534,7 +10439,9 @@ final class AppModel: ObservableObject {
   private func handleSprintOwnerComment(
     productID: UUID,
     workItemID: UUID,
-    body: String
+    body: String,
+    actor: String = "Product owner",
+    reasonPrefix: String = "Demo feedback"
   ) async {
     guard
       let store = store(for: productID),
@@ -8557,12 +10464,12 @@ final class AppModel: ObservableObject {
           .filter { $0.role == .lead }
           .map(\.id)
       )
-      if
-        let reviewingCandidate = currentCandidates
-          .filter({
-            $0.workItemID == workItemID && $0.status == .reviewing
-          })
-          .max(by: { $0.version < $1.version }),
+      if let reviewingCandidate =
+        currentCandidates
+        .filter({
+          $0.workItemID == workItemID && $0.status == .reviewing
+        })
+        .max(by: { $0.version < $1.version }),
         let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
           for: reviewingCandidate,
           runs: currentRuns,
@@ -8573,8 +10480,8 @@ final class AppModel: ObservableObject {
         _ = try await updateAgentRun(
           id: reviewRun.id,
           status: .queued,
-          eventActor: "Product Owner",
-          eventDetail: "Retry requested; Tech Lead review queued to continue"
+          eventActor: "Product owner",
+          eventDetail: "Retry requested; tech lead review queued to continue"
         )
         await reloadSelectedProductIfCurrent(productID: productID)
         scheduleSprintExecution(productID: productID)
@@ -8593,7 +10500,7 @@ final class AppModel: ObservableObject {
           _ = try await updateAgentRun(
             id: resolutionRun.id,
             status: .queued,
-            eventActor: "Product Owner",
+            eventActor: "Product owner",
             eventDetail: "Response received; integration queued to resume"
           )
           await reloadSelectedProductIfCurrent(productID: productID)
@@ -8613,34 +10520,47 @@ final class AppModel: ObservableObject {
         _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
-          eventActor: "Product Owner",
+          eventActor: "Product owner",
           eventDetail: "Response received; work queued to resume"
         )
-      } else if
-        (implementationRun.status == .failed || implementationRun.status == .interrupted),
+      } else if implementationRun.status == .failed || implementationRun.status == .interrupted,
         item.state == .running
       {
         _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
-          eventActor: "Product Owner",
+          eventActor: "Product owner",
           eventDetail: "Retry requested; preserved work queued to resume"
         )
       } else if item.state == .acceptance {
+        if let githubRemoteService {
+          let remoteState = await githubRemoteService.state(productID: productID)
+          if let publication = remoteState.publications.first(where: {
+            $0.workItemID == workItemID && $0.status.isActive
+              && $0.pullRequest?.state == .open && $0.pullRequest?.isDraft == false
+          }) {
+            let updated = try await githubRemoteService.returnTicketPullRequestToDraft(
+              publicationID: publication.id
+            )
+            githubRemoteRepositoryStates[productID] = updated
+          }
+        }
         let readyCandidates = currentCandidates.filter { candidate in
           candidate.workItemID == item.id && candidate.status == .readyForDemo
         }
         if let candidate = readyCandidates.max(by: { $0.version < $1.version }) {
           await stopDemoSession(candidate, removesPreview: true)
-          guard let integratedSHA = candidate.integratedSHA else {
-            throw PersistenceError.corruptData(
-              "The reviewed demo candidate has no integrated revision."
+          if candidate.deliveryKind.changesRepository {
+            guard let integratedSHA = candidate.integratedSHA else {
+              throw PersistenceError.corruptData(
+                "The reviewed demo candidate has no integrated revision."
+              )
+            }
+            _ = try await adoptIntegratedBaselineForRevision(
+              candidate: candidate,
+              integratedSHA: integratedSHA
             )
           }
-          _ = try await adoptIntegratedBaselineForRevision(
-            candidate: candidate,
-            integratedSHA: integratedSHA
-          )
           _ = try await store.updateCandidateRevision(
             id: candidate.id,
             status: .superseded
@@ -8659,14 +10579,14 @@ final class AppModel: ObservableObject {
         _ = try await store.transitionWorkItem(
           id: item.id,
           to: .running,
-          actor: "Product Owner",
-          reason: "Demo feedback: \(body.prefix(160))"
+          actor: actor,
+          reason: "\(reasonPrefix): \(body.prefix(160))"
         )
         _ = try await updateAgentRun(
           id: implementationRun.id,
           status: .queued,
-          eventActor: "Product Owner",
-          eventDetail: "Demo feedback received; work queued to resume"
+          eventActor: actor,
+          eventDetail: "\(reasonPrefix) received; work queued to resume"
         )
       } else {
         return
@@ -8716,10 +10636,12 @@ final class AppModel: ObservableObject {
         guard self.liveActivityMonitorIDs[runID] == monitorID else { return }
 
         let now = Date()
-        let contextUsedTokens = notification.method == "thread/tokenUsage/updated"
+        let contextUsedTokens =
+          notification.method == "thread/tokenUsage/updated"
           ? notification.params["tokenUsage"]?["last"]?["totalTokens"]?.integerValue.map(Int.init)
           : nil
-        let contextWindowTokens = notification.method == "thread/tokenUsage/updated"
+        let contextWindowTokens =
+          notification.method == "thread/tokenUsage/updated"
           ? notification.params["tokenUsage"]?["modelContextWindow"]?.integerValue.map(Int.init)
           : nil
         let didCompact =
@@ -8738,11 +10660,10 @@ final class AppModel: ObservableObject {
             at: now
           )
           lastHeartbeatAt = now
-        } else if
-          contextUsedTokens != nil
-            || contextWindowTokens != nil
-            || didCompact
-            || now.timeIntervalSince(lastHeartbeatAt) >= 5
+        } else if contextUsedTokens != nil
+          || contextWindowTokens != nil
+          || didCompact
+          || now.timeIntervalSince(lastHeartbeatAt) >= 5
         {
           await self.persistRunTelemetry(
             runID: runID,
@@ -8798,7 +10719,7 @@ final class AppModel: ObservableObject {
         didCompact: didCompact,
         startsTurn: startsTurn,
         at: at
-    )
+      )
     else { return }
     guard selectedProductID == updated.productID else { return }
     if let index = runs.firstIndex(where: { $0.id == updated.id }) {
@@ -8842,12 +10763,6 @@ final class AppModel: ObservableObject {
       guard let task = activeImplementationTasks[runID] else { continue }
       task.cancel()
     }
-    let reviewCandidateIDs = activeReviewProductIDs.compactMap {
-      productID == nil || $0.value == productID ? $0.key : nil
-    }
-    for candidateID in reviewCandidateIDs {
-      activeReviewTasks[candidateID]?.cancel()
-    }
     let integrationCandidateIDs = activeIntegrationProductIDs.compactMap {
       productID == nil || $0.value == productID ? $0.key : nil
     }
@@ -8869,11 +10784,9 @@ final class AppModel: ObservableObject {
         }
       }
     }
-    if
-      !executionTasks.isEmpty
-        || !implementationTaskIDs.isEmpty
-        || !reviewCandidateIDs.isEmpty
-        || !integrationCandidateIDs.isEmpty
+    if !executionTasks.isEmpty
+      || !implementationTaskIDs.isEmpty
+      || !integrationCandidateIDs.isEmpty
     {
       for _ in 0..<100 {
         let hasScheduler =
@@ -8885,13 +10798,10 @@ final class AppModel: ObservableObject {
         let hasImplementation = activeImplementationProductIDs.contains {
           productID == nil || $0.value == productID
         }
-        let hasReview = activeReviewProductIDs.contains {
-          productID == nil || $0.value == productID
-        }
         let hasIntegration = activeIntegrationProductIDs.contains {
           productID == nil || $0.value == productID
         }
-        guard hasScheduler || hasImplementation || hasReview || hasIntegration
+        guard hasScheduler || hasImplementation || hasIntegration
         else { break }
         try? await Task.sleep(for: .milliseconds(100))
       }
@@ -8903,10 +10813,6 @@ final class AppModel: ObservableObject {
       for runID in implementationTaskIDs {
         activeImplementationTasks.removeValue(forKey: runID)
         activeImplementationProductIDs.removeValue(forKey: runID)
-      }
-      for candidateID in reviewCandidateIDs {
-        activeReviewTasks.removeValue(forKey: candidateID)
-        activeReviewProductIDs.removeValue(forKey: candidateID)
       }
       for candidateID in integrationCandidateIDs {
         activeIntegrationTasks.removeValue(forKey: candidateID)
@@ -8924,8 +10830,6 @@ final class AppModel: ObservableObject {
       sprintExecutionTaskIDs.removeAll()
       activeImplementationTasks.removeAll()
       activeImplementationProductIDs.removeAll()
-      activeReviewTasks.removeAll()
-      activeReviewProductIDs.removeAll()
       activeIntegrationTasks.removeAll()
       activeIntegrationProductIDs.removeAll()
       activeExecutionTurns.removeAll()
@@ -8959,6 +10863,57 @@ final class AppModel: ObservableObject {
 
   func shutdown() async {
     isShuttingDown = true
+    let pullRequestPollingTask = githubPullRequestPollingTask
+    pullRequestPollingTask?.cancel()
+    let pullRequestSyncTasks = Array(githubPullRequestSyncTasks.values)
+    for task in pullRequestSyncTasks {
+      task.cancel()
+    }
+    await pullRequestPollingTask?.value
+    for task in pullRequestSyncTasks {
+      await task.value
+    }
+    githubPullRequestPollingTask = nil
+    githubPullRequestSyncTasks.removeAll()
+    let remoteTasks = Array(githubRemoteTasks.values)
+    for task in remoteTasks {
+      task.cancel()
+    }
+    for task in remoteTasks {
+      await task.value
+    }
+    githubRemoteTasks.removeAll()
+    let importAuthorizationTask = githubImportAuthorizationTask
+    importAuthorizationTask?.cancel()
+    _ = try? await importAuthorizationTask?.value
+    githubImportAuthorizationTask = nil
+    githubImportDeviceAuthorizationPrompt = nil
+    await githubRemoteService?.shutdown()
+    let interruptedImportTask = productImportTask
+    interruptedImportTask?.cancel()
+    _ = try? await interruptedImportTask?.value
+    productImportTask = nil
+    let interruptedRepositoryKnowledgeTasks = repositoryKnowledgeTasks
+    for task in interruptedRepositoryKnowledgeTasks.values {
+      task.cancel()
+    }
+    for (runID, turn) in activeRepositoryKnowledgeTurns {
+      if let client = repositoryKnowledgeClients[runID] {
+        try? await client.interruptTurn(
+          threadID: turn.threadID,
+          turnID: turn.turnID
+        )
+      }
+    }
+    for task in interruptedRepositoryKnowledgeTasks.values {
+      await task.value
+    }
+    repositoryKnowledgeTasks.removeAll()
+    activeRepositoryKnowledgeTurns.removeAll()
+    for client in repositoryKnowledgeClients.values {
+      await client.disconnect()
+    }
+    repositoryKnowledgeClients.removeAll()
     let interruptedSuggestionTask = suggestionTask
     let interruptedEpicPlanningTask = epicPlanningTask
     interruptedSuggestionTask?.cancel()
@@ -8978,6 +10933,12 @@ final class AppModel: ObservableObject {
     for task in interruptedRetrospectiveTasks {
       task.cancel()
     }
+    let interruptedProductConversationTitleTasks = Array(
+      productConversationTitleTasks.values
+    )
+    for task in interruptedProductConversationTitleTasks {
+      task.cancel()
+    }
     if let client = codexClient {
       for (conversationThreadID, turn) in activeProductConversationTurns {
         try? await client.interruptTurn(
@@ -8987,6 +10948,12 @@ final class AppModel: ObservableObject {
         _ = try? await store(for: turn.productID)?.updateConversationThread(
           id: conversationThreadID,
           status: .cancelled
+        )
+      }
+      for turn in activeProductConversationTitleTurns.values {
+        try? await client.interruptTurn(
+          threadID: turn.threadID,
+          turnID: turn.turnID
         )
       }
       for turn in activeRetrospectiveSynthesisTurns.values {
@@ -8999,6 +10966,9 @@ final class AppModel: ObservableObject {
     for task in interruptedRetrospectiveTasks {
       await task.value
     }
+    for task in interruptedProductConversationTitleTasks {
+      await task.value
+    }
     retrospectiveSynthesisTasks.removeAll()
     cancelledProductConversationThreadIDs.removeAll()
     for threadID in Array(productConversationActivityTasks.keys) {
@@ -9006,6 +10976,8 @@ final class AppModel: ObservableObject {
     }
     stopTicketConversationActivityMonitoring()
     activeProductConversationTurns.removeAll()
+    activeProductConversationTitleTurns.removeAll()
+    productConversationTitleTasks.removeAll()
     respondingConversationThreadIDs.removeAll()
     activeRetrospectiveSynthesisTurns.removeAll()
     await epicConversationPersistenceTask?.value
@@ -9013,6 +10985,7 @@ final class AppModel: ObservableObject {
     await applyExecutionLifecycle(.appShutdown)
     approvalRoutingTask?.cancel()
     approvalRoutingTask = nil
+    stopCodexUsageMonitoring()
     await codexClient?.disconnect()
     codexClient = nil
   }
@@ -9109,7 +11082,7 @@ final class AppModel: ObservableObject {
         let analyst = productProfiles.first(where: { $0.role == .businessAnalyst })
       else {
         throw PersistenceError.corruptData(
-          "This product needs a Business Analyst to prepare retrospective actions."
+          "This product needs a business analyst to prepare retrospective actions."
         )
       }
       let synthesis = try await store.beginRetrospectiveSynthesis(
@@ -9144,9 +11117,10 @@ final class AppModel: ObservableObject {
       let productItems = try await store.fetchWorkItems(productID: product.id)
       let productNotes = try await store.fetchRetrospectiveNotes(productID: product.id)
       let productKnowledge = try await store.fetchKnowledgePages(productID: product.id)
-      let waysOfWorking = productKnowledge.first {
-        $0.slug == "ways-of-working" && $0.verificationStatus == .verified
-      }?.bodyMarkdown ?? ""
+      let waysOfWorking =
+        productKnowledge.first {
+          $0.slug == "ways-of-working" && $0.verificationStatus == .verified
+        }?.bodyMarkdown ?? ""
       let existingActions = productNotes.filter {
         $0.category == .suggestedAction
           && !$0.isActionCandidate
@@ -9284,21 +11258,21 @@ final class AppModel: ObservableObject {
     let knowledgeScope =
       includesMandatoryKnowledge
       ? """
-        Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
-        rows in that view as verified reusable knowledge.
-        """
+      Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
+      rows in that view as verified reusable knowledge.
+      """
       : """
-        Query agent_verified_knowledge when the assigned ticket needs durable product context.
-        """
+      Query agent_verified_knowledge when the assigned ticket needs durable product context.
+      """
     let repositoryScope =
       allowsRepositoryInspection
       ? """
-        Search the product Git history when repository evidence is useful.
-        """
+      Search the product Git history when repository evidence is useful.
+      """
       : """
-        This is a planning turn. Use the ticket contracts and verified Product knowledge supplied in the
-        prompt. Do not inspect repository files or Git history.
-        """
+      This is a planning turn. Use the ticket contracts and verified product knowledge supplied in the
+      prompt. Do not inspect repository files or Git history.
+      """
     return [
       shared,
       """
@@ -9347,20 +11321,25 @@ final class AppModel: ObservableObject {
     result: TicketExecutionResult,
     authorName: String
   ) -> String {
-    let checks = result.tests.isEmpty
+    let checks =
+      result.tests.isEmpty
       ? "- No automated checks were reported."
       : result.tests.map { "- \($0)" }.joined(separator: "\n")
     let review = result.reviewInstructions.map { "- \($0)" }.joined(separator: "\n")
-    let knowledge = result.knowledgeNotes.isEmpty
+    let knowledge =
+      result.knowledgeNotes.isEmpty
       ? "- No durable decision or limitation was reported."
       : result.knowledgeNotes.map { "- \($0)" }.joined(separator: "\n")
-    let files = result.changedFiles.isEmpty
+    let files =
+      result.changedFiles.isEmpty
       ? "- No changed file was reported."
       : result.changedFiles.map { "- `\($0)`" }.joined(separator: "\n")
-    let demo = result.demo.map {
-      "- **\($0.title)** — \($0.presentation.kind.title)"
-    } ?? "- No managed demo recipe was recorded."
-    let followUps = result.followUpTicketProposals.isEmpty
+    let demo =
+      result.demo.map {
+        "- **\($0.title)** — \($0.presentation.kind.title)"
+      } ?? "- No managed demo recipe was recorded."
+    let followUps =
+      result.followUpTicketProposals.isEmpty
       ? "- No follow-up tickets were recommended."
       : result.followUpTicketProposals.map {
         "- **\($0.reference): \($0.title)** — \($0.rationale)"
@@ -9368,7 +11347,7 @@ final class AppModel: ObservableObject {
     return """
       # \(item.key) · \(item.title)
 
-      **Delivery evidence:** Prepared with the candidate revision  
+      **Delivery evidence:** Prepared with the candidate revision<br>
       **Prepared by:** \(authorName)
 
       ## What changed
@@ -9383,7 +11362,7 @@ final class AppModel: ObservableObject {
       ## Checks performed
       \(checks)
 
-      ## How the Product Owner can review it
+      ## How the product owner can review it
       \(review)
 
       ## One-click demo
@@ -9465,22 +11444,807 @@ final class AppModel: ObservableObject {
     }
   }
 
-  private static func writeDeliveryNoteMarkdown(
-    _ markdown: String,
-    sprintNumber: Int,
-    item: WorkItem,
-    workspaceURL: URL
-  ) throws {
-    let directory = workspaceURL
-      .appendingPathComponent("knowledge", isDirectory: true)
-      .appendingPathComponent("delivery-history", isDirectory: true)
-      .appendingPathComponent("sprint-\(sprintNumber)", isDirectory: true)
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
+
+  private func cancelRepositoryKnowledge(productID: UUID) async {
+    guard let task = repositoryKnowledgeTasks[productID] else { return }
+    task.cancel()
+    if let productStore = store(for: productID),
+      let run = try? await productStore.fetchLatestRepositoryKnowledgeRun(productID: productID),
+      let turn = activeRepositoryKnowledgeTurns[run.id],
+      let client = repositoryKnowledgeClients[run.id]
+    {
+      try? await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
+    }
+    await task.value
+    repositoryKnowledgeTasks[productID] = nil
+  }
+
+  private func scheduleRepositoryKnowledgeRuns() {
+    for product in products where repositoryKnowledgeTasks[product.id] == nil {
+      let task = Task { [weak self] in
+        guard let self else { return }
+        await self.recoverOrRunRepositoryKnowledge(productID: product.id)
+      }
+      repositoryKnowledgeTasks[product.id] = task
+    }
+  }
+
+  private func recoverOrRunRepositoryKnowledge(productID: UUID) async {
+    defer { repositoryKnowledgeTasks[productID] = nil }
+    guard !Task.isCancelled, let productStore = store(for: productID) else { return }
+    do {
+      guard try await productStore.fetchProductRepository(productID: productID) != nil,
+        let latest = try await productStore.fetchLatestRepositoryKnowledgeRun(
+          productID: productID
+        )
+      else {
+        return
+      }
+      let shouldRetryUnproductiveAnalysis: Bool
+      if latest.status == .completed {
+        let drafts = try await productStore.fetchRepositoryKnowledgeDrafts(runID: latest.id)
+        let pages = try await productStore.fetchKnowledgePages(productID: productID)
+        shouldRetryUnproductiveAnalysis =
+          repositoryKnowledgeRecoveryPolicy.shouldRetryUnproductiveCompletedAnalysis(
+            run: latest,
+            drafts: drafts,
+            pages: pages
+          )
+      } else {
+        shouldRetryUnproductiveAnalysis = false
+      }
+      let shouldRetryLegacyLaunch =
+        repositoryKnowledgeRecoveryPolicy.shouldRetryLegacyInvalidLaunchProposal(run: latest)
+      let action =
+        shouldRetryUnproductiveAnalysis || shouldRetryLegacyLaunch
+        ? RepositoryKnowledgeRecoveryAction.createRecoveryAttempt
+        : repositoryKnowledgeRecoveryPolicy.action(
+          for: latest,
+          alreadyCreatedRecoveryAttempt: repositoryRecoveryAttemptProductIDs.contains(productID)
+        )
+      let run: RepositoryKnowledgeRun
+      guard
+        repositoryKnowledgeRecoveryPolicy.canExecute(
+          action,
+          codexConnectionAvailable: codexRuntimeExecutableURL != nil
+        )
+      else {
+        return
+      }
+      switch action {
+      case .startPendingAnalysis:
+        run = latest
+      case .resumePublication:
+        run = latest
+      case .createRecoveryAttempt:
+        repositoryRecoveryAttemptProductIDs.insert(productID)
+        let recoveryMessage: String
+        if shouldRetryLegacyLaunch {
+          recoveryMessage =
+            "Setup is retrying because an optional app launch recipe was unsafe."
+        } else if shouldRetryUnproductiveAnalysis {
+          recoveryMessage =
+            "The earlier repository analysis produced no product knowledge and is being retried."
+        } else {
+          recoveryMessage = "Analysis was interrupted when Spedito closed and is being retried."
+        }
+        let interrupted = try await productStore.updateRepositoryKnowledgeRun(
+          id: latest.id,
+          status: .interrupted,
+          errorMessage: recoveryMessage
+        )
+        guard
+          let recovered = try await createRepositoryKnowledgeRetry(
+            productID: productID,
+            after: interrupted,
+            store: productStore
+          )
+        else {
+          return
+        }
+        run = recovered
+      case .none:
+        return
+      }
+      await executeRepositoryKnowledgeRun(run, store: productStore)
+    } catch {
+      if selectedProductID == productID {
+        errorMessage = error.localizedDescription
+        await reloadSelectedProduct()
+      }
+    }
+  }
+
+  private func createRepositoryKnowledgeRetry(
+    productID: UUID,
+    after previous: RepositoryKnowledgeRun,
+    store productStore: SQLiteStore
+  ) async throws -> RepositoryKnowledgeRun? {
+    let profiles = try await productStore.fetchAgentProfiles(productID: productID)
+    guard
+      let analyzer = profiles.first(where: { $0.role == .businessAnalyst }),
+      let reviewer = profiles.first(where: { $0.role == .lead })
+    else {
+      return nil
+    }
+    let sha: String
+    if previous.purpose == .importedAppLaunch {
+      guard
+        let repository = try await productStore.fetchProductRepository(productID: productID)
+      else {
+        return nil
+      }
+      sha = repository.importedSHA
+    } else {
+      sha = try await gitWorkspaceManager.acceptedTrunkSHA(
+        at: repositoryWorkspaceURL(productID: productID)
+      )
+    }
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: previous.attempt + 1,
+      purpose: previous.purpose,
+      analyzedSHA: sha,
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id
     )
-    let fileURL = directory.appendingPathComponent("\(item.key.lowercased()).md")
-    try Data(markdown.utf8).write(to: fileURL, options: .atomic)
+    try await productStore.createRepositoryKnowledgeRun(run)
+    return run
+  }
+
+  func retryRepositoryKnowledgeAnalysis() async {
+    guard
+      let productID = selectedProductID,
+      repositoryKnowledgeTasks[productID] == nil,
+      let productStore = store(for: productID),
+      let latest = try? await productStore.fetchLatestRepositoryKnowledgeRun(
+        productID: productID
+      ),
+      latest.status == .failed || latest.status == .interrupted || latest.status == .stale
+        || latest.status == .publishing || latest.status == .pendingAnalysis
+    else {
+      return
+    }
+    if latest.status == .pendingAnalysis, codexRuntimeExecutableURL == nil {
+      errorMessage =
+        "Repository analysis starts when the Codex team connection is available."
+      return
+    }
+    do {
+      let retry: RepositoryKnowledgeRun
+      if latest.status == .publishing || latest.status == .pendingAnalysis {
+        retry = latest
+      } else {
+        guard
+          let newAttempt = try await createRepositoryKnowledgeRetry(
+            productID: productID,
+            after: latest,
+            store: productStore
+          )
+        else {
+          errorMessage =
+            "Repository analysis needs an active business analyst and tech lead on this product."
+          return
+        }
+        retry = newAttempt
+      }
+      await reloadSelectedProduct()
+      let task = Task { [weak self] in
+        guard let self else { return }
+        defer { self.repositoryKnowledgeTasks[productID] = nil }
+        await self.executeRepositoryKnowledgeRun(retry, store: productStore)
+      }
+      repositoryKnowledgeTasks[productID] = task
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  var isCheckingImportedAppLaunch: Bool {
+    guard repositoryKnowledgeRun?.purpose == .importedAppLaunch else { return false }
+    switch repositoryKnowledgeRun?.status {
+    case .pendingAnalysis, .analyzing, .reviewing, .publishing:
+      return true
+    default:
+      return false
+    }
+  }
+  var canCheckImportedAppLaunch: Bool {
+    guard let productID = selectedProductID else { return false }
+    let runIsActive: Bool
+    switch repositoryKnowledgeRun?.status {
+    case .pendingAnalysis, .analyzing, .reviewing, .publishing:
+      runIsActive = true
+    default:
+      runIsActive = false
+    }
+    return productRepository != nil
+      && importedAppLaunch == nil
+      && repositoryKnowledgeTasks[productID] == nil
+      && !runIsActive
+      && codexRuntimeExecutableURL != nil
+  }
+
+  func checkImportedAppLaunch() async {
+    guard
+      let productID = selectedProductID,
+      importedAppLaunch == nil,
+      canCheckImportedAppLaunch,
+      repositoryKnowledgeTasks[productID] == nil,
+      let productStore = store(for: productID),
+      let repository = try? await productStore.fetchProductRepository(productID: productID)
+    else { return }
+    guard codexRuntimeExecutableURL != nil else {
+      errorMessage = "Checking the imported app needs the Codex team connection."
+      return
+    }
+    do {
+      let profiles = try await productStore.fetchAgentProfiles(productID: productID)
+      guard
+        let analyzer = profiles.first(where: { $0.role == .businessAnalyst }),
+        let reviewer = profiles.first(where: { $0.role == .lead })
+      else {
+        errorMessage =
+          "Checking the imported app needs an active business analyst and tech lead."
+        return
+      }
+      let attempts = try await productStore.fetchRepositoryKnowledgeRuns(productID: productID)
+      let run = RepositoryKnowledgeRun(
+        productID: productID,
+        attempt: (attempts.map(\.attempt).max() ?? 0) + 1,
+        purpose: .importedAppLaunch,
+        analyzedSHA: repository.importedSHA,
+        analyzerProfileID: analyzer.id,
+        reviewerProfileID: reviewer.id
+      )
+      try await productStore.createRepositoryKnowledgeRun(run)
+      await reloadSelectedProduct()
+      let task = Task { [weak self] in
+        guard let self else { return }
+        defer { self.repositoryKnowledgeTasks[productID] = nil }
+        await self.executeRepositoryKnowledgeRun(run, store: productStore)
+      }
+      repositoryKnowledgeTasks[productID] = task
+    } catch {
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  private func executeRepositoryKnowledgeRun(
+    _ initialRun: RepositoryKnowledgeRun,
+    store productStore: SQLiteStore
+  ) async {
+    var snapshotURL: URL?
+    var analysisClient: CodexAppServerClient?
+    do {
+      var run = try await productStore.fetchRepositoryKnowledgeRun(id: initialRun.id)
+      if run.status == .pendingAnalysis {
+        guard let executableURL = codexRuntimeExecutableURL else {
+          throw CodexClientError.notConnected
+        }
+        let activeProfiles = try await productStore.fetchAgentProfiles(
+          productID: run.productID
+        )
+        guard
+          let analyzer = activeProfiles.first(where: { $0.id == run.analyzerProfileID }),
+          let reviewer = activeProfiles.first(where: { $0.id == run.reviewerProfileID })
+        else {
+          _ = try await productStore.updateRepositoryKnowledgeRun(
+            id: run.id,
+            status: .pendingAnalysis,
+            errorMessage:
+              "Repository analysis needs its active business analyst and tech lead."
+          )
+          if selectedProductID == run.productID { await reloadSelectedProduct() }
+          return
+        }
+        let workspaceURL = try repositoryWorkspaceURL(productID: run.productID)
+        let destinationURL = try Self.repositoryAnalysisRootURL()
+          .appendingPathComponent(run.id.uuidString, isDirectory: true)
+        let snapshot = try await gitWorkspaceManager.prepareRepositoryAnalysisSnapshot(
+          repositoryURL: workspaceURL,
+          sha: run.analyzedSHA,
+          destinationURL: destinationURL
+        )
+        snapshotURL = snapshot.url
+        let transport = CodexJSONLTransport(
+          configuration: .init(
+            executableURL: executableURL,
+            arguments: CodexPermissionProfiles.repositoryAnalysisAppServerArguments(
+              snapshotURL: snapshot.url
+            ),
+            currentDirectoryURL: snapshot.url,
+            environmentOverrides: CodexPermissionProfiles.repositoryAnalysisProcessEnvironment,
+            environmentMode: .replace,
+            requestTimeout: .seconds(30)
+          )
+        )
+        let client = CodexAppServerClient(transport: transport)
+        analysisClient = client
+        repositoryKnowledgeClients[run.id] = client
+        _ = try await client.connect()
+
+        run = try await productStore.updateRepositoryKnowledgeRun(
+          id: run.id,
+          status: .analyzing
+        )
+        presentRepositoryKnowledgeRun(run)
+        let analyzerThreadID = try await client.startRepositoryAnalysisThread(
+          snapshotURL: snapshot.url,
+          developerInstructions: repositoryInstructions(
+            base: CodexRepositoryKnowledgeAnalyzer.developerInstructions,
+            profile: analyzer
+          ),
+          model: analyzer.model
+        )
+        monitorRepositoryKnowledgeActivity(
+          productID: run.productID,
+          client: client,
+          threadID: analyzerThreadID,
+          initialText: "Reading repository evidence…"
+        )
+        let pages = try await productStore.fetchKnowledgePages(productID: run.productID)
+        var analyzerTurnID = try await client.startStructuredTurn(
+          threadID: analyzerThreadID,
+          prompt: try CodexRepositoryKnowledgeAnalyzer.prompt(
+            run: run,
+            pages: pages,
+            snapshot: snapshot
+          ),
+          effort: analyzer.reasoningEffort,
+          outputSchema: CodexRepositoryKnowledgeAnalyzer.outputSchema,
+          runtimeWorkspaceRoots: [snapshot.url],
+          responseTimeout: Duration.seconds(30)
+        )
+        activeRepositoryKnowledgeTurns[run.id] = (analyzerThreadID, analyzerTurnID)
+        run = try await productStore.updateRepositoryKnowledgeRun(
+          id: run.id,
+          status: .analyzing,
+          analyzerThreadID: analyzerThreadID,
+          analyzerTurnID: analyzerTurnID
+        )
+        presentRepositoryKnowledgeRun(run)
+        let analyzerText = try await client.waitForFinalAgentMessage(
+          threadID: analyzerThreadID,
+          turnID: analyzerTurnID,
+          timeout: Duration.seconds(120),
+          totalTimeout: Duration.seconds(1_200)
+        )
+        activeRepositoryKnowledgeTurns[run.id] = nil
+        var analysis = try CodexRepositoryKnowledgeAnalyzer.decode(
+          analyzerText,
+          run: run,
+          pages: pages,
+          snapshot: snapshot
+        )
+        if let launchIssue = analysis.launchProposalIssue {
+          repositoryKnowledgeActivities[run.productID] = CodexLiveActivity(
+            text: "Correcting the imported app recipe…",
+            kind: .inspecting
+          )
+          let correctionTurnID = try await client.startStructuredTurn(
+            threadID: analyzerThreadID,
+            prompt: CodexRepositoryKnowledgeAnalyzer.launchCorrectionPrompt(
+              reason: launchIssue
+            ),
+            effort: analyzer.reasoningEffort,
+            outputSchema: CodexRepositoryKnowledgeAnalyzer.outputSchema,
+            runtimeWorkspaceRoots: [snapshot.url],
+            responseTimeout: Duration.seconds(30)
+          )
+          analyzerTurnID = correctionTurnID
+          activeRepositoryKnowledgeTurns[run.id] = (analyzerThreadID, correctionTurnID)
+          run = try await productStore.updateRepositoryKnowledgeRun(
+            id: run.id,
+            status: .analyzing,
+            analyzerThreadID: analyzerThreadID,
+            analyzerTurnID: correctionTurnID
+          )
+          presentRepositoryKnowledgeRun(run)
+          let correctedText = try await client.waitForFinalAgentMessage(
+            threadID: analyzerThreadID,
+            turnID: correctionTurnID,
+            timeout: Duration.seconds(120),
+            totalTimeout: Duration.seconds(1_200)
+          )
+          activeRepositoryKnowledgeTurns[run.id] = nil
+          let corrected = try CodexRepositoryKnowledgeAnalyzer.decode(
+            correctedText,
+            run: run,
+            pages: pages,
+            snapshot: snapshot
+          )
+          analysis = RepositoryKnowledgeAnalysisResult(
+            summary: analysis.summary,
+            drafts: analysis.drafts,
+            launchProposal: corrected.launchProposal,
+            launchProposalIssue: corrected.launchProposalIssue
+          )
+        }
+        if run.purpose == .importedAppLaunch, let launchIssue = analysis.launchProposalIssue {
+          throw RepositoryKnowledgeAnalysisError.invalidResponse(
+            "The imported app recipe could not be validated after one correction: \(launchIssue)"
+          )
+        }
+        if let launchIssue = analysis.launchProposalIssue {
+          analysis = RepositoryKnowledgeAnalysisResult(
+            summary:
+              "\(analysis.summary)\n\nThe optional imported app recipe was not saved: \(launchIssue)",
+            drafts: analysis.drafts
+          )
+        }
+        try await gitWorkspaceManager.validateRepositoryAnalysisRevision(
+          at: workspaceURL,
+          sha: run.analyzedSHA,
+          evidence: analysis.drafts.flatMap(\.evidence) + (analysis.launchProposal?.evidence ?? []),
+          requiresTrunkRevisionMatch: run.purpose == .knowledge
+        )
+        run = try await productStore.recordRepositoryKnowledgeAnalysis(
+          runID: run.id,
+          summary: analysis.summary,
+          drafts: analysis.drafts,
+          launchProposal: analysis.launchProposal,
+          analyzerThreadID: analyzerThreadID,
+          analyzerTurnID: analyzerTurnID
+        )
+        let persistedDrafts = try await productStore.fetchRepositoryKnowledgeDrafts(
+          runID: run.id
+        )
+        let persistedLaunchProposal = try await productStore.fetchRepositoryLaunchProposal(
+          runID: run.id
+        )
+        presentRepositoryKnowledgeRun(run, drafts: persistedDrafts)
+        if run.status == .completed {
+          await finishRepositoryKnowledgeRun(
+            run: run,
+            snapshotURL: snapshotURL,
+            client: analysisClient
+          )
+          if selectedProductID == run.productID { await reloadSelectedProduct() }
+          return
+        }
+
+        let reviewerThreadID = try await client.startRepositoryAnalysisThread(
+          snapshotURL: snapshot.url,
+          developerInstructions: repositoryInstructions(
+            base: CodexRepositoryKnowledgeReviewer.developerInstructions,
+            profile: reviewer
+          ),
+          model: reviewer.model
+        )
+        monitorRepositoryKnowledgeActivity(
+          productID: run.productID,
+          client: client,
+          threadID: reviewerThreadID,
+          initialText: "Checking proposed product information…"
+        )
+        let reviewerTurnID = try await client.startStructuredTurn(
+          threadID: reviewerThreadID,
+          prompt: try CodexRepositoryKnowledgeReviewer.prompt(
+            run: run,
+            drafts: persistedDrafts,
+            launchProposal: persistedLaunchProposal,
+            snapshot: snapshot
+          ),
+          effort: reviewer.reasoningEffort,
+          outputSchema: CodexRepositoryKnowledgeReviewer.outputSchema,
+          runtimeWorkspaceRoots: [snapshot.url],
+          responseTimeout: Duration.seconds(30)
+        )
+        activeRepositoryKnowledgeTurns[run.id] = (reviewerThreadID, reviewerTurnID)
+        run = try await productStore.updateRepositoryKnowledgeRun(
+          id: run.id,
+          status: .reviewing,
+          reviewerThreadID: reviewerThreadID,
+          reviewerTurnID: reviewerTurnID
+        )
+        presentRepositoryKnowledgeRun(run, drafts: persistedDrafts)
+        let reviewerText = try await client.waitForFinalAgentMessage(
+          threadID: reviewerThreadID,
+          turnID: reviewerTurnID,
+          timeout: Duration.seconds(120),
+          totalTimeout: Duration.seconds(1_200)
+        )
+        activeRepositoryKnowledgeTurns[run.id] = nil
+        let review = try CodexRepositoryKnowledgeReviewer.decode(
+          reviewerText,
+          drafts: persistedDrafts,
+          launchProposal: persistedLaunchProposal
+        )
+        try await gitWorkspaceManager.validateRepositoryAnalysisRevision(
+          at: workspaceURL,
+          sha: run.analyzedSHA,
+          evidence: persistedDrafts.flatMap(\.evidence) + (persistedLaunchProposal?.evidence ?? []),
+          requiresTrunkRevisionMatch: run.purpose == .knowledge
+        )
+        run = try await productStore.recordRepositoryKnowledgeReview(
+          runID: run.id,
+          summary: review.summary,
+          decisions: review.decisions,
+          launchDecision: review.launchDecision,
+          reviewerThreadID: reviewerThreadID,
+          reviewerTurnID: reviewerTurnID
+        )
+        presentRepositoryKnowledgeRun(run, drafts: persistedDrafts)
+      }
+
+      if run.status == .publishing {
+        stopRepositoryKnowledgeActivityMonitoring(productID: run.productID)
+        repositoryKnowledgeActivities[run.productID] = CodexLiveActivity(
+          text: run.purpose == .importedAppLaunch
+            ? "Saving the verified imported app recipe…"
+            : "Saving verified product information…",
+          kind: .inspecting
+        )
+        if run.purpose == .importedAppLaunch {
+          run = try await productStore.finalizeRepositoryKnowledgePublication(runID: run.id)
+        } else {
+          run = try await publishRepositoryKnowledge(run: run, store: productStore)
+        }
+      }
+      await finishRepositoryKnowledgeRun(
+        run: run,
+        snapshotURL: snapshotURL,
+        client: analysisClient
+      )
+      if selectedProductID == run.productID { await reloadSelectedProduct() }
+    } catch is CancellationError {
+      await interruptRepositoryKnowledgeRun(
+        initialRun.id,
+        store: productStore,
+        publishingRemainsResumable: true
+      )
+      await finishRepositoryKnowledgeRun(
+        run: initialRun,
+        snapshotURL: snapshotURL,
+        client: analysisClient
+      )
+    } catch {
+      await failRepositoryKnowledgeRun(initialRun.id, error: error, store: productStore)
+      await finishRepositoryKnowledgeRun(
+        run: initialRun,
+        snapshotURL: snapshotURL,
+        client: analysisClient
+      )
+      if selectedProductID == initialRun.productID { await reloadSelectedProduct() }
+    }
+  }
+
+  private func monitorRepositoryKnowledgeActivity(
+    productID: UUID,
+    client: CodexAppServerClient,
+    threadID: String,
+    initialText: String
+  ) {
+    stopRepositoryKnowledgeActivityMonitoring(productID: productID)
+    let monitorID = UUID()
+    repositoryKnowledgeActivityMonitorIDs[productID] = monitorID
+    repositoryKnowledgeActivities[productID] = CodexLiveActivity(
+      text: initialText,
+      kind: .thinking
+    )
+
+    repositoryKnowledgeActivityTasks[productID] = Task { [weak self] in
+      guard let self else { return }
+      var accumulator = CodexLiveActivityAccumulator()
+      let messages = await client.inboundMessages(replayRecent: true)
+      for await message in messages {
+        guard !Task.isCancelled else { break }
+        guard case .notification(let notification) = message else { continue }
+        guard
+          notification.params["threadId"]?.stringValue == threadID,
+          self.repositoryKnowledgeActivityMonitorIDs[productID] == monitorID
+        else {
+          continue
+        }
+
+        switch accumulator.consume(notification) {
+        case .activity(let activity):
+          self.repositoryKnowledgeActivities[productID] = activity
+        case .turnFinished:
+          self.repositoryKnowledgeActivityMonitorIDs[productID] = nil
+          self.repositoryKnowledgeActivityTasks[productID] = nil
+          return
+        case nil:
+          continue
+        }
+      }
+
+      guard self.repositoryKnowledgeActivityMonitorIDs[productID] == monitorID else {
+        return
+      }
+      self.repositoryKnowledgeActivityMonitorIDs[productID] = nil
+      self.repositoryKnowledgeActivityTasks[productID] = nil
+    }
+  }
+
+  private func stopRepositoryKnowledgeActivityMonitoring(productID: UUID) {
+    repositoryKnowledgeActivityTasks.removeValue(forKey: productID)?.cancel()
+    repositoryKnowledgeActivityMonitorIDs.removeValue(forKey: productID)
+    repositoryKnowledgeActivities.removeValue(forKey: productID)
+  }
+
+  private func presentRepositoryKnowledgeRun(
+    _ run: RepositoryKnowledgeRun,
+    drafts: [RepositoryKnowledgeDraft]? = nil
+  ) {
+    guard selectedProductID == run.productID else { return }
+    repositoryKnowledgeRun = run
+    if let drafts {
+      repositoryKnowledgeDrafts = drafts
+    }
+  }
+
+  private func publishRepositoryKnowledge(
+    run: RepositoryKnowledgeRun,
+    store productStore: SQLiteStore
+  ) async throws -> RepositoryKnowledgeRun {
+    guard
+      let repository = try await productStore.fetchProductRepository(productID: run.productID)
+    else {
+      throw PersistenceError.corruptData("Imported repository provenance is missing")
+    }
+    let workspaceURL = try repositoryWorkspaceURL(productID: run.productID)
+    let drafts = try await productStore.fetchRepositoryKnowledgeDrafts(runID: run.id)
+    if run.knowledgeExportPaths.isEmpty, run.knowledgeCommitSHA == nil {
+      try await gitWorkspaceManager.validateRepositoryAnalysisRevision(
+        at: workspaceURL,
+        sha: run.analyzedSHA,
+        evidence: drafts.filter { $0.status != .rejected }.flatMap(\.evidence)
+      )
+      return try await productStore.finalizeRepositoryKnowledgePublication(runID: run.id)
+    }
+    // Runs started by older builds may already own a prepared knowledge checkpoint.
+    // New runs publish locally and return above; this branch only preserves durable recovery.
+    try await gitWorkspaceManager.validateRepositoryAnalysisRevision(
+      at: workspaceURL,
+      sha: run.analyzedSHA,
+      evidence: drafts.filter { $0.status != .rejected }.flatMap(\.evidence),
+      requiresCleanWorkspace: false
+    )
+    let projection = try await productStore.projectRepositoryKnowledgePublication(
+      runID: run.id
+    )
+    let export = try await RepositoryKnowledgeExporter.export(
+      projection: projection,
+      changedPageIDs: Set(projection.changedPageIDs),
+      repository: repository,
+      workspaceURL: workspaceURL,
+      gitWorkspaceManager: gitWorkspaceManager
+    )
+
+    var currentRun = run
+    if !currentRun.knowledgeExportPaths.isEmpty, currentRun.knowledgeCommitSHA == nil {
+      let expected = Dictionary(
+        uniqueKeysWithValues: currentRun.knowledgeExportPaths.compactMap { path in
+          export.expectedContents[path].map { (path, $0) }
+        }
+      )
+      guard expected.count == currentRun.knowledgeExportPaths.count else {
+        throw PersistenceError.corruptData(
+          "Repository knowledge publication content could not be reconstructed"
+        )
+      }
+      if let recoveredSHA = try await gitWorkspaceManager.recoverRepositoryKnowledgeCheckpoint(
+        at: workspaceURL,
+        analyzedSHA: run.analyzedSHA,
+        expectedFiles: expected
+      ) {
+        currentRun = try await productStore.recordRepositoryKnowledgeCommitSHA(
+          runID: run.id,
+          sha: recoveredSHA
+        )
+      }
+    } else if currentRun.knowledgeCommitSHA == nil {
+      currentRun = try await productStore.recordRepositoryKnowledgeExport(
+        runID: run.id,
+        paths: export.touchedPaths
+      )
+      if !export.touchedPaths.isEmpty {
+        let expected = Dictionary(
+          uniqueKeysWithValues: export.touchedPaths.compactMap { path in
+            export.expectedContents[path].map { (path, $0) }
+          }
+        )
+        let commitSHA = try await gitWorkspaceManager.checkpointRepositoryKnowledge(
+          at: workspaceURL,
+          analyzedSHA: run.analyzedSHA,
+          expectedFiles: expected
+        )
+        currentRun = try await productStore.recordRepositoryKnowledgeCommitSHA(
+          runID: run.id,
+          sha: commitSHA
+        )
+      }
+    }
+    return try await productStore.finalizeRepositoryKnowledgePublication(runID: run.id)
+  }
+
+  private func interruptRepositoryKnowledgeRun(
+    _ runID: UUID,
+    store productStore: SQLiteStore,
+    publishingRemainsResumable: Bool
+  ) async {
+    guard let run = try? await productStore.fetchRepositoryKnowledgeRun(id: runID) else {
+      return
+    }
+    let status: RepositoryKnowledgeRunStatus =
+      publishingRemainsResumable && run.status == .publishing ? .publishing : .interrupted
+    _ = try? await productStore.updateRepositoryKnowledgeRun(
+      id: runID,
+      status: status,
+      errorMessage:
+        status == .publishing
+        ? "Spedito closed while verified knowledge was publishing. Publication will resume."
+        : "Spedito closed before repository analysis finished."
+    )
+  }
+
+  private func failRepositoryKnowledgeRun(
+    _ runID: UUID,
+    error: Error,
+    store productStore: SQLiteStore
+  ) async {
+    guard let run = try? await productStore.fetchRepositoryKnowledgeRun(id: runID) else {
+      return
+    }
+    let status: RepositoryKnowledgeRunStatus
+    if error is GitWorkspaceError || error is RepositoryAnalysisSnapshotError {
+      status = .stale
+    } else if run.status == .publishing {
+      status = .publishing
+    } else {
+      status = .failed
+    }
+    _ = try? await productStore.updateRepositoryKnowledgeRun(
+      id: runID,
+      status: status,
+      errorMessage: error.localizedDescription
+    )
+  }
+
+  private func finishRepositoryKnowledgeRun(
+    run: RepositoryKnowledgeRun,
+    snapshotURL: URL?,
+    client: CodexAppServerClient?
+  ) async {
+    activeRepositoryKnowledgeTurns[run.id] = nil
+    stopRepositoryKnowledgeActivityMonitoring(productID: run.productID)
+    repositoryKnowledgeClients[run.id] = nil
+    if let client { await client.disconnect() }
+    if let snapshotURL {
+      try? GitWorkspaceManager.removeRepositoryAnalysisSnapshot(at: snapshotURL)
+    }
+  }
+
+  private func repositoryInstructions(
+    base: String,
+    profile: AgentProfile
+  ) -> String {
+    let custom = profile.customInstructionText
+    guard !custom.isEmpty else { return base }
+    return "\(base)\n\nTeam member instructions:\n\(custom)"
+  }
+
+  private func repositoryWorkspaceURL(productID: UUID) throws -> URL {
+    if let storeRegistry {
+      return storeRegistry.productWorkspacesRootURL
+        .appendingPathComponent(productID.uuidString, isDirectory: true)
+    }
+    return try Self.productWorkspaceURL(productID: productID)
+  }
+
+  private static func repositoryAnalysisRootURL() throws -> URL {
+    let caches = try FileManager.default.url(
+      for: .cachesDirectory,
+      in: .userDomainMask,
+      appropriateFor: nil,
+      create: true
+    )
+    return
+      caches
+      .appendingPathComponent("Spedito", isDirectory: true)
+      .appendingPathComponent("Repository analysis", isDirectory: true)
   }
 
   func reload() async {
@@ -9493,6 +12257,7 @@ final class AppModel: ObservableObject {
     do {
       products = try await fetchProducts()
       archivedProducts = try await fetchProducts(status: .archived)
+      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
       if !didResolveInitialProductSelection {
         didResolveInitialProductSelection = true
         let rememberedSelectionIsValid = products.contains { $0.id == selectedProductID }
@@ -9507,6 +12272,7 @@ final class AppModel: ObservableObject {
         rememberSelectedProduct(selectedProductID)
       }
       await reloadSelectedProduct()
+      scheduleGitHubPullRequestPolling()
     } catch {
       errorMessage = error.localizedDescription
     }
@@ -9527,10 +12293,16 @@ final class AppModel: ObservableObject {
       sprintReadinessIssues = []
       activity = []
       suggestionBatch = nil
+      importedAppLaunch = nil
       retrospectiveNotes = []
       retrospectiveSyntheses = []
       retrospectiveActionSources = []
       knowledgePages = []
+      knowledgePageReadState.reset()
+      unreadKnowledgePageIDs = []
+      productRepository = nil
+      repositoryKnowledgeRun = nil
+      repositoryKnowledgeDrafts = []
       candidateRevisions = []
       demoSessions = []
       permissionRequests = []
@@ -9544,28 +12316,33 @@ final class AppModel: ObservableObject {
       return
     }
     do {
+      let loadedGitHubRemoteState = await githubRemoteService?.state(productID: productID)
+      let loadedRepository = try await store.fetchProductRepository(productID: productID)
+      let loadedRepositoryRun = try await store.fetchLatestRepositoryKnowledgeRun(
+        productID: productID
+      )
+      let loadedImportedAppLaunch = try await store.fetchImportedAppLaunch(productID: productID)
+      let loadedRepositoryDrafts: [RepositoryKnowledgeDraft]
+      if let loadedRepositoryRun {
+        loadedRepositoryDrafts = try await store.fetchRepositoryKnowledgeDrafts(
+          runID: loadedRepositoryRun.id
+        )
+      } else {
+        loadedRepositoryDrafts = []
+      }
       let loadedEpics = try await store.fetchEpics(productID: productID)
       let loadedWorkItems = try await store.fetchWorkItems(productID: productID)
       let loadedDependencies = try await store.fetchWorkItemDependencies(
         productID: productID
       )
       let loadedProfiles = try await store.seedDefaultProfiles(productID: productID)
-      let loadedKnowledgePages = try await store.seedKnowledgeBase(productID: productID)
+      let loadedKnowledgePages =
+        if loadedRepository == nil {
+          try await store.seedKnowledgeBase(productID: productID)
+        } else {
+          try await store.fetchKnowledgePages(productID: productID)
+        }
       let loadedCandidates = try await store.fetchCandidateRevisions(productID: productID)
-      let acceptedKnowledgeSourceWorkItemIDs = Set(
-        loadedCandidates
-          .filter { $0.status == .accepted }
-          .map(\.workItemID)
-      ).union(
-        loadedWorkItems
-          .filter { $0.state == .readyToRelease || $0.state == .released }
-          .map(\.id)
-      )
-      try Self.syncKnowledgeMarkdownFiles(
-        productID: productID,
-        pages: loadedKnowledgePages,
-        acceptedSourceWorkItemIDs: acceptedKnowledgeSourceWorkItemIDs
-      )
       let loadedAgentRunKnowledgeContext = try await store.fetchAgentRunKnowledgeContext(
         productID: productID
       )
@@ -9620,11 +12397,20 @@ final class AppModel: ObservableObject {
       }
 
       guard selectedProductID == productID else { return }
+      if let loadedGitHubRemoteState {
+        githubRemoteRepositoryStates[productID] = loadedGitHubRemoteState
+      }
       epics = loadedEpics
+      importedAppLaunch = loadedImportedAppLaunch
       workItems = loadedWorkItems
       dependencies = loadedDependencies
       profiles = loadedProfiles
       knowledgePages = loadedKnowledgePages
+      knowledgePageReadState.load(productID: productID, pages: loadedKnowledgePages)
+      unreadKnowledgePageIDs = knowledgePageReadState.unreadPageIDs(in: loadedKnowledgePages)
+      productRepository = loadedRepository
+      repositoryKnowledgeRun = loadedRepositoryRun
+      repositoryKnowledgeDrafts = loadedRepositoryDrafts
       agentRunKnowledgeContext = loadedAgentRunKnowledgeContext
       agentRunKnowledgeDestinations = loadedAgentRunKnowledgeDestinations
       candidateRevisions = loadedCandidates
@@ -9648,8 +12434,92 @@ final class AppModel: ObservableObject {
     }
   }
 
+  private func startCodexUsageMonitoring(client: CodexAppServerClient) async {
+    stopCodexUsageMonitoring()
+    let monitorID = UUID()
+    codexUsageMonitorID = monitorID
+    isRefreshingCodexUsage = true
+    let messages = await client.inboundMessages(replayRecent: false)
+
+    codexUsageMonitoringTask = Task { [weak self] in
+      guard let self else { return }
+      await self.refreshCodexUsage(client: client, monitorID: monitorID)
+      for await message in messages {
+        guard !Task.isCancelled else { return }
+        guard
+          case .notification(let notification) = message,
+          notification.method == "account/rateLimits/updated"
+        else { continue }
+        try? await Task.sleep(for: .milliseconds(250))
+        guard !Task.isCancelled else { return }
+        await self.refreshCodexUsage(client: client, monitorID: monitorID)
+      }
+    }
+  }
+
+  private func refreshCodexUsage(
+    client: CodexAppServerClient,
+    monitorID: UUID
+  ) async {
+    guard codexUsageMonitorID == monitorID else { return }
+    isRefreshingCodexUsage = true
+    do {
+      let snapshot = try await client.readRateLimits()
+      guard codexUsageMonitorID == monitorID else { return }
+      codexRateLimits = snapshot
+      codexUsageUpdatedAt = Date()
+      isCodexUsageStale = false
+      isRefreshingCodexUsage = false
+      scheduleCodexUsageReset(snapshot.nextResetAt, client: client, monitorID: monitorID)
+    } catch {
+      guard codexUsageMonitorID == monitorID else { return }
+      isRefreshingCodexUsage = false
+      isCodexUsageStale = codexRateLimits != nil
+    }
+  }
+
+  private func scheduleCodexUsageReset(
+    _ resetAt: Date?,
+    client: CodexAppServerClient,
+    monitorID: UUID
+  ) {
+    codexUsageResetTask?.cancel()
+    guard let resetAt else {
+      codexUsageResetTask = nil
+      return
+    }
+    let delay = resetAt.timeIntervalSinceNow + 1
+    guard delay > 0 else {
+      codexUsageResetTask = nil
+      return
+    }
+    codexUsageResetTask = Task { [weak self] in
+      do {
+        try await Task.sleep(for: .seconds(delay))
+      } catch {
+        return
+      }
+      guard let self, self.codexUsageMonitorID == monitorID else { return }
+      self.isRefreshingCodexUsage = true
+      await self.refreshCodexUsage(client: client, monitorID: monitorID)
+    }
+  }
+
+  private func stopCodexUsageMonitoring() {
+    codexUsageMonitoringTask?.cancel()
+    codexUsageMonitoringTask = nil
+    codexUsageResetTask?.cancel()
+    codexUsageResetTask = nil
+    codexUsageMonitorID = nil
+    codexRateLimits = nil
+    codexUsageUpdatedAt = nil
+    isRefreshingCodexUsage = false
+    isCodexUsageStale = false
+  }
+
   private func connectCodex() async {
     codexConnectionState = .checking
+    stopCodexUsageMonitoring()
     codexModels = []
     refreshCodexInstallations()
     let candidates = selectedCodexInstallation.map(\.runtimeCandidate).map { [$0] } ?? []
@@ -9661,7 +12531,8 @@ final class AppModel: ObservableObject {
       let transport = CodexJSONLTransport(
         configuration: .init(
           executableURL: descriptor.executableURL,
-          environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment
+          environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment,
+          environmentMode: .replace
         )
       )
       let client = CodexAppServerClient(transport: transport)
@@ -9675,14 +12546,18 @@ final class AppModel: ObservableObject {
         throw error
       }
       codexClient = client
+      codexRuntimeExecutableURL = descriptor.executableURL
       demoLauncher.useExecutor(
         CodexWorkspaceCommandExecutor(executableURL: descriptor.executableURL)
       )
       startApprovalRouting(client: client)
+      await startCodexUsageMonitoring(client: client)
       codexConnectionState = .connected(version: descriptor.version, userAgent: info.userAgent)
       scheduleRetrospectiveSyntheses()
+      scheduleRepositoryKnowledgeRuns()
       codexModels = models
     } catch let error as CodexRuntimeError {
+      codexRuntimeExecutableURL = nil
       switch error {
       case .missingRequiredFeature:
         codexConnectionState = .incompatible(error.localizedDescription)
@@ -9690,6 +12565,7 @@ final class AppModel: ObservableObject {
         codexConnectionState = .unavailable(error.localizedDescription)
       }
     } catch {
+      codexRuntimeExecutableURL = nil
       codexConnectionState = .unavailable(error.localizedDescription)
     }
   }
@@ -9797,6 +12673,7 @@ final class AppModel: ObservableObject {
 
   private func reconnectCodex() async {
     approvalRoutingTask?.cancel()
+    stopCodexUsageMonitoring()
     approvalRoutingTask = nil
     await codexClient?.disconnect()
     codexClient = nil
@@ -9882,11 +12759,11 @@ final class AppModel: ObservableObject {
       {
         let eventDetail =
           if resumesAfterDecision && allow && rememberForProduct {
-            "Saved the recovered capability for this product; queued the Conversation to resume"
+            "Saved the recovered capability for this product; queued the conversation to resume"
           } else if resumesAfterDecision && allow {
-            "Allowed the recovered capability once; queued the Conversation to resume"
+            "Allowed the recovered capability once; queued the conversation to resume"
           } else if resumesAfterDecision {
-            "Denied the recovered capability; queued the Conversation so the agent can adapt"
+            "Denied the recovered capability; queued the conversation so the agent can adapt"
           } else if allow && rememberForProduct {
             "Saved and allowed the requested capability for this product"
           } else if allow {
@@ -9897,7 +12774,7 @@ final class AppModel: ObservableObject {
         _ = try await updateAgentRun(
           id: request.agentRunID,
           status: resumesAfterDecision ? .queued : .running,
-          eventActor: "Product Owner",
+          eventActor: "Product owner",
           eventDetail: eventDetail
         )
       }
@@ -9934,17 +12811,18 @@ final class AppModel: ObservableObject {
       return
     }
     let activeMatch = activeExecutionTurns.first(where: {
-        $0.value.threadID == presentation.threadID
-          && $0.value.turnID == presentation.turnID
-      })
-    let runID = activeMatch?.key
+      $0.value.threadID == presentation.threadID
+        && $0.value.turnID == presentation.turnID
+    })
+    let runID =
+      activeMatch?.key
       ?? runs
-        .filter {
-          $0.codexThreadID == presentation.threadID
-            && ($0.status == .running || $0.status == .awaitingOwner)
-        }
-        .max(by: { $0.createdAt < $1.createdAt })?
-        .id
+      .filter {
+        $0.codexThreadID == presentation.threadID
+          && ($0.status == .running || $0.status == .awaitingOwner)
+      }
+      .max(by: { $0.createdAt < $1.createdAt })?
+      .id
     let runStore: SQLiteStore?
     if let productID = activeMatch?.value.productID {
       runStore = store(for: productID)
@@ -9972,8 +12850,7 @@ final class AppModel: ObservableObject {
       }
     )
 
-    if
-      let signature = productGrantSignature,
+    if let signature = productGrantSignature,
       AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
         productGrantSignature: signature,
         kind: presentation.kind,
@@ -9990,10 +12867,12 @@ final class AppModel: ObservableObject {
             && $0.signature == presentation.signature
             && $0.status == .policyDenied
         }) {
-          let policyExplanation = "Spedito protected storage owned by another execution. This delivery run must use its assigned ticket worktree; managed preview, integration, product-control, and other ticket workspaces are not available to it."
-          let recordedReason = presentation.reason.map {
-            "\(policyExplanation)\n\nAgent rationale: \($0)"
-          } ?? policyExplanation
+          let policyExplanation =
+            "Spedito protected storage owned by another execution. This delivery run must use its assigned ticket worktree; managed preview, integration, product-control, and other ticket workspaces are not available to it."
+          let recordedReason =
+            presentation.reason.map {
+              "\(policyExplanation)\n\nAgent rationale: \($0)"
+            } ?? policyExplanation
           let record = AgentPermissionRequest(
             productID: run.productID,
             workItemID: run.workItemID,
@@ -10020,23 +12899,19 @@ final class AppModel: ObservableObject {
       }
     }
 
-    if let priorDecision = (
-      productPermissionRequests
+    if let priorDecision =
+      (productPermissionRequests
         .filter {
           $0.agentRunID == runID
             && $0.signature == presentation.signature
-            && (
-              $0.status == .allowed
-                || $0.status == .denied
-                || $0.status == .policyDenied
-                || (
-                  $0.status == .existingAccess
-                    && $0.turnID == presentation.turnID
-                )
-            )
+            && ($0.status == .allowed
+              || $0.status == .denied
+              || $0.status == .policyDenied
+              || ($0.status == .existingAccess
+                && $0.turnID == presentation.turnID))
         }
-        .max(by: { $0.updatedAt < $1.updatedAt })
-    ) {
+        .max(by: { $0.updatedAt < $1.updatedAt }))
+    {
       do {
         try await client.resolveApprovalRequest(
           request,
@@ -10049,8 +12924,7 @@ final class AppModel: ObservableObject {
       }
     }
 
-    if
-      let signature = productGrantSignature,
+    if let signature = productGrantSignature,
       AgentPermissionGrantPolicy.coversActiveRunRequest(
         productGrantSignature: signature,
         kind: presentation.kind,
@@ -10089,8 +12963,7 @@ final class AppModel: ObservableObject {
       }
     }
 
-    if
-      let signature = productGrantSignature,
+    if let signature = productGrantSignature,
       AgentPermissionGrantPolicy.covers(
         productGrantSignature: signature,
         kind: presentation.kind,
@@ -10218,7 +13091,7 @@ final class AppModel: ObservableObject {
         guard selectedProductID == productID else {
           try? await store.failTicketSuggestionSession(
             sessionID: restartedSession.id,
-            message: "Epic planning recovery was interrupted by a Product change."
+            message: "Epic planning recovery was interrupted by a product change."
           )
           return
         }
@@ -10281,8 +13154,7 @@ final class AppModel: ObservableObject {
   ) throws -> URL {
     let currentURL = root.appendingPathComponent("Spedito", isDirectory: true)
     let legacyURL = root.appendingPathComponent("StoryPointless", isDirectory: true)
-    if
-      !fileManager.fileExists(atPath: currentURL.path),
+    if !fileManager.fileExists(atPath: currentURL.path),
       fileManager.fileExists(atPath: legacyURL.path)
     {
       try fileManager.moveItem(at: legacyURL, to: currentURL)
@@ -10328,31 +13200,6 @@ final class AppModel: ObservableObject {
     )
   }
 
-  private static func excludeProductControlDirectoryFromGit(
-    at workspaceURL: URL
-  ) throws {
-    let gitDirectory = workspaceURL
-      .appendingPathComponent(".git", isDirectory: true)
-    guard FileManager.default.fileExists(atPath: gitDirectory.path) else { return }
-    let excludeURL = gitDirectory
-      .appendingPathComponent("info", isDirectory: true)
-      .appendingPathComponent("exclude")
-    let directory = excludeURL.deletingLastPathComponent()
-    try FileManager.default.createDirectory(
-      at: directory,
-      withIntermediateDirectories: true
-    )
-    let existing =
-      (try? String(contentsOf: excludeURL, encoding: .utf8)) ?? ""
-    let entry = "/\(ProductStoreRegistry.controlDirectoryName)/"
-    guard !existing.split(whereSeparator: \.isNewline).map(String.init).contains(entry)
-    else { return }
-    let separator = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
-    try Data("\(existing)\(separator)\(entry)\n".utf8).write(
-      to: excludeURL,
-      options: .atomic
-    )
-  }
 
   private static func ticketWorktreesRootURL(productID: UUID) throws -> URL {
     let url = try applicationSupportURL()
@@ -10379,7 +13226,8 @@ final class AppModel: ObservableObject {
     else {
       throw CocoaError(.fileNoSuchFile)
     }
-    let url = cachesURL
+    let url =
+      cachesURL
       .appendingPathComponent("Spedito", isDirectory: true)
       .appendingPathComponent("PreviewWorktrees", isDirectory: true)
       .appendingPathComponent(productID.uuidString, isDirectory: true)
@@ -10387,86 +13235,4 @@ final class AppModel: ObservableObject {
     return url
   }
 
-  private static func syncKnowledgeMarkdownFiles(
-    productID: UUID,
-    pages: [KnowledgePage],
-    acceptedSourceWorkItemIDs: Set<UUID>
-  ) throws {
-    try syncKnowledgeMarkdownFiles(
-      at: productWorkspaceURL(productID: productID),
-      pages: pages,
-      shouldExport: {
-        AcceptedWorkspaceKnowledgeExportPolicy.shouldExport(
-          $0,
-          acceptedSourceWorkItemIDs: acceptedSourceWorkItemIDs
-        )
-      }
-    )
-  }
-
-  private static func syncKnowledgeMarkdownFiles(
-    at workspaceURL: URL,
-    pages: [KnowledgePage]
-  ) throws {
-    try syncKnowledgeMarkdownFiles(
-      at: workspaceURL,
-      pages: pages,
-      shouldExport: { $0.verificationStatus == .verified }
-    )
-  }
-
-  private static func syncKnowledgeMarkdownFiles(
-    at workspaceURL: URL,
-    pages: [KnowledgePage],
-    shouldExport: (KnowledgePage) -> Bool
-  ) throws {
-    let knowledgeRoot = workspaceURL
-      .appendingPathComponent("knowledge", isDirectory: true)
-    try FileManager.default.createDirectory(
-      at: knowledgeRoot,
-      withIntermediateDirectories: true
-    )
-    let pagesByID = Dictionary(uniqueKeysWithValues: pages.map { ($0.id, $0) })
-
-    func ancestorSlugs(for page: KnowledgePage) -> [String] {
-      var slugs: [String] = []
-      var parentID = page.parentID
-      while let id = parentID, let parent = pagesByID[id] {
-        slugs.insert(parent.slug, at: 0)
-        parentID = parent.parentID
-      }
-      return slugs
-    }
-
-    for page in pages {
-      var directory = knowledgeRoot
-      for slug in ancestorSlugs(for: page) {
-        directory.appendPathComponent(slug, isDirectory: true)
-      }
-      if page.kind == .section {
-        directory.appendPathComponent(page.slug, isDirectory: true)
-        try FileManager.default.createDirectory(
-          at: directory,
-          withIntermediateDirectories: true
-        )
-        directory.appendPathComponent("index.md")
-      } else {
-        try FileManager.default.createDirectory(
-          at: directory,
-          withIntermediateDirectories: true
-        )
-        directory.appendPathComponent("\(page.slug).md")
-      }
-      guard shouldExport(page) else {
-        if FileManager.default.fileExists(atPath: directory.path) {
-          try FileManager.default.removeItem(at: directory)
-        }
-        continue
-      }
-      let markdown = page.bodyMarkdown.isEmpty
-        ? "# \(page.title)\n"
-        : page.bodyMarkdown
-      try Data(markdown.utf8).write(to: directory, options: .atomic)
-    }
-  }
 }

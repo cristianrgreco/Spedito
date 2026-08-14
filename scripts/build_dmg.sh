@@ -19,8 +19,9 @@ if [[ ! -f "$background_path" ]]; then
   exit 66
 fi
 
-if ! command -v create-dmg >/dev/null 2>&1; then
-  echo "create-dmg is required. Install it with: brew install create-dmg" >&2
+create_dmg="${CREATE_DMG_EXECUTABLE:-create-dmg}"
+if ! command -v "$create_dmg" >/dev/null 2>&1; then
+  echo "create-dmg is required. Set CREATE_DMG_EXECUTABLE to a reviewed executable." >&2
   exit 69
 fi
 
@@ -50,7 +51,7 @@ ditto "$app_path" "$staging_dir/Spedito.app"
 # create-dmg refuses to overwrite an existing output file.
 rm -f "$output_path"
 
-create-dmg \
+"$create_dmg" \
   --volname "$volume_name" \
   --background "$background_path" \
   --window-pos 180 140 \

@@ -24,18 +24,18 @@ public enum EpicConversationGenerationError: Error, Equatable, LocalizedError, S
 
 public enum CodexEpicConversation {
   private static let platformInstructions = """
-    You are the single team member explicitly selected by the Product Owner in a live conversation
+    You are the single team member explicitly selected by the product owner in a live conversation
     attached to one epic. Respond only as your configured role. Do not contact, simulate, or aggregate
     replies from other team members.
 
     This is a concise workplace chat, not an implementation or planning turn. Do not modify files,
     browse the web, create tickets, or claim to update the epic. You may use read-only local tools to
     query the live product database and inspect product Git history. Answer the owner's actual question
-    directly from that evidence and the Epic Conversation. Prefer one to four short sentences. If the
+    directly from that evidence and the epic conversation. Prefer one to four short sentences. If the
     requested rationale is not established, say that plainly rather than inventing one. Ask at most one
     focused follow-up question when it is necessary.
 
-    The separate Business Analyst refinement questions are governed inputs. Ordinary chat never answers,
+    The separate business analyst refinement questions are governed inputs. Ordinary chat never answers,
     dismisses, or changes them. If the owner asks for an epic change, discuss the recommendation without
     claiming it was applied. Return only the JSON requested by the output schema.
     """
@@ -67,22 +67,25 @@ public enum CodexEpicConversation {
     previousMessages: [EpicPlanningConversationMessage],
     ownerMessage: String
   ) -> String {
-    let successCriteria = epic.successCriteria.isEmpty
+    let successCriteria =
+      epic.successCriteria.isEmpty
       ? "No success criteria supplied."
       : epic.successCriteria.map { "- \($0)" }.joined(separator: "\n")
     let constraints = epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines)
-    let acceptedScope = relatedItems.isEmpty
+    let acceptedScope =
+      relatedItems.isEmpty
       ? "No accepted tickets belong to this epic."
       : relatedItems.map { "- \($0.key) [\($0.state.title)]: \($0.title)" }
         .joined(separator: "\n")
-    let proposedScope = proposedItems.isEmpty
+    let proposedScope =
+      proposedItems.isEmpty
       ? "No ticket proposals are awaiting review."
       : proposedItems.map { "- \($0.title)" }.joined(separator: "\n")
     let history = chatHistory(previousMessages)
 
     return """
       Product: \(product.name)
-      Epic: \(epic.title) [\(epic.status.title)]
+      Epic title: \(epic.hasAnalyzedMetadata ? epic.title : "Pending business analyst analysis") [\(epic.status.title)]
       Goal and customer value:
       \(epic.goal)
 
@@ -101,7 +104,7 @@ public enum CodexEpicConversation {
       Recent epic conversation:
       \(history)
 
-      Product Owner message:
+      Product owner message:
       \(ownerMessage)
       """
   }
@@ -137,7 +140,8 @@ public enum CodexEpicConversation {
   private static func chatHistory(
     _ messages: [EpicPlanningConversationMessage]
   ) -> String {
-    let entries = messages
+    let entries =
+      messages
       .filter { $0.kind == .chat }
       .suffix(24)
       .compactMap { message -> String? in
@@ -145,7 +149,7 @@ public enum CodexEpicConversation {
         guard !body.isEmpty else { return nil }
         switch message.author {
         case .owner:
-          return "Product Owner: \(body)"
+          return "Product owner: \(body)"
         case .agent, .businessAnalyst:
           return "\(message.participantName ?? "Team member"): \(body)"
         case .system:

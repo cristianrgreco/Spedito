@@ -19,6 +19,8 @@ bundle_identifier=${SPEDITO_BUNDLE_IDENTIFIER:-io.spedito.app}
 marketing_version=${SPEDITO_VERSION:-0.1.0}
 build_number=${SPEDITO_BUILD_NUMBER:-1}
 signing_identity=${SPEDITO_SIGN_IDENTITY:--}
+github_client_id=${SPEDITO_GITHUB_CLIENT_ID:-}
+github_app_slug=${SPEDITO_GITHUB_APP_SLUG:-}
 
 cd "$project_root"
 
@@ -71,6 +73,8 @@ install -m 644 \
 plutil -replace CFBundleIdentifier -string "$bundle_identifier" "$contents_path/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$marketing_version" "$contents_path/Info.plist"
 plutil -replace CFBundleVersion -string "$build_number" "$contents_path/Info.plist"
+plutil -replace SpeditoGitHubClientID -string "$github_client_id" "$contents_path/Info.plist"
+plutil -replace SpeditoGitHubAppSlug -string "$github_app_slug" "$contents_path/Info.plist"
 
 if [[ -n "$signing_identity" ]]; then
   signing_options=(--force --sign "$signing_identity")

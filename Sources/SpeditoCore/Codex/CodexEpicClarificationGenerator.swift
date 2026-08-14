@@ -22,7 +22,7 @@ public enum EpicClarificationGenerationError: Error, Equatable, LocalizedError, 
   public var errorDescription: String? {
     switch self {
     case .invalidResponse(let detail):
-      "The Business Analyst returned an invalid epic clarification: \(detail)"
+      "The business analyst returned an invalid epic clarification: \(detail)"
     }
   }
 }
@@ -74,32 +74,32 @@ public enum CodexEpicClarificationGenerator {
     )
     return """
       Before proposing an epic or any delivery tickets, have a short requirements conversation with the
-      Product Owner. Ask only material questions whose answers can change scope, success criteria, user
+      product owner. Ask only material questions whose answers can change scope, success criteria, user
       experience, constraints, or the ticket breakdown.
 
       Actively inspect consequential decision surfaces relevant to this outcome, including data or
       content sources, third-party services, licensing, cost, reliability, privacy, security, and
       maintenance ownership. Resolve those choices during this conversation whenever the available
       context supports a responsible recommendation. Recommend a sensible default with a brief rationale.
-      Do not silently defer an unresolved Product Owner decision into a backlog ticket. Offer research as
-      a choice only when external evidence is genuinely required; the Product Owner choosing it is explicit
+      Do not silently defer an unresolved product owner decision into a backlog ticket. Offer research as
+      a choice only when external evidence is genuinely required; the product owner choosing it is explicit
       permission to create a time-boxed research ticket with a concrete comparison and recommendation.
       Selecting a specific real external source or service is not resolved merely by agreeing desired
       constraints when current evidence about candidates, terms, suitability, or operation is still needed.
       In that situation, make the work consequence explicit in the choices. Distinguish:
-      - creating a Business Analyst research ticket to compare candidates and recommend one for approval;
-      - the Product Owner naming an already approved choice; and
+      - creating a business analyst research ticket to compare candidates and recommend one for approval;
+      - the product owner naming an already approved choice; and
       - explicitly delegating implementation-time selection to the implementer without a separate
         recommendation.
       Recommend the research option when no choice is already approved and a responsible recommendation
       needs external evidence. Do not offer a vague option such as “let the team choose.”
 
-      Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified Product
+      Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified product
       knowledge supplied below, especially verified Environments knowledge. Planning is not source
       investigation. Do not inspect repository files, manifests, scripts, CI, documentation, or Git
       history. Decide from the
       supplied evidence whether the existing product environment can build, test, prototype, demo, and
-      locally run the likely delivery work. Do not scan the Product Owner's Mac for installed package
+      locally run the likely delivery work. Do not scan the product owner's Mac for installed package
       managers or treat an incidental executable as an approved product environment. If the environment
       evidence is absent or insufficient and executable work is likely, ask at most one business-friendly
       question about an existing technology or hosting constraint versus having the team recommend the
@@ -116,18 +116,18 @@ public enum CodexEpicClarificationGenerator {
       choices.
 
       Resolve a standard foundation recommendation in this conversation when the supplied tickets and
-      verified Product knowledge are enough. If a responsible recommendation genuinely needs current
-      external evidence, offer a separate Business Analyst research outcome; choosing it authorises that
+      verified product knowledge are enough. If a responsible recommendation genuinely needs current
+      external evidence, offer a separate business analyst research outcome; choosing it authorises that
       research.
       Make the consequence explicit in the choices: a standard recommendation uses the supplied verified
       product evidence and creates no research ticket, while time-boxed research creates a separate
-      Business Analyst ticket that compares current options before the environment is established.
-      The eventual plan must keep stack recommendation separate from the Implementer task that establishes
+      business analyst ticket that compares current options before the environment is established.
+      The eventual plan must keep stack recommendation separate from the implementer task that establishes
       and verifies the environment. Considering the intended deployment destination early does not
       authorise production credentials, accounts, signing identities, or a deployment.
 
       Product: \(product.name)
-      Outcome captured from the Product Owner:
+      Outcome captured from the product owner:
       \(epic.goal)
 
       Supplied planning evidence:
@@ -145,18 +145,18 @@ public enum CodexEpicClarificationGenerator {
       .map { "\($0.offset + 1). \($0.element)" }
       .joined(separator: "\n")
     return """
-      The Product Owner answered:
+      The product owner answered:
       \(answerText)
 
       Decide whether a further material clarification is genuinely required. If so, ask one to three new
       concise questions using the same choice format and set readyToPlan to false. Do not repeat resolved
       questions. Before declaring the outcome ready, confirm that consequential choices such as sources,
       third-party services, licensing, cost, reliability, privacy, security, and maintenance ownership
-      have either been resolved or explicitly delegated to research by the Product Owner. Do not silently
+      have either been resolved or explicitly delegated to research by the product owner. Do not silently
       turn an unresolved choice into a discovery ticket. Constraints for an unnamed external source do not
       resolve its selection. Treat an instruction to identify, compare, recommend, or choose it using
-      current external evidence as authorisation for Business Analyst research. A broad answer such as
-      “let the team choose” is ambiguous: ask whether the Product Owner wants a separate recommendation or
+      current external evidence as authorisation for business analyst research. A broad answer such as
+      “let the team choose” is ambiguous: ask whether the product owner wants a separate recommendation or
       explicitly delegates implementation-time selection without one. If the outcome is sufficiently clear
       to define a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and
       briefly confirm any authorised research that the plan will include.
@@ -170,9 +170,9 @@ public enum CodexEpicClarificationGenerator {
       question, every option must restate the complete resulting scope rather than add to a previous option;
       never use incremental labels such as “as well,” “too,” or “also.” Direct an unlisted constraint
       through the interface's Other text field. Distinguish using the supplied verified product evidence
-      without a research ticket from authorising a time-boxed Business Analyst comparison of current
+      without a research ticket from authorising a time-boxed business analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
-      authorise separate environment research only when the Product Owner agreed that current external
+      authorise separate environment research only when the product owner agreed that current external
       evidence is needed. Do not propose tickets in this response.
       """
   }
@@ -191,12 +191,12 @@ public enum CodexEpicClarificationGenerator {
     let transcript = durableTranscript(messages)
     return """
       The previous Codex thread for this epic is no longer available. Continue the requirements
-      conversation from the durable Spedito transcript below. Treat every Product Owner answer
-      in the transcript as authoritative. Do not repeat resolved questions or ask the Product Owner to
+      conversation from the durable Spedito transcript below. Treat every product owner answer
+      in the transcript as authoritative. Do not repeat resolved questions or ask the product owner to
       re-enter an answer.
 
       Product: \(product.name)
-      Outcome captured from the Product Owner:
+      Outcome captured from the product owner:
       \(epic.goal)
 
       Supplied planning evidence:
@@ -210,11 +210,11 @@ public enum CodexEpicClarificationGenerator {
       recommended choice first and suffix it with "(Recommended)". Do not include an "Other" option; the
       interface adds it. Before declaring the outcome ready, confirm that consequential choices such as
       data or content sources, third-party services, licensing, cost, reliability, privacy, security, and
-      maintenance ownership have either been resolved or explicitly delegated to research by the Product
-      Owner. Do not silently turn an unresolved choice into a discovery ticket. Constraints for an unnamed
+      maintenance ownership have either been resolved or explicitly delegated to research by the product
+      owner. Do not silently turn an unresolved choice into a discovery ticket. Constraints for an unnamed
       external source do not resolve its selection. Treat an instruction to identify, compare, recommend,
-      or choose it using current external evidence as authorisation for Business Analyst research. A broad
-      answer such as “let the team choose” is ambiguous: ask whether the Product Owner wants a separate
+      or choose it using current external evidence as authorisation for business analyst research. A broad
+      answer such as “let the team choose” is ambiguous: ask whether the product owner wants a separate
       recommendation or explicitly delegates implementation-time selection without one. If the outcome is
       sufficiently clear to define a coherent epic and delivery backlog, return no questions, set
       readyToPlan to true, and briefly confirm any authorised research that the plan will include.
@@ -230,7 +230,7 @@ public enum CodexEpicClarificationGenerator {
       interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
       existing evidence without a research ticket from time-boxed research that creates one. Confirm that
       the final plan will include an environment-establishment prerequisite, with separate research only
-      when the Product Owner authorised evidence gathering. Do not propose tickets in this response.
+      when the product owner authorised evidence gathering. Do not propose tickets in this response.
       """
   }
 
@@ -250,31 +250,31 @@ public enum CodexEpicClarificationGenerator {
     )
       + """
 
-        Use every requirement resolved in the preceding conversation. Return the complete epic metadata
-        and ticket plan now. Create research or discovery work only when the Product Owner explicitly
-        requested it or agreed during clarification that more evidence is required. An instruction for the
-        Business Analyst or team to identify, compare, recommend, or choose a real external source using
-        current evidence is such authorisation. Give that work a separate Business Analyst ticket; do not
-        bury it inside design or implementation. The only exception is an explicit Product Owner decision
-        to delegate implementation-time selection to the implementer without a separate recommendation.
-        Otherwise return tickets that deliver the agreed outcome, not tickets that discover what the
-        outcome should be. If approved research is needed before delivery, include it together with the
-        downstream work needed to achieve the epic; do not return a research-only plan for an epic whose
-        success criteria include a product change. Do not force that work into a standard sequence of
-        research, design, implementation, and verification tickets. Make verification explicit in the
-        relevant acceptance criteria, using a separate ticket only when it has an independently valuable
-        outcome.
+      Use every requirement resolved in the preceding conversation. Return the complete epic metadata
+      and ticket plan now. Create research or discovery work only when the product owner explicitly
+      requested it or agreed during clarification that more evidence is required. An instruction for the
+      business analyst or team to identify, compare, recommend, or choose a real external source using
+      current evidence is such authorisation. Give that work a separate business analyst ticket; do not
+      bury it inside design or implementation. The only exception is an explicit product owner decision
+      to delegate implementation-time selection to the implementer without a separate recommendation.
+      Otherwise return tickets that deliver the agreed outcome, not tickets that discover what the
+      outcome should be. If approved research is needed before delivery, include it together with the
+      downstream work needed to achieve the epic; do not return a research-only plan for an epic whose
+      success criteria include a product change. Do not force that work into a standard sequence of
+      research, design, implementation, and verification tickets. Make verification explicit in the
+      relevant acceptance criteria, using a separate ticket only when it has an independently valuable
+      outcome.
 
-        Return the structured environment assessment required by the schema. If executable delivery is not
-        covered by verified Environments guidance, include one concrete Implementer-owned environment
-        establishment task and make every ticket that needs it depend on it directly or transitively.
-        Mark research, product decisions, and neutral design artefacts independent only when they can
-        truthfully proceed without that environment. If a material stack recommendation needed research,
-        include the separately authorised Business Analyst recommendation before the establishment task.
-        The establishment task must verify stable repository entry points, run-private temporary and cache
-        locations, required capabilities, managed demo readiness, limitations, and the complete
-        Environments Product knowledge update. Do not ask more questions in this response.
-        """
+      Return the structured environment assessment required by the schema. If executable delivery is not
+      covered by verified Environments guidance, include one concrete implementer-owned environment
+      establishment task and make every ticket that needs it depend on it directly or transitively.
+      Mark research, product decisions, and neutral design artefacts independent only when they can
+      truthfully proceed without that environment. If a material stack recommendation needed research,
+      include the separately authorised business analyst recommendation before the establishment task.
+      The establishment task must verify stable repository entry points, run-private temporary and cache
+      locations, required capabilities, managed demo readiness, limitations, and the complete
+      Environments product knowledge update. Do not ask more questions in this response.
+      """
   }
 
   public static func finalPlanRecoveryPrompt(
@@ -286,21 +286,21 @@ public enum CodexEpicClarificationGenerator {
     verifiedKnowledge: [KnowledgePage] = []
   ) -> String {
     """
-      The previous Codex thread stopped while preparing the final epic plan. Reconstruct the plan from
-      the durable Spedito transcript below. Treat every Product Owner answer as authoritative,
-      retain the Business Analyst's confirmed scope, and do not ask the Product Owner to repeat anything.
+    The previous Codex thread stopped while preparing the final epic plan. Reconstruct the plan from
+    the durable Spedito transcript below. Treat every product owner answer as authoritative,
+    retain the business analyst's confirmed scope, and do not ask the product owner to repeat anything.
 
-      Durable conversation:
-      \(durableTranscript(messages))
+    Durable conversation:
+    \(durableTranscript(messages))
 
-      \(finalPlanPrompt(
+    \(finalPlanPrompt(
         product: product,
         epic: epic,
         existingItems: existingItems,
         rejectedSuggestions: rejectedSuggestions,
         verifiedKnowledge: verifiedKnowledge
       ))
-      """
+    """
   }
 
   public static func decode(_ text: String) throws -> EpicClarificationReply {
@@ -364,7 +364,7 @@ public enum CodexEpicClarificationGenerator {
       switch message.author {
       case .businessAnalyst:
         let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        return body.isEmpty ? nil : "Business Analyst: \(body)"
+        return body.isEmpty ? nil : "Business analyst: \(body)"
       case .agent:
         let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = message.participantName ?? "Team member"
@@ -375,10 +375,10 @@ public enum CodexEpicClarificationGenerator {
             "- Question: \($0.question.prompt)\n  Answer: \($0.answer)"
           }
           .joined(separator: "\n")
-          return "Product Owner answered:\n\(answers)"
+          return "Product owner answered:\n\(answers)"
         }
         let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        return body.isEmpty ? nil : "Product Owner: \(body)"
+        return body.isEmpty ? nil : "Product owner: \(body)"
       case .system:
         let body = message.body.trimmingCharacters(in: .whitespacesAndNewlines)
         return body.isEmpty ? nil : "Spedito: \(body)"

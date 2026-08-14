@@ -30,7 +30,9 @@ struct CodebaseView: View {
   }
 
   private var ticketRevisions: [CodebaseTicketRevision] {
-    model.candidateRevisions.map(CodebaseTicketRevision.init)
+    model.candidateRevisions
+      .filter(\.deliveryKind.changesRepository)
+      .map(CodebaseTicketRevision.init)
   }
 
   private var branchWorkItemIDs: [String: UUID] {
@@ -50,15 +52,13 @@ struct CodebaseView: View {
     return model.workItems
       .filter { item in
         relevantIDs.contains(item.id)
-          && (
-            branchIDs.contains(item.id)
-              || !CodebaseHistoryFilter.commits(
-                in: snapshot,
-                scope: .ticket(item.id),
-                revisions: ticketRevisions,
-                branchWorkItemIDs: branchWorkItemIDs
-              ).isEmpty
-          )
+          && (branchIDs.contains(item.id)
+            || !CodebaseHistoryFilter.commits(
+              in: snapshot,
+              scope: .ticket(item.id),
+              revisions: ticketRevisions,
+              branchWorkItemIDs: branchWorkItemIDs
+            ).isEmpty)
       }
       .sorted { lhs, rhs in
         lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
@@ -68,6 +68,19 @@ struct CodebaseView: View {
   var body: some View {
     VStack(spacing: 0) {
       header
+      if let remoteState = model.selectedGitHubRemoteRepositoryState,
+        let connection = remoteState.connection,
+        connection.status == .connected
+      {
+        CodebaseRemoteRepositoryStatus(
+          state: remoteState,
+          isBusy: model.isSelectedGitHubRemoteRepositoryBusy,
+          onCheck: {
+            guard let productID = model.selectedProductID else { return }
+            Task { await model.checkRemoteRepository(productID: productID) }
+          }
+        )
+      }
       Divider()
       if snapshot != nil {
         VStack(spacing: 0) {
@@ -143,6 +156,10 @@ struct CodebaseView: View {
     .task(id: selectedBranchName) {
       await loadSelectedBranch()
     }
+    .task(id: model.selectedGitHubRemoteRepositoryState?.observation?.localSHA) {
+      guard snapshot != nil else { return }
+      await refresh(selectInitialCommit: false)
+    }
     .task(id: model.codebaseFocusWorkItemID) {
       guard let workItemID = model.codebaseFocusWorkItemID else { return }
       for _ in 0..<30 where snapshot == nil {
@@ -203,11 +220,12 @@ struct CodebaseView: View {
                   subject: displaySubject(for: commit),
                   authorName: displayAuthor(for: commit),
                   presentation: commitPresentation(for: commit),
+                  showsState: historyScope != .trunk,
                   isSelected: selectedCommitSHA == commit.sha
                 )
               }
               .buttonStyle(.plain)
-              Divider().padding(.leading, 18)
+              Divider()
             }
           }
         }
@@ -317,23 +335,20 @@ struct CodebaseView: View {
       let newSnapshot = try await model.codebaseSnapshot()
       snapshot = newSnapshot
       errorMessage = nil
-      if
-        let selectedBranchName,
+      if let selectedBranchName,
         !newSnapshot.branches.contains(where: { $0.name == selectedBranchName })
       {
         self.selectedBranchName = nil
         selectedBranchDetail = nil
       }
-      if
-        case .ticket(let workItemID) = historyScope,
+      if case .ticket(let workItemID) = historyScope,
         !historyTickets.contains(where: { $0.id == workItemID })
       {
         historyScope = .trunk
       }
       if (selectInitialCommit || selectedCommitSHA == nil) && selectedBranchName == nil {
         selectedCommitSHA = commits.first?.sha
-      } else if
-        let selectedCommitSHA,
+      } else if let selectedCommitSHA,
         !commits.contains(where: { $0.sha == selectedCommitSHA })
       {
         self.selectedCommitSHA = commits.first?.sha
@@ -353,8 +368,7 @@ struct CodebaseView: View {
     selectedBranchDetail = nil
     selectedFilePath = nil
     selectedCommitDetail = nil
-    if
-      commits.isEmpty,
+    if commits.isEmpty,
       case .ticket(let workItemID) = historyScope,
       let branchName = branchWorkItemIDs.first(where: { $0.value == workItemID })?.key
     {
@@ -484,8 +498,7 @@ struct CodebaseView: View {
     if let candidate = candidate(for: commit) {
       return model.workItems.first { $0.id == candidate.workItemID }
     }
-    if
-      let branch = snapshot?.branches.first(where: { $0.commitSHAs.contains(commit.sha) }),
+    if let branch = snapshot?.branches.first(where: { $0.commitSHAs.contains(commit.sha) }),
       let workItemID = branchWorkItemIDs[branch.name]
     {
       return model.workItems.first { $0.id == workItemID }
@@ -500,8 +513,7 @@ struct CodebaseView: View {
     if commit.authorName != "Spedito" {
       return model.profiles.first { $0.name == commit.authorName }
     }
-    if
-      let candidate = candidate(for: commit),
+    if let candidate = candidate(for: commit),
       let run = model.runs.first(where: { $0.id == candidate.implementationRunID })
     {
       return model.profiles.first { $0.id == run.profileID }
@@ -555,6 +567,92 @@ struct CodebaseView: View {
       return "Integrate \(ticket.key): \(ticket.title)"
     }
     return commit.subject
+  }
+}
+private struct CodebaseRemoteRepositoryStatus: View {
+  let state: GitHubRemoteRepositoryState
+  let isBusy: Bool
+  let onCheck: () -> Void
+
+  var body: some View {
+    if let connection = state.connection {
+      HStack(alignment: .center, spacing: 14) {
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 8) {
+            if let url = connection.canonicalHTTPSURL,
+              let fullName = connection.fullName
+            {
+              Link(fullName, destination: url)
+                .font(.callout.weight(.semibold))
+            } else if let fullName = connection.fullName {
+              Text(fullName)
+                .font(.callout.weight(.semibold))
+            }
+            if let branch = connection.defaultBranch {
+              Text(branch)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+            relationshipLabel
+          }
+          if let observation = state.observation {
+            HStack(spacing: 12) {
+              Text("Local \(String(observation.localSHA.prefix(8)))")
+              Text("GitHub \(String(observation.remoteSHA.prefix(8)))")
+              Text("\(observation.aheadCount) ahead · \(observation.behindCount) behind")
+              Text(
+                "Checked \(observation.observedAt.formatted(date: .abbreviated, time: .shortened))")
+            }
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+          } else {
+            Text("GitHub has not been checked yet.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+        Spacer(minLength: 12)
+        Button("Check GitHub", action: onCheck)
+          .buttonStyle(.borderedProminent)
+          .disabled(isBusy)
+      }
+      .padding(.horizontal, 24)
+      .padding(.vertical, 10)
+      .background(.quaternary.opacity(0.22))
+    }
+  }
+
+  @ViewBuilder
+  private var relationshipLabel: some View {
+    if let relationship = state.observation?.relationship {
+      Text(title(for: relationship))
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(color(for: relationship))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(color(for: relationship).opacity(0.12), in: Capsule())
+    }
+  }
+
+  private func title(for relationship: RemoteRepositoryRelationship) -> String {
+    switch relationship {
+    case .aligned: "Up to date"
+    case .localAhead: "Local changes"
+    case .remoteAhead: "Incoming changes"
+    case .historyAlignmentAvailable: "Merged history available"
+    case .diverged: "Diverged"
+    case .unrelated: "Unrelated"
+    }
+  }
+
+  private func color(for relationship: RemoteRepositoryRelationship) -> Color {
+    switch relationship {
+    case .aligned: .green
+    case .localAhead: .blue
+    case .remoteAhead, .historyAlignmentAvailable: .orange
+    case .diverged, .unrelated: .red
+    }
   }
 }
 
@@ -951,10 +1049,9 @@ enum CodebaseCommitPresentationResolver {
       kind = .workspaceUpdate
     } else if normalizedSubject.contains("product knowledge") {
       kind = .productKnowledge
-    } else if
-      normalizedSubject.hasPrefix("integrate ")
-        || revision.map({ commit.sha == $0.integratedSHA }) == true
-        || revision.map({ commit.parentSHAs.contains($0.headSHA) }) == true
+    } else if normalizedSubject.hasPrefix("integrate ")
+      || revision.map({ commit.sha == $0.integratedSHA }) == true
+      || revision.map({ commit.parentSHAs.contains($0.headSHA) }) == true
     {
       kind = .integration
     } else if revision != nil || (hasTicket && !commit.isOnTrunk) {
@@ -980,8 +1077,8 @@ enum CodebaseCommitPresentationResolver {
     _ status: CandidateRevisionStatus
   ) -> CodebaseCommitState {
     switch status {
-    case .queuedForReview, .reviewing: .inReview
-    case .queuedForIntegration, .integrating: .integrating
+    case .queuedForReview, .queuedForIntegration, .integrating, .promoting: .integrating
+    case .reviewing: .inReview
     case .resolvingConflict: .resolvingConflict
     case .changesRequested: .changesRequested
     case .readyForDemo: .readyForDemo
@@ -1010,8 +1107,8 @@ private struct CodebaseCommitRow: View {
   let subject: String
   let authorName: String
   let presentation: CodebaseCommitPresentation
+  let showsState: Bool
   let isSelected: Bool
-
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
       Image(systemName: presentation.kind.symbol)
@@ -1025,9 +1122,11 @@ private struct CodebaseCommitRow: View {
           .lineLimit(2)
           .frame(maxWidth: .infinity, alignment: .leading)
         HStack(spacing: 6) {
-          Text(presentation.state.title)
-            .fontWeight(.semibold)
-            .foregroundStyle(presentation.state.tint)
+          if showsState {
+            Text(presentation.state.title)
+              .fontWeight(.semibold)
+              .foregroundStyle(presentation.state.tint)
+          }
           Text(commit.shortSHA)
             .font(.caption2.monospaced())
         }
@@ -1154,8 +1253,7 @@ private struct CodebaseFileTreeNode: Identifiable {
     return grouped.keys.sorted().compactMap { component in
       guard let groupedFiles = grouped[component] else { return nil }
       let nodePath = prefix.isEmpty ? component : "\(prefix)/\(component)"
-      if
-        groupedFiles.count == 1,
+      if groupedFiles.count == 1,
         displayPath(for: groupedFiles[0]).split(separator: "/").count == depth + 1
       {
         let file = groupedFiles[0]
@@ -1314,7 +1412,7 @@ private struct CodebaseCommitDetailView: View {
                   time: .shortened
                 )
               )
-                .foregroundStyle(.secondary)
+              .foregroundStyle(.secondary)
               Text("·")
                 .foregroundStyle(.tertiary)
               Text(detail.commit.shortSHA)
@@ -1332,7 +1430,7 @@ private struct CodebaseCommitDetailView: View {
               Label("Open \(ticket.key)", systemImage: "arrow.up.right.square")
             }
             .buttonStyle(.bordered)
-            .help("Open \(ticket.key) in the Sprint Board")
+            .help("Open \(ticket.key) in the sprint board")
           }
         }
 
@@ -1497,8 +1595,8 @@ private struct CodebaseDiffViewer: View {
         GeometryReader { geometry in
           let effectiveLayout: CodebaseDiffLayout =
             layout == .automatic
-              ? (geometry.size.width >= 900 ? .split : .unified)
-              : layout
+            ? (geometry.size.width >= 900 ? .split : .unified)
+            : layout
           if effectiveLayout == .split {
             splitDiff(
               minimumWidth: geometry.size.width,
@@ -1533,8 +1631,8 @@ private struct CodebaseDiffViewer: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 1)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(diffBackground(line))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(diffBackground(line))
         }
         truncationNotice
       }
