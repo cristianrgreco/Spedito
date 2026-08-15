@@ -255,12 +255,7 @@ struct PlanningDropPolicyTests {
       before: nil
     )
 
-    for _ in 0..<100 {
-      if model.candidateSprintPlan?.items.map(\.workItemID) == [prerequisite.id] {
-        break
-      }
-      try await Task.sleep(for: .milliseconds(10))
-    }
+    await model.settleOwnerCommands()
 
     #expect(model.candidateSprintPlan?.items.map(\.workItemID) == [prerequisite.id])
     #expect(
@@ -308,12 +303,7 @@ struct PlanningDropPolicyTests {
     )
     model.addToCandidateSprint(moveAllToSprint.targetItems)
 
-    for _ in 0..<100 {
-      if model.candidateSprintPlan?.items.count == 2 {
-        break
-      }
-      try await Task.sleep(for: .milliseconds(10))
-    }
+    await model.settleOwnerCommands()
 
     #expect(
       Set(model.candidateSprintPlan?.items.map(\.workItemID) ?? [])
@@ -327,12 +317,7 @@ struct PlanningDropPolicyTests {
     )
     model.removeFromCandidateSprint(moveAllToBacklog.targetItems)
 
-    for _ in 0..<100 {
-      if model.candidateSprintPlan?.items.isEmpty == true {
-        break
-      }
-      try await Task.sleep(for: .milliseconds(10))
-    }
+    await model.settleOwnerCommands()
 
     #expect(model.candidateSprintPlan?.items.isEmpty == true)
     await store.close()

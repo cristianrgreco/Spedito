@@ -20,26 +20,29 @@ struct RemoteRepositoryAppModelTests {
     let model = AppModel(
       store: store,
       selectedProductID: product.id,
-      githubRemoteService: service
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
     )
     await model.reload()
-    await model.refreshGitHubImportRepositories()
+    await model.sendRepositoryImportCommand(.loadAuthorizedRepositories)
     #expect(
-      model.githubImportRepositoryCatalog.choices.map(\.repository.fullName)
+      model.repositoryImportSnapshot.catalog.choices.map(\.repository.fullName)
         == ["example/importable"]
     )
-    #expect(model.githubImportRepositoryCatalog.installations.map(\.id) == [41])
-    #expect(model.githubImportRepositoryError == nil)
-    await model.connectGitHubForImport()
+    #expect(model.repositoryImportSnapshot.catalog.installations.map(\.id) == [41])
+    #expect(model.repositoryImportSnapshot.failure == nil)
+    await model.sendRepositoryImportCommand(.authorizeGitHub)
     #expect(await service.didAuthorizeImport)
-    #expect(model.githubImportRepositoryCatalog.choices.first?.repository.isPrivate == true)
+    #expect(
+      model.repositoryImportSnapshot.catalog.choices.first?.repository.isPrivate == true
+    )
 
     let connectionTask = Task {
       await model.connectGitHub(productID: product.id)
     }
     await service.waitForConnectionStart()
-    #expect(model.githubDeviceAuthorizationPrompts[product.id]?.userCode == "ABCD-EFGH")
-    #expect(model.githubRemoteRepositoryBusyProductIDs.contains(product.id))
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).authorizationPrompt?.userCode == "ABCD-EFGH")
+    #expect(model.remoteRepositorySnapshot(for: product.id).isBusy)
 
     let queuedSelection = Task {
       await model.selectLocalGitHubRepository(productID: product.id, repositoryID: 91)
@@ -48,10 +51,12 @@ struct RemoteRepositoryAppModelTests {
     await connectionTask.value
     await queuedSelection.value
     #expect(await service.selectionCount == 1)
-    #expect(model.githubDeviceAuthorizationPrompts[product.id] == nil)
+    #expect(model.remoteRepositorySnapshot(for: product.id).authorizationPrompt == nil)
     #expect(
-      model.githubRemoteRepositoryStates[product.id]?.connection?.status == .selectingRepository)
-    #expect(!model.githubRemoteRepositoryBusyProductIDs.contains(product.id))
+      model.remoteRepositorySnapshotIfLoaded(for: product.id)?.repositoryState.connection?.status
+        == .selectingRepository
+    )
+    #expect(!model.remoteRepositorySnapshot(for: product.id).isBusy)
 
     await service.pauseNextInitialization()
     let initializationTask = Task {
@@ -59,30 +64,35 @@ struct RemoteRepositoryAppModelTests {
     }
     await service.waitForInitializationStart()
     #expect(
-      model.githubRepositorySetupActivities[product.id]
+      model.remoteRepositorySnapshot(for: product.id).setupActivity
         == .inProgress(progress: .validatingProduct, publishesExistingHistory: false)
     )
     #expect(
       !GitHubRepositoryPickerDismissalPolicy.canDismiss(
-        activity: model.githubRepositorySetupActivities[product.id]
+        activity: model.remoteRepositorySnapshot(for: product.id).setupActivity
       )
     )
     await service.completeInitialization()
     await initializationTask.value
-    #expect(model.githubRemoteRepositoryStates[product.id]?.connection?.status == .connected)
     #expect(
-      model.githubRepositorySetupActivities[product.id]
+      model.remoteRepositorySnapshotIfLoaded(for: product.id)?.repositoryState.connection?.status
+        == .connected
+    )
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).setupActivity
         == .completed(publishedExistingHistory: false)
     )
     #expect(
       GitHubRepositoryPickerDismissalPolicy.canDismiss(
-        activity: model.githubRepositorySetupActivities[product.id]
+        activity: model.remoteRepositorySnapshot(for: product.id).setupActivity
       )
     )
 
     await service.failChecks()
     await model.checkRemoteRepository(productID: product.id)
-    #expect(model.githubRemoteRepositoryErrors[product.id] == "GitHub is temporarily unavailable.")
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).failure?.message
+        == "GitHub is temporarily unavailable.")
     #expect(model.errorMessage == nil)
 
     await model.shutdown()
@@ -104,11 +114,14 @@ struct RemoteRepositoryAppModelTests {
     let model = AppModel(
       store: store,
       selectedProductID: product.id,
-      githubRemoteService: service
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
     )
     await model.reload()
 
-    #expect(model.githubRemoteRepositoryStates[product.id]?.repositories.isEmpty == true)
+    #expect(
+      model.remoteRepositorySnapshotIfLoaded(for: product.id)?.repositoryState.repositories.isEmpty
+        == true
+    )
     await model.resumeLocalGitHubRepositorySetup(productID: product.id)
     #expect(await service.refreshRepositoryCount == 1)
     #expect(await service.selectionCount == 1)
@@ -140,7 +153,7 @@ struct RemoteRepositoryAppModelTests {
     let model = AppModel(
       store: store,
       selectedProductID: product.id,
-      githubRemoteService: service
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
     )
     await model.reload()
 
@@ -149,7 +162,7 @@ struct RemoteRepositoryAppModelTests {
     await model.checkRemoteRepository(productID: product.id)
     #expect(await service.checkCount == 0)
     #expect(
-      model.githubRemoteRepositoryErrors[product.id]
+      model.remoteRepositorySnapshot(for: product.id).failure?.message
         == "Restore this Product before resuming its GitHub repository work."
     )
 
@@ -176,7 +189,10 @@ struct RemoteRepositoryAppModelTests {
     )
     let service = AppModelRemoteService()
     await service.failNextImport(with: .emptyDefaultBranch)
-    let model = AppModel(storeRegistry: registry, githubRemoteService: service)
+    let model = AppModel(
+      storeRegistry: registry,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
     await model.reload()
 
     let created = await model.createProductAndSelect(
@@ -206,6 +222,42 @@ struct RemoteRepositoryAppModelTests {
     }
   }
 
+  @Test("Blank Product creation remains independent of repository import")
+  func blankProductCreation() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-AppModel-Blank-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: root.appendingPathComponent(
+        "Product Workspaces",
+        isDirectory: true
+      )
+    )
+    let model = AppModel(storeRegistry: registry)
+    await model.reload()
+
+    #expect(await model.createProductAndSelect(.blank(name: "Blank Product")))
+
+    let product = try #require(model.products.first { $0.name == "Blank Product" })
+    #expect(model.selectedProductID == product.id)
+    #expect(model.repositoryImportSnapshot.phase == .idle)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: registry.productWorkspacesRootURL
+          .appendingPathComponent(product.id.uuidString, isDirectory: true)
+          .appendingPathComponent(".git", isDirectory: true)
+          .path
+      )
+    )
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
   @Test("A failed repository creation leaves an owner-facing error")
   func repositoryCreationFailure() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -221,7 +273,10 @@ struct RemoteRepositoryAppModelTests {
     )
     let service = AppModelRemoteService()
     await service.failNextImport(with: .cloneFailed)
-    let model = AppModel(storeRegistry: registry, githubRemoteService: service)
+    let model = AppModel(
+      storeRegistry: registry,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
     await model.reload()
 
     let created = await model.createProductAndSelect(
@@ -283,7 +338,7 @@ struct RemoteRepositoryAppModelTests {
     let model = AppModel(
       store: store,
       selectedProductID: product.id,
-      githubRemoteService: service
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
     )
     await model.reload()
 
@@ -294,12 +349,6 @@ struct RemoteRepositoryAppModelTests {
 
     await model.prepareIncomingRepositoryChange(productID: product.id)
     #expect(await service.prepareSafeSyncCount == 0)
-    await model.prepareRemotePublication(productID: product.id)
-    #expect(await service.preparePublicationCount == 0)
-    #expect(
-      model.githubRemoteRepositoryErrors[product.id]?
-        .contains("before preparing a pull request") == true
-    )
     await model.shutdown()
     await store.close()
   }
@@ -578,6 +627,24 @@ struct RemoteRepositoryAppModelTests {
         publicationStatus: .openStale
       )
     )
+  }
+
+  @Test("Product settings hides a routine up-to-date repository status")
+  func repositoryRelationshipVisibility() {
+    #expect(
+      !GitHubRepositoryRelationshipVisibility.showsStatus(for: .aligned)
+    )
+    for relationship in [
+      RemoteRepositoryRelationship.localAhead,
+      .remoteAhead,
+      .historyAlignmentAvailable,
+      .diverged,
+      .unrelated,
+    ] {
+      #expect(
+        GitHubRepositoryRelationshipVisibility.showsStatus(for: relationship)
+      )
+    }
   }
 
   @Test("Sprint board hides routine publication states and shows owner actions")
@@ -874,6 +941,7 @@ struct RemoteRepositoryAppModelTests {
       productID: productID,
       connectionID: connectionID,
       workItemID: workItemID,
+      purpose: .ticket,
       accountID: accountID,
       repositoryID: 1,
       owner: "example",
@@ -921,6 +989,246 @@ struct RemoteRepositoryAppModelTests {
   }
 }
 
+@Suite("Remote repository feature model", .serialized)
+@MainActor
+struct RemoteRepositoryFeatureModelTests {
+  @Test("Loading, failure, owner retry, and product switches keep bounded snapshots")
+  func snapshotLifecycle() async {
+    let firstProductID = UUID()
+    let secondProductID = UUID()
+    let service = AppModelRemoteService()
+    let feature = RemoteRepositoryFeatureModel(service: service)
+
+    #expect(feature.snapshotIfLoaded(for: firstProductID) == nil)
+    await service.setRelationship(productID: firstProductID, relationship: .aligned)
+    await feature.load(productID: firstProductID)
+    #expect(
+      feature.snapshot(for: firstProductID).repositoryState.connection?.status == .connected
+    )
+
+    await service.failChecks()
+    await feature.check(productID: firstProductID, isProductActive: true)
+    #expect(
+      feature.snapshot(for: firstProductID).failure?.message
+        == "GitHub is temporarily unavailable."
+    )
+    #expect(!feature.snapshot(for: firstProductID).isBusy)
+
+    await service.resumeChecks()
+    await feature.check(productID: firstProductID, isProductActive: true)
+    #expect(feature.snapshot(for: firstProductID).failure == nil)
+
+    await service.prepareRelaunchedSetup(productID: secondProductID)
+    await feature.load(productID: secondProductID)
+    #expect(
+      feature.snapshot(for: secondProductID).repositoryState.connection?.status
+        == .selectingRepository
+    )
+    #expect(
+      feature.snapshot(for: firstProductID).repositoryState.connection?.status == .connected
+    )
+    await feature.shutdown()
+  }
+
+  @Test("Cancellation clears pending presentation and shutdown settles live work")
+  func cancellationAndShutdown() async {
+    let productID = UUID()
+    let service = AppModelRemoteService()
+    let feature = RemoteRepositoryFeatureModel(service: service)
+
+    let connection = Task {
+      await feature.connect(productID: productID, isProductActive: true)
+    }
+    await service.waitForConnectionStart()
+    #expect(feature.snapshot(for: productID).authorizationPrompt != nil)
+    #expect(feature.snapshot(for: productID).isBusy)
+
+    let cancellation = Task {
+      await feature.cancelConnection(productID: productID, isProductActive: true)
+    }
+    await service.completeConnection()
+    await cancellation.value
+    await connection.value
+    #expect(feature.snapshot(for: productID).authorizationPrompt == nil)
+
+    await service.prepareForConnection()
+    #expect(!feature.snapshot(for: productID).isBusy)
+    #expect(feature.snapshot(for: productID).repositoryState.connection?.status == .disconnected)
+
+    let liveConnection = Task {
+      await feature.connect(productID: productID, isProductActive: true)
+    }
+    await service.waitForConnectionStart()
+    await feature.shutdown()
+    await liveConnection.value
+    #expect(await service.didShutdown)
+    #expect(!feature.snapshot(for: productID).isBusy)
+  }
+
+  @Test("Recovery is owned and settled by the feature model")
+  func recovery() async {
+    let productID = UUID()
+    let service = AppModelRemoteService()
+    let feature = RemoteRepositoryFeatureModel(service: service)
+
+    feature.scheduleRecovery(productIDs: [productID])
+    await service.waitForRecovery()
+    await feature.shutdown()
+
+    #expect(await service.recoveryCount == 1)
+    #expect(await service.didShutdown)
+  }
+
+  @Test("Polling uses injected time and cancels on product and activity changes")
+  func deterministicPollingLifecycle() async {
+    let firstProductID = UUID()
+    let secondProductID = UUID()
+    let sleeper = TestRemotePollingSleeper()
+    let feature = RemoteRepositoryFeatureModel(
+      service: nil,
+      pollingSleeper: sleeper
+    )
+    var selectedProductID = firstProductID
+
+    feature.schedulePullRequestPolling(
+      productID: firstProductID,
+      workItems: { [] },
+      isSelected: { $0 == selectedProductID },
+      onSync: { _ in }
+    )
+    var intervals = await sleeper.waitForRequestCount(1)
+    #expect(intervals == [.seconds(120)])
+
+    selectedProductID = secondProductID
+    feature.schedulePullRequestPolling(
+      productID: secondProductID,
+      workItems: { [] },
+      isSelected: { $0 == selectedProductID },
+      onSync: { _ in }
+    )
+    await sleeper.waitForCancellationCount(1)
+    intervals = await sleeper.waitForRequestCount(2)
+    #expect(intervals == [.seconds(120), .seconds(120)])
+
+    feature.setApplicationActive(false)
+    await sleeper.waitForCancellationCount(2)
+    intervals = await sleeper.waitForRequestCount(3)
+    #expect(intervals == [.seconds(120), .seconds(120), .seconds(300)])
+
+    await feature.shutdown()
+    await sleeper.waitForCancellationCount(3)
+  }
+  #if DEBUG
+    @Test("Development catalog covers every remote owner-facing state")
+    func presentationScenarioCatalog() {
+      let scenarios = RemoteRepositoryPresentationScenarioCatalog.all
+      let scenarioIDs = scenarios.map(\.id)
+
+      #expect(Set(scenarioIDs) == Set(RemoteRepositoryPresentationScenarioID.allCases))
+      #expect(scenarioIDs.count == Set(scenarioIDs).count)
+      #expect(scenarios.allSatisfy { !$0.title.isEmpty })
+      #expect(
+        scenarios.first { $0.id == .waitingForDeviceFlow }?.snapshot.authorizationPrompt != nil
+      )
+      #expect(
+        scenarios.first { $0.id == .publishingBootstrap }?.snapshot.setupActivity?.isInProgress
+          == true
+      )
+      #expect(
+        scenarios.first { $0.id == .incomingChangesAvailable }?.snapshot.repositoryState
+          .observation?.relationship == .remoteAhead
+      )
+      #expect(
+        scenarios.first { $0.id == .awaitingSafeSyncConfirmation }?.snapshot.repositoryState
+          .safeSync?.status == .awaitingConfirmation
+      )
+      #expect(
+        scenarios.first { $0.id == .pullRequestAwaitingReview }?.snapshot.repositoryState
+          .publication?.pullRequest?.isDraft == true
+      )
+      #expect(
+        scenarios.first { $0.id == .pullRequestReadyForApproval }?.snapshot.repositoryState
+          .publication?.pullRequest?.isDraft == false
+      )
+      #expect(
+        scenarios.first { $0.id == .retryableFailure }?.snapshot.failure?.kind == .operation
+      )
+    }
+  #endif
+}
+
+private actor TestRemotePollingSleeper: RemoteRepositoryPollingSleeping {
+  private var requests: [Duration] = []
+  private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
+  private var cancelledBeforeWaiting: Set<UUID> = []
+  private var recordedCancellations: Set<UUID> = []
+  private var cancellationCount = 0
+  private var requestObservers: [Int: [CheckedContinuation<Void, Never>]] = [:]
+  private var cancellationObservers: [Int: [CheckedContinuation<Void, Never>]] = [:]
+
+  func sleep(for duration: Duration) async throws {
+    let id = UUID()
+    requests.append(duration)
+    resumeSatisfiedRequestObservers()
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, any Error>) in
+        if cancelledBeforeWaiting.remove(id) != nil {
+          continuation.resume(throwing: CancellationError())
+        } else {
+          waiters[id] = continuation
+        }
+      }
+    } onCancel: {
+      Task {
+        await self.cancel(id: id)
+      }
+    }
+  }
+
+  func waitForRequestCount(_ count: Int) async -> [Duration] {
+    if requests.count < count {
+      await withCheckedContinuation { continuation in
+        requestObservers[count, default: []].append(continuation)
+      }
+    }
+    return requests
+  }
+
+  func waitForCancellationCount(_ count: Int) async {
+    if cancellationCount < count {
+      await withCheckedContinuation { continuation in
+        cancellationObservers[count, default: []].append(continuation)
+      }
+    }
+  }
+
+  private func cancel(id: UUID) {
+    guard recordedCancellations.insert(id).inserted else { return }
+    cancellationCount += 1
+    if let continuation = waiters.removeValue(forKey: id) {
+      continuation.resume(throwing: CancellationError())
+    } else {
+      cancelledBeforeWaiting.insert(id)
+    }
+    resumeSatisfiedCancellationObservers()
+  }
+
+  private func resumeSatisfiedRequestObservers() {
+    let satisfiedCounts = requestObservers.keys.filter { $0 <= requests.count }
+    for count in satisfiedCounts {
+      requestObservers.removeValue(forKey: count)?.forEach { $0.resume() }
+    }
+  }
+
+  private func resumeSatisfiedCancellationObservers() {
+    let satisfiedCounts = cancellationObservers.keys.filter { $0 <= cancellationCount }
+    for count in satisfiedCounts {
+      cancellationObservers.removeValue(forKey: count)?.forEach { $0.resume() }
+    }
+  }
+}
+
 private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var currentState = GitHubRemoteRepositoryState(isConfigured: true)
   private var connectionContinuation: CheckedContinuation<Void, Never>?
@@ -928,7 +1236,6 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var shouldFailChecks = false
   private(set) var checkCount = 0
   private(set) var prepareSafeSyncCount = 0
-  private(set) var preparePublicationCount = 0
   private(set) var didPresentPrompt = false
   private(set) var didAuthorizeImport = false
   private(set) var didShutdown = false
@@ -1102,8 +1409,16 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     connectionContinuation = nil
   }
 
+  func prepareForConnection() {
+    didPresentPrompt = false
+  }
+
   func failChecks() {
     shouldFailChecks = true
+  }
+
+  func resumeChecks() {
+    shouldFailChecks = false
   }
 
   func pauseNextInitialization() {
@@ -1243,6 +1558,15 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     return currentState
   }
 
+  func prepareTicketIntegration(
+    productID: UUID
+  ) async throws -> GitHubTicketIntegrationPreparation {
+    GitHubTicketIntegrationPreparation(
+      state: try await check(productID: productID),
+      base: nil
+    )
+  }
+
   func prepareSafeSync(productID: UUID) async throws -> GitHubRemoteRepositoryState {
     prepareSafeSyncCount += 1
     _ = productID
@@ -1259,33 +1583,51 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     return currentState
   }
 
-  func preparePublication(productID: UUID) async throws -> GitHubRemoteRepositoryState {
-    preparePublicationCount += 1
-    _ = productID
-    return currentState
-  }
-
-  func cancelPublication(id: UUID) async throws -> GitHubRemoteRepositoryState {
-    _ = id
-    return currentState
-  }
-
-  func confirmPublication(
-    id: UUID,
-    title: String,
-    body: String
+  func prepareTicketPullRequest(
+    productID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID
   ) async throws -> GitHubRemoteRepositoryState {
-    _ = (id, title, body)
-    return currentState
+    _ = (productID, workItemID, candidateRevisionID)
+    throw GitHubRemoteRepositoryServiceError.unavailable(
+      "Ticket pull requests are unavailable in this test."
+    )
   }
 
-  func finishPullRequest(
-    id: UUID,
-    title: String,
-    body: String
+  func markTicketPullRequestReady(
+    publicationID: UUID
   ) async throws -> GitHubRemoteRepositoryState {
-    _ = (id, title, body)
-    return currentState
+    _ = publicationID
+    throw GitHubRemoteRepositoryServiceError.unavailable(
+      "Ticket pull requests are unavailable in this test."
+    )
+  }
+
+  func returnTicketPullRequestToDraft(
+    publicationID: UUID
+  ) async throws -> GitHubRemoteRepositoryState {
+    _ = publicationID
+    throw GitHubRemoteRepositoryServiceError.unavailable(
+      "Ticket pull requests are unavailable in this test."
+    )
+  }
+
+  func syncTicketPullRequest(
+    publicationID: UUID
+  ) async throws -> GitHubTicketPullRequestSync {
+    _ = publicationID
+    throw GitHubRemoteRepositoryServiceError.unavailable(
+      "Ticket pull requests are unavailable in this test."
+    )
+  }
+
+  func mergeTicketPullRequest(
+    publicationID: UUID
+  ) async throws -> GitHubTicketPullRequestMergeResult {
+    _ = publicationID
+    throw GitHubRemoteRepositoryServiceError.unavailable(
+      "Ticket pull requests are unavailable in this test."
+    )
   }
 
   func refreshPullRequest(publicationID: UUID) async throws -> GitHubRemoteRepositoryState {

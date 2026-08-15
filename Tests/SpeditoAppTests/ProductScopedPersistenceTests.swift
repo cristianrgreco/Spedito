@@ -331,7 +331,7 @@ struct ProductScopedPersistenceTests {
       )
       await relaunched.load()
       #expect(
-        relaunched.repositoryKnowledgeCompletionOutcome == .noPublishableKnowledge
+        relaunched.repositoryKnowledgeSnapshot?.completionOutcome == .noPublishableKnowledge
       )
       await relaunched.shutdown()
       #expect(try await store.fetchRepositoryKnowledgeRuns(productID: product.id).count == 1)
@@ -429,7 +429,7 @@ struct ProductScopedPersistenceTests {
       )
       await relaunched.load()
       #expect(
-        relaunched.repositoryKnowledgeCompletionOutcome == .noPublishableKnowledge
+        relaunched.repositoryKnowledgeSnapshot?.completionOutcome == .noPublishableKnowledge
       )
       await relaunched.shutdown()
       #expect(try await store.fetchRepositoryKnowledgeRuns(productID: product.id).count == 1)
@@ -514,7 +514,6 @@ struct ProductScopedPersistenceTests {
     }
   }
 
-
 }
 
 private struct ProductScopedPersistenceFixture {
@@ -540,8 +539,7 @@ private struct ProductScopedPersistenceFixture {
   @MainActor
   func relaunch(
     closing registry: ProductStoreRegistry,
-    selectedProductID: UUID,
-    githubRemoteService: (any GitHubRemoteRepositoryServing)? = nil
+    selectedProductID: UUID
   ) async throws -> ProductScopedAppInstance {
     for store in registry.allStores {
       await store.close()
@@ -552,8 +550,7 @@ private struct ProductScopedPersistenceFixture {
     try await relaunchedRegistry.prepare()
     let model = AppModel(
       storeRegistry: relaunchedRegistry,
-      selectedProductID: selectedProductID,
-      githubRemoteService: githubRemoteService
+      selectedProductID: selectedProductID
     )
     await model.reload()
     return ProductScopedAppInstance(

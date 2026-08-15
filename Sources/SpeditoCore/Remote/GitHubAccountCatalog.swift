@@ -254,9 +254,13 @@ public actor GitHubAccountCatalog {
           refreshTokenExpiresAt: refreshed.refreshTokenExpiresAt
         )
         try await saveTokenSet(tokenSet)
-      } catch {
-        try? await connections.markConnectionsNeedAuthorization(accountIDs: [accountID])
-        throw error
+      } catch let refreshError {
+        do {
+          try await connections.markConnectionsNeedAuthorization(accountIDs: [accountID])
+        } catch {
+          throw error
+        }
+        throw refreshError
       }
     }
     activeLeases[accountID, default: 0] += 1

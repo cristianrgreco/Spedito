@@ -1,0 +1,504 @@
+import Foundation
+import SQLite3
+
+public enum InvalidCandidateRecoveryError: Error, Equatable, LocalizedError, Sendable {
+  case invalidCandidateState
+  case invalidReferences
+  case invalidTicketState(String)
+  case persistence(String)
+
+  public var errorDescription: String? {
+    switch self {
+    case .invalidCandidateState:
+      "The candidate is no longer awaiting ready-for-demo recovery."
+    case .invalidReferences:
+      "The candidate recovery records do not belong to one product and ticket."
+    case .invalidTicketState(let state):
+      "The ticket cannot resume from \(state)."
+    case .persistence(let detail):
+      "The recovery transaction failed: \(detail)"
+    }
+  }
+}
+
+public enum TicketDeliveryRecoveryMutation: Sendable {
+  case updateCandidate(
+    id: UUID,
+    expectedStatuses: Set<CandidateRevisionStatus>,
+    status: CandidateRevisionStatus,
+    integratedSHA: String? = nil,
+    integrationWorktreePath: String? = nil
+  )
+  case updateRun(
+    id: UUID,
+    expectedStatuses: Set<AgentRunStatus>,
+    status: AgentRunStatus,
+    worktreePath: String? = nil,
+    eventDetail: String? = nil
+  )
+  case createRunIfAbsent(AgentRun, notBefore: Date)
+  case transitionWorkItem(
+    id: UUID,
+    expectedStates: Set<WorkItemState>,
+    states: [WorkItemState],
+    reasons: [String]
+  )
+  case updatePermissionRequest(
+    id: UUID,
+    expectedStatuses: Set<AgentPermissionRequestStatus>,
+    status: AgentPermissionRequestStatus
+  )
+  case appendComment(body: String)
+}
+
+public enum TicketDeliveryRecoveryError: Error, Equatable, LocalizedError, Sendable {
+  case invalidReferences
+  case staleCandidate
+  case staleRun
+  case staleWorkItem
+  case stalePermissionRequest
+  case invalidTransition
+  case persistence(String)
+
+  public var errorDescription: String? {
+    switch self {
+    case .invalidReferences:
+      "The delivery recovery records do not belong to one product and ticket."
+    case .staleCandidate:
+      "The candidate changed before delivery recovery could claim it."
+    case .staleRun:
+      "The team member run changed before delivery recovery could claim it."
+    case .staleWorkItem:
+      "The ticket changed before delivery recovery could claim it."
+    case .stalePermissionRequest:
+      "The permission request changed before delivery recovery could claim it."
+    case .invalidTransition:
+      "The delivery recovery transition is incomplete."
+    case .persistence(let detail):
+      "The delivery recovery transaction failed: \(detail)"
+    }
+  }
+}
+
+extension SQLiteStore {
+  public func nextCandidateRevisionVersion(workItemID: UUID) throws -> Int {
+    try withStatement(
+      """
+      SELECT COALESCE(MAX(version), 0) + 1
+      FROM candidate_revisions
+      WHERE work_item_id = ?;
+      """
+    ) { statement in
+      try bind(workItemID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { throw currentSQLiteError() }
+      return Int(sqlite3_column_int64(statement, 0))
+    }
+  }
+
+  public func createCandidateRevision(
+    _ candidate: CandidateRevision
+  ) throws -> CandidateRevision {
+    try withStatement(
+      """
+      INSERT INTO candidate_revisions (
+          id, product_id, sprint_id, sprint_item_id, work_item_id,
+          implementation_run_id, version, branch_name, base_sha, head_sha,
+          integrated_sha, worktree_path, integration_worktree_path, status,
+          commit_count, execution_result_json, created_at, updated_at, delivery_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      """
+    ) { statement in
+      try bind(candidate.id.uuidString, to: 1, in: statement)
+      try bind(candidate.productID.uuidString, to: 2, in: statement)
+      try bind(candidate.sprintID.uuidString, to: 3, in: statement)
+      try bind(candidate.sprintItemID.uuidString, to: 4, in: statement)
+      try bind(candidate.workItemID.uuidString, to: 5, in: statement)
+      try bind(candidate.implementationRunID.uuidString, to: 6, in: statement)
+      try bind(Int64(candidate.version), to: 7, in: statement)
+      try bind(candidate.branchName, to: 8, in: statement)
+      try bind(candidate.baseSHA, to: 9, in: statement)
+      try bind(candidate.headSHA, to: 10, in: statement)
+      try bindOptionalString(candidate.integratedSHA, to: 11, in: statement)
+      try bind(candidate.worktreePath, to: 12, in: statement)
+      try bindOptionalString(candidate.integrationWorktreePath, to: 13, in: statement)
+      try bind(candidate.status.rawValue, to: 14, in: statement)
+      try bind(Int64(candidate.commitCount), to: 15, in: statement)
+      try bind(candidate.executionResultJSON, to: 16, in: statement)
+      try bind(candidate.createdAt.timeIntervalSince1970, to: 17, in: statement)
+      try bind(candidate.updatedAt.timeIntervalSince1970, to: 18, in: statement)
+      try bind(candidate.deliveryKind.rawValue, to: 19, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchCandidateRevision(id: candidate.id)
+  }
+
+  public func fetchCandidateRevisions(productID: UUID) throws -> [CandidateRevision] {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
+             implementation_run_id, version, branch_name, base_sha, head_sha,
+             integrated_sha, worktree_path, integration_worktree_path, status,
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+      FROM candidate_revisions
+      WHERE product_id = ?
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var candidates: [CandidateRevision] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        candidates.append(try decodeCandidateRevision(statement))
+      }
+      return candidates
+    }
+  }
+
+  func fetchSprintExecutionCandidateRevisions(
+    sprintID: UUID
+  ) throws -> [CandidateRevision] {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
+             implementation_run_id, version, branch_name, base_sha, head_sha,
+             integrated_sha, worktree_path, integration_worktree_path, status,
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+      FROM candidate_revisions
+      WHERE sprint_id = ?
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(sprintID.uuidString, to: 1, in: statement)
+      var candidates: [CandidateRevision] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        candidates.append(try decodeCandidateRevision(statement))
+      }
+      return candidates
+    }
+  }
+
+  public func fetchCandidateRevision(id: UUID) throws -> CandidateRevision {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
+             implementation_run_id, version, branch_name, base_sha, head_sha,
+             integrated_sha, worktree_path, integration_worktree_path, status,
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+      FROM candidate_revisions
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(id.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("candidate revision \(id)")
+      }
+      return try decodeCandidateRevision(statement)
+    }
+  }
+
+  public func updateCandidateRevision(
+    id: UUID,
+    status: CandidateRevisionStatus,
+    integratedSHA: String? = nil,
+    integrationWorktreePath: String? = nil
+  ) throws -> CandidateRevision {
+    let now = Date()
+    try withStatement(
+      """
+      UPDATE candidate_revisions
+      SET status = ?,
+          integrated_sha = COALESCE(?, integrated_sha),
+          integration_worktree_path = COALESCE(?, integration_worktree_path),
+          updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(status.rawValue, to: 1, in: statement)
+      try bindOptionalString(integratedSHA, to: 2, in: statement)
+      try bindOptionalString(integrationWorktreePath, to: 3, in: statement)
+      try bind(now.timeIntervalSince1970, to: 4, in: statement)
+      try bind(id.uuidString, to: 5, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchCandidateRevision(id: id)
+  }
+
+  public func recoverInvalidReadyForDemoCandidate(
+    candidateID: UUID,
+    runEventDetail: String,
+    transitionReason: String,
+    commentBody: String
+  ) throws {
+    do {
+      try transaction {
+        let candidate = try fetchCandidateRevision(id: candidateID)
+        guard candidate.status == .readyForDemo || candidate.status == .superseded else {
+          throw InvalidCandidateRecoveryError.invalidCandidateState
+        }
+
+        let implementationRun = try fetchAgentRun(id: candidate.implementationRunID)
+        let workItem = try fetchWorkItem(id: candidate.workItemID)
+        guard
+          implementationRun.productID == candidate.productID,
+          implementationRun.workItemID == candidate.workItemID,
+          workItem.productID == candidate.productID
+        else {
+          throw InvalidCandidateRecoveryError.invalidReferences
+        }
+
+        if candidate.status == .readyForDemo {
+          _ = try updateCandidateRevision(id: candidate.id, status: .superseded)
+        }
+        try markKnowledgePageProposals(
+          candidateRevisionID: candidate.id,
+          status: .superseded
+        )
+
+        switch workItem.state {
+        case .acceptance, .integrating, .verifying:
+          _ = try transitionWorkItem(
+            id: workItem.id,
+            to: .running,
+            actor: "Spedito",
+            reason: transitionReason
+          )
+        case .running:
+          break
+        default:
+          throw InvalidCandidateRecoveryError.invalidTicketState(workItem.state.rawValue)
+        }
+
+        _ = try updateAgentRun(
+          id: implementationRun.id,
+          status: .queued,
+          eventActor: "Spedito",
+          eventDetail: runEventDetail
+        )
+
+        let matchingComment = try fetchComments(workItemID: workItem.id).contains {
+          $0.authorKind == .system
+            && $0.authorName == "Spedito"
+            && $0.body == commentBody
+        }
+        if !matchingComment {
+          _ = try appendComment(
+            workItemID: workItem.id,
+            authorKind: .system,
+            authorName: "Spedito",
+            body: commentBody
+          )
+        }
+      }
+    } catch let error as InvalidCandidateRecoveryError {
+      throw error
+    } catch {
+      throw InvalidCandidateRecoveryError.persistence(error.localizedDescription)
+    }
+  }
+
+  public func performTicketDeliveryRecovery(
+    productID: UUID,
+    workItemID: UUID,
+    mutations: [TicketDeliveryRecoveryMutation]
+  ) throws {
+    do {
+      try transaction {
+        let workItem = try fetchWorkItem(id: workItemID)
+        guard workItem.productID == productID else {
+          throw TicketDeliveryRecoveryError.invalidReferences
+        }
+
+        for mutation in mutations {
+          switch mutation {
+          case .updateCandidate(
+            let id,
+            let expectedStatuses,
+            let status,
+            let integratedSHA,
+            let integrationWorktreePath
+          ):
+            let candidate = try fetchCandidateRevision(id: id)
+            guard
+              candidate.productID == productID,
+              candidate.workItemID == workItemID
+            else {
+              throw TicketDeliveryRecoveryError.invalidReferences
+            }
+            guard candidate.status == status || expectedStatuses.contains(candidate.status) else {
+              throw TicketDeliveryRecoveryError.staleCandidate
+            }
+            _ = try updateCandidateRevision(
+              id: candidate.id,
+              status: status,
+              integratedSHA: integratedSHA,
+              integrationWorktreePath: integrationWorktreePath
+            )
+
+          case .updateRun(
+            let id,
+            let expectedStatuses,
+            let status,
+            let worktreePath,
+            let eventDetail
+          ):
+            let run = try fetchAgentRun(id: id)
+            guard run.productID == productID, run.workItemID == workItemID else {
+              throw TicketDeliveryRecoveryError.invalidReferences
+            }
+            guard run.status == status || expectedStatuses.contains(run.status) else {
+              throw TicketDeliveryRecoveryError.staleRun
+            }
+            _ = try updateAgentRun(
+              id: run.id,
+              status: status,
+              worktreePath: worktreePath,
+              eventActor: eventDetail == nil ? nil : "Spedito",
+              eventDetail: eventDetail
+            )
+
+          case .createRunIfAbsent(let run, let notBefore):
+            guard run.productID == productID, run.workItemID == workItemID else {
+              throw TicketDeliveryRecoveryError.invalidReferences
+            }
+            let matchingRunExists = try fetchAgentRuns(productID: productID).contains {
+              $0.workItemID == workItemID
+                && $0.profileID == run.profileID
+                && $0.createdAt >= notBefore
+            }
+            if !matchingRunExists {
+              _ = try createAgentRun(run)
+            }
+
+          case .transitionWorkItem(
+            let id,
+            let expectedStates,
+            let states,
+            let reasons
+          ):
+            guard id == workItemID, !states.isEmpty, states.count == reasons.count else {
+              throw TicketDeliveryRecoveryError.invalidTransition
+            }
+            var current = try fetchWorkItem(id: id)
+            guard current.productID == productID else {
+              throw TicketDeliveryRecoveryError.invalidReferences
+            }
+            if current.state == states.last {
+              continue
+            }
+            guard expectedStates.contains(current.state) else {
+              throw TicketDeliveryRecoveryError.staleWorkItem
+            }
+            for (state, reason) in zip(states, reasons) where current.state != state {
+              current = try transitionWorkItem(
+                id: current.id,
+                to: state,
+                actor: "Spedito",
+                reason: reason
+              )
+            }
+
+          case .updatePermissionRequest(let id, let expectedStatuses, let status):
+            let request = try fetchAgentPermissionRequest(id: id)
+            guard request.productID == productID, request.workItemID == workItemID else {
+              throw TicketDeliveryRecoveryError.invalidReferences
+            }
+            guard request.status == status || expectedStatuses.contains(request.status) else {
+              throw TicketDeliveryRecoveryError.stalePermissionRequest
+            }
+            _ = try updateAgentPermissionRequest(id: request.id, status: status)
+
+          case .appendComment(let body):
+            let matchingComment = try fetchComments(workItemID: workItemID).contains {
+              $0.authorKind == .system
+                && $0.authorName == "Spedito"
+                && $0.body == body
+            }
+            if !matchingComment {
+              _ = try appendComment(
+                workItemID: workItemID,
+                authorKind: .system,
+                authorName: "Spedito",
+                body: body
+              )
+            }
+          }
+        }
+      }
+    } catch let error as TicketDeliveryRecoveryError {
+      throw error
+    } catch {
+      throw TicketDeliveryRecoveryError.persistence(error.localizedDescription)
+    }
+  }
+  public func saveDemoSession(_ session: DemoSession) throws -> DemoSession {
+    try withStatement(
+      """
+      INSERT INTO demo_sessions (
+          id, product_id, source_kind, launch_id, status, preview_worktree_path,
+          allocated_port, output, error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_kind, launch_id) DO UPDATE SET
+          status = excluded.status,
+          preview_worktree_path = excluded.preview_worktree_path,
+          allocated_port = excluded.allocated_port,
+          output = excluded.output,
+          error_message = excluded.error_message,
+          updated_at = excluded.updated_at;
+      """
+    ) { statement in
+      try bind(session.id.uuidString, to: 1, in: statement)
+      try bind(session.productID.uuidString, to: 2, in: statement)
+      try bind(session.sourceKind.rawValue, to: 3, in: statement)
+      try bind(session.launchID.uuidString, to: 4, in: statement)
+      try bind(session.status.rawValue, to: 5, in: statement)
+      try bindOptionalString(session.previewWorktreePath, to: 6, in: statement)
+      try bindOptionalInt(session.allocatedPort, to: 7, in: statement)
+      try bindOptionalString(session.output, to: 8, in: statement)
+      try bindOptionalString(session.errorMessage, to: 9, in: statement)
+      try bind(session.createdAt.timeIntervalSince1970, to: 10, in: statement)
+      try bind(session.updatedAt.timeIntervalSince1970, to: 11, in: statement)
+      try stepDone(statement)
+    }
+    return try fetchDemoSession(sourceKind: session.sourceKind, launchID: session.launchID)
+  }
+
+  public func fetchDemoSessions(productID: UUID) throws -> [DemoSession] {
+    try withStatement(
+      """
+      SELECT id, product_id, source_kind, launch_id, status, preview_worktree_path,
+             allocated_port, output, error_message, created_at, updated_at
+      FROM demo_sessions
+      WHERE product_id = ?
+      ORDER BY created_at ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var sessions: [DemoSession] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        sessions.append(try decodeDemoSession(statement))
+      }
+      return sessions
+    }
+  }
+
+  public func fetchDemoSession(
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID
+  ) throws -> DemoSession {
+    try withStatement(
+      """
+      SELECT id, product_id, source_kind, launch_id, status, preview_worktree_path,
+             allocated_port, output, error_message, created_at, updated_at
+      FROM demo_sessions
+      WHERE source_kind = ? AND launch_id = ?;
+      """
+    ) { statement in
+      try bind(sourceKind.rawValue, to: 1, in: statement)
+      try bind(launchID.uuidString, to: 2, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("demo session \(sourceKind.rawValue)/\(launchID)")
+      }
+      return try decodeDemoSession(statement)
+    }
+  }
+
+}

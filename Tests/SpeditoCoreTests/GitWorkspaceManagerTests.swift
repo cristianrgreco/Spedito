@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 
@@ -840,6 +841,116 @@ struct GitWorkspaceManagerTests {
     )
   }
 
+  @Test("Same-product Git commands do not overlap while a process is running")
+  func sameProductCommandsSerialize() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-git-serialization-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let wrapper = root.appendingPathComponent("serialized-git")
+    let lock = root.appendingPathComponent("active-command", isDirectory: true)
+    let startedPipe = root.appendingPathComponent("started.pipe")
+    let releasePipe = root.appendingPathComponent("release.pipe")
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    _ = try await GitWorkspaceManager().ensureRepository(at: repository)
+    try #require(mkfifo(startedPipe.path, 0o600) == 0)
+    try #require(mkfifo(releasePipe.path, 0o600) == 0)
+    let startedDescriptor = open(startedPipe.path, O_RDWR)
+    let releaseDescriptor = open(releasePipe.path, O_RDWR)
+    try #require(startedDescriptor >= 0)
+    try #require(releaseDescriptor >= 0)
+    defer {
+      _ = close(startedDescriptor)
+      _ = close(releaseDescriptor)
+    }
+
+    try Data(
+      """
+      #!/bin/sh
+      if ! /bin/mkdir '\(lock.path)' 2>/dev/null; then
+        printf O > '\(startedPipe.path)'
+        exit 97
+      fi
+      printf S > '\(startedPipe.path)'
+      /bin/dd if='\(releasePipe.path)' bs=1 count=1 >/dev/null 2>&1
+      /usr/bin/git "$@"
+      status=$?
+      /bin/rmdir '\(lock.path)'
+      exit "$status"
+
+      """.utf8
+    ).write(to: wrapper)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: wrapper.path
+    )
+
+    let manager = GitWorkspaceManager(executableURL: wrapper)
+    let first = Task {
+      try await manager.currentSHA(at: repository)
+    }
+    #expect(try await readPipeByte(startedDescriptor) == 83)
+
+    let second = Task {
+      try await manager.currentSHA(at: repository)
+    }
+    try writePipeByte(releaseDescriptor)
+    let firstSHA = try await first.value
+    #expect(try await readPipeByte(startedDescriptor) == 83)
+    try writePipeByte(releaseDescriptor)
+    let secondSHA = try await second.value
+    #expect(firstSHA == secondSHA)
+  }
+
+  @Test("A repository operation rejects overlapping Git commands while suspended")
+  func repositoryOperationRejectsOverlap() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-git-operation-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    let manager = GitWorkspaceManager()
+    let expectedSHA = try await manager.ensureRepository(at: repository)
+    let gate = GitRepositoryOperationGate()
+    let operation = Task {
+      try await manager.withRepositoryOperation(at: repository) {
+        await gate.begin()
+        await gate.waitForRelease()
+        return try await manager.currentSHA(at: repository)
+      }
+    }
+    await gate.waitUntilStarted()
+
+    await #expect(throws: GitWorkspaceError.self) {
+      _ = try await manager.currentSHA(at: repository)
+    }
+
+    await gate.release()
+    #expect(try await operation.value == expectedSHA)
+  }
+
+  private func readPipeByte(_ descriptor: Int32) async throws -> UInt8 {
+    try await Task.detached {
+      var byte: UInt8 = 0
+      guard Darwin.read(descriptor, &byte, 1) == 1 else {
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+      }
+      return byte
+    }.value
+  }
+
+  private func writePipeByte(_ descriptor: Int32) throws {
+    var byte: UInt8 = 82
+    guard Darwin.write(descriptor, &byte, 1) == 1 else {
+      throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+  }
+
   private func runGit(_ arguments: [String], at directory: URL) throws -> String {
     let process = Process()
     let pipe = Pipe()
@@ -860,5 +971,38 @@ struct GitWorkspaceManagerTests {
       throw GitWorkspaceError.commandFailed(arguments: arguments, output: output)
     }
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
+private actor GitRepositoryOperationGate {
+  private var didStart = false
+  private var didRelease = false
+  private var startContinuation: CheckedContinuation<Void, Never>?
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func begin() {
+    didStart = true
+    startContinuation?.resume()
+    startContinuation = nil
+  }
+
+  func waitUntilStarted() async {
+    guard !didStart else { return }
+    await withCheckedContinuation { continuation in
+      startContinuation = continuation
+    }
+  }
+
+  func waitForRelease() async {
+    guard !didRelease else { return }
+    await withCheckedContinuation { continuation in
+      releaseContinuation = continuation
+    }
+  }
+
+  func release() {
+    didRelease = true
+    releaseContinuation?.resume()
+    releaseContinuation = nil
   }
 }

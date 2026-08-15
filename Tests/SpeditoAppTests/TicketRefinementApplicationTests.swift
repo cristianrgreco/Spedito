@@ -25,6 +25,7 @@ struct TicketRefinementApplicationTests {
     let product = try await store.createProduct(
       name: "Refinement"
     )
+    _ = try await store.seedDefaultProfiles(productID: product.id)
     let existingPrerequisite = try await store.createWorkItem(
       productID: product.id,
       title: "Existing prerequisite"
@@ -113,6 +114,7 @@ struct TicketRefinementApplicationTests {
     let product = try await store.createProduct(
       name: "Draft refinement"
     )
+    _ = try await store.seedDefaultProfiles(productID: product.id)
     let item = try await store.createWorkItem(
       productID: product.id,
       title: "Rough implementation ticket"

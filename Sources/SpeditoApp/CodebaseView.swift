@@ -2,6 +2,12 @@ import Foundation
 import SpeditoCore
 import SwiftUI
 
+private struct CodebaseFocusTaskID: Hashable {
+  let productID: UUID?
+  let workItemID: UUID?
+  let trunkSHA: String?
+}
+
 struct CodebaseView: View {
   @EnvironmentObject private var model: AppModel
   let onOpenTicket: (WorkItem) -> Void
@@ -18,6 +24,14 @@ struct CodebaseView: View {
   @State private var isLoadingBranch = false
   @State private var errorMessage: String?
   @State private var detailErrorMessage: String?
+
+  private var focusTaskID: CodebaseFocusTaskID {
+    CodebaseFocusTaskID(
+      productID: model.selectedProductID,
+      workItemID: model.codebaseFocusWorkItemID,
+      trunkSHA: snapshot?.trunkSHA
+    )
+  }
 
   private var commits: [GitCommitSummary] {
     guard let snapshot else { return [] }
@@ -65,22 +79,13 @@ struct CodebaseView: View {
       }
   }
 
+  private var remoteRepositoryObservedLocalSHA: String? {
+    model.selectedRemoteRepositorySnapshot?.repositoryState.observation?.localSHA
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       header
-      if let remoteState = model.selectedGitHubRemoteRepositoryState,
-        let connection = remoteState.connection,
-        connection.status == .connected
-      {
-        CodebaseRemoteRepositoryStatus(
-          state: remoteState,
-          isBusy: model.isSelectedGitHubRemoteRepositoryBusy,
-          onCheck: {
-            guard let productID = model.selectedProductID else { return }
-            Task { await model.checkRemoteRepository(productID: productID) }
-          }
-        )
-      }
       Divider()
       if snapshot != nil {
         VStack(spacing: 0) {
@@ -156,18 +161,16 @@ struct CodebaseView: View {
     .task(id: selectedBranchName) {
       await loadSelectedBranch()
     }
-    .task(id: model.selectedGitHubRemoteRepositoryState?.observation?.localSHA) {
+    .task(id: remoteRepositoryObservedLocalSHA) {
       guard snapshot != nil else { return }
       await refresh(selectInitialCommit: false)
     }
-    .task(id: model.codebaseFocusWorkItemID) {
-      guard let workItemID = model.codebaseFocusWorkItemID else { return }
-      for _ in 0..<30 where snapshot == nil {
-        try? await Task.sleep(for: .milliseconds(100))
-      }
-      if snapshot == nil {
-        await refresh(selectInitialCommit: false)
-      }
+    .task(id: focusTaskID) {
+      guard
+        let workItemID = focusTaskID.workItemID,
+        focusTaskID.productID == model.selectedProductID,
+        snapshot != nil
+      else { return }
       await focusChanges(for: workItemID)
     }
   }
@@ -567,92 +570,6 @@ struct CodebaseView: View {
       return "Integrate \(ticket.key): \(ticket.title)"
     }
     return commit.subject
-  }
-}
-private struct CodebaseRemoteRepositoryStatus: View {
-  let state: GitHubRemoteRepositoryState
-  let isBusy: Bool
-  let onCheck: () -> Void
-
-  var body: some View {
-    if let connection = state.connection {
-      HStack(alignment: .center, spacing: 14) {
-        VStack(alignment: .leading, spacing: 3) {
-          HStack(spacing: 8) {
-            if let url = connection.canonicalHTTPSURL,
-              let fullName = connection.fullName
-            {
-              Link(fullName, destination: url)
-                .font(.callout.weight(.semibold))
-            } else if let fullName = connection.fullName {
-              Text(fullName)
-                .font(.callout.weight(.semibold))
-            }
-            if let branch = connection.defaultBranch {
-              Text(branch)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-            }
-            relationshipLabel
-          }
-          if let observation = state.observation {
-            HStack(spacing: 12) {
-              Text("Local \(String(observation.localSHA.prefix(8)))")
-              Text("GitHub \(String(observation.remoteSHA.prefix(8)))")
-              Text("\(observation.aheadCount) ahead · \(observation.behindCount) behind")
-              Text(
-                "Checked \(observation.observedAt.formatted(date: .abbreviated, time: .shortened))")
-            }
-            .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-          } else {
-            Text("GitHub has not been checked yet.")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-          }
-        }
-        Spacer(minLength: 12)
-        Button("Check GitHub", action: onCheck)
-          .buttonStyle(.borderedProminent)
-          .disabled(isBusy)
-      }
-      .padding(.horizontal, 24)
-      .padding(.vertical, 10)
-      .background(.quaternary.opacity(0.22))
-    }
-  }
-
-  @ViewBuilder
-  private var relationshipLabel: some View {
-    if let relationship = state.observation?.relationship {
-      Text(title(for: relationship))
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(color(for: relationship))
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(color(for: relationship).opacity(0.12), in: Capsule())
-    }
-  }
-
-  private func title(for relationship: RemoteRepositoryRelationship) -> String {
-    switch relationship {
-    case .aligned: "Up to date"
-    case .localAhead: "Local changes"
-    case .remoteAhead: "Incoming changes"
-    case .historyAlignmentAvailable: "Merged history available"
-    case .diverged: "Diverged"
-    case .unrelated: "Unrelated"
-    }
-  }
-
-  private func color(for relationship: RemoteRepositoryRelationship) -> Color {
-    switch relationship {
-    case .aligned: .green
-    case .localAhead: .blue
-    case .remoteAhead, .historyAlignmentAvailable: .orange
-    case .diverged, .unrelated: .red
-    }
   }
 }
 

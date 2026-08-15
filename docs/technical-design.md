@@ -78,6 +78,15 @@ work.
 
 No UI type is allowed to become the authoritative workflow state machine.
 
+`AppModel` is the application composition and navigation boundary: it constructs
+feature coordinators, tracks the selected product and page, and routes owner
+commands. Long-lived tasks, polling, cancellation, wake signals, and multi-step
+workflow state belong to focused feature coordinators that expose bounded
+snapshots or query methods. `ContentView` provides only the root scene routing;
+feature screens and reusable presentation policies live in files named for the
+owner-facing feature so contributors can change one journey without loading the
+entire application surface.
+
 ## 4. Durable storage boundary
 
 Each product owns one authoritative database at
@@ -165,10 +174,58 @@ Schema version 8 adds a non-null candidate delivery kind. Existing rows migrate
 to `repository_change`; new `local_outcome` rows preserve repository-free
 business analyst results without an empty commit or pull request.
 
+Schema version 9 removes the placeholder draft-sprint goal, and version 10
+enforces one active repository-knowledge run per product after retiring older
+unfinished attempts. Schema version 11 retires the owner-inaccessible manual
+publication path: any remaining manual publication is made terminal with a
+durable error code and normalized to existing-product-history provenance before
+runtime decoding. New publication records must declare either
+existing-product-history or ticket provenance explicitly.
+
 The application catalog is the set of valid product workspace identifiers and
 their databases. Cross-product operations enumerate these stores; product
 delivery reads and writes only the owning store. SQLite WAL snapshots allow the
 UI and read-only agents to inspect current state safely while it changes.
+
+`SQLiteStore.swift` owns the actor, connection, migration, transaction, binding,
+and decoding primitives. Product, epic, work-item, conversation, sprint, run,
+candidate, permission, knowledge, activity, retrospective, repository-analysis,
+and remote-repository operations are grouped in domain-named `SQLiteStore+…`
+extensions. The split is source organization only: one actor remains the
+authority, each multi-row mutation stays inside one named transaction, and no
+in-memory aggregate becomes a second database.
+
+Selected-product presentation reads a `ProductWorkspacePersistenceSnapshot` in
+one SQLite read transaction. Sprint scheduler wakes use a narrower
+`SprintExecutionPersistenceSnapshot` under the same rule. That scheduler
+snapshot reads only active-sprint tickets, their direct prerequisites, the
+active sprint's runs, candidates, and permission requests, plus current
+product-scoped profiles, grants, and verified knowledge. Historical backlog,
+run, candidate, and permission rows therefore do not amplify every scheduler
+wake. Startup preparation owns migration and default seeding; ordinary reloads
+are read-only. The product catalog is fetched across stores once and
+partitioned into active and archived records in memory. Conversation thread
+summaries are part of the selected product snapshot, while message bodies are
+loaded only for the selected thread, so query count does not grow with archived
+or inactive conversation history. Focused observable application models own
+product-library selection, ticket and epic conversations, epic and sprint
+planning, ticket suggestions, retrospective synthesis, managed demos, Codex
+connection and usage, and product conversation title/activity lifecycles.
+`AppModel` composes their dependencies, forwards compatibility commands, and
+retains application lifecycle and navigation authority rather than their
+transient task registries or presentation storage.
+
+Ticket delivery uses Core-owned workflow boundaries rather than AppModel-owned
+task dictionaries. `TicketDeliveryRuntimeCoordinator` owns scheduler wake-ups,
+implementation, review, integration, live-activity, permission, and acceptance
+operation lifecycles, including product-scoped cancellation and settlement.
+`SprintWorkRecoveryPolicy` derives restart actions from durable evidence;
+`SQLiteStore.performTicketDeliveryRecovery` applies each resulting multi-record
+cutover atomically; `AgentPermissionResolver` preserves decision intent across
+transport failure; and `GitWorkspaceManager` serializes repository mutations.
+The application composition layer supplies the current store, Codex, remote,
+demo, and presentation adapters, but those adapters cannot bypass the Core
+persistence, permission, cancellation, or Git invariants.
 
 Repository-changing candidate execution results also retain a schema-versioned
 demo launch specification. Durable demo-session rows record the candidate, state,
@@ -229,6 +286,18 @@ projects queueing, implementation, integration, verification, review, and
 post-approval finalization into four decision-oriented stages: **In progress**,
 **In review**, **Ready for demo**, and **Done**. Integration and tech lead review
 share **In review**, with the card and work log stating which activity is current.
+
+`TicketDeliveryRuntimeCoordinator` is the single runtime owner for product
+schedulers, implementation and review turns, integration, live activity,
+permission-routing state, acceptance, and sprint cancellation intent. It keys
+every operation by durable product, run, candidate, or work-item identity;
+duplicate scheduling wakes the existing scheduler, replacement tokens prevent
+stale completions from clearing newer work, and product cancellation or shutdown
+cancels and awaits every owned child. Focused non-delivery runtimes apply the
+same ownership rule to ticket suggestions, planning conversations, retrospective
+synthesis, product conversations, and Codex connection monitoring. Short-lived
+owner commands are retained by a product-scoped command runtime so product
+archival and application shutdown also settle them before persistence closes.
 
 Thirty dependency-free tickets produce thirty admitted runs in the local MVP.
 Account or machine back-pressure may delay the underlying turns, but there is no
@@ -329,6 +398,17 @@ non-interactive workflow never requests access to the product owner's personal
 signing key. This is scoped to each Spedito command and does not change the
 owner's global or repository Git configuration.
 
+All post-activation repository checks, polling reads, and delivery mutations use
+the same `GitWorkspaceManager` actor. Multi-process asynchronous remote
+operations acquire a FIFO repository lease for their complete check-and-mutate
+sequence; nested exact-ref checks inherit that lease. While such an operation is
+suspended, an unrelated synchronous command for the same Product fails with the
+stable owner-facing `operationInProgress` error instead of starting a competing
+Git process. Operations on an exact publication branch query only that ref;
+full remote-head enumeration is reserved for proving that a new remote is empty.
+Public repository cloning targets an unregistered staging directory before a
+Product can poll or deliver against it.
+
 ### 6.1 Imported repository activation and knowledge
 
 Repository onboarding accepts only canonical HTTPS URLs from GitHub, GitLab,
@@ -345,6 +425,16 @@ analysis run are durable does Spedito atomically move the clone into the normal
 product workspace and register the store. Cancellation or failure removes only
 Spedito-owned staging and unregistered activation paths.
 
+The Core-owned repository import coordinator is the single operation owner for
+both public-link and authorized GitHub imports. Its snapshot bounds transient
+catalog, device-authorization prompt, progress, cancellation, and typed retry
+state; its completion contains the exact activated product, repository
+provenance, and pending knowledge-run identity. GitHub access tokens remain
+inside the source resolver and short-lived Git credential session rather than
+crossing into App state. AppModel observes that snapshot, changes selection only
+after activation completes, and then schedules repository understanding as a
+separate operation.
+
 Repository understanding is a product-scoped background state machine:
 `pending_analysis`, `analyzing`, `reviewing`, `publishing`, then `completed`,
 with durable `failed`, `interrupted`, and `stale` outcomes. Analysis reads an
@@ -360,11 +450,16 @@ result, not an ambiguous recovery state. Relaunch does not create another Codex
 turn. Presentation explains that no verified product knowledge was found and
 offers a new versioned attempt only through an explicit product-owner action.
 
-The App model subscribes to each analysis and review thread's supported Codex
-notifications while its turn is active. `CodexLiveActivityAccumulator` ignores
+The Core-owned repository knowledge coordinator serializes one command per
+product and owns recovery, retry, dedicated clients, live turns, activity
+monitors, and snapshot cleanup. SQLite permits only one active knowledge run per
+product; interrupted-run retirement and retry creation share one transaction.
+AppModel observes a bounded product snapshot only. It keeps knowledge-page
+read/unread presentation state and refreshes that projection from the
+coordinator's durable completion event. `CodexLiveActivityAccumulator` ignores
 raw reasoning deltas and exposes only bounded reasoning-summary, plan, and
-tool-category activity. This ephemeral per-product activity drives the sidebar
-setup popover and is cleared when the repository-knowledge run terminates.
+tool-category activity; the coordinator clears this ephemeral field when its
+run terminates.
 
 Repository analysis uses a dedicated Codex App Server process, not the normal
 delivery client. Its process environment is replaced with a minimal allowlist.
@@ -405,6 +500,28 @@ only Metadata read, Contents read/write, Pull requests read/write, and Workflows
 write capabilities. Administration write is deliberately omitted, so repository
 creation stays on GitHub rather than broadening the App's authority. There is no
 client secret, private key, in-app repository creation, or CI/check aggregation.
+
+`GitHubRemoteRepositoryService` is the single Core actor composition root, but
+callers depend on narrow state, connection, observation, safe-synchronization,
+publication, lifecycle, and import-source protocols. Its implementation is
+grouped by those workflows; the credential session, account catalog, API client,
+and Git workspace manager remain behind the actor boundary. The app layer's
+`RemoteRepositoryFeatureModel` owns remote command serialization, cancellation,
+recovery, pull-request polling, and product-scoped presentation state. It
+projects one bounded snapshot per product containing repository state, a
+short-lived authorization prompt, busy state, a typed failure, and setup
+activity. `AppModel` forwards owner commands to that feature model and does not
+retain parallel remote dictionaries, tasks, or a broad Core service reference.
+
+Product creation/import, repository settings, repository setup, incoming-change
+review, sprint-board repository status, and ticket pull-request status are
+separate presentation units. Each renders feature snapshots and sends owner
+commands back through `AppModel`; only dismissal, selection, and focus state
+remain local to a view. Application active/background changes are delivered as
+one feature command, which restarts the single adaptive polling loop so
+foreground priority takes effect immediately. Debug builds include a finite
+scenario catalog covering unavailable, setup, synchronization, publication,
+review, reconciliation, and retry states.
 
 Only active products enter automatic remote recovery. Archiving first settles
 or blocks in-flight remote commands and preserves durable connection,
@@ -521,6 +638,9 @@ ticket pull request for the selected Product, prioritizing the visible ticket
 and tickets in acceptance. It uses 60-second foreground cycles when prioritized
 work exists, 120-second ordinary foreground cycles, 300-second inactive cycles,
 and conditional REST requests with bounded in-memory ETag response caching.
+The polling sleeper is injected at the feature-model boundary, so product
+switches, app activity changes, and shutdown cancel the current wait and are
+covered without wall-clock sleeps in tests.
 Fresh repository checks and product owner approval remain unconditional
 authoritative checks. `CHANGES_REQUESTED` converts the pull request back to
 draft and requeues the ticket's existing delivery run. After internal review
@@ -532,11 +652,11 @@ expected head SHA. If the default branch moved or GitHub reports that the exact
 ticket is no longer mergeable, Spedito returns the pull request to draft and
 requeues the same candidate for remote-aware integration and focused review.
 
-Ticket acceptance is launched as an AppModel-owned background task rather than
-being scoped to the ticket detail view. The view dismisses as soon as that task
-is retained, and a published work-item ID set drives **Completing ticket**
-presentation if the owner returns to the board or ticket. After preflight,
-candidate `promoting` state remains the durable interruption boundary.
+Ticket acceptance is owned by the ticket-delivery runtime coordinator rather
+than a detail view or an untracked application task. The view dismisses as soon
+as that operation is retained, and a published work-item ID set drives
+**Completing ticket** presentation if the owner returns to the board or ticket.
+After preflight, candidate `promoting` state remains the durable interruption boundary.
 Repository-changing acceptance performs the authoritative remote check, merge,
 local reconciliation, and trunk promotion. Local-outcome acceptance skips Git
 and GitHub, marks the exact reviewed candidate accepted, publishes its approved
@@ -953,21 +1073,49 @@ item and ordered by the latest run update. The projection joins the product and
 work item with the latest structured owner question or pending permission
 request summary. Startup reloads the projection from SQLite; every transition
 into or out of `awaiting_owner` refreshes the owning product so attention counts
-remain durable rather than behaving like unread notifications. Product-switcher
-and product-library navigation counts exclude the selected product. The
-product-switcher capsule uses the app accent color. The product-library section
-count uses an orange capsule, while inline attention labels remain orange text.
-Attention within the selected product remains on its workspace destination.
+remain durable rather than behaving like unread notifications. The
+cross-product product-switcher and product-library counts union these unresolved
+ticket targets with active owner-notification targets from non-selected
+products, counting each source once. The product-switcher capsule uses the app
+accent color; product-library attention uses orange when an unresolved action
+is present and purple for unread updates alone. Attention within the selected
+product remains on its workspace destination.
 
 A newly waiting run publishes one transient in-app presentation containing its
 product, ticket, and summary. Its action selects the owning product only after
 the product owner chooses it, then opens the ticket. Product-library navigation
 opens a single waiting ticket directly or publishes a multi-ticket sprint-board
 filter. When the app is inactive, `UNUserNotificationCenter` receives an alert
-without an additional sound. Notification metadata contains only product and
-work-item identifiers; the application delegate resolves the click through the
-same durable attention projection and navigation path. Notification denial or
+without an additional sound. Notification metadata contains only notification,
+product, target-kind, and target identifiers; the application delegate resolves
+the click through the same durable attention projection and navigation path.
+Notification denial or
 delivery failure never changes ticket state or removes the in-app badge.
+
+Background refinement and conversation results are coordinated by one focused
+owner-notification coordinator rather than by individual views or `AppModel`
+task registries. Core persists an idempotent notification record keyed by the
+durable source event. Each record names its product, kind, target kind, target
+identifier, owner-facing title and body, creation time, read time, and optional
+resolution time. The active projection contains unread updates and unresolved
+questions; read ordinary updates and resolved questions remain as deduplication
+evidence but do not appear in counts.
+
+Ticket comments, epic-planning snapshots, suggestion sessions, and Chat messages
+remain the authoritative result data. The notification row is a navigation and
+read-state projection only. Result producers insert it only after their
+authoritative transaction succeeds. The coordinator presents a newly inserted
+record once, suppresses an in-app banner when the exact target is visible,
+posts a macOS notification only while the app is inactive, and removes delivered
+or pending system notifications when their record is read or resolved. Startup
+loads the bounded active projection without replaying transient presentation.
+
+Navigation metadata contains only the notification, product, target kind, and
+target identifiers. Application routing resolves those identifiers against the
+current product store before opening a ticket, epic, or Chat thread. Missing or
+archived targets fail closed. Ticket and epic detail views and the selected Chat
+thread publish a bounded visibility snapshot; they do not own notification
+lifecycle state.
 
 The same adapter owns buffered and streaming `command/exec`, output deltas, and
 termination for candidate demos. The durable run stores the thread identifier
@@ -993,6 +1141,11 @@ last-activity time, and fails independently of the main conversation turn. The
 durable conversation turn returns a plain Markdown answer without a title
 schema. Same-member
 follow-ups resume the stored Codex thread without regenerating the title.
+Product selection changes replace only the loaded Chat presentation. Active
+response operations remain keyed by product and thread; returning to a product
+reconstructs its responding-thread set from that runtime, and the eventual
+durable reply reloads the thread. Only explicit product archival or application
+shutdown cancels those turns.
 When the owner selects another member, the persistence write atomically changes
 the current recipient and clears the former role-specific Codex identifier; the
 new member starts a fresh read-only session whose prompt contains the durable
@@ -1109,6 +1262,32 @@ worktrees, candidate commits, and preview processes. A normal quit requests a
 structured checkpoint, interrupts after a bounded grace period, and preserves
 the run as paused. Crash recovery creates a system note from durable events and
 filesystem state when no agent-authored checkpoint exists.
+
+Candidate-delivery recovery commits one SQLite transaction for every related
+candidate status, AgentRun status and event, ticket transition and event,
+permission-request status, and work-log comment. Each mutation carries its
+expected durable state. A retry may observe either the complete prior result or
+the complete old state; it cannot admit a second run or expose a partial
+transition. File-system cleanup happens before that transaction and a cleanup
+failure leaves durable authority unchanged.
+
+Recovery error handling has three explicit classes:
+
+- **Owner-visible failure:** every authoritative SQLite read or write, remote
+  product-store lookup, and GitHub authorization-state write is propagated or
+  projected into the product-scoped failure state. Remote state reads never
+  turn a database error into an empty disconnected state.
+- **Diagnostic-only probe:** attempting to resume a prior Codex thread and read
+  its last completed structured response may fail without becoming the recovery
+  result. Recovery then follows the normal interrupted-run path using SQLite and
+  the preserved workspace. A failed optional history-alignment proof remains a
+  conservative `diverged` observation and never enables synchronization.
+- **Benign cleanup:** deleting Spedito-owned temporary credential directories,
+  closing credential-cache processes, and deleting stale managed observation
+  refs may be best effort after durable state is already safe. These failures
+  cannot advance a ticket, candidate, permission, synchronization, or
+  publication and are retried by later cleanup or made harmless by
+  create-or-replace ref semantics.
 
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral

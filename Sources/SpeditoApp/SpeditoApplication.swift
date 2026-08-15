@@ -6,6 +6,7 @@ import UserNotifications
 struct SpeditoApplication: App {
   @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
   @StateObject private var model = AppModel()
+  @Environment(\.scenePhase) private var scenePhase
 
   var body: some Scene {
     WindowGroup {
@@ -15,13 +16,14 @@ struct SpeditoApplication: App {
           appDelegate.terminationHandler = {
             await model.shutdown()
           }
+          await model.setApplicationActive(scenePhase == .active)
           await model.load()
-          appDelegate.ticketAttentionHandler = { productID, workItemID in
-            await model.openTicketAttention(
-              productID: productID,
-              workItemID: workItemID
-            )
+          appDelegate.ownerNotificationHandler = { route in
+            await model.openOwnerNotification(route)
           }
+        }
+        .onChange(of: scenePhase) { _, phase in
+          Task { await model.setApplicationActive(phase == .active) }
         }
         .frame(minWidth: 1_080, minHeight: 680)
     }
@@ -38,18 +40,18 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate,
   UNUserNotificationCenterDelegate
 {
   var terminationHandler: (@MainActor () async -> Void)?
-  var ticketAttentionHandler: (@MainActor (UUID, UUID) async -> Void)? {
+  var ownerNotificationHandler: (@MainActor (OwnerNotificationRoute) async -> Void)? {
     didSet {
-      guard let pendingTicketAttentionRoute, ticketAttentionHandler != nil else {
+      guard let pendingOwnerNotificationRoute, ownerNotificationHandler != nil else {
         return
       }
-      self.pendingTicketAttentionRoute = nil
+      self.pendingOwnerNotificationRoute = nil
       Task { @MainActor [weak self] in
-        await self?.deliver(pendingTicketAttentionRoute)
+        await self?.deliver(pendingOwnerNotificationRoute)
       }
     }
   }
-  private var pendingTicketAttentionRoute: TicketAttentionNotificationRoute?
+  private var pendingOwnerNotificationRoute: OwnerNotificationRoute?
   private var isPreparingToTerminate = false
   func applicationDidFinishLaunching(_ notification: Notification) {
     if let iconURL = SpeditoResources.url(
@@ -67,14 +69,13 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate,
     }
   }
 
-
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter,
     didReceive response: UNNotificationResponse,
     withCompletionHandler completionHandler: @escaping @Sendable () -> Void
   ) {
     guard
-      let route = TicketAttentionNotificationRoute(
+      let route = OwnerNotificationRoute(
         userInfo: response.notification.request.content.userInfo
       )
     else {
@@ -87,12 +88,12 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate,
     }
   }
 
-  private func deliver(_ route: TicketAttentionNotificationRoute) async {
-    guard let ticketAttentionHandler else {
-      pendingTicketAttentionRoute = route
+  private func deliver(_ route: OwnerNotificationRoute) async {
+    guard let ownerNotificationHandler else {
+      pendingOwnerNotificationRoute = route
       return
     }
-    await ticketAttentionHandler(route.productID, route.workItemID)
+    await ownerNotificationHandler(route)
   }
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard !isPreparingToTerminate, let terminationHandler else {

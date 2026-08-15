@@ -85,7 +85,6 @@ public enum RemotePublicationStatus: String, Codable, Sendable {
 }
 
 public enum RemotePublicationPurpose: String, Codable, Sendable {
-  case legacyManual = "legacy_manual"
   case existingProductHistory = "existing_product_history"
   case ticket
 }
@@ -465,7 +464,7 @@ public struct RemotePublication: Codable, Equatable, Identifiable, Sendable {
     connectionID: UUID,
     workItemID: UUID? = nil,
     candidateRevisionID: UUID? = nil,
-    purpose: RemotePublicationPurpose = .legacyManual,
+    purpose: RemotePublicationPurpose,
     version: Int = 1,
     pushAttemptCount: Int = 0,
     pullRequestAttemptCount: Int = 0,

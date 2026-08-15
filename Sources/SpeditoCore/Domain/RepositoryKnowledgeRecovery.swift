@@ -15,15 +15,12 @@ public enum RepositoryKnowledgeCompletionOutcome: Equatable, Sendable {
 public struct RepositoryKnowledgeRecoveryPolicy: Sendable {
   public init() {}
 
-  public func action(
-    for run: RepositoryKnowledgeRun,
-    alreadyCreatedRecoveryAttempt: Bool = false
-  ) -> RepositoryKnowledgeRecoveryAction {
+  public func action(for run: RepositoryKnowledgeRun) -> RepositoryKnowledgeRecoveryAction {
     switch run.status {
     case .pendingAnalysis:
       return .startPendingAnalysis
     case .analyzing, .reviewing, .interrupted:
-      return alreadyCreatedRecoveryAttempt ? .none : .createRecoveryAttempt
+      return .createRecoveryAttempt
     case .publishing:
       return .resumePublication
     case .completed, .failed, .stale:
