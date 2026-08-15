@@ -1068,24 +1068,28 @@ use the same path, and shutdown suppresses new playback. Audio failure never
 changes the durable attention state.
 
 The application also derives a cross-product attention projection from
-`awaiting_owner` AgentRuns in every active product store, deduplicated by work
-item and ordered by the latest run update. The projection joins the product and
-work item with the latest structured owner question or pending permission
-request summary. Startup reloads the projection from SQLite; every transition
-into or out of `awaiting_owner` refreshes the owning product so attention counts
-remain durable rather than behaving like unread notifications. The
-cross-product product-switcher and product-library counts union these unresolved
-ticket targets with active owner-notification targets from non-selected
-products, counting each source once. The product-switcher capsule uses the app
-accent color; product-library attention uses orange when an unresolved action
-is present and purple for unread updates alone. Attention within the selected
-product remains on its workspace destination.
+`awaiting_owner` AgentRuns and `acceptance` work items in every active product
+store. Waiting runs are deduplicated by work item and ordered by the latest run
+update; `acceptance` adds any ticket that is **Ready for demo** and is not already
+represented by a waiting run. The projection joins the product and work item
+with the latest structured owner question, pending permission request summary,
+or ready-for-demo state. Startup reloads the projection from SQLite; transitions
+into or out of `awaiting_owner`, background product refreshes, and product
+switching refresh the affected product so attention counts remain durable rather
+than behaving like unread notifications. The cross-product product-switcher and
+product-library counts union these owner-action targets with active
+owner-notification targets from non-selected products, counting each source
+once. The product-switcher capsule uses the app accent color; product-library
+attention uses orange when an unresolved action is present and purple for unread
+updates alone. Attention within the selected product remains on its workspace
+destination.
 
 A newly waiting run publishes one transient in-app presentation containing its
-product, ticket, and summary. Its action selects the owning product only after
-the product owner chooses it, then opens the ticket. Product-library navigation
-opens a single waiting ticket directly or publishes a multi-ticket sprint-board
-filter. When the app is inactive, `UNUserNotificationCenter` receives an alert
+product, ticket, and summary. It slides in from the bottom-right edge. Its action
+selects the owning product only after the product owner chooses it, then opens
+the ticket. Product-library navigation opens a single attention ticket directly
+or publishes a multi-ticket sprint-board filter.
+When the app is inactive, `UNUserNotificationCenter` receives an alert
 without an additional sound. Notification metadata contains only notification,
 product, target-kind, and target identifiers; the application delegate resolves
 the click through the same durable attention projection and navigation path.

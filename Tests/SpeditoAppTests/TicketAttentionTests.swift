@@ -65,6 +65,74 @@ struct TicketAttentionTests {
     }
   }
 
+  @Test("Reload exposes ready for demo attention from a product that is not selected")
+  func reloadAggregatesBackgroundReadyForDemoAttention() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let sourceProduct = try await registry.createProduct(name: "Ready product")
+    let selectedProduct = try await registry.createProduct(name: "Current product")
+    let sourceStore = try #require(registry.store(for: sourceProduct.id))
+    let item = try await moveToAcceptance(
+      try await sourceStore.createWorkItem(
+        productID: sourceProduct.id,
+        title: "Review the completed ticket"
+      ),
+      in: sourceStore
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: selectedProduct.id
+    )
+
+    await model.reload()
+
+    #expect(model.ownerAttentionCount(excluding: selectedProduct.id) == 1)
+    #expect(model.ownerAttentionCount(for: sourceProduct.id) == 1)
+    #expect(model.ownerAttentionRequiresAction(productID: sourceProduct.id))
+    let attention = try #require(model.ticketAttentionsByProductID[sourceProduct.id]?.first)
+    #expect(attention.workItemID == item.id)
+    #expect(attention.summary == "Ready for demo")
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("Switching products preserves newly ready for demo attention")
+  func switchingProductsRefreshesReadyForDemoAttention() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let sourceProduct = try await registry.createProduct(name: "Ready product")
+    let selectedProduct = try await registry.createProduct(name: "Next product")
+    let sourceStore = try #require(registry.store(for: sourceProduct.id))
+    let item = try await sourceStore.createWorkItem(
+      productID: sourceProduct.id,
+      title: "Review after switching products"
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: sourceProduct.id
+    )
+    await model.reload()
+    _ = try await moveToAcceptance(item, in: sourceStore)
+
+    await model.selectProduct(selectedProduct)
+
+    #expect(model.selectedProductID == selectedProduct.id)
+    #expect(model.ownerAttentionCount(excluding: selectedProduct.id) == 1)
+    #expect(model.ticketAttentionCount(for: sourceProduct.id) == 1)
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
   @Test("Opening one attention request selects its product and targets its ticket")
   func openingAttentionTargetsTicket() async throws {
     let fixture = try TicketAttentionFixture()
@@ -372,6 +440,30 @@ struct TicketAttentionTests {
     for store in registry.allStores {
       await store.close()
     }
+  }
+
+  private func moveToAcceptance(
+    _ item: WorkItem,
+    in store: SQLiteStore
+  ) async throws -> WorkItem {
+    var item = item
+    for state: WorkItemState in [
+      .refining,
+      .ready,
+      .queued,
+      .running,
+      .integrating,
+      .verifying,
+      .acceptance,
+    ] {
+      item = try await store.transitionWorkItem(
+        id: item.id,
+        to: state,
+        actor: "Test",
+        reason: "Set up ready for demo attention"
+      )
+    }
+    return item
   }
 
 }

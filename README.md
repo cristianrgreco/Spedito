@@ -58,11 +58,11 @@ a compatible Codex app or `codex` installation.
   any selected version from its exact commit.
 - Keeps questions, permission requests, progress, and decisions in each ticket's
   work log.
-- Keeps delivery running across products and surfaces unresolved **Needs your
-  input** tickets alongside unread background refinement results and agent
-  replies through cross-product and workspace counts, contextual in-app and
-  macOS notifications, and direct navigation back to the ticket, epic, or Chat
-  thread.
+- Keeps delivery running across products and surfaces **Ready for demo** and
+  unresolved **Needs your input** tickets alongside unread background refinement
+  results and agent replies through cross-product and workspace counts,
+  contextual in-app and macOS notifications, and direct navigation back to the
+  ticket, epic, or Chat thread.
 - Builds versioned product knowledge from an isolated repository snapshot,
   requires independent tech lead approval, and stores the verified result only
   in the Product's local `.spedito` control data rather than its Git history.

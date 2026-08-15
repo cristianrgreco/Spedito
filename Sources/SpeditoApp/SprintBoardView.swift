@@ -44,8 +44,8 @@ struct SprintBoardView: View {
               } label: {
                 Label(
                   attentionWorkItemIDs.count == 1
-                    ? "1 needs your input"
-                    : "\(attentionWorkItemIDs.count) need your input",
+                    ? "1 needs your attention"
+                    : "\(attentionWorkItemIDs.count) need your attention",
                   systemImage: "line.3.horizontal.decrease.circle.fill"
                 )
               }

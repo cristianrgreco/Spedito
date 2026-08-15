@@ -1617,10 +1617,10 @@ does not start new attention presentation.
 
 The product switcher carries an accent-colored count of targets needing the
 owner's attention in products other than the selected product. The count
-combines unresolved **Needs your input** actions with unread background results
-and replies, counting one source target once. Attention in the selected product
-remains represented by its workspace destination, so two visible counts never
-describe the same required navigation.
+combines tickets that are **Ready for demo**, unresolved **Needs your input**
+actions, and unread background results and replies, counting one source target
+once. Attention in the selected product remains represented by its workspace
+destination, so two visible counts never describe the same required navigation.
 The product library places affected non-selected products in a **Needs your
 attention** section. Its section count and product labels use orange when an
 unresolved action is present and purple when the product contains only unread
@@ -1637,9 +1637,10 @@ not interrupt ticket or epic refinement, ticket or epic conversation replies, or
 Chat replies; only product archival, an explicit stop, or application shutdown
 ends that work. If the exact ticket, epic, or Chat thread is visible while
 Spedito is active, the result appears inline and no banner is added. Otherwise an
-active Spedito window shows one transient banner; an inactive app sends one macOS
-notification instead. Opening either presentation selects the product only after
-the product owner chooses the action and opens the exact source.
+active Spedito window slides one transient banner in at the bottom right; an
+inactive app sends one macOS notification instead. Opening either presentation
+selects the product only after the product owner chooses the action and opens
+the exact source.
 
 | Durable state | Entered by | SQLite evidence | What the owner sees | Available actions | Relaunch recovery |
 | --- | --- | --- | --- | --- | --- |

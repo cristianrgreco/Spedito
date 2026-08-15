@@ -999,11 +999,9 @@ final class AppModel: ObservableObject {
     store: SQLiteStore
   ) async throws -> [TicketAttention] {
     let workItems = try await store.fetchWorkItems(productID: product.id)
-    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
     let permissionRequests = try await store.fetchAgentPermissionRequests(productID: product.id)
-    let awaitingRuns = try await store.fetchAgentRuns(productID: product.id)
-      .filter { $0.status == .awaitingOwner }
-    let latestRunsByWorkItemID = awaitingRuns.reduce(
+    let runs = try await store.fetchAgentRuns(productID: product.id)
+    let latestRunsByWorkItemID = runs.reduce(
       into: [UUID: AgentRun]()
     ) { latestRuns, run in
       if let current = latestRuns[run.workItemID], current.updatedAt >= run.updatedAt {
@@ -1011,47 +1009,70 @@ final class AppModel: ObservableObject {
       }
       latestRuns[run.workItemID] = run
     }
+    let latestAwaitingRunsByWorkItemID = runs
+      .filter { $0.status == .awaitingOwner }
+      .reduce(into: [UUID: AgentRun]()) { latestRuns, run in
+        if let current = latestRuns[run.workItemID], current.updatedAt >= run.updatedAt {
+          return
+        }
+        latestRuns[run.workItemID] = run
+      }
     let commentsByWorkItemID = try await store.fetchComments(
-      workItemIDs: Set(latestRunsByWorkItemID.keys)
+      workItemIDs: Set(latestAwaitingRunsByWorkItemID.keys)
     )
 
     var attentions: [TicketAttention] = []
-    for run in latestRunsByWorkItemID.values {
-      guard let item = workItemsByID[run.workItemID] else { continue }
-      let latestPermissionRequest =
-        permissionRequests
-        .filter {
-          $0.agentRunID == run.id && $0.status.needsOwnerDecision
-        }
-        .max { $0.updatedAt < $1.updatedAt }
-      let latestQuestion =
-        commentsByWorkItemID[item.id, default: []]
-        .reversed()
-        .compactMap { comment in
-          TicketOwnerQuestion.presentation(
-            in: comment.body,
-            structuredQuestion: comment.ownerQuestion
-          )?.question.prompt
-        }
-        .first
-      let summary =
-        latestPermissionRequest?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
-        ?? latestPermissionRequest?.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        ?? latestQuestion?.trimmingCharacters(in: .whitespacesAndNewlines)
-        ?? item.title
-      attentions.append(
-        TicketAttention(
-          id: run.id,
-          productID: product.id,
-          productName: product.name,
-          sprintID: run.sprintID,
-          workItemID: item.id,
-          itemKey: item.key,
-          title: item.title,
-          summary: summary.isEmpty ? item.title : summary,
-          updatedAt: run.updatedAt
+    for item in workItems {
+      if let run = latestAwaitingRunsByWorkItemID[item.id] {
+        let latestPermissionRequest =
+          permissionRequests
+          .filter {
+            $0.agentRunID == run.id && $0.status.needsOwnerDecision
+          }
+          .max { $0.updatedAt < $1.updatedAt }
+        let latestQuestion =
+          commentsByWorkItemID[item.id, default: []]
+          .reversed()
+          .compactMap { comment in
+            TicketOwnerQuestion.presentation(
+              in: comment.body,
+              structuredQuestion: comment.ownerQuestion
+            )?.question.prompt
+          }
+          .first
+        let summary =
+          latestPermissionRequest?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+          ?? latestPermissionRequest?.title.trimmingCharacters(in: .whitespacesAndNewlines)
+          ?? latestQuestion?.trimmingCharacters(in: .whitespacesAndNewlines)
+          ?? item.title
+        attentions.append(
+          TicketAttention(
+            id: run.id,
+            productID: product.id,
+            productName: product.name,
+            sprintID: run.sprintID,
+            workItemID: item.id,
+            itemKey: item.key,
+            title: item.title,
+            summary: summary.isEmpty ? item.title : summary,
+            updatedAt: run.updatedAt
+          )
         )
-      )
+      } else if item.state == .acceptance {
+        attentions.append(
+          TicketAttention(
+            id: item.id,
+            productID: product.id,
+            productName: product.name,
+            sprintID: latestRunsByWorkItemID[item.id]?.sprintID,
+            workItemID: item.id,
+            itemKey: item.key,
+            title: item.title,
+            summary: "Ready for demo",
+            updatedAt: item.updatedAt
+          )
+        )
+      }
     }
     return attentions.sorted {
       if $0.updatedAt != $1.updatedAt {
@@ -2106,6 +2127,9 @@ final class AppModel: ObservableObject {
         productID: departingProductID,
         preservingOwnerAgentTurns: true
       )
+    }
+    if let departingProductID = selectedProductID {
+      await refreshTicketAttentions(productID: departingProductID)
     }
     selectedProductID = product.id
     repositoryKnowledgeSnapshot = repositoryKnowledgeCoordinator.snapshot(for: product.id)
@@ -6776,7 +6800,10 @@ final class AppModel: ObservableObject {
   }
 
   private func reloadSelectedProductIfCurrent(productID: UUID) async {
-    guard selectedProductID == productID else { return }
+    guard selectedProductID == productID else {
+      await refreshTicketAttentions(productID: productID)
+      return
+    }
     await reloadSelectedProduct()
   }
 

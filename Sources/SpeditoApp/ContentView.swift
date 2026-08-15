@@ -378,7 +378,7 @@ private struct ProductWorkspaceView: View {
         handleOwnerNotificationNavigationRequest(request)
       }
     }
-    .overlay(alignment: .top) {
+    .overlay(alignment: .bottomTrailing) {
       if let notification = model.presentedOwnerNotification {
         OwnerNotificationBanner(
           notification: notification,
@@ -389,8 +389,9 @@ private struct ProductWorkspaceView: View {
             model.dismissPresentedOwnerNotification(id: notification.id)
           }
         )
-        .padding(.top, 12)
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .padding(.trailing, 16)
+        .padding(.bottom, 16)
+        .transition(.move(edge: .trailing).combined(with: .opacity))
       }
     }
     .animation(.easeInOut(duration: 0.2), value: model.presentedOwnerNotification?.id)
@@ -603,7 +604,6 @@ private struct OwnerNotificationBanner: View {
       RoundedRectangle(cornerRadius: 12)
         .stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1)
     }
-    .padding(.horizontal, 16)
     .task(id: notification.id) {
       try? await Task.sleep(for: .seconds(8))
       guard !Task.isCancelled else { return }
