@@ -31,6 +31,24 @@ public struct AgentSavedAccessGroup: Identifiable, Equatable, Sendable {
   }
 }
 
+public struct AgentSavedAccessRevocationPlan: Equatable, Sendable {
+  public let grantIDs: [UUID]
+  public let requiresConfirmation: Bool
+
+  private init(grantIDs: [UUID], requiresConfirmation: Bool) {
+    self.grantIDs = grantIDs
+    self.requiresConfirmation = requiresConfirmation
+  }
+
+  public static func group(_ group: AgentSavedAccessGroup) -> Self {
+    Self(grantIDs: group.grantIDs, requiresConfirmation: false)
+  }
+
+  public static func all(_ grants: [AgentPermissionGrant]) -> Self {
+    Self(grantIDs: grants.filter(\.isActive).map(\.id), requiresConfirmation: true)
+  }
+}
+
 public enum AgentPermissionGrantPolicy {
   private static let permissionMethod = "item/permissions/requestApproval"
 

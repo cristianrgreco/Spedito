@@ -577,6 +577,7 @@ extension SQLiteStore {
       .filter { cascadeIDs.contains($0.id) }
       .sorted { $0.position < $1.position }
     let proposedSuggestions = affectedSuggestions.filter { $0.status == .proposed }
+    let planningStates: Set<WorkItemState> = [.backlog, .refining, .ready]
     var acceptedWorkItemIDs: Set<UUID> = []
     for dependent in affectedSuggestions where dependent.status == .accepted {
       guard let workItemID = dependent.acceptedWorkItemID else {
@@ -585,7 +586,7 @@ extension SQLiteStore {
         )
       }
       let workItem = try fetchWorkItem(id: workItemID)
-      if workItem.state != .cancelled {
+      if planningStates.contains(workItem.state) {
         acceptedWorkItemIDs.insert(workItemID)
       }
     }

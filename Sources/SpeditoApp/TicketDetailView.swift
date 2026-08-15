@@ -2,6 +2,27 @@ import AppKit
 import SpeditoCore
 import SwiftUI
 
+enum TicketRefinementConflictPolicy {
+  static let unsavedDraftMessage =
+    "You edited the ticket while the review was running. Save those edits and run a fresh review before accepting suggestions."
+  static let savedTicketMessage =
+    "The saved ticket changed while the review was running. Run a fresh review before accepting suggestions."
+
+  static func message(
+    currentDraft: SprintPlanningTicketSnapshot?,
+    baseDraft: SprintPlanningTicketSnapshot,
+    savedVersion: Int?,
+    proposalBaseVersion: Int
+  ) -> String? {
+    if currentDraft != baseDraft {
+      return unsavedDraftMessage
+    }
+    if savedVersion != proposalBaseVersion {
+      return savedTicketMessage
+    }
+    return nil
+  }
+}
 struct TicketDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -161,6 +182,7 @@ struct TicketDetailView: View {
     return item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || item.acceptanceCriteria.isEmpty
   }
+
 
   var body: some View {
     VStack(spacing: 0) {
@@ -418,17 +440,12 @@ struct TicketDetailView: View {
       refinementConflictMessage = nil
       return
     }
-    if currentDraftSnapshot != result.base {
-      refinementConflictMessage =
-        "You edited the ticket while the review was running. Save those edits and run a fresh review before accepting suggestions."
-    } else if model.workItems.first(where: { $0.id == itemID })?.version
-      != reply.proposal.baseVersion
-    {
-      refinementConflictMessage =
-        "The saved ticket changed while the review was running. Run a fresh review before accepting suggestions."
-    } else {
-      refinementConflictMessage = nil
-    }
+    refinementConflictMessage = TicketRefinementConflictPolicy.message(
+      currentDraft: currentDraftSnapshot,
+      baseDraft: result.base,
+      savedVersion: model.workItems.first(where: { $0.id == itemID })?.version,
+      proposalBaseVersion: reply.proposal.baseVersion
+    )
   }
 
   private func syncFromLatestSavedTicket() {
@@ -938,19 +955,14 @@ struct TicketDetailView: View {
         syncFromLatestSavedTicket()
         refinementReply = nil
         refinementConflictMessage = nil
-      } else if currentDraftSnapshot != base {
-        refinementReply = reply
-        refinementConflictMessage =
-          "You edited the ticket while the review was running. Save those edits and run a fresh review before accepting suggestions."
-      } else if model.workItems.first(where: { $0.id == item.id })?.version
-        != reply.proposal.baseVersion
-      {
-        refinementReply = reply
-        refinementConflictMessage =
-          "The saved ticket changed while the review was running. Run a fresh review before accepting suggestions."
       } else {
         refinementReply = reply
-        refinementConflictMessage = nil
+        refinementConflictMessage = TicketRefinementConflictPolicy.message(
+          currentDraft: currentDraftSnapshot,
+          baseDraft: base,
+          savedVersion: model.workItems.first(where: { $0.id == item.id })?.version,
+          proposalBaseVersion: reply.proposal.baseVersion
+        )
       }
     } catch {
       refinementError = error.localizedDescription

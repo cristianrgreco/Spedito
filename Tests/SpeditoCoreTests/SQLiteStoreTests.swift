@@ -2017,8 +2017,13 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Rejecting a legacy suggested prerequisite archives already accepted dependents")
-  func rejectingSuggestionCascadesThroughDependentWork() async throws {
+  /// Existing partial coverage:
+  /// - `ticketSuggestionsAreOwnerControlled`
+  /// - `TicketSuggestionRejectionImpact`
+  /// This test covers only E12's mixed accepted-dependent boundary: open accepted work is
+  /// archived, delivered work is preserved, and proposed dependents are rejected.
+  @Test("E12 rejecting a prerequisite preserves delivered dependents and archives open ones")
+  func e12RejectingSuggestionPreservesDeliveredDependent() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
@@ -2090,6 +2095,17 @@ struct SQLiteStoreTests {
       productID: product.id,
       title: "Build the implementation"
     )
+    for state in [
+      WorkItemState.refining, .ready, .queued, .running, .integrating, .verifying,
+      .acceptance, .readyToRelease, .released,
+    ] {
+      _ = try await store.transitionWorkItem(
+        id: acceptedS5.id,
+        to: state,
+        actor: "Test",
+        reason: "Prepare delivered dependent history"
+      )
+    }
     let suggestionS3 = try #require(ready.suggestions.first { $0.reference == "S3" })
     let suggestionS5 = try #require(ready.suggestions.first { $0.reference == "S5" })
     try fixture.execute(
@@ -2116,8 +2132,8 @@ struct SQLiteStoreTests {
     #expect(statuses["S5"] == .accepted)
 
     let acceptedTickets = try await store.fetchWorkItems(productID: product.id)
-    #expect(acceptedTickets.count == 2)
-    #expect(acceptedTickets.allSatisfy { $0.state == .cancelled })
+    #expect(acceptedTickets.first { $0.id == acceptedS3.id }?.state == .cancelled)
+    #expect(acceptedTickets.first { $0.id == acceptedS5.id }?.state == .released)
     #expect(try await store.fetchWorkItemDependencies(productID: product.id).isEmpty)
     await store.close()
   }
@@ -2434,8 +2450,13 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Archiving an epic archives unfinished tickets and preserves delivered work")
-  func archivingEpicArchivesUnfinishedTickets() async throws {
+  /// Existing partial coverage:
+  /// - `archivingEpicCancelsSuggestionGeneration`
+  /// - `epicArchiveRequiresNoActiveDelivery`
+  /// This test covers only E14's atomic archive disposition across the epic, its unfinished
+  /// and delivered tickets, and every outstanding proposal.
+  @Test("E14 archiving an epic atomically disposes tickets and proposals")
+  func e14ArchivingEpicDisposesTicketsAndProposals() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
@@ -3758,6 +3779,108 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `retrospectiveSynthesisLifecycle`
+  /// - `RetrospectiveSprintSelectionTests.retrospectivePhasesFollowSprintLifecycle`
+  /// This test covers only I03's durable interruption, failed retry, and explicit
+  /// continue-without-AI composition while preserving the original source-note snapshot.
+  @Test("I03 interrupted retrospective synthesis can fail retry then continue without AI")
+  func i03RetrospectiveSynthesisRecoveryAndSkipPreserveSources() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Durable retrospective")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver the retrospective source"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Recover retrospective preparation",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sourceNote = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .couldImprove,
+      body: "The approved validation runtime was unavailable.",
+      isActionCandidate: true,
+      actionDestination: .teamPractice
+    )
+    try await store.saveRetrospectiveNotes([sourceNote])
+    let completed = try await completeSprint(active, delivering: item, in: store)
+    let pending = try #require(
+      try await store.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    _ = try await store.beginRetrospectiveSynthesis(id: pending.id, profileID: analyst.id)
+    let capturedSources = try await store.fetchRetrospectiveSynthesisSourceNotes(
+      synthesisID: pending.id
+    )
+    #expect(capturedSources.map(\.id) == [sourceNote.id])
+    await store.close()
+
+    let recovered = try SQLiteStore(url: fixture.databaseURL)
+    try await recovered.requeueGeneratingRetrospectiveSyntheses()
+    let requeued = try #require(
+      try await recovered.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    #expect(requeued.id == pending.id)
+    #expect(requeued.status == .pending)
+    _ = try await recovered.beginRetrospectiveSynthesis(
+      id: pending.id,
+      profileID: analyst.id
+    )
+    let failed = try await recovered.failRetrospectiveSynthesis(
+      id: pending.id,
+      message: "The retry could not reach Codex."
+    )
+    #expect(failed.status == .failed)
+    await recovered.close()
+
+    let retried = try SQLiteStore(url: fixture.databaseURL)
+    let durableFailure = try #require(
+      try await retried.fetchRetrospectiveSyntheses(productID: product.id).first
+    )
+    #expect(durableFailure.id == pending.id)
+    #expect(durableFailure.status == .failed)
+    #expect(durableFailure.errorMessage == "The retry could not reach Codex.")
+    let preservedSources = try await retried.fetchRetrospectiveSynthesisSourceNotes(
+      synthesisID: pending.id
+    )
+    #expect(preservedSources.map(\.id) == [sourceNote.id])
+    #expect(preservedSources.map(\.body) == [sourceNote.body])
+
+    let skipped = try await retried.skipRetrospectiveSynthesis(id: pending.id)
+    #expect(skipped.status == .skipped)
+    #expect(
+      try await retried.fetchRetrospectiveSyntheses(productID: product.id).map(\.id)
+        == [pending.id]
+    )
+    let durableSources = try await retried.fetchRetrospectiveSynthesisSourceNotes(
+      synthesisID: pending.id
+    )
+    #expect(durableSources.map(\.id) == [sourceNote.id])
+    #expect(durableSources.map(\.body) == [sourceNote.body])
+    let concluded = try await retried.concludeRetrospective(id: completed.sprint.id)
+    #expect(concluded.sprint.retrospectiveConcludedAt != nil)
+    await retried.close()
+  }
+
   @Test("Managed demo sessions are durable and launch-bound")
   func managedDemoSessions() async throws {
     let fixture = try DatabaseFixture()
@@ -3874,8 +3997,13 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Agent permission decisions are durable and pending requests recover safely")
-  func agentPermissionRequests() async throws {
+  /// Existing partial coverage:
+  /// - `AgentPermissionGrantPolicyTests.effectiveAccessGroups`
+  /// - `TicketDeliveryPermissionWorkflowCoordinatorTests.permissionRequest`
+  /// This test covers only S02's revoke-one, confirmed revoke-all, retained audit, and
+  /// subsequent matching-request composition.
+  @Test("S02 revoke one or confirmed revoke all retains audit and prompts again")
+  func s02SavedAgentAccessRevocationJourney() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
@@ -4025,11 +4153,27 @@ struct SQLiteStoreTests {
         signature: "product-command|docker compose ps"
       )
     )
-    let revoked = try await reopened.revokeAgentPermissionGrants(
-      ids: [grant.id, secondGrant.id]
+    let grantGroup = try #require(
+      AgentPermissionGrantPolicy.savedAccessGroups(for: [grant, secondGrant])
+        .first { $0.grantIDs == [grant.id] }
     )
-    #expect(revoked.count == 2)
-    #expect(revoked.allSatisfy { $0.revokedAt != nil })
+    let revokeOne = AgentSavedAccessRevocationPlan.group(grantGroup)
+    #expect(!revokeOne.requiresConfirmation)
+    let individuallyRevoked = try await reopened.revokeAgentPermissionGrants(
+      ids: revokeOne.grantIDs
+    )
+    #expect(individuallyRevoked.map(\.id) == [grant.id])
+    #expect(individuallyRevoked.allSatisfy { $0.revokedAt != nil })
+    grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
+    #expect(grants == [secondGrant])
+
+    let revokeAll = AgentSavedAccessRevocationPlan.all(grants)
+    #expect(revokeAll.requiresConfirmation)
+    #expect(revokeAll.grantIDs == [secondGrant.id])
+    let collectivelyRevoked = try await reopened.revokeAgentPermissionGrants(
+      ids: revokeAll.grantIDs
+    )
+    #expect(collectivelyRevoked.map(\.id) == [secondGrant.id])
     grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
     #expect(grants.isEmpty)
     let auditGrants = try await reopened.fetchAgentPermissionGrants(
@@ -4038,11 +4182,37 @@ struct SQLiteStoreTests {
     )
     #expect(Set(auditGrants.map(\.id)) == [grant.id, secondGrant.id])
     #expect(auditGrants.allSatisfy { $0.revokedAt != nil })
+    #expect(
+      !AgentPermissionGrantPolicy.covers(
+        productGrantSignature: grant.signature,
+        kind: grant.kind,
+        grants: grants
+      )
+    )
+
+    let repeatedRequest = AgentPermissionRequest(
+      productID: product.id,
+      workItemID: item.id,
+      agentRunID: run.id,
+      threadID: "thread-permission",
+      turnID: "turn-permission-repeat",
+      serverRequestID: "44",
+      method: request.method,
+      kind: request.kind,
+      title: request.title,
+      detail: request.detail,
+      reason: request.reason,
+      signature: request.signature,
+      productGrantSignature: grant.signature
+    )
+    let persistedRepeat = try await reopened.saveAgentPermissionRequest(repeatedRequest)
+    #expect(persistedRepeat.status == .pending)
+    #expect(persistedRepeat.status.needsOwnerDecision)
 
     let replacement = try await reopened.saveAgentPermissionGrant(
       AgentPermissionGrant(
         productID: product.id,
-        sourceRequestID: request.id,
+        sourceRequestID: repeatedRequest.id,
         method: request.method,
         kind: request.kind,
         title: request.title,
@@ -4056,8 +4226,13 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Candidate revisions own reviewable canonical knowledge proposals")
-  func candidateKnowledgeProposals() async throws {
+  /// Existing partial coverage:
+  /// - `knowledgeBaseLifecycle`
+  /// - `SprintTicketWorkLogHistoryTests.reviewedKnowledgeNeedsAttentionWhenOwnerApprovalIsEnabled`
+  /// This test covers only D16's candidate-level accept/reject/unreviewed composition and
+  /// proves after relaunch that only accepted content became canonical product knowledge.
+  @Test("D16 only accepted candidate knowledge becomes canonical truth")
+  func d16CandidateKnowledgeDecisionsPublishOnlyAcceptedContent() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
 
@@ -4213,13 +4388,30 @@ struct SQLiteStoreTests {
         .first { $0.id == overview.id }
     )
     #expect(updatedOverview.bodyMarkdown.contains("Verified integration details"))
+    #expect(!updatedOverview.bodyMarkdown.contains("A stale alternative"))
     #expect(!updatedOverview.bodyMarkdown.hasPrefix("# "))
     #expect(updatedOverview.sourceWorkItemID == item.id)
     #expect(
       try await store.fetchKnowledgePageRevisions(pageID: overview.id).first?
         .changeSummary == update.rationale
     )
+    #expect(
+      try await store.fetchKnowledgePages(productID: product.id)
+        .allSatisfy { $0.title != creation.title }
+    )
     await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let durableProposals = try await reopened.fetchKnowledgePageProposals(productID: product.id)
+    #expect(durableProposals.first { $0.id == update.id }?.status == .accepted)
+    #expect(durableProposals.first { $0.id == creation.id }?.status == .rejected)
+    #expect(durableProposals.first { $0.id == staleUpdate.id }?.status == .reviewed)
+    let durablePages = try await reopened.fetchKnowledgePages(productID: product.id)
+    let durableOverview = try #require(durablePages.first { $0.id == overview.id })
+    #expect(durableOverview.bodyMarkdown.contains("Verified integration details"))
+    #expect(!durableOverview.bodyMarkdown.contains("A stale alternative"))
+    #expect(durablePages.allSatisfy { $0.title != creation.title })
+    await reopened.close()
   }
 
   @Test("Owner notifications retain read and resolution state across restart")

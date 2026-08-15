@@ -196,6 +196,120 @@ struct TicketConversationHistoryTests {
       ])
     #expect(insertionIndex == 1)
   }
+  /// Existing partial coverage:
+  /// - `submittedChoiceRemainsAnsweredQuestion`
+  /// - `pendingQuestionStaysInChronologicalPosition`
+  /// - `SQLiteStoreTests.durableWorkflow`
+  /// This test covers only B03's combined relaunch projection.
+  @Test("B03 relaunch restores refinement state, answered and pending cards, and comments")
+  func b03RelaunchRestoresCompleteRefinementConversation() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-b03-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let databaseURL = directory.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Durable refinement")
+    let analyst = try #require(
+      try await store.seedDefaultProfiles(productID: product.id)
+        .first { $0.role == .businessAnalyst }
+    )
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Refine the durable conversation"
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .refining,
+      actor: analyst.name,
+      reason: "Clarification started"
+    )
+    let firstQuestion = TicketRefinementQuestion(
+      prompt: "Which empty state should the Ticket deliver?",
+      options: ["A concise explanation", "A retry action"]
+    )
+    _ = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .agent,
+      authorName: analyst.name,
+      body: """
+        Which empty state should the Ticket deliver?
+        • A concise explanation
+        • A retry action
+        """,
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: firstQuestion.prompt,
+        options: firstQuestion.options
+      )
+    )
+    let answer = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@\(analyst.name) A retry action",
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: firstQuestion,
+          selectedOption: "A retry action",
+          answer: "A retry action"
+        )
+      ]
+    )
+    let ordinaryComment = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: "@\(analyst.name) Keep the copy concise."
+    )
+    let pendingQuestion = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .agent,
+      authorName: analyst.name,
+      body: """
+        Where should the retry action lead?
+        • Retry in place
+        • Open settings
+        """,
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: "Where should the retry action lead?",
+        options: ["Retry in place", "Open settings"]
+      )
+    )
+    await store.close()
+
+    let reopened = try SQLiteStore(url: databaseURL)
+    let restoredItem = try #require(
+      try await reopened.fetchWorkItems(productID: product.id).first { $0.id == item.id }
+    )
+    let comments = try await reopened.fetchComments(workItemID: item.id)
+    let displayed = TicketConversationHistory.displayedComments(
+      from: comments,
+      pendingQuestionID: pendingQuestion.id,
+      analystName: analyst.name
+    )
+    let insertionIndex = try #require(
+      TicketConversationHistory.pendingQuestionInsertionIndex(
+        in: displayed,
+        sourceComments: comments,
+        pendingQuestionID: pendingQuestion.id
+      )
+    )
+
+    #expect(restoredItem.state == .refining)
+    #expect(displayed.map(\.id) == [answer.id, ordinaryComment.id])
+    #expect(displayed.first?.answeredQuestions.first?.answer == "A retry action")
+    #expect(displayed.last?.body == "@\(analyst.name) Keep the copy concise.")
+    #expect(insertionIndex == displayed.endIndex)
+    #expect(
+      comments.first { $0.id == pendingQuestion.id }?.ownerQuestion?.prompt
+        == "Where should the retry action lead?"
+    )
+
+    await reopened.close()
+  }
+
 }
 
 @Suite("Conversation timeline scrolling")

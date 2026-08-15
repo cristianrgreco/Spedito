@@ -214,6 +214,115 @@ struct RepositoryKnowledgeCoordinatorTests {
     await secondFixture.store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `publicationRecoveryOrdersDurabilityBeforeCompletion`
+  /// - `refreshUsesExactDurableState`
+  /// This test covers only K04's edit lock and recoverable-failure composition.
+  @Test("K04 publication locks owner edits and failure preserves drafts for retry")
+  func k04PublicationLockAndFailureRecovery() {
+    let productID = UUID()
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: 1,
+      analyzedSHA: String(repeating: "a", count: 40),
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID(),
+      status: .publishing
+    )
+    let draft = RepositoryKnowledgeDraft(
+      runID: run.id,
+      operation: .create,
+      title: "Verified integration",
+      proposedBodyMarkdown: "# Verified integration\n\nDurable facts.",
+      rationale: "The repository proves this contract.",
+      evidence: [.init(path: "README.md", startLine: 1, endLine: 2)]
+    )
+    let publishing = RepositoryKnowledgeSnapshot(
+      productID: productID,
+      run: run,
+      drafts: [draft],
+      isRunning: true
+    )
+    var failedRun = run
+    failedRun.status = .failed
+    failedRun.errorMessage = "Publishing could not finish."
+    let failed = RepositoryKnowledgeSnapshot(
+      productID: productID,
+      run: failedRun,
+      drafts: [draft],
+      failure: RepositoryKnowledgeFailure(
+        kind: .publication,
+        message: "Publishing could not finish.",
+        retryAction: .retry
+      )
+    )
+
+    #expect(publishing.isActive)
+    #expect(!failed.isActive)
+    #expect(failed.drafts == publishing.drafts)
+    #expect(failed.failure?.retryAction == .retry)
+  }
+
+  /// Existing partial coverage:
+  /// - `concurrentExplicitRetries`
+  /// - `refreshUsesExactDurableState`
+  /// - `SQLiteStoreTests.repositoryKnowledgeActiveRunMigrationAndRecovery`
+  /// This test covers only R09's stale-retry race against the accepted newer revision.
+  @Test("R09 a stale retry binds to the newer accepted repository revision")
+  func r09StaleRetryUsesNewerAcceptedRevision() async throws {
+    let fixture = try await RepositoryKnowledgeProductFixture.make(
+      name: "Advanced repository",
+      importedSHA: String(repeating: "1", count: 40)
+    )
+    defer { fixture.remove() }
+    let staleSHA = String(repeating: "2", count: 40)
+    let acceptedSHA = String(repeating: "3", count: 40)
+    let failedRun = RepositoryKnowledgeRun(
+      productID: fixture.product.id,
+      attempt: 1,
+      purpose: .knowledge,
+      analyzedSHA: staleSHA,
+      analyzerProfileID: fixture.analyzerID,
+      reviewerProfileID: fixture.reviewerID,
+      status: .failed,
+      errorMessage: "The stale attempt failed."
+    )
+    try await fixture.store.createRepositoryKnowledgeRun(failedRun)
+    let gate = AcceptedRevisionGate()
+    let coordinator = RepositoryKnowledgeCoordinator(
+      storeProvider: { productID in
+        productID == fixture.product.id ? fixture.store : nil
+      },
+      workspaceURLProvider: { _ in fixture.workspaceURL },
+      analysisRootURLProvider: {
+        fixture.rootURL.appendingPathComponent("analysis", isDirectory: true)
+      },
+      gitWorkspaceManager: GitWorkspaceManager(),
+      acceptedTrunkSHAProvider: { _ in await gate.acceptedSHA() }
+    )
+    _ = await coordinator.send(
+      .runtimeChanged(executableURL: URL(fileURLWithPath: "/usr/bin/false"))
+    )
+
+    let retry = Task {
+      await coordinator.send(.retry(productID: fixture.product.id))
+    }
+    await gate.waitUntilRequested()
+    await gate.release(acceptedSHA)
+    _ = await retry.value
+
+    let durableRetry = try #require(
+      try await fixture.store.fetchRepositoryKnowledgeRuns(productID: fixture.product.id)
+        .first { $0.id != failedRun.id }
+    )
+    #expect(durableRetry.attempt == 2)
+    #expect(durableRetry.analyzedSHA == acceptedSHA)
+    #expect(durableRetry.analyzedSHA != staleSHA)
+
+    await coordinator.shutdown()
+    await fixture.store.close()
+  }
+
   private func makeCoordinator(
     fixtures: [RepositoryKnowledgeProductFixture],
     recorder: RepositoryKnowledgeObservationRecorder
@@ -421,6 +530,44 @@ private final class RepositoryKnowledgeObservationRecorder {
 
   func operationStartCount(for productID: UUID) -> Int {
     operationStartCounts[productID, default: 0]
+  }
+}
+
+private actor AcceptedRevisionGate {
+  private var isRequested = false
+  private var acceptedValue: String?
+  private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+  private var valueWaiters: [CheckedContinuation<String, Never>] = []
+
+  func acceptedSHA() async -> String {
+    isRequested = true
+    let waitingForRequest = requestWaiters
+    requestWaiters.removeAll()
+    for waiter in waitingForRequest {
+      waiter.resume()
+    }
+    if let acceptedValue {
+      return acceptedValue
+    }
+    return await withCheckedContinuation { continuation in
+      valueWaiters.append(continuation)
+    }
+  }
+
+  func waitUntilRequested() async {
+    guard !isRequested else { return }
+    await withCheckedContinuation { continuation in
+      requestWaiters.append(continuation)
+    }
+  }
+
+  func release(_ sha: String) {
+    acceptedValue = sha
+    let waitingForValue = valueWaiters
+    valueWaiters.removeAll()
+    for waiter in waitingForValue {
+      waiter.resume(returning: sha)
+    }
   }
 }
 

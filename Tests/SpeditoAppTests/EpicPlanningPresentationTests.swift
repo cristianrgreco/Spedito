@@ -603,4 +603,129 @@ struct EpicPlanningPresentationTests {
     )
   }
 
+  /// Existing partial coverage:
+  /// - `submittedEpicAnswersPreserveQuestionPosition`
+  /// - `failedEpicClarificationRetriesAnswers`
+  /// - `SQLiteStoreTests.epicPlanningConversationsAreDurable`
+  /// This test covers only E03's listed-choice, Other, and exclusive advancement composition.
+  @Test("E03 listed and custom answers exclusively enable one complete submission")
+  func e03ListedAndCustomAnswersEnableSubmission() throws {
+    let questions = [
+      TicketRefinementQuestion(
+        prompt: "Which audience should this outcome serve first?",
+        options: ["New customers", "Existing customers"]
+      ),
+      TicketRefinementQuestion(
+        prompt: "Which reporting cadence is required?",
+        options: ["Daily", "Weekly"]
+      ),
+    ]
+    let listedOnly = [0: "Existing customers"]
+    let incompleteOther = [
+      0: "Existing customers",
+      1: EpicPlanningAnswerSubmission.otherChoice,
+    ]
+
+    #expect(
+      !EpicPlanningAnswerSubmission.canSubmit(
+        questions: questions,
+        selectedOptions: listedOnly,
+        otherAnswers: [:]
+      )
+    )
+    #expect(
+      !EpicPlanningAnswerSubmission.canSubmit(
+        questions: questions,
+        selectedOptions: incompleteOther,
+        otherAnswers: [1: "   "]
+      )
+    )
+    #expect(
+      EpicPlanningAnswerSubmission.canSubmit(
+        questions: questions,
+        selectedOptions: incompleteOther,
+        otherAnswers: [1: "  Monthly after close  "]
+      )
+    )
+
+    let answers = EpicPlanningAnswerSubmission.answeredQuestions(
+      questions: questions,
+      selectedOptions: incompleteOther,
+      otherAnswers: [1: "  Monthly after close  "]
+    )
+    #expect(answers.count == 2)
+    #expect(answers[0].selectedOption == "Existing customers")
+    #expect(answers[0].answer == "Existing customers")
+    #expect(answers[1].selectedOption == nil)
+    #expect(answers[1].answer == "Monthly after close")
+  }
+
+  /// Existing partial coverage:
+  /// - `SQLiteStoreTests.ticketSuggestionsAreOwnerControlled`
+  /// - `SQLiteStoreTests.suggestionsCanDependOnExistingWork`
+  /// - `SQLiteStoreTests.dependencyAwareRanking`
+  /// This test covers only E11's complete transitive preview before persistence.
+  @Test("E11 acceptance previews every transitive suggested prerequisite before writing")
+  func e11AcceptancePreviewsTransitivePrerequisites() {
+    let sessionID = UUID()
+    let contract = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S1",
+      position: 0
+    )
+    let design = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S2",
+      position: 1,
+      dependencyIDs: [contract.id]
+    )
+    let implementation = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S3",
+      position: 2,
+      dependencyIDs: [design.id]
+    )
+    let unrelated = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S4",
+      position: 3
+    )
+    let suggestions = [implementation, unrelated, design, contract]
+
+    let prerequisites = transitiveSuggestedPrerequisites(
+      of: implementation,
+      in: suggestions
+    )
+    let impact = SuggestionAcceptanceImpact(
+      suggestion: implementation,
+      prerequisites: prerequisites
+    )
+
+    #expect(prerequisites.map(\.reference) == ["S1", "S2"])
+    #expect(impact.requiresConfirmation)
+    #expect(impact.actionTitle == "Accept 3 tickets")
+    #expect(impact.message.contains("S1, S2"))
+    #expect(suggestions.allSatisfy { $0.status == .proposed })
+  }
+
+  private func ticketSuggestion(
+    sessionID: UUID,
+    reference: String,
+    position: Int,
+    dependencyIDs: [UUID] = []
+  ) -> TicketSuggestion {
+    TicketSuggestion(
+      sessionID: sessionID,
+      reference: reference,
+      position: position,
+      title: reference,
+      body: "Deliver \(reference).",
+      acceptanceCriteria: ["\(reference) is complete"],
+      suggestedRole: .implementer,
+      priority: .normal,
+      rationale: "Required delivery work.",
+      dependencyIDs: dependencyIDs
+    )
+  }
+
 }

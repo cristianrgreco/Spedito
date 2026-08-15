@@ -843,6 +843,44 @@ enum EpicPlanningConversationTimeline {
   }
 }
 
+enum EpicPlanningAnswerSubmission {
+  static let otherChoice = "__other__"
+
+  static func canSubmit(
+    questions: [TicketRefinementQuestion],
+    selectedOptions: [Int: String],
+    otherAnswers: [Int: String]
+  ) -> Bool {
+    questions.indices.allSatisfy { index in
+      guard let option = selectedOptions[index] else { return false }
+      if option == otherChoice {
+        return !(otherAnswers[index] ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      }
+      return true
+    }
+  }
+
+  static func answeredQuestions(
+    questions: [TicketRefinementQuestion],
+    selectedOptions: [Int: String],
+    otherAnswers: [Int: String]
+  ) -> [EpicPlanningAnsweredQuestion] {
+    questions.indices.map { index in
+      let selection = selectedOptions[index] ?? ""
+      let answer =
+        selection == otherChoice
+        ? (otherAnswers[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        : selection
+      return EpicPlanningAnsweredQuestion(
+        question: questions[index],
+        selectedOption: selection == otherChoice ? nil : selection,
+        answer: answer
+      )
+    }
+  }
+}
+
 struct EpicPlanningConversationPanel: View {
   @EnvironmentObject private var model: AppModel
   let epic: Epic
@@ -854,7 +892,7 @@ struct EpicPlanningConversationPanel: View {
   @State private var respondingRecipientID: UUID?
   @State private var sendError: String?
 
-  private let otherChoice = "__other__"
+  private let otherChoice = EpicPlanningAnswerSubmission.otherChoice
 
   private var conversation: EpicPlanningConversationState? {
     guard model.epicPlanningConversation?.epicID == epic.id else { return nil }
@@ -1206,30 +1244,20 @@ struct EpicPlanningConversationPanel: View {
   }
 
   private func canSubmit(_ questions: [TicketRefinementQuestion]) -> Bool {
-    questions.indices.allSatisfy { index in
-      guard let option = selectedOptions[index] else { return false }
-      if option == otherChoice {
-        return !(otherAnswers[index] ?? "")
-          .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      }
-      return true
-    }
+    EpicPlanningAnswerSubmission.canSubmit(
+      questions: questions,
+      selectedOptions: selectedOptions,
+      otherAnswers: otherAnswers
+    )
   }
 
   private func submitAnswers(_ questions: [TicketRefinementQuestion]) {
     guard canSubmit(questions), !isAnyAgentResponding else { return }
-    let answeredQuestions = questions.enumerated().map { index, question in
-      let selection = selectedOptions[index] ?? ""
-      let answer =
-        selection == otherChoice
-        ? (otherAnswers[index] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        : selection
-      return EpicPlanningAnsweredQuestion(
-        question: question,
-        selectedOption: selection == otherChoice ? nil : selection,
-        answer: answer
-      )
-    }
+    let answeredQuestions = EpicPlanningAnswerSubmission.answeredQuestions(
+      questions: questions,
+      selectedOptions: selectedOptions,
+      otherAnswers: otherAnswers
+    )
     let answers = answeredQuestions.map {
       "\($0.question.prompt)\nAnswer: \($0.answer)"
     }

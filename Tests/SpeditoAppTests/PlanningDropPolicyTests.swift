@@ -323,6 +323,30 @@ struct PlanningDropPolicyTests {
     await store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `completeBranchCanEnterSprint`
+  /// - `dependantNeedsPrerequisiteInSprint`
+  /// - `bulkActionsPersistWholeSectionMoves`
+  /// This test covers only B09's partial-selection composition and exact explanation.
+  @Test("B09 partial sprint scope names the missing prerequisite relationship")
+  func b09PartialSprintScopeExplainsMissingRelationship() {
+    let fixture = Fixture()
+    let action = PlanningBulkMoveAction(
+      items: fixture.workItems,
+      selectedWorkItemIDs: [fixture.dependant.id],
+      destination: .candidateSprint
+    )
+
+    let evaluation = fixture.evaluate(
+      moving: Set(action.targetItems.map(\.id)),
+      intoCandidateSprint: true
+    )
+
+    #expect(action.targetItems.map(\.id) == [fixture.dependant.id])
+    #expect(evaluation.blockingConstraint == .sprintScope)
+    #expect(evaluation.message == "Move T1 too; T2 depends on it")
+  }
+
   private struct Fixture {
     let workItems: [WorkItem]
     let dependencies: [WorkItemDependency]

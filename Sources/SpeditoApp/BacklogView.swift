@@ -2785,7 +2785,7 @@ struct TicketSuggestionBatchActions: View {
   }
 }
 
-private func transitiveSuggestionDependents(
+func transitiveSuggestionDependents(
   of suggestion: TicketSuggestion,
   in suggestions: [TicketSuggestion]
 ) -> [TicketSuggestion] {
@@ -2806,7 +2806,7 @@ private func transitiveSuggestionDependents(
     .sorted { $0.position < $1.position }
 }
 
-private func transitiveSuggestedPrerequisites(
+func transitiveSuggestedPrerequisites(
   of suggestion: TicketSuggestion,
   in suggestions: [TicketSuggestion]
 ) -> [TicketSuggestion] {

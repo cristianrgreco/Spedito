@@ -130,9 +130,7 @@ struct KnowledgeBaseView: View {
   }
 
   private var repositoryKnowledgeIsRunning: Bool {
-    guard let status = model.repositoryKnowledgeSnapshot?.run?.status else { return false }
-    return status == .pendingAnalysis || status == .analyzing || status == .reviewing
-      || status == .publishing
+    model.repositoryKnowledgeSnapshot?.isActive == true
   }
 
   private var selectedPage: KnowledgePage? {

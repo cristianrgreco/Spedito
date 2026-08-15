@@ -633,11 +633,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     return storeRegistry?.store(for: selectedProductID)
   }
   private let gitWorkspaceManager: GitWorkspaceManager
-  private let productRepositoryImporter: ProductRepositoryImporter?
+  private let repositoryImportActivator: (any RepositoryImportActivating)?
   private let remoteRepositoryFeature: RemoteRepositoryFeatureModel
   private lazy var repositoryImportCoordinator: RepositoryImportCoordinator? = {
     return RepositoryImportCoordinator(
-      activator: productRepositoryImporter,
+      activator: repositoryImportActivator,
       sourceResolver: remoteRepositoryFeature,
       blankProductActivator: { [weak self] name, repositoryID in
         guard let self else { throw CancellationError() }
@@ -824,13 +824,10 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         legacyDatabaseURL: baseURL.appendingPathComponent("storypointless.sqlite")
       )
       storeRegistry = registry
-      productRepositoryImporter = ProductRepositoryImporter(
+      repositoryImportActivator = ProductRepositoryImporter(
         registration: registry,
         gitWorkspaceManager: gitWorkspaceManager,
-        stagingRootURL: baseURL.appendingPathComponent(
-          "Import Workspaces",
-          isDirectory: true
-        )
+        stagingRootURL: baseURL.appendingPathComponent("Import Workspaces", isDirectory: true)
       )
       remoteService = makeAppRemoteRepositoryService(
         registry: registry,
@@ -840,7 +837,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       injectedStore = nil
     } catch {
       storeRegistry = nil
-      productRepositoryImporter = nil
+      repositoryImportActivator = nil
       injectedStore = nil
       errorMessage = error.localizedDescription
     }
@@ -865,7 +862,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     codexInstallationPreferences = CodexInstallationPreferences()
     self.codexTransportFactory = codexTransportFactory
     gitWorkspaceManager = GitWorkspaceManager()
-    productRepositoryImporter = nil
+    repositoryImportActivator = nil
     storeRegistry = nil
     injectedStore = store
     self.remoteRepositoryFeature = remoteRepositoryFeature
@@ -886,20 +883,23 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       MacOSOwnerNotificationNotifier(),
     remoteRepositoryFeature: RemoteRepositoryFeatureModel = RemoteRepositoryFeatureModel(
       service: nil
-    )
+    ),
+    repositoryImportActivator: (any RepositoryImportActivating)? = nil
   ) {
     codexInstallationPreferences = CodexInstallationPreferences()
     self.codexTransportFactory = codexTransportFactory
     let gitWorkspaceManager = GitWorkspaceManager()
     self.gitWorkspaceManager = gitWorkspaceManager
     self.storeRegistry = storeRegistry
-    productRepositoryImporter = ProductRepositoryImporter(
-      registration: storeRegistry,
-      gitWorkspaceManager: gitWorkspaceManager,
-      stagingRootURL: storeRegistry.productWorkspacesRootURL
-        .deletingLastPathComponent()
-        .appendingPathComponent("Import Workspaces", isDirectory: true)
-    )
+    self.repositoryImportActivator =
+      repositoryImportActivator
+      ?? ProductRepositoryImporter(
+        registration: storeRegistry,
+        gitWorkspaceManager: gitWorkspaceManager,
+        stagingRootURL: storeRegistry.productWorkspacesRootURL
+          .deletingLastPathComponent()
+          .appendingPathComponent("Import Workspaces", isDirectory: true)
+      )
     injectedStore = nil
     self.remoteRepositoryFeature = remoteRepositoryFeature
     self.ownerNotificationSoundPlayer = ownerNotificationSoundPlayer
@@ -1934,7 +1934,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           selectedProductID = fixtureProductID
         }
       #endif
-      try productRepositoryImporter?.prepare()
+      try repositoryImportActivator?.prepare()
       try await prepareStartupProductDefaults()
       let stores = storeRegistry?.allStores ?? injectedStore.map { [$0] } ?? []
       try repositoryKnowledgeCoordinator.cleanupAbandonedSnapshots()

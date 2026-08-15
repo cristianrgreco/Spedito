@@ -8,6 +8,7 @@ struct ProductContextView: View {
   @State private var name = ""
   @State private var isRevokingSavedAccess = false
   @State private var showingRevokeAllConfirmation = false
+  @State private var pendingSavedAccessRevocation: AgentSavedAccessRevocationPlan?
   @State private var showingArchiveConfirmation = false
   @State private var isArchiving = false
 
@@ -55,7 +56,7 @@ struct ProductContextView: View {
               Spacer(minLength: 12)
               if !model.permissionGrants.isEmpty {
                 Button("Revoke all", role: .destructive) {
-                  showingRevokeAllConfirmation = true
+                  requestSavedAccessRevocation(.all(model.permissionGrants))
                 }
                 .buttonStyle(.bordered)
                 .tint(.red)
@@ -96,11 +97,7 @@ struct ProductContextView: View {
                   }
                   Spacer(minLength: 12)
                   Button("Revoke", role: .destructive) {
-                    isRevokingSavedAccess = true
-                    Task {
-                      await model.revokePermissionGrants(group.grantIDs)
-                      isRevokingSavedAccess = false
-                    }
+                    requestSavedAccessRevocation(.group(group))
                   }
                   .disabled(isRevokingSavedAccess)
                 }
@@ -158,14 +155,13 @@ struct ProductContextView: View {
       titleVisibility: .visible
     ) {
       Button("Revoke all", role: .destructive) {
-        isRevokingSavedAccess = true
-        let grantIDs = model.permissionGrants.map(\.id)
-        Task {
-          await model.revokePermissionGrants(grantIDs)
-          isRevokingSavedAccess = false
+        if let pendingSavedAccessRevocation {
+          performSavedAccessRevocation(pendingSavedAccessRevocation)
         }
       }
-      Button("Cancel", role: .cancel) {}
+      Button("Cancel", role: .cancel) {
+        pendingSavedAccessRevocation = nil
+      }
     } message: {
       Text(
         "Future matching requests will need your approval again. Existing work log history is preserved."
@@ -184,6 +180,26 @@ struct ProductContextView: View {
       Text(
         "Active delivery will be safely suspended. Nothing is deleted, and you can restore the product later from products."
       )
+    }
+  }
+
+  private func requestSavedAccessRevocation(_ plan: AgentSavedAccessRevocationPlan) {
+    guard !isRevokingSavedAccess, !plan.grantIDs.isEmpty else { return }
+    if plan.requiresConfirmation {
+      pendingSavedAccessRevocation = plan
+      showingRevokeAllConfirmation = true
+    } else {
+      performSavedAccessRevocation(plan)
+    }
+  }
+
+  private func performSavedAccessRevocation(_ plan: AgentSavedAccessRevocationPlan) {
+    guard !isRevokingSavedAccess, !plan.grantIDs.isEmpty else { return }
+    pendingSavedAccessRevocation = nil
+    isRevokingSavedAccess = true
+    Task {
+      await model.revokePermissionGrants(plan.grantIDs)
+      isRevokingSavedAccess = false
     }
   }
 

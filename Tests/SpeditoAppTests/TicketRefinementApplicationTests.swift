@@ -260,4 +260,41 @@ struct TicketRefinementApplicationTests {
     #expect(unchanged.version == item.version)
     await store.close()
   }
+  /// Existing partial coverage:
+  /// - `SQLiteStoreTests.ticketEditVersionConflict`
+  /// - `completedRefinementIsAppliedAsOneUpdate`
+  /// - `unresolvedRefinementIsNotApplied`
+  /// This test covers only B05's stale in-flight presentation and newer-draft preservation.
+  @Test("B05 stale refinement completion preserves the newer owner draft and explains the conflict")
+  func b05StaleCompletionPreservesNewerDraft() {
+    let base = SprintPlanningTicketSnapshot(
+      version: 3,
+      title: "Original owner title",
+      type: .story,
+      body: "Original contract",
+      acceptanceCriteria: ["Original outcome"],
+      priority: .normal
+    )
+    let newerDraft = SprintPlanningTicketSnapshot(
+      version: 3,
+      title: "Newer owner title",
+      type: .story,
+      body: "Newer owner contract",
+      acceptanceCriteria: ["Newer owner outcome"],
+      priority: .high
+    )
+
+    let message = TicketRefinementConflictPolicy.message(
+      currentDraft: newerDraft,
+      baseDraft: base,
+      savedVersion: 3,
+      proposalBaseVersion: 3
+    )
+
+    #expect(message == TicketRefinementConflictPolicy.unsavedDraftMessage)
+    #expect(newerDraft.title == "Newer owner title")
+    #expect(newerDraft.body == "Newer owner contract")
+    #expect(newerDraft.acceptanceCriteria == ["Newer owner outcome"])
+  }
+
 }

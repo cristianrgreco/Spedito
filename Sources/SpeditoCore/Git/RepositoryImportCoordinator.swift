@@ -7,12 +7,17 @@ public enum RepositoryImportActivationProgress: Equatable, Sendable {
 
 @MainActor
 public protocol RepositoryImportActivating: Sendable {
+  func prepare() throws
   func importProduct(
     name: String,
     from source: PublicGitRepositoryURL,
     credentialConfiguration: GitCredentialSessionConfiguration?,
     onProgress: @escaping @Sendable (RepositoryImportActivationProgress) async -> Void
   ) async throws -> ImportedProduct
+}
+
+extension RepositoryImportActivating {
+  public func prepare() throws {}
 }
 
 public protocol RepositoryImportSourceResolving: Sendable {

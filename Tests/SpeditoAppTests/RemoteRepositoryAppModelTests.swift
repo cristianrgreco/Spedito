@@ -914,6 +914,137 @@ struct RemoteRepositoryAppModelTests {
     }
   }
 
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryServiceTests.importedProductConnection`
+  /// - `repositoryAttentionPolicy`
+  /// This test covers only R12's explicit confirm-or-disconnect owner choice.
+  @Test("R12 owner can confirm the newly observed target or disconnect")
+  func r12ObservedTargetChoice() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-r12-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Observed target")
+    let observedAt = Date(timeIntervalSince1970: 5_000)
+    let pendingConnection = RemoteRepositoryConnection(
+      productID: product.id,
+      version: 7,
+      kind: .importedSource,
+      repositoryID: 11,
+      owner: "example",
+      name: "old",
+      fullName: "example/old",
+      canonicalHTTPSURL: URL(string: "https://github.com/example/old.git"),
+      defaultBranch: "main",
+      status: .needsTargetReview,
+      pendingRepositoryID: 22,
+      pendingFullName: "example/new",
+      pendingCanonicalHTTPSURL: URL(string: "https://github.com/example/new.git"),
+      pendingDefaultBranch: "trunk",
+      pendingObservedAt: observedAt
+    )
+    let service = AppModelRemoteService()
+    await service.setState(
+      GitHubRemoteRepositoryState(
+        isConfigured: true,
+        connection: pendingConnection
+      )
+    )
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
+    await model.reload()
+
+    await model.confirmRemoteRepositoryTarget(
+      productID: product.id,
+      expectedVersion: pendingConnection.version,
+      pendingObservedAt: observedAt
+    )
+    let confirmed = try #require(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.connection
+    )
+    #expect(confirmed.repositoryID == 22)
+    #expect(confirmed.fullName == "example/new")
+    #expect(confirmed.defaultBranch == "trunk")
+    #expect(confirmed.pendingRepositoryID == nil)
+    #expect(confirmed.status == .connected)
+    #expect(await service.confirmTargetCount == 1)
+
+    await service.setState(
+      GitHubRemoteRepositoryState(
+        isConfigured: true,
+        connection: pendingConnection
+      )
+    )
+    await model.checkRemoteRepository(productID: product.id)
+    await model.disconnectGitHub(productID: product.id)
+    let disconnected = try #require(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.connection
+    )
+    #expect(disconnected.status == .disconnected)
+    #expect(await service.disconnectCount == 1)
+
+    await model.shutdown()
+    await store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `RepositoryImportCoordinatorTests.publicImport`
+  /// - `RepositoryImportKnowledgeTests.stagedRepositoryImport`
+  /// This test covers only R01's application selection before durable understanding recovery.
+  @Test("R01 imported Product opens before background repository understanding continues")
+  func r01ImportedProductOpensBeforeUnderstandingContinues() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-r01-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: root.appendingPathComponent("products", isDirectory: true)
+    )
+    let activator = AppModelRepositoryImportActivator(registry: registry)
+    let model = AppModel(
+      storeRegistry: registry,
+      repositoryImportActivator: activator
+    )
+    let source = try PublicGitRepositoryURL(
+      "https://github.com/example/imported-product.git"
+    )
+
+    #expect(
+      await model.createProductAndSelect(
+        .importRepository(name: "Imported product", source: source)
+      )
+    )
+    let product = try #require(model.selectedProduct)
+    let store = try #require(registry.store(for: product.id))
+    let repository = try #require(
+      try await store.fetchProductRepository(productID: product.id)
+    )
+    let pendingRun = try #require(
+      try await store.fetchLatestRepositoryKnowledgeRun(productID: product.id)
+    )
+
+    #expect(model.selectedProductID == product.id)
+    #expect(model.workItems.isEmpty)
+    #expect(repository.importedSHA == AppModelRepositoryImportActivator.importedSHA)
+    #expect(pendingRun.status == .pendingAnalysis)
+
+    await model.awaitRepositoryKnowledgeRecovery(productID: product.id)
+    #expect(model.repositoryKnowledgeSnapshot?.productID == product.id)
+    #expect(model.repositoryKnowledgeSnapshot?.run?.id == pendingRun.id)
+    #expect(model.repositoryKnowledgeSnapshot?.isActive == true)
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   private func pollingWorkItem(
     productID: UUID,
     key: String,
@@ -1229,6 +1360,54 @@ private actor TestRemotePollingSleeper: RemoteRepositoryPollingSleeping {
   }
 }
 
+@MainActor
+private final class AppModelRepositoryImportActivator: RepositoryImportActivating {
+  static let importedSHA = String(repeating: "a", count: 40)
+
+  private let registry: ProductStoreRegistry
+
+  init(registry: ProductStoreRegistry) {
+    self.registry = registry
+  }
+
+  func importProduct(
+    name: String,
+    from source: PublicGitRepositoryURL,
+    credentialConfiguration: GitCredentialSessionConfiguration?,
+    onProgress: @escaping @Sendable (RepositoryImportActivationProgress) async -> Void
+  ) async throws -> ImportedProduct {
+    _ = credentialConfiguration
+    await onProgress(.cloningAndStaging)
+    let product = try await registry.createProduct(name: name)
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyzer = try #require(profiles.first { $0.role == .businessAnalyst })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    let repository = ProductRepository(
+      productID: product.id,
+      originURL: source.url,
+      sourceDefaultBranch: "main",
+      importedSHA: Self.importedSHA
+    )
+    try await store.createProductRepository(repository)
+    let run = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      purpose: .importedAppLaunch,
+      analyzedSHA: Self.importedSHA,
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id
+    )
+    try await store.createRepositoryKnowledgeRun(run)
+    await onProgress(.activatingProduct)
+    return ImportedProduct(
+      product: product,
+      repository: repository,
+      knowledgeRun: run
+    )
+  }
+}
+
 private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var currentState = GitHubRemoteRepositoryState(isConfigured: true)
   private var connectionContinuation: CheckedContinuation<Void, Never>?
@@ -1242,6 +1421,8 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private(set) var selectionCount = 0
   private(set) var refreshRepositoryCount = 0
   private(set) var recoveryCount = 0
+  private(set) var confirmTargetCount = 0
+  private(set) var disconnectCount = 0
   private var recoveryContinuation: CheckedContinuation<Void, Never>?
   private var initializationContinuation: CheckedContinuation<Void, Never>?
   private var initializationStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -1448,7 +1629,8 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   }
 
   func disconnect(productID: UUID) async throws -> GitHubRemoteRepositoryState {
-    try await cancelConnection(productID: productID)
+    disconnectCount += 1
+    return try await cancelConnection(productID: productID)
   }
 
   func signOut(accountID: UUID) async throws {
@@ -1543,7 +1725,38 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     expectedVersion: Int,
     pendingObservedAt: Date
   ) async throws -> GitHubRemoteRepositoryState {
-    _ = (productID, expectedVersion, pendingObservedAt)
+    guard
+      var connection = currentState.connection,
+      connection.productID == productID,
+      connection.version == expectedVersion,
+      connection.pendingObservedAt == pendingObservedAt
+    else {
+      throw GitHubRemoteRepositoryServiceError.unavailable(
+        "The observed repository target changed."
+      )
+    }
+    confirmTargetCount += 1
+    connection.version += 1
+    connection.repositoryID = connection.pendingRepositoryID
+    connection.fullName = connection.pendingFullName
+    connection.canonicalHTTPSURL = connection.pendingCanonicalHTTPSURL
+    connection.defaultBranch = connection.pendingDefaultBranch
+    connection.pendingRepositoryID = nil
+    connection.pendingFullName = nil
+    connection.pendingCanonicalHTTPSURL = nil
+    connection.pendingDefaultBranch = nil
+    connection.pendingObservedAt = nil
+    connection.status = .connected
+    currentState = GitHubRemoteRepositoryState(
+      isConfigured: currentState.isConfigured,
+      connection: connection,
+      repositories: currentState.repositories,
+      selectedEligibility: currentState.selectedEligibility,
+      observation: currentState.observation,
+      safeSync: currentState.safeSync,
+      publications: currentState.publications,
+      errorMessage: currentState.errorMessage
+    )
     return currentState
   }
 

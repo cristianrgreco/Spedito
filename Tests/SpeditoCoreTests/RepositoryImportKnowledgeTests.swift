@@ -759,9 +759,13 @@ struct RepositoryImportKnowledgeTests {
     }
   }
 
+  /// Existing partial coverage:
+  /// - `RepositoryImportCoordinatorTests.publicImport`
+  /// This test adds R06's exact default-branch head and unchanged-history assertions to the
+  /// existing staged activation fixture.
   @MainActor
-  @Test("Importer activates complete history and durable provenance from staging")
-  func stagedRepositoryImport() async throws {
+  @Test("R06 imported revision is the default-branch head without rewritten history")
+  func r06ImportedRevisionPreservesDefaultBranchHistory() async throws {
     let root = temporaryDirectory(named: "import")
     let sourceRepository = root.appendingPathComponent("source", isDirectory: true)
     let productsRoot = root.appendingPathComponent("products", isDirectory: true)

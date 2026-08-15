@@ -442,6 +442,160 @@ struct TicketAttentionTests {
     }
   }
 
+  /// Existing partial coverage:
+  /// - `ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`
+  /// - `SprintTicketWorkLogHistoryTests.activeTicketQuestionRouting`
+  /// This test covers only D03's active-run Product switch and exact Ticket route.
+  @Test("D03 switching Products keeps the active question and routes back to its exact Ticket")
+  func d03ProductSwitchPreservesActiveQuestionRoute() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let deliveryProduct = try await registry.createProduct(name: "Delivery product")
+    let otherProduct = try await registry.createProduct(name: "Other product")
+    let deliveryStore = try #require(registry.store(for: deliveryProduct.id))
+    let profile = try #require(
+      try await deliveryStore.seedDefaultProfiles(productID: deliveryProduct.id).first
+    )
+    let item = try await deliveryStore.createWorkItem(
+      productID: deliveryProduct.id,
+      title: "Resolve the active delivery decision"
+    )
+    let run = try await deliveryStore.createAgentRun(
+      AgentRun(
+        productID: deliveryProduct.id,
+        workItemID: item.id,
+        profileID: profile.id,
+        status: .awaitingOwner
+      )
+    )
+    _ = try await deliveryStore.appendComment(
+      workItemID: item.id,
+      authorKind: .agent,
+      authorName: profile.name,
+      body: "Delivery needs one decision.",
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: "Which fallback should this Ticket use?",
+        options: ["Keep the current result", "Use the reviewed fallback"]
+      )
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: deliveryProduct.id
+    )
+    await model.reload()
+
+    await model.selectProduct(otherProduct)
+    let durableRun = try #require(
+      try await deliveryStore.fetchAgentRuns(productID: deliveryProduct.id)
+        .first { $0.id == run.id }
+    )
+    #expect(durableRun.status == .awaitingOwner)
+    let attention = try #require(
+      model.ticketAttentionsByProductID[deliveryProduct.id]?.first
+    )
+    #expect(attention.summary == "Which fallback should this Ticket use?")
+
+    let presentation = OwnerNotificationPresentation(attention: attention)
+    await model.openOwnerNotification(
+      try #require(
+        OwnerNotificationRoute(
+          userInfo: OwnerNotificationRoute.userInfo(for: presentation)
+        )
+      )
+    )
+
+    #expect(model.selectedProductID == deliveryProduct.id)
+    let request = try #require(model.ownerNotificationNavigationRequest)
+    #expect(request.productID == deliveryProduct.id)
+    #expect(request.target == OwnerNotificationTarget(kind: .ticket, id: item.id))
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `notificationKindControlsSoundAndResolution`
+  /// - `reloadAggregatesBackgroundProductAttention`
+  /// This test covers only C09's visible suppression, read, resolution, and count deduplication.
+  @Test("C09 visible Chat updates deduplicate, become read, and resolve only their target")
+  func c09VisibleTargetReadResolutionAndCounts() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Visible Chat")
+    let store = try #require(registry.store(for: product.id))
+    let sound = NotificationSoundSpy()
+    let system = NotificationSystemSpy()
+    let coordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in productID == product.id ? store : nil },
+      soundPlayer: sound,
+      systemNotifier: system
+    )
+    let target = OwnerNotificationTarget(kind: .conversationThread, id: UUID())
+    let firstNotification = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: target,
+      title: "Business analyst needs input in Chat",
+      body: "Choose the next step."
+    )
+    let repeatedTargetNotification = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: target,
+      title: "Business analyst still needs input in Chat",
+      body: "The same conversation is waiting."
+    )
+    await coordinator.setVisible(productID: product.id, target: target)
+
+    #expect(await coordinator.publish(firstNotification, productName: product.name))
+    #expect(await coordinator.publish(repeatedTargetNotification, productName: product.name))
+    #expect(coordinator.presentedNotification == nil)
+    #expect(system.posted.isEmpty)
+    #expect(sound.playCount == 0)
+    #expect(
+      coordinator.activeTargetCount(
+        productID: product.id,
+        targetKinds: [.conversationThread]
+      ) == 1
+    )
+    #expect(
+      coordinator.unreadTargetCount(
+        productID: product.id,
+        targetKinds: [.conversationThread]
+      ) == 0
+    )
+
+    await coordinator.markRead(productID: product.id, target: target)
+    #expect(
+      coordinator.unreadTargetCount(
+        productID: product.id,
+        targetKinds: [.conversationThread]
+      ) == 0
+    )
+    await coordinator.resolve(productID: product.id, target: target)
+    #expect(
+      coordinator.activeTargetCount(
+        productID: product.id,
+        targetKinds: [.conversationThread]
+      ) == 0
+    )
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).isEmpty
+    )
+
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   private func moveToAcceptance(
     _ item: WorkItem,
     in store: SQLiteStore

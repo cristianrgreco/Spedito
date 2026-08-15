@@ -95,6 +95,7 @@ public final class RepositoryKnowledgeCoordinator {
   public typealias WorkspaceURLProvider = @MainActor (UUID) throws -> URL
   public typealias AnalysisRootURLProvider = @MainActor () throws -> URL
   public typealias ClientFactory = @MainActor (URL, URL) -> CodexAppServerClient
+  public typealias AcceptedTrunkSHAProvider = @MainActor (URL) async throws -> String
   public typealias SnapshotObserver = @MainActor (
     RepositoryKnowledgeSnapshot,
     RepositoryKnowledgeEvent?
@@ -117,6 +118,7 @@ public final class RepositoryKnowledgeCoordinator {
   private let analysisRootURLProvider: AnalysisRootURLProvider
   private let gitWorkspaceManager: GitWorkspaceManager
   private let recoveryPolicy = RepositoryKnowledgeRecoveryPolicy()
+  private let acceptedTrunkSHAProvider: AcceptedTrunkSHAProvider
   private let clientFactory: ClientFactory
   private let onSnapshot: SnapshotObserver
   private let onEvent: EventObserver
@@ -135,6 +137,7 @@ public final class RepositoryKnowledgeCoordinator {
     workspaceURLProvider: @escaping WorkspaceURLProvider,
     analysisRootURLProvider: AnalysisRootURLProvider? = nil,
     gitWorkspaceManager: GitWorkspaceManager,
+    acceptedTrunkSHAProvider: AcceptedTrunkSHAProvider? = nil,
     clientFactory: ClientFactory? = nil,
     onSnapshot: @escaping SnapshotObserver = { _, _ in },
     onEvent: @escaping EventObserver = { _ in }
@@ -145,6 +148,9 @@ public final class RepositoryKnowledgeCoordinator {
       analysisRootURLProvider ?? Self.defaultAnalysisRootURL
     self.gitWorkspaceManager = gitWorkspaceManager
     self.clientFactory = clientFactory ?? Self.makeClient
+    self.acceptedTrunkSHAProvider =
+      acceptedTrunkSHAProvider
+      ?? { try await gitWorkspaceManager.acceptedTrunkSHA(at: $0) }
     self.onSnapshot = onSnapshot
     self.onEvent = onEvent
   }
@@ -458,8 +464,8 @@ public final class RepositoryKnowledgeCoordinator {
       }
       analyzedSHA = repository.importedSHA
     } else {
-      analyzedSHA = try await gitWorkspaceManager.acceptedTrunkSHA(
-        at: workspaceURLProvider(productID)
+      analyzedSHA = try await acceptedTrunkSHAProvider(
+        workspaceURLProvider(productID)
       )
     }
     if let interruptionMessage {
