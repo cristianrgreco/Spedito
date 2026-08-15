@@ -383,6 +383,118 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  @Test("[D04] Paused delivery relaunches and resumes the same durable run")
+  @MainActor
+  func pausedDeliveryResumesExistingRun() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    #expect(await harness.coordinator.pauseSprint(harness.plan.sprint))
+    let pausedPlan = try #require(
+      try await harness.store.fetchCurrentSprint(productID: harness.product.id)
+    )
+    #expect(pausedPlan.sprint.state == .paused)
+
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let pausedRun = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(pausedRun.status == .running)
+    #expect(await relaunched.resumeSprint(pausedPlan.sprint))
+    await relaunched.recoverDelivery(productID: harness.product.id)
+    let recoveredRun = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(recoveredRun.status == .queued)
+    #expect(try await harness.store.fetchAgentRuns(productID: harness.product.id).count == 1)
+
+    #expect(
+      try await harness.store.fetchCurrentSprint(productID: harness.product.id)?.sprint.state
+        == .active
+    )
+    await harness.store.close()
+  }
+
+  @Test("[D05] Stopping delivery supersedes the unaccepted candidate")
+  @MainActor
+  func stoppedDeliveryPreservesAuditAndReturnsTicketToReady() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let sprintItem = try #require(
+      harness.plan.items.first { $0.workItemID == harness.workItem.id }
+    )
+    let candidate = try await harness.store.createCandidateRevision(
+      CandidateRevision(
+        productID: harness.product.id,
+        sprintID: harness.plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: harness.workItem.id,
+        implementationRunID: harness.run.id,
+        version: 1,
+        branchName: "ticket/\(harness.workItem.key)",
+        baseSHA: "base",
+        headSHA: "head",
+        integratedSHA: "integrated",
+        worktreePath: harness.run.worktreePath ?? harness.root.path,
+        status: .readyForDemo,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+
+    #expect(await harness.coordinator.stopSprint(harness.plan.sprint))
+    let storedItem = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first(where: { $0.id == harness.workItem.id })
+    )
+    let storedRun = try await harness.store.fetchAgentRun(id: harness.run.id)
+    let storedCandidate = try await harness.store.fetchCandidateRevision(id: candidate.id)
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    #expect(try await harness.store.fetchCurrentSprint(productID: harness.product.id) == nil)
+    #expect(storedItem.state == .ready)
+    #expect(storedRun.status == .cancelled)
+    #expect(storedCandidate.status == .superseded)
+    #expect(comments.last?.body.contains("returned to Ready for replanning") == true)
+    await harness.store.close()
+  }
+
+  @Test(
+    "[A11] Crash recovery reuses a durable workspace and explains a missing one",
+    arguments: [true, false]
+  )
+  @MainActor
+  func crashRecoveryUsesLastDurableMilestone(workspaceExists: Bool) async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: workspaceExists)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+
+    await relaunched.recoverDelivery(productID: harness.product.id)
+
+    let recoveredRun = try await harness.store.fetchAgentRun(id: harness.run.id)
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    #expect(recoveredRun.id == harness.run.id)
+    #expect(recoveredRun.codexThreadID == harness.run.codexThreadID)
+    #expect(recoveredRun.worktreePath == harness.run.worktreePath)
+    #expect(recoveredRun.status == (workspaceExists ? .queued : .awaitingOwner))
+    #expect(comments.last?.body.contains("Recovery after restart") == true)
+    #expect(comments.last?.body.contains("is missing") == !workspaceExists)
+    #expect(try await harness.store.fetchAgentRuns(productID: harness.product.id).count == 1)
+    await harness.store.close()
+  }
+
+
   @MainActor
   private func makeAcceptanceHarness(
     deliveryKind: CandidateDeliveryKind
@@ -591,12 +703,129 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   }
 
   @MainActor
+  private func makeRecoveryHarness(workspaceExists: Bool) async throws -> RecoveryHarness {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-recovery-coordinator-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Recovery authority")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Resume preserved delivery",
+      acceptanceCriteria: ["Recovery reuses the durable run."]
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refined"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Recover without replacement work",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    var run = try #require(
+      try await store.fetchAgentRuns(productID: product.id)
+        .first(where: { $0.workItemID == workItem.id })
+    )
+    let ticketWorkspace = root.appendingPathComponent("ticket", isDirectory: true)
+    if workspaceExists {
+      try FileManager.default.createDirectory(
+        at: ticketWorkspace,
+        withIntermediateDirectories: true
+      )
+    }
+    run = try await store.updateAgentRun(
+      id: run.id,
+      status: .running,
+      codexThreadID: "thread-recovery",
+      worktreePath: ticketWorkspace.path,
+      eventActor: implementer.name,
+      eventDetail: "Delivery was active"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Delivery started"
+    )
+    let gitWorkspaceManager = GitWorkspaceManager()
+    _ = try await gitWorkspaceManager.ensureRepository(
+      at: root.appendingPathComponent("product", isDirectory: true)
+    )
+    let client = CodexAppServerClient(
+      transport: ScriptedCodexTransport(responses: [])
+    )
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    return RecoveryHarness(
+      root: root,
+      store: store,
+      product: product,
+      plan: plan,
+      workItem: workItem,
+      run: run,
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      coordinator: coordinator
+    )
+  }
+
+
+  @MainActor
   private struct AcceptanceHarness {
     let root: URL
     let store: SQLiteStore
     let product: Product
     let workItem: WorkItem
     let candidate: CandidateRevision
+    let delegate: CandidateReviewDelegate
+    let gitWorkspaceManager: GitWorkspaceManager
+    let coordinator: TicketDeliveryWorkflowCoordinator
+  }
+
+  @MainActor
+  private struct RecoveryHarness {
+    let root: URL
+    let store: SQLiteStore
+    let product: Product
+    let plan: SprintPlan
+    let workItem: WorkItem
+    let run: AgentRun
     let delegate: CandidateReviewDelegate
     let gitWorkspaceManager: GitWorkspaceManager
     let coordinator: TicketDeliveryWorkflowCoordinator
@@ -758,6 +987,8 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     launchID: UUID,
     removesPreview: Bool
   ) async {}
+
+  func deliveryStopDemoSessions(productID: UUID, includesPreparation: Bool) async {}
 
   func deliveryScheduleRetrospectiveSyntheses() {}
 

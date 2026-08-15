@@ -780,10 +780,10 @@ production, delivery notes, knowledge proposals, exact-candidate Tech Lead
 review, integration queueing, clean integration, conflict resolution, targeted
 review and integration recovery, return-to-implementation decisions, exact
 candidate acceptance, remote or local promotion, completion handoff
-publication, reviewed knowledge publication, and demo-failure correction.
+publication, reviewed knowledge publication, demo-failure correction, sprint
+pause/stop execution, and delivery-wide interruption recovery.
 `TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
-durable decisions, automatic replay, and saved-grant delivery. Delivery-wide
-interruption recovery remains in `AppModel` for the next clean subdomain cutover.
+durable decisions, automatic replay, and saved-grant delivery.
 
 ### Required journey tests
 

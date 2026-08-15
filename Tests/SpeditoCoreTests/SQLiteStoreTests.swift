@@ -1428,7 +1428,7 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Pausing a sprint is durable, blocks another start, and resumes preserved runs")
+  @Test("[D04] Pausing a sprint is durable, blocks another start, and resumes preserved runs")
   func sprintPauseAndResumeAreDurable() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
@@ -1497,7 +1497,7 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Stopping a sprint keeps done work and returns unfinished work for replanning")
+  @Test("[D05] Stopping a sprint keeps done work and returns unfinished work for replanning")
   func stoppingSprintPreservesAcceptedWorkAndSupersedesUnacceptedWork() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
