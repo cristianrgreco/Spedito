@@ -765,22 +765,22 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Identify all AppModel task dictionaries, product-ID maps, active turns, continuations, and manually stopped/paused sets associated with delivery.
 - [x] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
 - [x] Migrate implementation execution next, including permissions and live activity ownership.
-- [ ] Extract candidate review without combining it with implementation.
+- [x] Extract candidate review without combining it with implementation.
 - [ ] Extract integration and conflict resolution with exact candidate/review provenance.
 - [ ] Extract acceptance only after review and integration snapshots are stable.
 - [x] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
-- [ ] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
+- [x] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
 - [x] Preserve product isolation and concurrent product execution.
 - [x] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
 
 `TicketDeliveryRuntimeCoordinator` owns delivery task registries, active turns,
 wake continuations, and busy state. `TicketDeliveryWorkflowCoordinator` now
 owns implementation worktree/thread execution, evidence validation, candidate
-production, delivery notes, and knowledge proposals;
+production, delivery notes, knowledge proposals, exact-candidate Tech Lead
+review, review recovery, and return-to-implementation decisions;
 `TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
-durable decisions, automatic replay, and saved-grant delivery. Candidate
-review, integration/conflict resolution, acceptance/finalization, and recovery
-transitions remain in `AppModel`.
+durable decisions, automatic replay, and saved-grant delivery. Integration and
+conflict resolution plus acceptance and finalization remain in `AppModel`.
 
 ### Required journey tests
 
@@ -790,7 +790,7 @@ transitions remain in `AppModel`.
 - [ ] Normal shutdown suspends all owned work and recovery resumes safely.
 - [x] Failed or interrupted implementation preserves and requeues the same workspace, thread, and durable run (`ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity` / D10).
 - [ ] Permission request, approval, denial, and relaunch retain least privilege.
-- [ ] Review is bound to an immutable candidate and cannot attest its own work.
+- [x] Review is bound to an immutable candidate and cannot attest its own work (`TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound` and `SprintWorkRecoveryTests` / D11).
 - [ ] Clean integration retains candidate review.
 - [ ] Conflict resolution that changes the result requires focused re-review.
 - [ ] Parallel candidates serialize promotion against current local `trunk`.
