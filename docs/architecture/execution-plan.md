@@ -238,7 +238,16 @@ Gate 0 is the stabilization plan's own open gate: Phase 0 owner inspection, the 
 
 ## Packet 8 — UI runner and proving contract
 
-Conditional on packet 7. Implements sections 7.2 to 7.4 and the section 6.4 contract of the journey plan: debug-only composition, fixture control, the accessibility identifiers the Epic test needs, and the injectable owner-notification banner interval that removes the eight-second wall-clock dependency at `ContentView.swift:607`.
+Conditional on packet 7. Implements sections 7.2 to 7.4 and the section 6.4 contract of the journey plan: debug-only composition, fixture control, the accessibility identifiers the Epic test needs, and the injectable `OwnerNotificationBanner` interval that removes the eight-second wall-clock dependency.
+
+**Implementation evidence — 15 August 2026:** `AppRuntimeComposition` selects
+debug-only `UIFixtureRuntime` boundaries while preserving production defaults
+for release builds. `OwnerNotificationBanner` accepts a composition-supplied
+dismissal interval, and `EpicOwnerNotificationUITests` drives E02 through the
+ad-hoc-signed app bundle with UUID-backed controls and an explicit
+cross-process response gate. The Swift suite, release compilation, UI-test
+bundle compilation, and six architecture ratchets pass locally; the final
+serialized launched-process run is pending in the target CI environment.
 
 ## Packet 9 — P0 journey matrix
 

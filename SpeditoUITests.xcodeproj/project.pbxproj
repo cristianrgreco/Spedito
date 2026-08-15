@@ -7,11 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02D258787B031734A525ED09 /* EpicOwnerNotificationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */; };
 		B5A314E996CAB33D1B8AD7F0 /* LaunchSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		2EE3FEED16C2DFC3D3F905F6 /* SpeditoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SpeditoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpicOwnerNotificationUITests.swift; sourceTree = "<group>"; };
 		FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSmokeTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -35,6 +37,7 @@
 		F4C2EF4B3865E8287204A3AF /* SpeditoUITests */ = {
 			isa = PBXGroup;
 			children = (
+				8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */,
 				FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */,
 			);
 			name = SpeditoUITests;
@@ -99,6 +102,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				02D258787B031734A525ED09 /* EpicOwnerNotificationUITests.swift in Sources */,
 				B5A314E996CAB33D1B8AD7F0 /* LaunchSmokeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

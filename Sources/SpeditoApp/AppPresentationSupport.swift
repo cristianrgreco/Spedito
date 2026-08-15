@@ -55,6 +55,7 @@ struct EditableTextArea: View {
   let minHeight: CGFloat
   let focusOnAppear: Bool
   let isReadOnly: Bool
+  let accessibilityIdentifier: String?
   @FocusState private var isFocused: Bool
 
   init(
@@ -64,7 +65,8 @@ struct EditableTextArea: View {
     statusText: String? = nil,
     minHeight: CGFloat,
     focusOnAppear: Bool = false,
-    isReadOnly: Bool = false
+    isReadOnly: Bool = false,
+    accessibilityIdentifier: String? = nil
   ) {
     self.title = title
     self.prompt = prompt
@@ -73,6 +75,7 @@ struct EditableTextArea: View {
     self.minHeight = minHeight
     self.focusOnAppear = focusOnAppear
     self.isReadOnly = isReadOnly
+    self.accessibilityIdentifier = accessibilityIdentifier
   }
 
   var body: some View {
@@ -100,6 +103,7 @@ struct EditableTextArea: View {
           .font(.body)
           .padding(8)
           .focused($isFocused)
+          .accessibilityIdentifier(accessibilityIdentifier ?? "")
       }
       .frame(minHeight: minHeight)
       .background(

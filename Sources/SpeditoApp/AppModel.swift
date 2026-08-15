@@ -82,7 +82,6 @@ struct EpicPlanningPolicy {
   }
 }
 
-
 enum ProductExecutionLifecycleEvent: Equatable {
   case productSelectionChanged
   case productArchived(UUID)
@@ -109,7 +108,6 @@ struct ProductExecutionLifecyclePolicy {
     }
   }
 }
-
 
 enum PlanningDropConstraint: Equatable {
   case sprintScope
@@ -809,8 +807,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     let gitWorkspaceManager = GitWorkspaceManager()
     var remoteService: (any GitHubRemoteRepositoryServing)?
     self.gitWorkspaceManager = gitWorkspaceManager
-    ownerNotificationSoundPlayer = BundledOwnerNotificationSoundPlayer()
-    ownerNotificationSystemNotifier = MacOSOwnerNotificationNotifier()
+    let notificationAdapters = makeAppOwnerNotificationAdapters()
+    ownerNotificationSoundPlayer = notificationAdapters.soundPlayer
+    ownerNotificationSystemNotifier = notificationAdapters.systemNotifier
     let persistedSelectedProductID = UserDefaults.standard.string(
       forKey: Self.selectedProductDefaultsKey
     ).flatMap(UUID.init(uuidString:))
@@ -833,21 +832,10 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           isDirectory: true
         )
       )
-      remoteService = GitHubRemoteRepositoryService(
-        configuration: .current(),
-        git: gitWorkspaceManager,
-        storeProvider: { productID in
-          await registry.store(for: productID)
-        },
-        storesProvider: {
-          await registry.allStores
-        },
-        workspaceProvider: { productID in
-          workspacesRootURL.appendingPathComponent(
-            productID.uuidString,
-            isDirectory: true
-          )
-        }
+      remoteService = makeAppRemoteRepositoryService(
+        registry: registry,
+        gitWorkspaceManager: gitWorkspaceManager,
+        workspacesRootURL: workspacesRootURL
       )
       injectedStore = nil
     } catch {
@@ -991,7 +979,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       }
       latestRuns[run.workItemID] = run
     }
-    let latestAwaitingRunsByWorkItemID = runs
+    let latestAwaitingRunsByWorkItemID =
+      runs
       .filter { $0.status == .awaitingOwner }
       .reduce(into: [UUID: AgentRun]()) { latestRuns, run in
         if let current = latestRuns[run.workItemID], current.updatedAt >= run.updatedAt {
@@ -1938,6 +1927,13 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     didLoad = true
     do {
       try await storeRegistry?.prepare()
+      #if DEBUG
+        if let storeRegistry,
+          let fixtureProductID = try await UIFixtureRuntime.prepare(registry: storeRegistry)
+        {
+          selectedProductID = fixtureProductID
+        }
+      #endif
       try productRepositoryImporter?.prepare()
       try await prepareStartupProductDefaults()
       let stores = storeRegistry?.allStores ?? injectedStore.map { [$0] } ?? []
@@ -3585,8 +3581,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await ticketDeliveryWorkflowCoordinator.stopAgentRun(run)
   }
 
-
-
   func resumeSprintWork(
     productID: UUID,
     workItemID: UUID,
@@ -3629,8 +3623,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       workItemID: workItemID
     )
   }
-
-
 
   func launchDemo(for candidate: CandidateRevision) async -> Bool {
     guard candidate.deliveryKind.changesRepository,
@@ -6072,7 +6064,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     return startedIntegration ? .continueImmediately : .waitForWake
   }
 
-
   private func reloadSelectedProductIfCurrent(productID: UUID) async {
     guard selectedProductID == productID else {
       await refreshTicketAttentions(productID: productID)
@@ -6090,7 +6081,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     errorMessage = error.localizedDescription
   }
 
-
   private func eligibleImplementationRuns(
     in context: TicketDeliveryWorkflowContext
   ) -> [AgentRun] {
@@ -6101,13 +6091,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       dependencies: context.dependencies
     )
   }
-
-
-
-
-
-
-
 
   private func integrateLatestGitHubChanges(
     candidate: CandidateRevision,
@@ -6158,9 +6141,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       base.remoteSHA
     )
   }
-
-
-
 
   private func monitorLiveActivity(
     runID: UUID,
@@ -6314,7 +6294,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await ticketDeliveryWorkflowCoordinator.suspendSprintExecution()
     }
   }
-
 
   private func interruptFeatureTurn(_ turn: CodexTurnIdentity) async {
     guard let client = codexClient else { return }
@@ -6710,8 +6689,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       }
     )
   }
-
-
 
   func awaitRepositoryKnowledgeRecovery(productID: UUID) async {
     await repositoryKnowledgeCoordinator.send(.recover(productID: productID))
@@ -7187,7 +7164,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-
   private func recoverTicketSuggestionSessionIfNeeded() async {
     guard
       let store,
@@ -7257,15 +7233,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   private static func applicationSupportURL() throws -> URL {
-    guard
-      let root = FileManager.default.urls(
-        for: .applicationSupportDirectory,
-        in: .userDomainMask
-      ).first
-    else {
-      throw CocoaError(.fileNoSuchFile)
-    }
-    return try migratedApplicationSupportURL(in: root)
+    try appApplicationSupportURL()
   }
 
   static func migratedApplicationSupportURL(

@@ -384,6 +384,8 @@ private struct ProductLibraryRow: View {
     .contentShape(Rectangle())
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected ? .isSelected : [])
+    .accessibilityAddTraits(.isButton)
+    .accessibilityIdentifier("product.row.\(product.id.uuidString)")
   }
 }
 

@@ -13,6 +13,11 @@ typealias CodexTransportFactory =
 func makeProductionCodexTransport(
   candidates: [CodexRuntimeCandidate]
 ) async throws -> CodexTransportFactoryOutput {
+  #if DEBUG
+    if let fixture = await UIFixtureRuntime.transportFactoryOutput() {
+      return fixture
+    }
+  #endif
   let descriptor = try await Task.detached(priority: .userInitiated) {
     try CodexRuntimeResolver().resolve(candidates: candidates)
   }.value

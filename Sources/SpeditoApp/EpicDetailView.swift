@@ -54,8 +54,10 @@ struct EpicDetailView: View {
           .foregroundStyle(.purple)
         Text("Epic details")
           .font(.title2.bold())
+          .accessibilityIdentifier("epic.detail.\(epic.id.uuidString)")
         Spacer()
         Button("Done", action: close)
+          .accessibilityIdentifier("epic.done")
       }
       .padding(22)
       Divider()
@@ -1058,6 +1060,7 @@ struct EpicPlanningConversationPanel: View {
           .tint(.purple)
           .controlSize(.small)
           .disabled(!canSubmit(conversation.questions) || isAnyAgentResponding)
+          .accessibilityIdentifier("epic.submit-answers")
         }
         .padding(14)
         .background(tint.opacity(0.075))
@@ -1159,7 +1162,8 @@ struct EpicPlanningConversationPanel: View {
       selectedOptions: $selectedOptions,
       otherAnswers: $otherAnswers,
       otherChoiceKey: otherChoice,
-      tint: tint
+      tint: tint,
+      accessibilityPrefix: "epic"
     )
     .id(ConversationTimelineScrollTarget.questions(epic.id, questions))
   }
@@ -1169,7 +1173,8 @@ struct EpicPlanningConversationPanel: View {
   ) -> some View {
     MultipleChoiceQuestionCards(
       answeredQuestions: answeredQuestions,
-      tint: tint
+      tint: tint,
+      accessibilityPrefix: "epic"
     )
   }
 
