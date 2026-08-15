@@ -34,6 +34,23 @@ inspection and explicit approval are also required before establishing the
 known-good commit. Do not interpret the checked extraction work as approval to
 skip those remaining gates.
 
+### Current implementation evidence — 15 August 2026
+
+- `AppModel.swift` is 12,511 lines with 319 functions, 34 `@Published`
+  properties, 122 `try?` sites, and one task-launch site.
+- `ContentView.swift` is 613 lines with two task-launch sites.
+- `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery task
+  lifecycle. Transition execution remains in `AppModel`, including
+  `completeSprintTicketAcceptance` at line 4,287,
+  `recoverOrphanedExecutionRuns` at line 6,839,
+  `executeImplementationRun` at line 7,910, `resumeTechLeadReview` at line
+  8,651, `reviewCompletedImplementation` at line 9,457,
+  `applyTechLeadReviewResult` at line 9,759,
+  `runIntegrationConflictResolution` at line 10,223, and
+  `handleServerRequest` at line 11,977. The recovery function alone spans 746
+  lines and contains 29 awaits.
+
+
 ## 2. Instructions for the implementing agent
 
 Before starting any phase:
@@ -744,30 +761,34 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Write a state-transition table for each subdomain from current code and tests before moving it.
 - [x] Identify all AppModel task dictionaries, product-ID maps, active turns, continuations, and manually stopped/paused sets associated with delivery.
 - [x] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
-- [x] Migrate implementation execution next, including permissions and live activity ownership.
-- [x] Extract candidate review without combining it with implementation.
-- [x] Extract integration and conflict resolution with exact candidate/review provenance.
-- [x] Extract acceptance only after review and integration snapshots are stable.
+- [ ] Migrate implementation execution next, including permissions and live activity ownership.
+- [ ] Extract candidate review without combining it with implementation.
+- [ ] Extract integration and conflict resolution with exact candidate/review provenance.
+- [ ] Extract acceptance only after review and integration snapshots are stable.
 - [x] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
-- [x] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
+- [ ] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
 - [x] Preserve product isolation and concurrent product execution.
 - [x] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
 
+`TicketDeliveryRuntimeCoordinator` took ownership of task registries, active
+turns, wake continuations, and busy and snapshot state. The transition functions
+named in the implementation evidence above remain in `AppModel`.
+
 ### Required journey tests
 
-- [x] Dependency-ready tickets are admitted and blocked dependants wait.
-- [x] Product switching does not suspend active delivery.
-- [x] Product archival suspends only that product.
-- [x] Normal shutdown suspends all owned work and recovery resumes safely.
-- [x] Implementation interruption preserves the workspace and durable run.
-- [x] Permission request, approval, denial, and relaunch retain least privilege.
-- [x] Review is bound to an immutable candidate and cannot attest its own work.
-- [x] Clean integration retains candidate review.
-- [x] Conflict resolution that changes the result requires focused re-review.
-- [x] Parallel candidates serialize promotion against current local `trunk`.
-- [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
-- [x] Remote merge followed by interruption completes local reconciliation exactly once.
-- [x] Completed tickets leave the required self-contained handoff for dependants.
+- [x] Dependency-ready tickets are admitted and blocked dependants wait (`WorkflowPolicyTests.dependencyAwareRunAdmission`).
+- [x] Product switching does not suspend active delivery (`ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`).
+- [x] Product archival suspends only that product (`ProductExecutionLifecycleTests.productArchivalHasProductScope`).
+- [ ] Normal shutdown suspends all owned work and recovery resumes safely.
+- [ ] Implementation interruption preserves the workspace and durable run.
+- [ ] Permission request, approval, denial, and relaunch retain least privilege.
+- [ ] Review is bound to an immutable candidate and cannot attest its own work.
+- [ ] Clean integration retains candidate review.
+- [ ] Conflict resolution that changes the result requires focused re-review.
+- [ ] Parallel candidates serialize promotion against current local `trunk`.
+- [ ] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
+- [ ] Remote merge followed by interruption completes local reconciliation exactly once.
+- [ ] Completed tickets leave the required self-contained handoff for dependants.
 
 ### Acceptance
 
@@ -792,9 +813,9 @@ Finish turning `AppModel` into a composition and navigation boundary and `Conten
 Complete these in the order indicated by current defect frequency and feature work, not by arbitrary file position:
 
 - [x] Product conversations and title/activity lifecycle.
-- [x] Ticket and epic conversations/refinement.
-- [x] Epic planning and ticket suggestions.
-- [x] Sprint planning and goal generation.
+- [ ] Ticket and epic conversations/refinement.
+- [ ] Epic planning and ticket suggestions.
+- [ ] Sprint planning and goal generation.
 - [x] Demo/app-version launch and recovery.
 - [x] Retrospective synthesis.
 - [x] Codex connection and usage monitoring.
@@ -933,8 +954,8 @@ The stabilization program is done only when:
 - [x] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
 - [x] Remote account, connection, synchronization, and publication responsibilities are separated.
 - [x] Remote application state is no longer distributed across AppModel dictionaries and view state.
-- [x] Delivery execution, review, integration, and acceptance are Core-owned workflows.
-- [x] `AppModel` is an application composition/navigation boundary.
+- [ ] Delivery execution, review, integration, and acceptance are Core-owned workflows.
+- [ ] `AppModel` is an application composition/navigation boundary.
 - [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
 - [x] Persistence code is organized by aggregate without changing database authority.
 - [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
@@ -1094,14 +1115,14 @@ Required correction:
 - [x] Fetch all product statuses once and partition them in memory.
 - [x] Pass product ID through remote operation commands and perform direct store lookup.
 - [x] Move status filtering into indexed SQL queries.
-- [x] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
+- [ ] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
 
 Acceptance:
 
-- [x] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
-- [x] A product with long conversation history has bounded launch and product-selection work.
-- [x] A coordinator snapshot cannot combine records from different durable versions.
-- [x] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
+- [ ] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
+- [ ] A product with long conversation history has bounded launch and product-selection work.
+- [ ] A coordinator snapshot cannot combine records from different durable versions.
+- [ ] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
 
 ### 14.7 Priority 1 — Polling substitutes for observable state transitions
 

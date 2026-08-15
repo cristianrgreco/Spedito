@@ -28,17 +28,17 @@ Measured facts, so no packet has to re-derive them. Re-measure before starting, 
 
 | Metric | Value | How to reproduce |
 | --- | --- | --- |
-| `AppModel.swift` lines | 12,484 | `wc -l Sources/SpeditoApp/AppModel.swift` |
+| `AppModel.swift` lines | 12,511 | `wc -l Sources/SpeditoApp/AppModel.swift` |
 | `ContentView.swift` lines | 613 | `wc -l Sources/SpeditoApp/ContentView.swift` |
 | `AppModel` functions | 319 | `grep -c "func " Sources/SpeditoApp/AppModel.swift` |
 | `AppModel` `@Published` | 34 | `grep -c "@Published" Sources/SpeditoApp/AppModel.swift` |
 | `AppModel` `try?` | 122 | `grep -c "try?" Sources/SpeditoApp/AppModel.swift` |
 | Task-launch sites, `AppModel` / `ContentView` | 1 / 2 | `grep -c "Task {\|Task(priority" <file>` |
-| Longest function | `recoverOrphanedExecutionRuns`, 747 lines, 29 awaits, 38 branches | `AppModel.swift:6812` |
-| Automated tests | 464 at `69227e6`; 466 `@Test` in the working tree | `swift test list` |
+| Longest function | `recoverOrphanedExecutionRuns`, 746 lines, 29 awaits | `AppModel.swift:6839` |
+| Automated tests | 469 `@Test` declarations at `f4b0c37` | Count `@Test` declarations under `Tests/` |
 | Schema versions | V1 → V13, in-place migrations | `Sources/SpeditoCore/Persistence/ProductDatabaseSchema.swift` |
 
-What the delivery extraction actually produced: `TicketDeliveryRuntimeCoordinator` (556 lines) owns task lifecycle — registries, active turns, wake continuations, busy and snapshot state. The workflow transitions did not move. `executeImplementationRun` (406 lines), `resumeTechLeadReview` (372), `completeSprintTicketAcceptance` (356), `applyTechLeadReviewResult` (332), `reviewCompletedImplementation` (302), `handleServerRequest` (247), and `runIntegrationConflictResolution` (197) still create worktrees, run Codex turns, produce candidates, bind review, integrate, and accept — all inside `AppModel`. Of its 319 functions, 49 are delivery, 31 epic, 26 sprint.
+What the delivery extraction actually produced: `TicketDeliveryRuntimeCoordinator` (556 lines) owns task lifecycle — registries, active turns, wake continuations, busy and snapshot state. The workflow transitions did not move. `executeImplementationRun` (405 lines), `resumeTechLeadReview` (371), `completeSprintTicketAcceptance` (355), `applyTechLeadReviewResult` (331), `reviewCompletedImplementation` (301), `handleServerRequest` (246), and `runIntegrationConflictResolution` (196) still create worktrees, run Codex turns, produce candidates, bind review, integrate, and accept — all inside `AppModel`. Of its 319 functions, 49 are delivery, 31 epic, 26 sprint.
 
 By contrast, the large view files are not a problem and are out of scope: `BacklogView.swift` averages 83 lines per type and `SprintBoardView.swift` 237. Length there is composition, not concentration.
 
