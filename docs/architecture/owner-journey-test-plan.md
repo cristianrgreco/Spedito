@@ -368,6 +368,15 @@ Build the UI-test bundle with a distinct bundle identifier, for example `io.sped
 
 Prove the runner before committing to it. macOS XCUITest needs a real GUI login session, a signed bundle, and automation permission for the test runner, and CI currently runs `swift test` only. Spike one trivial launch-and-assert test end to end in the target CI environment as the first task of work packet 2. If it cannot be made reliable there, the fallback is explicit and acceptable: keep the launched-process contracts as a product-owner-run local suite, mark the 19 `Shell = Y` rows as owner-verified, and do not weaken their deterministic coordinator proofs to compensate.
 
+**Runner decision — 15 August 2026:** proceed to work packet 2. The
+test-only `SpeditoUITests.xcodeproj` built the ad-hoc-signed debug bundle with a
+distinct application and runner bundle identifier, launched it through
+`XCUIApplication(url:)`, and passed in the repository's pinned macOS 26 /
+Xcode 26.6 GitHub Actions environment. The serialized spike completed in
+1 minute 41 seconds in
+[CI run 31887927106](https://github.com/cristianrgreco/Spedito/actions/runs/31887927106).
+No second application target was introduced.
+
 ### 7.2 Debug-only composition
 
 Add an explicit debug-only launch configuration, selected by launch arguments/environment:
