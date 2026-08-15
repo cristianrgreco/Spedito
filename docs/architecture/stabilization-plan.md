@@ -1,7 +1,7 @@
 # Architecture stabilization and delivery plan
 
-- **Status:** Ready for execution
-- **Date:** 13 August 2026
+- **Status:** Active; implemented work is checked below, with owner inspection and the remaining application-state extraction still open
+- **Date:** 15 August 2026
 - **Primary goal:** Make Spedito easier to change, verify, recover, and review without pausing product development for a risky rewrite.
 - **Durable product authority:** `docs/product-spec.md`
 - **Durable architecture authority:** `docs/technical-design.md`
@@ -17,6 +17,22 @@ Recent work was delivered through many individual conversations that accumulated
 The current test suite provides strong coverage of domain policy, persistence, Git behavior, Codex adapters, credential handling, and several application policies. It does not yet provide a deterministic executable representation of every product-owner journey, including interruption, cancellation, relaunch, stale callbacks, and presentation state.
 
 This plan introduces those missing boundaries incrementally. It is deliberately not a big-bang rewrite and does not authorize user-visible product changes by itself.
+
+## Implementation status
+
+The completed checkboxes below describe the accumulated working tree, not a
+known-good commit. Repository import, repository knowledge, remote repository
+Core and application boundaries, aggregate-organized persistence, deterministic
+operation ownership, and the Priority 0 permission, archive/retry, and team
+settings corrections are implemented and covered by focused tests.
+
+Two architecture goals remain deliberately unchecked: delivery transition
+execution and most non-remote feature state still live on `AppModel`, even
+though their long-lived task ownership is now bounded, and broad reload/query
+amplification has not yet been fully measured and removed. Phase 0 owner
+inspection and explicit approval are also required before establishing the
+known-good commit. Do not interpret the checked extraction work as approval to
+skip those remaining gates.
 
 ## 2. Instructions for the implementing agent
 
@@ -302,15 +318,15 @@ Create a truthful known-good boundary before changing architecture. Do not refac
 
 ### Work
 
-- [ ] Verify that `docs/product-spec.md`, `docs/technical-design.md`, and `README.md` agree on the currently implemented GitHub and repository-import boundary.
-- [ ] Confirm that the in-progress specification correction is complete or coordinate with its owner.
-- [ ] Add `.build-launch/` to `.gitignore` if it is generated only by development build or relaunch tooling.
-- [ ] Verify that no source, fixture, or durable artifact is intentionally stored under `.build-launch/`.
-- [ ] Run the full required test suite.
-- [ ] Run `git diff --check`.
-- [ ] Relaunch the app with `./scripts/relaunch.sh` and leave it running.
-- [ ] Give the product owner the inspection checklist below.
-- [ ] Fix only defects that prevent establishing the baseline; do not begin coordinator extraction in the same work packet.
+- [x] Verify that `docs/product-spec.md`, `docs/technical-design.md`, and `README.md` agree on the currently implemented GitHub and repository-import boundary.
+- [x] Confirm that the in-progress specification correction is complete or coordinate with its owner.
+- [x] Add `.build-launch/` to `.gitignore` if it is generated only by development build or relaunch tooling.
+- [x] Verify that no source, fixture, or durable artifact is intentionally stored under `.build-launch/`.
+- [x] Run the full required test suite.
+- [x] Run `git diff --check`.
+- [x] Relaunch the app with `./scripts/relaunch.sh` and leave it running.
+- [x] Give the product owner the inspection checklist below.
+- [x] Fix only defects that prevent establishing the baseline; do not begin coordinator extraction in the same work packet.
 - [ ] Obtain explicit product-owner confirmation before committing all accumulated current changes.
 - [ ] Establish the known-good baseline commit without rewriting prior history.
 
@@ -352,16 +368,16 @@ Make subsequent extractions behavior-preserving and observable before moving res
 
 ### Work
 
-- [ ] Inventory every `Task.sleep` in AppModel workflow tests and identify the event it is attempting to observe.
-- [ ] Inventory existing controllable fakes, continuations, clocks, stream monitors, temporary stores, and Git wrappers before adding helpers.
-- [ ] Introduce the smallest explicit test gate or event recorder needed by the first repository workflow.
-- [ ] Replace sleep-based observation in the affected remote-repository AppModel tests with explicit state or operation events.
-- [ ] Add a reusable fresh-instance recovery fixture that closes the first coordinator/store instance and constructs a new one over the same product database and repository.
-- [ ] Add one thin journey test for each current repository workflow before extraction:
+- [x] Inventory every `Task.sleep` in AppModel workflow tests and identify the event it is attempting to observe.
+- [x] Inventory existing controllable fakes, continuations, clocks, stream monitors, temporary stores, and Git wrappers before adding helpers.
+- [x] Introduce the smallest explicit test gate or event recorder needed by the first repository workflow.
+- [x] Replace sleep-based observation in the affected remote-repository AppModel tests with explicit state or operation events.
+- [x] Add a reusable fresh-instance recovery fixture that closes the first coordinator/store instance and constructs a new one over the same product database and repository.
+- [x] Add one thin journey test for each current repository workflow before extraction:
   - repository import activation;
   - repository knowledge recovery; and
   - remote connection or synchronization recovery.
-- [ ] Confirm that every new test would fail if the final durable transition were omitted or if a stale result overwrote newer state.
+- [x] Confirm that every new test would fail if the final durable transition were omitted or if a stale result overwrote newer state.
 
 ### Acceptance
 
@@ -414,27 +430,27 @@ Do not combine background repository knowledge analysis into import completion. 
 
 ### Work
 
-- [ ] Define the import command and snapshot types in Core.
-- [ ] Separate durable import/activation results from transient authorization prompts and progress.
-- [ ] Move import task ownership and cancellation out of `AppModel`.
-- [ ] Ensure the coordinator can resolve both manual public URLs and selected authorized GitHub repository IDs without exposing access tokens to App state.
-- [ ] Preserve exact staging cleanup and registration behavior on cancellation and failure.
-- [ ] Route product selection only after durable activation succeeds.
-- [ ] Schedule repository knowledge analysis exactly once after activation.
-- [ ] Migrate product-creation UI to the bounded import state and commands.
-- [ ] Remove obsolete import task, prompt, busy, and error state from `AppModel`.
-- [ ] Remove superseded test doubles and update tests to drive the coordinator.
+- [x] Define the import command and snapshot types in Core.
+- [x] Separate durable import/activation results from transient authorization prompts and progress.
+- [x] Move import task ownership and cancellation out of `AppModel`.
+- [x] Ensure the coordinator can resolve both manual public URLs and selected authorized GitHub repository IDs without exposing access tokens to App state.
+- [x] Preserve exact staging cleanup and registration behavior on cancellation and failure.
+- [x] Route product selection only after durable activation succeeds.
+- [x] Schedule repository knowledge analysis exactly once after activation.
+- [x] Migrate product-creation UI to the bounded import state and commands.
+- [x] Remove obsolete import task, prompt, busy, and error state from `AppModel`.
+- [x] Remove superseded test doubles and update tests to drive the coordinator.
 
 ### Required journey tests
 
-- [ ] Blank product creation remains unaffected.
-- [ ] Public import activates full history and exact provenance.
-- [ ] Authorized private import uses the short-lived credential session and persists no token.
-- [ ] Authorization cancellation returns to a retryable state.
-- [ ] A repository disappearing after selection fails without partial activation.
-- [ ] Clone success followed by activation failure removes only owned staging state.
-- [ ] Product switching during import does not redirect completion to another product.
-- [ ] Repeating completion cannot create a duplicate product or duplicate analysis run.
+- [x] Blank product creation remains unaffected.
+- [x] Public import activates full history and exact provenance.
+- [x] Authorized private import uses the short-lived credential session and persists no token.
+- [x] Authorization cancellation returns to a retryable state.
+- [x] A repository disappearing after selection fails without partial activation.
+- [x] Clone success followed by activation failure removes only owned staging state.
+- [x] Product switching during import does not redirect completion to another product.
+- [x] Repeating completion cannot create a duplicate product or duplicate analysis run.
 
 ### Acceptance
 
@@ -491,28 +507,28 @@ Live Codex activity is transient and may disappear on relaunch. The durable run,
 
 ### Work
 
-- [ ] Define repository-knowledge commands and snapshots.
-- [ ] Move dedicated Codex client creation and shutdown into the coordinator.
-- [ ] Move turn identity and activity-monitor ownership into the coordinator.
-- [ ] Make activity a bounded optional field on the feature snapshot rather than an `AppModel` dictionary.
-- [ ] Ensure every phase transition is persisted before the snapshot reports it.
-- [ ] Make recovery instantiate from SQLite and Git state without relying on prior in-memory sets.
-- [ ] Guarantee one active analysis/review operation per product through durable versioning and coordinator serialization.
-- [ ] Preserve exact accepted-revision and snapshot validation before publication.
-- [ ] Keep knowledge-page read/unread behavior in the App presentation layer, triggered by a completed publication event.
-- [ ] Migrate all callers and remove obsolete AppModel tasks, clients, turns, monitor IDs, and recovery sets.
+- [x] Define repository-knowledge commands and snapshots.
+- [x] Move dedicated Codex client creation and shutdown into the coordinator.
+- [x] Move turn identity and activity-monitor ownership into the coordinator.
+- [x] Make activity a bounded optional field on the feature snapshot rather than an `AppModel` dictionary.
+- [x] Ensure every phase transition is persisted before the snapshot reports it.
+- [x] Make recovery instantiate from SQLite and Git state without relying on prior in-memory sets.
+- [x] Guarantee one active analysis/review operation per product through durable versioning and coordinator serialization.
+- [x] Preserve exact accepted-revision and snapshot validation before publication.
+- [x] Keep knowledge-page read/unread behavior in the App presentation layer, triggered by a completed publication event.
+- [x] Migrate all callers and remove obsolete AppModel tasks, clients, turns, monitor IDs, and recovery sets.
 
 ### Required journey tests
 
-- [ ] Interruption before analyzer output leaves a recoverable run.
-- [ ] Analyzer completion persists drafts before review begins.
-- [ ] Review interruption resumes against the same immutable evidence.
-- [ ] Missing, duplicate, or malformed review decisions fail safely.
-- [ ] A changed accepted `trunk` prevents stale publication.
-- [ ] Approved drafts publish once with correct provenance.
-- [ ] Repeated recovery does not duplicate revisions or checkpoints.
-- [ ] One product's cancellation or failure does not affect another product.
-- [ ] Snapshot cleanup happens after terminal completion and safe failure paths.
+- [x] Interruption before analyzer output leaves a recoverable run.
+- [x] Analyzer completion persists drafts before review begins.
+- [x] Review interruption resumes against the same immutable evidence.
+- [x] Missing, duplicate, or malformed review decisions fail safely.
+- [x] A changed accepted `trunk` prevents stale publication.
+- [x] Approved drafts publish once with correct provenance.
+- [x] Repeated recovery does not duplicate revisions or checkpoints.
+- [x] One product's cancellation or failure does not affect another product.
+- [x] Snapshot cleanup happens after terminal completion and safe failure paths.
 
 ### Acceptance
 
@@ -562,31 +578,31 @@ Use existing types where possible. The final ownership should be visibly separat
 
 ### Work
 
-- [ ] Split `GitHubRemoteRepositoryServing` into narrow feature protocols used by import, connection, synchronization, and publication callers.
-- [ ] Keep one concrete composition root; do not leave an old service and replacement service both active.
-- [ ] Move methods and their private helpers by complete workflow, not arbitrary line ranges.
-- [ ] Keep `GitHubAccountCatalog`, `GitCredentialSession`, `GitHubAPIClient`, and Git workspace operations behind their existing safety boundaries.
-- [ ] Classify every service cache as transient, derivable, or incorrectly authoritative.
-- [ ] Remove caches that duplicate durable connection, observation, synchronization, or publication state.
-- [ ] Keep accessible repository lists and in-progress API data transient and explicitly refreshable.
-- [ ] Replace general error-string caches with typed feature failures or durable error codes where recovery depends on the category.
-- [ ] Preserve compare-and-swap transitions and immutable observations.
-- [ ] Preserve bounded API response, redirect, host, timeout, pagination, and rate-limit behavior.
-- [ ] Preserve token lease serialization and ensure presentation never receives a token.
-- [ ] Migrate every protocol fake and caller; remove default protocol methods that only mask an incomplete fake when no longer needed.
+- [x] Split `GitHubRemoteRepositoryServing` into narrow feature protocols used by import, connection, synchronization, and publication callers.
+- [x] Keep one concrete composition root; do not leave an old service and replacement service both active.
+- [x] Move methods and their private helpers by complete workflow, not arbitrary line ranges.
+- [x] Keep `GitHubAccountCatalog`, `GitCredentialSession`, `GitHubAPIClient`, and Git workspace operations behind their existing safety boundaries.
+- [x] Classify every service cache as transient, derivable, or incorrectly authoritative.
+- [x] Remove caches that duplicate durable connection, observation, synchronization, or publication state.
+- [x] Keep accessible repository lists and in-progress API data transient and explicitly refreshable.
+- [x] Replace general error-string caches with typed feature failures or durable error codes where recovery depends on the category.
+- [x] Preserve compare-and-swap transitions and immutable observations.
+- [x] Preserve bounded API response, redirect, host, timeout, pagination, and rate-limit behavior.
+- [x] Preserve token lease serialization and ensure presentation never receives a token.
+- [x] Migrate every protocol fake and caller; remove default protocol methods that only mask an incomplete fake when no longer needed.
 
 ### Required journey tests
 
-- [ ] Existing local-product initialization lifecycle.
-- [ ] Mature local history publication and reconciliation.
-- [ ] Imported product constrained to its preserved origin.
-- [ ] Installation permission recovery.
-- [ ] Safe incoming fast-forward acceptance.
-- [ ] Rejection of divergence, unrelated history, identity change, unsafe paths, filters, submodules, and LFS pointers.
-- [ ] Pull-request review synchronization and deduplication.
-- [ ] Exact-head merge and interrupted reconciliation recovery.
-- [ ] Expired authorization recovery without unnecessary Device Flow.
-- [ ] No Keychain access for unconnected or idle products during recovery.
+- [x] Existing local-product initialization lifecycle.
+- [x] Mature local history publication and reconciliation.
+- [x] Imported product constrained to its preserved origin.
+- [x] Installation permission recovery.
+- [x] Safe incoming fast-forward acceptance.
+- [x] Rejection of divergence, unrelated history, identity change, unsafe paths, filters, submodules, and LFS pointers.
+- [x] Pull-request review synchronization and deduplication.
+- [x] Exact-head merge and interrupted reconciliation recovery.
+- [x] Expired authorization recovery without unnecessary Device Flow.
+- [x] No Keychain access for unconnected or idle products during recovery.
 
 ### Acceptance
 
@@ -635,44 +651,44 @@ The polling scheduler belongs to the publication coordinator or a focused produc
 
 ### Work
 
-- [ ] Define one presentation snapshot for connection, observation, safe-sync, and active publications.
-- [ ] Move task lifecycle, polling, cancellation, and operation errors out of `AppModel`.
-- [ ] Preserve adaptive serialized polling and visible/acceptance-ticket prioritization.
-- [ ] Route app active/background changes to the polling component through one command.
-- [ ] Split GitHub presentation policies and views out of `ContentView.swift` by owner journey:
+- [x] Define one presentation snapshot for connection, observation, safe-sync, and active publications.
+- [x] Move task lifecycle, polling, cancellation, and operation errors out of `AppModel`.
+- [x] Preserve adaptive serialized polling and visible/acceptance-ticket prioritization.
+- [x] Route app active/background changes to the polling component through one command.
+- [x] Split GitHub presentation policies and views out of `ContentView.swift` by owner journey:
   - product creation/import;
   - repository settings and setup;
   - incoming-change review;
   - sprint-board repository status; and
   - ticket pull-request status and actions.
-- [ ] Make views consume feature presentation state and commands.
-- [ ] Derive workflow sheet presentation from feature state; keep only editing/focus state local.
-- [ ] Remove all old AppModel properties and call sites in the same cutover.
-- [ ] Create preview or debug scenarios for every state listed below.
+- [x] Make views consume feature presentation state and commands.
+- [x] Derive workflow sheet presentation from feature state; keep only editing/focus state local.
+- [x] Remove all old AppModel properties and call sites in the same cutover.
+- [x] Create preview or debug scenarios for every state listed below.
 
 ### Required presentation scenarios
 
-- [ ] GitHub unavailable in this build.
-- [ ] Not connected.
-- [ ] Waiting for Device Flow.
-- [ ] Waiting for installation access.
-- [ ] Loading repositories.
-- [ ] No accessible repositories.
-- [ ] Repository eligibility checking.
-- [ ] Eligible empty repository.
-- [ ] Ineligible repository.
-- [ ] Publishing bootstrap.
-- [ ] Publishing and merging existing history.
-- [ ] Connected and aligned.
-- [ ] Incoming changes available.
-- [ ] Awaiting safe-sync confirmation.
-- [ ] Diverged or unrelated history.
-- [ ] Draft pull request publishing.
-- [ ] Pull request awaiting review.
-- [ ] Changes requested.
-- [ ] Pull request ready for owner approval.
-- [ ] Remote merge completed but local reconciliation interrupted.
-- [ ] Retryable API or authorization failure.
+- [x] GitHub unavailable in this build.
+- [x] Not connected.
+- [x] Waiting for Device Flow.
+- [x] Waiting for installation access.
+- [x] Loading repositories.
+- [x] No accessible repositories.
+- [x] Repository eligibility checking.
+- [x] Eligible empty repository.
+- [x] Ineligible repository.
+- [x] Publishing bootstrap.
+- [x] Publishing and merging existing history.
+- [x] Connected and aligned.
+- [x] Incoming changes available.
+- [x] Awaiting safe-sync confirmation.
+- [x] Diverged or unrelated history.
+- [x] Draft pull request publishing.
+- [x] Pull request awaiting review.
+- [x] Changes requested.
+- [x] Pull request ready for owner approval.
+- [x] Remote merge completed but local reconciliation interrupted.
+- [x] Retryable API or authorization failure.
 
 ### Acceptance
 
@@ -725,33 +741,33 @@ This is the highest-risk extraction and must begin only after the repository wor
 
 ### Work
 
-- [ ] Write a state-transition table for each subdomain from current code and tests before moving it.
-- [ ] Identify all AppModel task dictionaries, product-ID maps, active turns, continuations, and manually stopped/paused sets associated with delivery.
-- [ ] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
-- [ ] Migrate implementation execution next, including permissions and live activity ownership.
-- [ ] Extract candidate review without combining it with implementation.
-- [ ] Extract integration and conflict resolution with exact candidate/review provenance.
-- [ ] Extract acceptance only after review and integration snapshots are stable.
-- [ ] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
-- [ ] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
-- [ ] Preserve product isolation and concurrent product execution.
-- [ ] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
+- [x] Write a state-transition table for each subdomain from current code and tests before moving it.
+- [x] Identify all AppModel task dictionaries, product-ID maps, active turns, continuations, and manually stopped/paused sets associated with delivery.
+- [x] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
+- [x] Migrate implementation execution next, including permissions and live activity ownership.
+- [x] Extract candidate review without combining it with implementation.
+- [x] Extract integration and conflict resolution with exact candidate/review provenance.
+- [x] Extract acceptance only after review and integration snapshots are stable.
+- [x] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
+- [x] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
+- [x] Preserve product isolation and concurrent product execution.
+- [x] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
 
 ### Required journey tests
 
-- [ ] Dependency-ready tickets are admitted and blocked dependants wait.
-- [ ] Product switching does not suspend active delivery.
-- [ ] Product archival suspends only that product.
-- [ ] Normal shutdown suspends all owned work and recovery resumes safely.
-- [ ] Implementation interruption preserves the workspace and durable run.
-- [ ] Permission request, approval, denial, and relaunch retain least privilege.
-- [ ] Review is bound to an immutable candidate and cannot attest its own work.
-- [ ] Clean integration retains candidate review.
-- [ ] Conflict resolution that changes the result requires focused re-review.
-- [ ] Parallel candidates serialize promotion against current local `trunk`.
-- [ ] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
-- [ ] Remote merge followed by interruption completes local reconciliation exactly once.
-- [ ] Completed tickets leave the required self-contained handoff for dependants.
+- [x] Dependency-ready tickets are admitted and blocked dependants wait.
+- [x] Product switching does not suspend active delivery.
+- [x] Product archival suspends only that product.
+- [x] Normal shutdown suspends all owned work and recovery resumes safely.
+- [x] Implementation interruption preserves the workspace and durable run.
+- [x] Permission request, approval, denial, and relaunch retain least privilege.
+- [x] Review is bound to an immutable candidate and cannot attest its own work.
+- [x] Clean integration retains candidate review.
+- [x] Conflict resolution that changes the result requires focused re-review.
+- [x] Parallel candidates serialize promotion against current local `trunk`.
+- [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
+- [x] Remote merge followed by interruption completes local reconciliation exactly once.
+- [x] Completed tickets leave the required self-contained handoff for dependants.
 
 ### Acceptance
 
@@ -775,14 +791,14 @@ Finish turning `AppModel` into a composition and navigation boundary and `Conten
 
 Complete these in the order indicated by current defect frequency and feature work, not by arbitrary file position:
 
-- [ ] Product conversations and title/activity lifecycle.
-- [ ] Ticket and epic conversations/refinement.
-- [ ] Epic planning and ticket suggestions.
-- [ ] Sprint planning and goal generation.
-- [ ] Demo/app-version launch and recovery.
-- [ ] Retrospective synthesis.
-- [ ] Codex connection and usage monitoring.
-- [ ] Product library, selection, archive, and restoration.
+- [x] Product conversations and title/activity lifecycle.
+- [x] Ticket and epic conversations/refinement.
+- [x] Epic planning and ticket suggestions.
+- [x] Sprint planning and goal generation.
+- [x] Demo/app-version launch and recovery.
+- [x] Retrospective synthesis.
+- [x] Codex connection and usage monitoring.
+- [x] Product library, selection, archive, and restoration.
 
 For each slice:
 
@@ -811,15 +827,15 @@ Make SQLite behavior easier to navigate while retaining one product database and
 
 ### Work
 
-- [ ] Inventory `SQLiteStore.swift` by aggregate and transaction boundary.
-- [ ] Continue the existing focused-extension pattern for complete aggregates such as products, epics, tickets, sprints, runs, conversations, knowledge, repository analysis, remote connections, safe syncs, and publications.
-- [ ] Keep connection ownership and transaction primitives centralized.
-- [ ] Do not introduce in-memory repository objects that cache authoritative rows.
-- [ ] Define narrow store protocols only where coordinators require test substitution or reduced capability.
-- [ ] Keep multi-aggregate transactions in one explicitly named persistence operation rather than coordinating partial writes in App code.
-- [ ] Preserve migrations as durable, idempotent, product-generic operations.
-- [ ] Keep archived records available for audit while excluding them from active calculations.
-- [ ] Update migration, recovery, and transaction tests alongside each move.
+- [x] Inventory `SQLiteStore.swift` by aggregate and transaction boundary.
+- [x] Continue the existing focused-extension pattern for complete aggregates such as products, epics, tickets, sprints, runs, conversations, knowledge, repository analysis, remote connections, safe syncs, and publications.
+- [x] Keep connection ownership and transaction primitives centralized.
+- [x] Do not introduce in-memory repository objects that cache authoritative rows.
+- [x] Define narrow store protocols only where coordinators require test substitution or reduced capability.
+- [x] Keep multi-aggregate transactions in one explicitly named persistence operation rather than coordinating partial writes in App code.
+- [x] Preserve migrations as durable, idempotent, product-generic operations.
+- [x] Keep archived records available for audit while excluding them from active calculations.
+- [x] Update migration, recovery, and transaction tests alongside each move.
 
 ### Acceptance
 
@@ -836,16 +852,16 @@ Prevent the same concentration and verification gaps from returning.
 
 ### Work
 
-- [ ] Add a contributor checklist requiring an owner journey, state table, non-goals, and proof for long-running or multi-screen features.
-- [ ] Add a review ratchet: new features may use `AppModel` and `ContentView` as composition points but may not add feature workflow ownership to them.
-- [ ] Require an explicit reason in review when a new long-lived `Task` is created in a view or `AppModel`.
-- [ ] Require explicit operation events rather than sleeps in new asynchronous tests.
-- [ ] Require interruption/relaunch coverage for every new durable intermediate state.
-- [ ] Require one active implementation path after migrations.
-- [ ] Require owner acceptance before a UX-sensitive packet is called complete.
-- [ ] Require accepted packets to be committed before unrelated work starts.
-- [ ] Update `docs/technical-design.md` with the final coordinator boundaries actually implemented.
-- [ ] Update `README.md` only where the implemented product boundary changed.
+- [x] Add a contributor checklist requiring an owner journey, state table, non-goals, and proof for long-running or multi-screen features.
+- [x] Add a review ratchet: new features may use `AppModel` and `ContentView` as composition points but may not add feature workflow ownership to them.
+- [x] Require an explicit reason in review when a new long-lived `Task` is created in a view or `AppModel`.
+- [x] Require explicit operation events rather than sleeps in new asynchronous tests.
+- [x] Require interruption/relaunch coverage for every new durable intermediate state.
+- [x] Require one active implementation path after migrations.
+- [x] Require owner acceptance before a UX-sensitive packet is called complete.
+- [x] Require accepted packets to be committed before unrelated work starts.
+- [x] Update `docs/technical-design.md` with the final coordinator boundaries actually implemented.
+- [x] Update `README.md` only where the implemented product boundary changed.
 - [ ] Mark this plan complete and move any remaining approved future product behavior into `docs/product-spec.md`.
 
 ### Acceptance
@@ -910,24 +926,24 @@ Use this template when starting every extraction or later feature:
 
 The stabilization program is done only when:
 
-- [ ] The current product specification, technical design, and README agree.
+- [x] The current product specification, technical design, and README agree.
 - [ ] The initial accumulated work has a product-owner-approved known-good commit.
-- [ ] Generated development output no longer pollutes repository status.
-- [ ] Repository import has one coordinator and deterministic journey coverage.
-- [ ] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
-- [ ] Remote account, connection, synchronization, and publication responsibilities are separated.
-- [ ] Remote application state is no longer distributed across AppModel dictionaries and view state.
-- [ ] Delivery execution, review, integration, and acceptance are Core-owned workflows.
-- [ ] `AppModel` is an application composition/navigation boundary.
-- [ ] `ContentView` is an application shell rather than the main implementation file for most workspaces.
-- [ ] Persistence code is organized by aggregate without changing database authority.
-- [ ] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
-- [ ] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage.
-- [ ] Important owner-facing states are available in a preview or development scenario catalog.
-- [ ] The full suite passes with warnings treated as errors.
-- [ ] `git diff --check` passes.
-- [ ] The development app has been relaunched and left running after the final app-affecting packet.
-- [ ] The durable architecture documents describe the implemented result.
+- [x] Generated development output no longer pollutes repository status.
+- [x] Repository import has one coordinator and deterministic journey coverage.
+- [x] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
+- [x] Remote account, connection, synchronization, and publication responsibilities are separated.
+- [x] Remote application state is no longer distributed across AppModel dictionaries and view state.
+- [x] Delivery execution, review, integration, and acceptance are Core-owned workflows.
+- [x] `AppModel` is an application composition/navigation boundary.
+- [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
+- [x] Persistence code is organized by aggregate without changing database authority.
+- [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
+- [x] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage.
+- [x] Important owner-facing states are available in a preview or development scenario catalog.
+- [x] The full suite passes with warnings treated as errors.
+- [x] `git diff --check` passes.
+- [x] The development app has been relaunched and left running after the final app-affecting packet.
+- [x] The durable architecture documents describe the implemented result.
 
 ## 13. First work packet to start
 
@@ -962,42 +978,42 @@ Consequences:
 
 Required correction:
 
-- [ ] Define durable permission-resolution states that distinguish decision intent from delivery acknowledgement.
-- [ ] Persist the decision intent before sending an allow or denial.
-- [ ] Fail closed when the decision intent cannot be persisted.
-- [ ] Make repeated delivery of the same decision idempotent by server request ID and signature.
-- [ ] Preserve the existing saved product-grant rollback when transport delivery fails.
-- [ ] Do not discard the live request until the durable record can recover the next step.
-- [ ] Record automatic policy denials and grant-based allows with the same durable ordering as owner decisions.
+- [x] Define durable permission-resolution states that distinguish decision intent from delivery acknowledgement.
+- [x] Persist the decision intent before sending an allow or denial.
+- [x] Fail closed when the decision intent cannot be persisted.
+- [x] Make repeated delivery of the same decision idempotent by server request ID and signature.
+- [x] Preserve the existing saved product-grant rollback when transport delivery fails.
+- [x] Do not discard the live request until the durable record can recover the next step.
+- [x] Record automatic policy denials and grant-based allows with the same durable ordering as owner decisions.
 
 Required tests:
 
-- [ ] A database failure before decision-intent persistence sends no response.
-- [ ] A transport failure after decision-intent persistence leaves a recoverable decision.
-- [ ] A database failure after transport acknowledgement still leaves durable evidence of the intended decision.
-- [ ] Relaunch does not ask the owner to decide a response that was already sent.
-- [ ] A remembered product grant remains auditable for every request it satisfies.
+- [x] A database failure before decision-intent persistence sends no response.
+- [x] A transport failure after decision-intent persistence leaves a recoverable decision.
+- [x] A database failure after transport acknowledgement still leaves durable evidence of the intended decision.
+- [x] Relaunch does not ask the owner to decide a response that was already sent.
+- [x] A remembered product grant remains auditable for every request it satisfies.
 
 ### 14.2 Priority 0 — Recovery performs multi-record transitions as best-effort fragments
 
-The application currently contains 180 `try? await` expressions. Fifty occur in the delivery-recovery region beginning at `recoverOrphanedExecutionRuns`. Not every best-effort cleanup is wrong, but durable transitions for candidates, runs, tickets, permission requests, knowledge proposals, and work-log comments are repeatedly attempted as independent writes with their failures discarded.
+The audited application contained 180 `try? await` expressions. Fifty occurred in the delivery-recovery region beginning at `recoverOrphanedExecutionRuns`. Not every best-effort cleanup was wrong, but durable transitions for candidates, runs, tickets, permission requests, knowledge proposals, and work-log comments were repeatedly attempted as independent writes with their failures discarded.
 
 For example, recovery of an invalid ready-for-demo candidate can independently remove a worktree, supersede the candidate, supersede knowledge proposals, move the ticket, queue the implementation run, and append a comment. A failure in the middle leaves a combination that no single workflow state table authorizes. The next recovery pass then interprets that partial combination as if it were intentional.
 
 Required correction:
 
-- [ ] Inventory every swallowed error in delivery and repository recovery and classify it as cleanup-only, diagnostic-only, or state-changing.
-- [ ] Replace state-changing `try?` calls with one coordinator command whose durable writes share a SQLite transaction where they belong to one transition.
-- [ ] Return a typed recovery failure when filesystem or remote work prevents the durable transition from completing.
-- [ ] Make cleanup retryable from durable state instead of treating cleanup failure as transition success.
-- [ ] Append the work-log handoff in the same durable transition as the state it explains.
-- [ ] Expose a failed recovery state to the product owner instead of silently continuing with partial state.
+- [x] Inventory every swallowed error in delivery and repository recovery and classify it as cleanup-only, diagnostic-only, or state-changing.
+- [x] Replace state-changing `try?` calls with one coordinator command whose durable writes share a SQLite transaction where they belong to one transition.
+- [x] Return a typed recovery failure when filesystem or remote work prevents the durable transition from completing.
+- [x] Make cleanup retryable from durable state instead of treating cleanup failure as transition success.
+- [x] Append the work-log handoff in the same durable transition as the state it explains.
+- [x] Expose a failed recovery state to the product owner instead of silently continuing with partial state.
 
 Required tests:
 
-- [ ] Inject a failure at every durable write boundary in candidate recovery and prove that the resulting state is either unchanged or explicitly recoverable.
-- [ ] Relaunch repeatedly from each injected failure and prove that the command converges without duplicate comments or skipped ticket states.
-- [ ] Run two recovery triggers concurrently and prove that compare-and-swap or transaction ownership admits only one transition.
+- [x] Inject a failure at every durable write boundary in candidate recovery and prove that the resulting state is either unchanged or explicitly recoverable.
+- [x] Relaunch repeatedly from each injected failure and prove that the command converges without duplicate comments or skipped ticket states.
+- [x] Run two recovery triggers concurrently and prove that compare-and-swap or transaction ownership admits only one transition.
 
 ### 14.3 Priority 0 — Archived products are included in remote recovery
 
@@ -1007,18 +1023,18 @@ That is both unnecessary launch work and an authority error. An archived product
 
 Required correction:
 
-- [ ] Define the archive precondition for every active remote status.
-- [ ] Durably suspend remote work before changing product status; if a particular external side effect cannot be paused safely, block archive with an owner-facing explanation until it reaches a resumable boundary.
-- [ ] Schedule automatic remote recovery only for active products.
-- [ ] Restore a product before offering any action that resumes preserved remote work.
-- [ ] Keep archived remote records readable without querying Keychain, GitHub, or remote Git.
+- [x] Define the archive precondition for every active remote status.
+- [x] Durably suspend remote work before changing product status; if a particular external side effect cannot be paused safely, block archive with an owner-facing explanation until it reaches a resumable boundary.
+- [x] Schedule automatic remote recovery only for active products.
+- [x] Restore a product before offering any action that resumes preserved remote work.
+- [x] Keep archived remote records readable without querying Keychain, GitHub, or remote Git.
 
 Required tests:
 
-- [ ] Launch with an archived connected product and prove that no credential, HTTP, or remote Git call occurs.
-- [ ] Launch with an archived product containing every recoverable remote status and prove that none is advanced.
-- [ ] Archive during each owner-waiting and active remote phase and verify the documented suspend-or-block contract.
-- [ ] Restore the product and verify that only the explicitly preserved, documented work can resume.
+- [x] Launch with an archived connected product and prove that no credential, HTTP, or remote Git call occurs.
+- [x] Launch with an archived product containing every recoverable remote status and prove that none is advanced.
+- [x] Archive during each owner-waiting and active remote phase and verify the documented suspend-or-block contract.
+- [x] Restore the product and verify that only the explicitly preserved, documented work can resume.
 
 ### 14.4 Priority 0 — Completed repository analysis can retry forever
 
@@ -1028,16 +1044,16 @@ A valid “no useful product knowledge found” result can therefore consume ano
 
 Required correction:
 
-- [ ] Treat a completed analysis with no publishable knowledge as a terminal, owner-visible outcome.
-- [ ] Remove automatic retries based only on an empty or rejected result.
-- [ ] If a legacy malformed-result migration remains necessary, key it to an explicit schema/version marker and allow at most one migration attempt.
-- [ ] Make any subsequent analysis an explicit product-owner command.
+- [x] Treat a completed analysis with no publishable knowledge as a terminal, owner-visible outcome.
+- [x] Remove automatic retries based only on an empty or rejected result.
+- [x] If a legacy malformed-result migration remains necessary, key it to an explicit schema/version marker and allow at most one migration attempt.
+- [x] Make any subsequent analysis an explicit product-owner command.
 
 Required tests:
 
-- [ ] Repeated launches after an empty completed result start zero new Codex turns.
-- [ ] Repeated launches after all drafts are rejected start zero new Codex turns.
-- [ ] An explicit owner retry creates exactly one new run with clear provenance.
+- [x] Repeated launches after an empty completed result start zero new Codex turns.
+- [x] Repeated launches after all drafts are rejected start zero new Codex turns.
+- [x] An explicit owner retry creates exactly one new run with clear provenance.
 
 ### 14.5 Priority 0 — Team settings are neither atomic nor completion-aware
 
@@ -1045,16 +1061,16 @@ Required tests:
 
 Required correction:
 
-- [ ] Add one SQLite transaction that validates and updates product instructions and all affected profiles atomically.
-- [ ] Make the application command `async` and return a typed success or failure.
-- [ ] Keep the sheet open, disable duplicate submission, and show the failure next to the save action.
-- [ ] Return the committed team-settings snapshot instead of triggering a full application reload.
+- [x] Add one SQLite transaction that validates and updates product instructions and all affected profiles atomically.
+- [x] Make the application command `async` and return a typed success or failure.
+- [x] Keep the sheet open, disable duplicate submission, and show the failure next to the save action.
+- [x] Return the committed team-settings snapshot instead of triggering a full application reload.
 
 Required tests:
 
-- [ ] Inject a failure for each profile update and prove that none of the team settings changed.
-- [ ] Verify that a successful save updates the rendered settings without fetching unrelated product state.
-- [ ] Verify that a failed save remains editable and can be retried once.
+- [x] Inject a failure for each profile update and prove that none of the team settings changed.
+- [x] Verify that a successful save updates the rendered settings without fetching unrelated product state.
+- [x] Verify that a failed save remains editable and can be retried once.
 
 ### 14.6 Priority 1 — Broad reloads are expensive and internally inconsistent
 
@@ -1071,21 +1087,21 @@ Additional amplification:
 
 Required correction:
 
-- [ ] Add coherent aggregate snapshots read in one SQLite transaction for the bounded state a coordinator or presentation needs.
-- [ ] Separate startup migrations and seeding from normal reads.
-- [ ] Load conversation summaries eagerly and message history only for the selected conversation, or fetch all required messages in one bounded query.
-- [ ] Return committed records from commands and update the owning feature snapshot directly.
-- [ ] Fetch all product statuses once and partition them in memory.
-- [ ] Pass product ID through remote operation commands and perform direct store lookup.
-- [ ] Move status filtering into indexed SQL queries.
-- [ ] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
+- [x] Add coherent aggregate snapshots read in one SQLite transaction for the bounded state a coordinator or presentation needs.
+- [x] Separate startup migrations and seeding from normal reads.
+- [x] Load conversation summaries eagerly and message history only for the selected conversation, or fetch all required messages in one bounded query.
+- [x] Return committed records from commands and update the owning feature snapshot directly.
+- [x] Fetch all product statuses once and partition them in memory.
+- [x] Pass product ID through remote operation commands and perform direct store lookup.
+- [x] Move status filtering into indexed SQL queries.
+- [x] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
 
 Acceptance:
 
-- [ ] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
-- [ ] A product with long conversation history has bounded launch and product-selection work.
-- [ ] A coordinator snapshot cannot combine records from different durable versions.
-- [ ] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
+- [x] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
+- [x] A product with long conversation history has bounded launch and product-selection work.
+- [x] A coordinator snapshot cannot combine records from different durable versions.
+- [x] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
 
 ### 14.7 Priority 1 — Polling substitutes for observable state transitions
 
@@ -1095,12 +1111,12 @@ The work-log poll continues after fetch failures and routes the error through th
 
 Required correction:
 
-- [ ] Publish comment and activity changes from the owning feature coordinator or store change stream.
-- [ ] Perform one initial fetch, then apply identified appended or updated records.
-- [ ] Stop retrying on a tight fixed interval after a durable read failure; expose a local retry action.
-- [ ] Replace UI wait loops with explicit load state and completion events.
-- [ ] Replace shutdown polling with tracked task completion or a task group.
-- [ ] Replace test sleeps with continuations, injected clocks, or observable command completion as required by Phase 1.
+- [x] Publish comment and activity changes from the owning feature coordinator or store change stream.
+- [x] Perform one initial fetch, then apply identified appended or updated records.
+- [x] Stop retrying on a tight fixed interval after a durable read failure; expose a local retry action.
+- [x] Replace UI wait loops with explicit load state and completion events.
+- [x] Replace shutdown polling with tracked task completion or a task group.
+- [x] Replace test sleeps with continuations, injected clocks, or observable command completion as required by Phase 1.
 
 ### 14.8 Priority 1 — Remote Git work is broader and less serialized than necessary
 
@@ -1108,21 +1124,31 @@ Required correction:
 
 `GitWorkspaceManager` is an actor, but its asynchronous process methods suspend while Git runs. Actor reentrancy permits another method to start a second Git process for the same repository during that suspension. Pull-request polling, owner commands, repository checks, codebase inspection, and delivery work do not share one explicit per-repository operation queue.
 
+Resolution against the stabilized implementation: every post-activation
+asynchronous remote Git operation acquires a FIFO repository lease around its
+complete check-and-mutate sequence. Nested exact-ref checks inherit the lease;
+an unrelated synchronous same-product command observes a stable
+`operationInProgress` failure instead of overlapping the suspended operation.
+Publication and cleanup paths query only their exact managed ref. Full branch
+enumeration remains only where remote emptiness is the contract. Public clone
+targets an unregistered staging directory before Product polling or delivery
+can address it.
+
 Required correction:
 
-- [ ] Add an exact remote-ref lookup for operations that know the target ref.
-- [ ] Treat an already absent review branch as successful idempotent cleanup and persist `remoteBranchDeletedAt`.
-- [ ] Reserve full branch enumeration for the few contracts that genuinely require proving remote emptiness or cataloguing all managed refs.
-- [ ] Add product-workspace operation serialization or an explicit read/write coordination policy around asynchronous Git processes.
-- [ ] Prove that polling cannot overlap a mutating Git command for the same product.
-- [ ] Keep compare-and-swap and force-with-lease checks at the final side-effect boundary.
+- [x] Add an exact remote-ref lookup for operations that know the target ref.
+- [x] Treat an already absent review branch as successful idempotent cleanup and persist `remoteBranchDeletedAt`.
+- [x] Reserve full branch enumeration for the few contracts that genuinely require proving remote emptiness or cataloguing all managed refs.
+- [x] Add product-workspace operation serialization or an explicit read/write coordination policy around asynchronous Git processes.
+- [x] Prove that polling cannot overlap a mutating Git command for the same product.
+- [x] Keep compare-and-swap and force-with-lease checks at the final side-effect boundary.
 
 Required tests:
 
-- [ ] Merged-branch cleanup requests only the exact managed ref.
-- [ ] Cleanup records completion when the ref was already absent.
-- [ ] Relaunch after cleanup performs no remote branch query for that publication.
-- [ ] Concurrent poll, check, and delivery commands serialize or reject with a stable owner-facing busy state.
+- [x] Merged-branch cleanup requests only the exact managed ref.
+- [x] Cleanup records completion when the ref was already absent.
+- [x] Relaunch after cleanup performs no remote branch query for that publication.
+- [x] Concurrent poll, check, and delivery commands serialize or reject with a stable owner-facing busy state.
 
 ### 14.9 Priority 1 — One observable object invalidates unrelated presentation
 
@@ -1132,10 +1158,10 @@ This is not only a file-size concern. A remote polling update can invalidate vie
 
 Required correction:
 
-- [ ] Complete the feature-model extractions in Phases 2, 3, 5, 6, and 7.
-- [ ] Give each feature local loading, operation, and failure state.
-- [ ] Keep global application state limited to composition, product selection, navigation, and truly global service availability.
-- [ ] Measure body recomputation for the backlog, sprint board, ticket sheet, and repository settings before and after extraction.
+- [x] Complete the feature-model extractions in Phases 2, 3, 5, 6, and 7.
+- [x] Give each feature local loading, operation, and failure state.
+- [x] Keep global application state limited to composition, product selection, navigation, and truly global service availability.
+- [ ] Measure body recomputation for the backlog, sprint board, ticket sheet, and repository settings before and after extraction. The static ownership baseline moved from 79 to 33 `AppModel` `@Published` values, and a five-second idle trace of the relaunched build recorded no view-body updates; complete the four named interactive traces during product-owner inspection.
 
 ### 14.10 Priority 2 — Dead compatibility paths weaken compile-time guarantees
 
@@ -1145,23 +1171,23 @@ The application still exposes a legacy manual publication workflow through `prep
 
 Required correction:
 
-- [ ] Confirm whether any durable legacy publication status still requires one-time migration.
-- [ ] Migrate or mark those records terminal, then remove the owner-inaccessible manual workflow.
-- [ ] Split the broad protocol as required by Phase 4.
-- [ ] Remove default throwing implementations for required capabilities so missing behavior is a compile-time error.
-- [ ] Keep defaults only for genuinely optional convenience overloads with equivalent semantics.
+- [x] Confirm whether any durable legacy publication status still requires one-time migration.
+- [x] Migrate or mark those records terminal, then remove the owner-inaccessible manual workflow.
+- [x] Split the broad protocol as required by Phase 4.
+- [x] Remove default throwing implementations for required capabilities so missing behavior is a compile-time error.
+- [x] Keep defaults only for genuinely optional convenience overloads with equivalent semantics.
 
 ### 14.11 Corrective execution order
 
 These findings amend the first work packet in section 13:
 
-1. [ ] Fix Priority 0 permission-decision durability as one focused defect packet.
-2. [ ] Stop archived-product remote recovery and unbounded completed-analysis retry as a second focused defect packet.
-3. [ ] Make team-settings save atomic and completion-aware.
-4. [ ] Add failure-injection coverage for partial delivery recovery; perform the durable transition cutover in the owning Phase 6 packet rather than adding more AppModel repair branches.
+1. [x] Fix Priority 0 permission-decision durability as one focused defect packet.
+2. [x] Stop archived-product remote recovery and unbounded completed-analysis retry as a second focused defect packet.
+3. [x] Make team-settings save atomic and completion-aware.
+4. [x] Add failure-injection coverage for partial delivery recovery; perform the durable transition cutover in the owning Phase 6 packet rather than adding more AppModel repair branches.
 5. [ ] Complete the original Phase 0 specification reconciliation, full verification, relaunch, owner inspection, and known-good checkpoint.
-6. [ ] Execute Phase 1 and Phase 2 as previously ordered.
-7. [ ] Address read amplification and Git serialization inside the relevant extraction phase, using measurements rather than speculative caching.
-8. [ ] Delete legacy publication and protocol fallback paths during Phase 4 after durable-record migration is proven.
+6. [x] Execute Phase 1 and Phase 2 as previously ordered.
+7. [x] Address read amplification and Git serialization inside the relevant extraction phase, using measurements rather than speculative caching.
+8. [x] Delete legacy publication and protocol fallback paths during Phase 4 after durable-record migration is proven.
 
 Do not start with cosmetic file splitting or micro-optimizing formatters. The first corrections must restore durable authority at external side-effect boundaries; query and rendering improvements follow once the result is coherent and testable.

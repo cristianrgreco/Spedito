@@ -20,7 +20,7 @@ public enum AgentPersonaDefaults {
     case .lead:
       Configuration(model: "gpt-5.6-terra", effort: "high")
     case .implementer:
-      Configuration(model: "gpt-5.6-terra", effort: "low")
+      Configuration(model: "gpt-5.6-terra", effort: "medium")
     case .frontendEngineer:
       Configuration(model: "gpt-5.6-terra", effort: "medium")
     case .backendEngineer:

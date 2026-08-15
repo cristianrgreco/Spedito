@@ -39,6 +39,522 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Team settings update atomically across every profile boundary")
+  func teamSettingsUpdateIsAtomic() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Atomic team")
+    let originalProfiles = try await store.seedDefaultProfiles(productID: product.id)
+    let updates = originalProfiles.enumerated().map { index, profile in
+      TeamProfileSettingsUpdate(
+        profileID: profile.id,
+        model: "updated-model-\(index)",
+        reasoningEffort: index.isMultiple(of: 2) ? "high" : "medium",
+        customInstructions: " Updated guidance \(index) "
+      )
+    }
+
+    for profile in originalProfiles {
+      try fixture.execute(
+        """
+        CREATE TRIGGER fail_team_settings_profile
+        BEFORE UPDATE ON agent_profiles
+        WHEN OLD.id = '\(profile.id.uuidString)'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected team settings failure');
+        END;
+        """
+      )
+      await #expect(throws: PersistenceError.self) {
+        try await store.updateTeamSettings(
+          productID: product.id,
+          productInstructions: "Updated shared guidance",
+          profiles: updates
+        )
+      }
+      try fixture.execute("DROP TRIGGER fail_team_settings_profile;")
+
+      let unchangedProduct = try #require(
+        try await store.fetchProducts().first { $0.id == product.id }
+      )
+      #expect(unchangedProduct.instructions == product.instructions)
+      #expect(try await store.fetchAgentProfiles(productID: product.id) == originalProfiles)
+    }
+
+    #if DEBUG
+      await store.resetPreparedStatementCount()
+    #endif
+    let snapshot = try await store.updateTeamSettings(
+      productID: product.id,
+      productInstructions: "  Updated shared guidance  ",
+      profiles: updates
+    )
+    #expect(snapshot.product.instructions == "Updated shared guidance")
+    #expect(snapshot.profiles.count == originalProfiles.count)
+    for (index, profile) in snapshot.profiles.enumerated() {
+      #expect(profile.model == "updated-model-\(index)")
+      #expect(profile.reasoningEffort == (index.isMultiple(of: 2) ? "high" : "medium"))
+      #expect(profile.customInstructions == "Updated guidance \(index)")
+    }
+    #if DEBUG
+      let settingsSaveQueryCount = await store.currentPreparedStatementCount()
+      #expect(
+        settingsSaveQueryCount <= originalProfiles.count + 6,
+        "Observed \(settingsSaveQueryCount) prepared statements"
+      )
+      let recipient = try #require(originalProfiles.first)
+      for index in 0..<20 {
+        let thread = ProductConversationThread(
+          productID: product.id,
+          recipientProfileID: recipient.id,
+          subject: "Historical settings thread \(index)"
+        )
+        _ = try await store.createConversationThread(
+          thread,
+          initialMessage: ProductConversationMessage(
+            threadID: thread.id,
+            authorKind: .owner,
+            authorName: "Product owner",
+            body: "Historical message \(index)"
+          )
+        )
+      }
+      await store.resetPreparedStatementCount()
+      _ = try await store.updateTeamSettings(
+        productID: product.id,
+        productInstructions: snapshot.product.instructions,
+        profiles: updates
+      )
+      #expect(await store.currentPreparedStatementCount() == settingsSaveQueryCount)
+    #endif
+    await store.close()
+  }
+
+  @Test("Sprint execution snapshots exclude unrelated backlog history")
+  func sprintExecutionSnapshotIsScoped() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Bounded scheduler")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+
+    var prerequisite = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Complete prerequisite"
+    )
+    for state: WorkItemState in [
+      .queued, .running, .integrating, .verifying, .acceptance, .readyToRelease, .released,
+    ] {
+      prerequisite = try await store.transitionWorkItem(
+        id: prerequisite.id,
+        to: state,
+        actor: "Spedito",
+        reason: "Prepare scheduler fixture"
+      )
+    }
+
+    let createdDelivery = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver current sprint",
+      acceptanceCriteria: ["The current increment is delivered"],
+      dependsOnWorkItemIDs: Set([prerequisite.id])
+    )
+    _ = try await store.transitionWorkItem(
+      id: createdDelivery.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refine"
+    )
+    let delivery = try await store.transitionWorkItem(
+      id: createdDelivery.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready for delivery"
+    )
+
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Load only the active delivery aggregate",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: delivery.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+
+    #if DEBUG
+      await store.resetPreparedStatementCount()
+    #endif
+    let baselineSnapshot = try #require(
+      try await store.fetchSprintExecutionSnapshot(productID: product.id)
+    )
+    #if DEBUG
+      let baselineQueryCount = await store.currentPreparedStatementCount()
+    #endif
+
+    for index in 0..<25 {
+      _ = try await readyItem(
+        in: store,
+        productID: product.id,
+        title: "Unrelated backlog ticket \(index)"
+      )
+    }
+
+    #if DEBUG
+      await store.resetPreparedStatementCount()
+    #endif
+    let snapshot = try #require(
+      try await store.fetchSprintExecutionSnapshot(productID: product.id)
+    )
+
+    #expect(baselineSnapshot.workItems.map(\.id) == snapshot.workItems.map(\.id))
+    #expect(Set(snapshot.workItems.map(\.id)) == Set([prerequisite.id, delivery.id]))
+    #expect(
+      snapshot.dependencies
+        == [
+          WorkItemDependency(
+            workItemID: delivery.id,
+            dependsOnWorkItemID: prerequisite.id
+          )
+        ]
+    )
+    #expect(snapshot.runs.allSatisfy { $0.sprintID == active.sprint.id })
+    #expect(snapshot.candidates.allSatisfy { $0.sprintID == active.sprint.id })
+    #expect(
+      snapshot.permissionRequests.allSatisfy { request in
+        snapshot.runs.contains { $0.id == request.agentRunID }
+      }
+    )
+    #if DEBUG
+      let expandedQueryCount = await store.currentPreparedStatementCount()
+      #expect(expandedQueryCount == baselineQueryCount)
+      #expect(expandedQueryCount <= 16)
+    #endif
+    await store.close()
+  }
+
+  @Test("Invalid candidate recovery is atomic, idempotent, and single-admission")
+  func invalidCandidateRecoveryIsAtomic() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    var store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Atomic candidate recovery")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Recover one candidate"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Recover atomically",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    var run = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    run = try await store.updateAgentRun(
+      id: run.id,
+      status: .awaitingOwner,
+      eventActor: "Spedito",
+      eventDetail: "Preparing recovery fixture"
+    )
+    var currentItem = try #require(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }
+    )
+    for state: WorkItemState in [.running, .integrating, .verifying, .acceptance] {
+      currentItem = try await store.transitionWorkItem(
+        id: currentItem.id,
+        to: state,
+        actor: "Spedito",
+        reason: "Preparing recovery fixture"
+      )
+    }
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: 1,
+        branchName: "ticket/\(item.key)",
+        baseSHA: "base",
+        headSHA: "head",
+        worktreePath: "/tmp/\(item.key)",
+        status: .readyForDemo,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let technical = try #require(
+      pages.first { $0.parentID == nil && $0.slug == "technical" }
+    )
+    let proposal = KnowledgePageProposal(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      candidateRevisionID: candidate.id,
+      operation: .create,
+      parentPageID: technical.id,
+      title: "Recovery evidence",
+      proposedBodyMarkdown: "# Recovery evidence\n\nDurable evidence.",
+      rationale: "Exercises the recovery transaction."
+    )
+    try await store.createKnowledgePageProposals([proposal])
+    let baselineActivityCount = try await store.fetchActivity(productID: product.id).count
+    let commentBody = "Candidate recovery returned the preserved workspace."
+    let triggers: [(name: String, sql: String)] = [
+      (
+        "fail_candidate_recovery_candidate",
+        """
+        CREATE TRIGGER fail_candidate_recovery_candidate
+        BEFORE UPDATE ON candidate_revisions
+        WHEN OLD.id = '\(candidate.id.uuidString)'
+        BEGIN SELECT RAISE(ABORT, 'candidate write failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_proposal",
+        """
+        CREATE TRIGGER fail_candidate_recovery_proposal
+        BEFORE UPDATE ON knowledge_page_proposals
+        WHEN OLD.candidate_revision_id = '\(candidate.id.uuidString)'
+        BEGIN SELECT RAISE(ABORT, 'proposal write failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_ticket",
+        """
+        CREATE TRIGGER fail_candidate_recovery_ticket
+        BEFORE UPDATE ON work_items
+        WHEN OLD.id = '\(item.id.uuidString)'
+        BEGIN SELECT RAISE(ABORT, 'ticket write failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_ticket_event",
+        """
+        CREATE TRIGGER fail_candidate_recovery_ticket_event
+        BEFORE INSERT ON activity_events
+        WHEN NEW.kind = 'work_item.transitioned'
+        BEGIN SELECT RAISE(ABORT, 'ticket event failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_run",
+        """
+        CREATE TRIGGER fail_candidate_recovery_run
+        BEFORE UPDATE ON agent_runs
+        WHEN OLD.id = '\(run.id.uuidString)'
+        BEGIN SELECT RAISE(ABORT, 'run write failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_run_event",
+        """
+        CREATE TRIGGER fail_candidate_recovery_run_event
+        BEFORE INSERT ON activity_events
+        WHEN NEW.kind = 'agent_run.queued'
+        BEGIN SELECT RAISE(ABORT, 'run event failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_comment",
+        """
+        CREATE TRIGGER fail_candidate_recovery_comment
+        BEFORE INSERT ON ticket_comments
+        WHEN NEW.work_item_id = '\(item.id.uuidString)'
+        BEGIN SELECT RAISE(ABORT, 'comment write failed'); END;
+        """
+      ),
+      (
+        "fail_candidate_recovery_comment_event",
+        """
+        CREATE TRIGGER fail_candidate_recovery_comment_event
+        BEFORE INSERT ON activity_events
+        WHEN NEW.kind = 'comment.created'
+        BEGIN SELECT RAISE(ABORT, 'comment event failed'); END;
+        """
+      ),
+    ]
+
+    for trigger in triggers {
+      try fixture.execute(trigger.sql)
+      await #expect(throws: InvalidCandidateRecoveryError.self) {
+        try await store.recoverInvalidReadyForDemoCandidate(
+          candidateID: candidate.id,
+          runEventDetail: "Candidate queued after recovery",
+          transitionReason: "Invalid candidate recovered",
+          commentBody: commentBody
+        )
+      }
+      try fixture.execute("DROP TRIGGER \(trigger.name);")
+      await store.close()
+      store = try SQLiteStore(url: fixture.databaseURL)
+
+      #expect(try await store.fetchCandidateRevision(id: candidate.id).status == .readyForDemo)
+      #expect(
+        try await store.fetchKnowledgePageProposals(productID: product.id).first?.status
+          == .proposed
+      )
+      #expect(
+        try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }?.state
+          == .acceptance
+      )
+      #expect(try await store.fetchAgentRun(id: run.id).status == .awaitingOwner)
+      #expect(try await store.fetchComments(workItemID: item.id).isEmpty)
+      #expect(try await store.fetchActivity(productID: product.id).count == baselineActivityCount)
+    }
+
+    try await store.recoverInvalidReadyForDemoCandidate(
+      candidateID: candidate.id,
+      runEventDetail: "Candidate queued after recovery",
+      transitionReason: "Invalid candidate recovered",
+      commentBody: commentBody
+    )
+    #expect(try await store.fetchCandidateRevision(id: candidate.id).status == .superseded)
+    #expect(
+      try await store.fetchKnowledgePageProposals(productID: product.id).first?.status
+        == .superseded
+    )
+    #expect(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }?.state
+        == .running
+    )
+    #expect(try await store.fetchAgentRun(id: run.id).status == .queued)
+    #expect(try await store.fetchComments(workItemID: item.id).map(\.body) == [commentBody])
+
+    await store.close()
+    let recoveryStore = try SQLiteStore(url: fixture.databaseURL)
+    async let firstRecovery: Void = recoveryStore.recoverInvalidReadyForDemoCandidate(
+      candidateID: candidate.id,
+      runEventDetail: "Candidate queued after recovery",
+      transitionReason: "Invalid candidate recovered",
+      commentBody: commentBody
+    )
+    async let secondRecovery: Void = recoveryStore.recoverInvalidReadyForDemoCandidate(
+      candidateID: candidate.id,
+      runEventDetail: "Candidate queued after recovery",
+      transitionReason: "Invalid candidate recovered",
+      commentBody: commentBody
+    )
+    _ = try await (firstRecovery, secondRecovery)
+    #expect(
+      try await recoveryStore.fetchComments(workItemID: item.id).map(\.body)
+        == [commentBody]
+    )
+    let queuedCandidate = try await recoveryStore.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: 2,
+        branchName: "ticket/\(item.key)",
+        baseSHA: "base",
+        headSHA: "head-2",
+        worktreePath: "/tmp/\(item.key)",
+        status: .reviewing,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+    let queueComment = "Candidate restored to integration atomically."
+    let queueMutations: [TicketDeliveryRecoveryMutation] = [
+      .updateCandidate(
+        id: queuedCandidate.id,
+        expectedStatuses: [.reviewing],
+        status: .queuedForIntegration
+      ),
+      .updateRun(
+        id: run.id,
+        expectedStatuses: [.queued],
+        status: .interrupted,
+        eventDetail: "Review retired before integration"
+      ),
+      .transitionWorkItem(
+        id: item.id,
+        expectedStates: [.running],
+        states: [.integrating],
+        reasons: ["Candidate returned to integration"]
+      ),
+      .appendComment(body: queueComment),
+    ]
+    try fixture.execute(
+      """
+      CREATE TRIGGER fail_atomic_delivery_recovery_comment
+      BEFORE INSERT ON ticket_comments
+      WHEN NEW.body = '\(queueComment)'
+      BEGIN SELECT RAISE(ABORT, 'recovery comment failed'); END;
+      """
+    )
+    await #expect(throws: TicketDeliveryRecoveryError.self) {
+      try await recoveryStore.performTicketDeliveryRecovery(
+        productID: product.id,
+        workItemID: item.id,
+        mutations: queueMutations
+      )
+    }
+    try fixture.execute("DROP TRIGGER fail_atomic_delivery_recovery_comment;")
+    #expect(
+      try await recoveryStore.fetchCandidateRevision(id: queuedCandidate.id).status == .reviewing
+    )
+    #expect(try await recoveryStore.fetchAgentRun(id: run.id).status == .queued)
+    #expect(
+      try await recoveryStore.fetchWorkItems(productID: product.id)
+        .first(where: { $0.id == item.id })?.state == .running
+    )
+    #expect(
+      !((try await recoveryStore.fetchComments(workItemID: item.id)).contains {
+        $0.body == queueComment
+      })
+    )
+
+    async let firstQueueRecovery: Void = recoveryStore.performTicketDeliveryRecovery(
+      productID: product.id,
+      workItemID: item.id,
+      mutations: queueMutations
+    )
+    async let secondQueueRecovery: Void = recoveryStore.performTicketDeliveryRecovery(
+      productID: product.id,
+      workItemID: item.id,
+      mutations: queueMutations
+    )
+    _ = try await (firstQueueRecovery, secondQueueRecovery)
+    #expect(
+      try await recoveryStore.fetchCandidateRevision(id: queuedCandidate.id).status
+        == .queuedForIntegration
+    )
+    #expect(try await recoveryStore.fetchAgentRun(id: run.id).status == .interrupted)
+    #expect(
+      try await recoveryStore.fetchWorkItems(productID: product.id)
+        .first(where: { $0.id == item.id })?.state == .integrating
+    )
+    #expect(
+      try await recoveryStore.fetchComments(workItemID: item.id)
+        .filter { $0.body == queueComment }.count == 1
+    )
+    await recoveryStore.close()
+  }
+
   @Test("Version 7 databases add durable candidate delivery kinds")
   func candidateDeliveryKindMigration() async throws {
     let fixture = try DatabaseFixture()
@@ -88,6 +604,155 @@ struct SQLiteStoreTests {
     #expect(
       try await migratedStore.sprintReadinessIssues(sprintID: migratedPlan.sprint.id)
         .allSatisfy { $0.id != "sprint.goal" }
+    )
+    await migratedStore.close()
+  }
+
+  @Test("Version 9 databases retain one active repository analysis and recover atomically")
+  func repositoryKnowledgeActiveRunMigrationAndRecovery() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await currentStore.createProduct(name: "Migrated analysis")
+    let profiles = try await currentStore.seedDefaultProfiles(productID: product.id)
+    let analyzer = try #require(profiles.first { $0.role == .businessAnalyst })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    let first = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      analyzedSHA: String(repeating: "1", count: 40),
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id,
+      status: .analyzing
+    )
+    try await currentStore.createRepositoryKnowledgeRun(first)
+    await currentStore.close()
+
+    let secondID = UUID()
+    let now = Date().timeIntervalSince1970
+    try fixture.execute(
+      """
+      DROP INDEX idx_repository_knowledge_runs_one_active;
+      INSERT INTO repository_knowledge_runs (
+        id, product_id, attempt, purpose, analyzed_sha, analyzer_profile_id,
+        reviewer_profile_id, analyzer_thread_id, analyzer_turn_id,
+        reviewer_thread_id, reviewer_turn_id, status, analysis_summary,
+        review_summary, error_message, knowledge_export_paths_json,
+        knowledge_commit_sha, created_at, updated_at
+      ) VALUES (
+        '\(secondID.uuidString)', '\(product.id.uuidString)', 2, 'knowledge',
+        '\(String(repeating: "2", count: 40))', '\(analyzer.id.uuidString)',
+        '\(reviewer.id.uuidString)', NULL, NULL, NULL, NULL, 'reviewing',
+        NULL, NULL, NULL, '[]', NULL, \(now), \(now)
+      );
+      PRAGMA user_version = 9;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let migratedRuns = try await migratedStore.fetchRepositoryKnowledgeRuns(
+      productID: product.id
+    )
+    #expect(migratedRuns.first { $0.id == first.id }?.status == .interrupted)
+    #expect(migratedRuns.first { $0.id == secondID }?.status == .reviewing)
+
+    let recovered = try await migratedStore.recoverRepositoryKnowledgeRun(
+      interruptedRunID: secondID,
+      errorMessage: "Interrupted for recovery",
+      analyzedSHA: String(repeating: "2", count: 40),
+      analyzerProfileID: analyzer.id,
+      reviewerProfileID: reviewer.id
+    )
+    #expect(recovered.attempt == 3)
+    #expect(recovered.status == .pendingAnalysis)
+    #expect(
+      try await migratedStore.fetchRepositoryKnowledgeRun(id: secondID).status
+        == .interrupted
+    )
+    await migratedStore.close()
+  }
+
+  @Test("Version 10 databases retire obsolete manual publications")
+  func obsoleteManualPublicationMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Migrated publication")
+    let accountID = UUID()
+    let permissions = RemoteRepositoryPermissions(
+      metadataRead: true,
+      contentsWrite: true,
+      pullRequestsWrite: true,
+      workflowsWrite: false
+    )
+    let connection = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .importedSource,
+        accountID: accountID,
+        installationID: 16,
+        repositoryID: 17,
+        owner: "owner",
+        name: "product",
+        fullName: "owner/product",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/product.git")!,
+        isPrivate: false,
+        defaultBranch: "main",
+        permissions: permissions,
+        status: .connected
+      )
+    )
+    let revision = String(repeating: "1", count: 40)
+    let publication = try await store.createRemotePublication(
+      RemotePublication(
+        productID: product.id,
+        connectionID: connection.id,
+        purpose: .existingProductHistory,
+        accountID: accountID,
+        repositoryID: 17,
+        owner: "owner",
+        name: "product",
+        fullName: "owner/product",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/product.git")!,
+        isPrivate: false,
+        permissions: permissions,
+        capturedLocalSHA: revision,
+        capturedLocalTree: revision,
+        remoteBaseSHA: revision,
+        remoteBaseTree: revision,
+        targetBranch: "main",
+        publicationBranch: "spedito/migrated",
+        manifestDigest: String(repeating: "2", count: 64),
+        manifestObjectCount: 1,
+        manifestCommitCount: 1,
+        manifestPathCount: 1,
+        commits: [RemoteCommitSummary(sha: revision, subject: "Existing history")],
+        paths: ["README.md"],
+        title: "Publish existing Product history",
+        body: "Existing history"
+      )
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      UPDATE remote_publications
+      SET purpose = 'legacy_manual'
+      WHERE id = '\(publication.id.uuidString)';
+      PRAGMA user_version = 10;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    #expect(
+      try await migratedStore.fetchRemotePublication(id: publication.id)?.purpose
+        == .existingProductHistory
+    )
+    #expect(
+      try await migratedStore.fetchRemotePublication(id: publication.id)?.status
+        == .cancelled
     )
     await migratedStore.close()
   }
@@ -211,7 +876,7 @@ struct SQLiteStoreTests {
     #expect(lead.role.title == "Tech lead")
     #expect(lead.role.capabilityTitle == "Architecture, planning & review")
     #expect(implementer.model == "gpt-5.6-terra")
-    #expect(implementer.reasoningEffort == "low")
+    #expect(implementer.reasoningEffort == "medium")
 
     let item = try await store.createWorkItem(
       productID: product.id,
@@ -320,6 +985,59 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("Comment aggregate fetch preserves per-ticket ordering")
+  func batchedCommentFetch() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Comment aggregate")
+    let first = try await store.createWorkItem(
+      productID: product.id,
+      title: "First ticket"
+    )
+    let second = try await store.createWorkItem(
+      productID: product.id,
+      title: "Second ticket"
+    )
+    let empty = try await store.createWorkItem(
+      productID: product.id,
+      title: "Empty ticket"
+    )
+    _ = try await store.appendComment(
+      workItemID: first.id,
+      authorKind: .agent,
+      authorName: "Implementer",
+      body: "Newer",
+      createdAt: Date(timeIntervalSince1970: 20)
+    )
+    _ = try await store.appendComment(
+      workItemID: first.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: "Older",
+      createdAt: Date(timeIntervalSince1970: 10)
+    )
+    _ = try await store.appendComment(
+      workItemID: second.id,
+      authorKind: .agent,
+      authorName: "Tech lead",
+      body: "Only",
+      createdAt: Date(timeIntervalSince1970: 15)
+    )
+
+    let comments = try await store.fetchComments(
+      workItemIDs: [first.id, second.id, empty.id]
+    )
+    #expect(comments[first.id]?.map(\.body) == ["Older", "Newer"])
+    #expect(comments[second.id]?.map(\.body) == ["Only"])
+    #expect(comments[empty.id] == nil)
+    #expect(try await store.fetchComments(workItemID: first.id).map(\.body) == ["Older", "Newer"])
+    #expect(try await store.fetchComments(workItemIDs: []).isEmpty)
+
+    await store.close()
+  }
+
   @Test("Archiving a product hides active work without deleting its history")
   func productArchiveAndRestorePreserveHistory() async throws {
     let fixture = try DatabaseFixture()
@@ -350,6 +1068,8 @@ struct SQLiteStoreTests {
     #expect(
       try await store.fetchProducts(status: .archived).map(\.id) == [archived.id]
     )
+    #expect(
+      Set(try await store.fetchProducts(status: nil).map(\.id)) == [retained.id, archived.id])
     #expect(try await store.fetchWorkItems(productID: archived.id).map(\.id) == [item.id])
     #expect(
       try await store.fetchComments(workItemID: item.id).map(\.body)
@@ -3209,9 +3929,23 @@ struct SQLiteStoreTests {
     requests = try await reopened.fetchAgentPermissionRequests(productID: product.id)
     #expect(requests.first?.status == .interrupted)
 
-    let allowed = try await reopened.updateAgentPermissionRequest(
-      id: request.id,
-      status: .allowed
+    let prepared = try await reopened.prepareAgentPermissionResolution(
+      requestID: request.id,
+      intent: .allowOncePendingDelivery,
+      productGrant: nil
+    )
+    #expect(prepared.request.status == .allowOncePendingDelivery)
+    #expect(!prepared.request.status.needsOwnerDecision)
+    #expect(
+      try await reopened.fetchAgentPermissionRequest(
+        agentRunID: run.id,
+        serverRequestID: request.serverRequestID,
+        signature: request.signature
+      )?.id == request.id
+    )
+    let allowed = try await reopened.acknowledgeAgentPermissionResolution(
+      requestID: request.id,
+      intent: .allowOncePendingDelivery
     )
     #expect(allowed.status == .allowed)
 
@@ -3486,6 +4220,126 @@ struct SQLiteStoreTests {
         .changeSummary == update.rationale
     )
     await store.close()
+  }
+
+  @Test("Owner notifications retain read and resolution state across restart")
+  func ownerNotificationLifecyclePersists() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Notification lifecycle")
+    let target = OwnerNotificationTarget(kind: .ticket, id: UUID())
+    let notification = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: target,
+      title: "T1 needs your input",
+      body: "Choose the owner-facing behavior.",
+      createdAt: Date(timeIntervalSince1970: 2_000)
+    )
+
+    #expect(try await store.createOwnerNotification(notification))
+    #expect(!(try await store.createOwnerNotification(notification)))
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    var active = try await reopened.fetchActiveOwnerNotifications(productID: product.id)
+    #expect(active == [notification])
+
+    try await reopened.markOwnerNotificationsRead(productID: product.id, target: target)
+    active = try await reopened.fetchActiveOwnerNotifications(productID: product.id)
+    #expect(active.count == 1)
+    #expect(active.first?.isUnread == false)
+    #expect(active.first?.resolvedAt == nil)
+
+    let resolvedIDs = try await reopened.resolveOwnerNotifications(
+      productID: product.id,
+      target: target
+    )
+    #expect(resolvedIDs == [notification.id])
+    #expect(try await reopened.fetchActiveOwnerNotifications(productID: product.id).isEmpty)
+    await reopened.close()
+  }
+
+  @Test("Version 11 databases add durable owner notifications")
+  func ownerNotificationMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await currentStore.createProduct(name: "Migrated notifications")
+    await currentStore.close()
+    try fixture.execute(
+      """
+      DROP TABLE owner_notifications;
+      PRAGMA user_version = 11;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let notification = OwnerNotification(
+      productID: product.id,
+      kind: .refinementComplete,
+      target: OwnerNotificationTarget(kind: .epic, id: UUID()),
+      title: "Epic refinement complete",
+      body: "The proposed tickets are ready to review."
+    )
+    #expect(try await migratedStore.createOwnerNotification(notification))
+    let stored = try #require(
+      try await migratedStore.fetchActiveOwnerNotifications(productID: product.id).first
+    )
+    #expect(stored.id == notification.id)
+    #expect(stored.kind == notification.kind)
+    #expect(stored.target == notification.target)
+    #expect(stored.title == notification.title)
+    #expect(stored.body == notification.body)
+    #expect(stored.isUnread)
+    await migratedStore.close()
+  }
+
+  @Test("Version 12 databases remove redundant empty GitHub review entries")
+  func emptyGitHubReviewMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await currentStore.createProduct(name: "Migrated GitHub reviews")
+    let ticket = try await currentStore.createWorkItem(
+      productID: product.id,
+      title: "Review GitHub feedback"
+    )
+    let reviewURL = try #require(
+      URL(string: "https://github.com/example/product/pull/3#pullrequestreview-73")
+    )
+    let commentURL = try #require(
+      URL(string: "https://github.com/example/product/pull/3#discussion_r72")
+    )
+    _ = try await currentStore.appendExternalCommentIfNeeded(
+      workItemID: ticket.id,
+      authorName: "reviewer",
+      body: "GitHub review: Review comment.",
+      authorAvatarURL: nil,
+      externalURL: reviewURL,
+      externalID: "github:91:3:review:73",
+      createdAt: Date(timeIntervalSince1970: 1_786_787_808)
+    )
+    _ = try await currentStore.appendExternalCommentIfNeeded(
+      workItemID: ticket.id,
+      authorName: "reviewer",
+      body: "Why is this all inline?",
+      authorAvatarURL: nil,
+      externalURL: commentURL,
+      externalID: "github:91:3:comment:72",
+      createdAt: Date(timeIntervalSince1970: 1_786_787_808)
+    )
+    await currentStore.close()
+    try fixture.execute("PRAGMA user_version = 12;")
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let comments = try await migratedStore.fetchComments(workItemID: ticket.id)
+    #expect(comments.map(\.body) == ["Why is this all inline?"])
+    await migratedStore.close()
   }
 
   private func readyItem(

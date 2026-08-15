@@ -213,6 +213,37 @@ the single durable product sequence `T1`, `T2`, and so on.
 - Verify UI changes at representative light/dark and laptop-sized layouts when
   practical.
 
+### Long-running and multi-screen feature checklist
+
+Before implementing or accepting a long-running or multi-screen feature, record
+the following in its work packet or accepted ticket:
+
+- the owner journey, exact behavior, and explicit non-goals;
+- a state table naming every durable intermediate state, the command that enters
+  it, the evidence stored in SQLite, what the owner sees, available actions, and
+  relaunch recovery;
+- the single feature coordinator, bounded presentation snapshot, persistence
+  operations, views, and call sites to migrate;
+- the observable proof for success, failure, cancellation, interruption, and
+  fresh-instance recovery; and
+- the product owner's acceptance for UX-sensitive changes.
+
+Review uses these architecture ratchets:
+
+- `AppModel` and `ContentView` are composition and routing points. New feature
+  workflow state, long-lived tasks, polling, and multi-step side-effect
+  orchestration belong in a focused coordinator.
+- Every new long-lived `Task` in a view or `AppModel` needs an explicit review
+  reason. Prefer coordinator-owned tasks with bounded lifecycle and settlement.
+- Asynchronous tests observe explicit operation events or continuations, never
+  arbitrary sleeps.
+- Every new durable intermediate state has interruption and relaunch coverage.
+- A migration leaves one active implementation path; remove replaced task
+  registries, state projections, aliases, and fallback protocols in the same
+  packet.
+- Commit an accepted work packet before starting unrelated implementation, and
+  do not rewrite prior history to create that checkpoint.
+
 ## Validate changes
 
 Run the full suite with the project-local module caches:

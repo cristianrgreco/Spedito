@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 9
+  static let version: Int32 = 13
 
   static let sql = """
     CREATE TABLE products (
@@ -554,6 +554,7 @@ enum ProductDatabaseSchema {
         created_at REAL NOT NULL
     );
 
+
     CREATE INDEX idx_products_status_created
       ON products(status, created_at);
     CREATE UNIQUE INDEX idx_agent_profiles_active_name
@@ -804,6 +805,10 @@ enum ProductDatabaseSchema {
     \(migrationV6ToV7)
     \(migrationV7ToV8)
     \(migrationV8ToV9)
+    \(migrationV9ToV10)
+    \(migrationV10ToV11)
+    \(migrationV11ToV12)
+    \(migrationV12ToV13)
     """
 
   static let migrationV1ToV2 = """
@@ -1377,6 +1382,87 @@ enum ProductDatabaseSchema {
     PRAGMA user_version = 9;
     """
 
+  static let migrationV9ToV10 = """
+    WITH ranked_active_runs AS (
+      SELECT
+        id,
+        ROW_NUMBER() OVER (
+          PARTITION BY product_id
+          ORDER BY attempt DESC, updated_at DESC, id DESC
+        ) AS active_rank
+      FROM repository_knowledge_runs
+      WHERE status IN ('pending_analysis', 'analyzing', 'reviewing', 'publishing')
+    )
+    UPDATE repository_knowledge_runs
+    SET
+      status = 'interrupted',
+      error_message = COALESCE(
+        error_message,
+        'A newer repository analysis superseded this unfinished attempt during migration.'
+      ),
+      updated_at = unixepoch()
+    WHERE id IN (
+      SELECT id FROM ranked_active_runs WHERE active_rank > 1
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_knowledge_runs_one_active
+      ON repository_knowledge_runs(product_id)
+      WHERE status IN ('pending_analysis', 'analyzing', 'reviewing', 'publishing');
+
+    PRAGMA user_version = 10;
+    """
+
+  static let migrationV10ToV11 = """
+    UPDATE remote_publications
+    SET
+      purpose = 'existing_product_history',
+      status = 'cancelled',
+      error_code = 'legacy_manual_publication_removed',
+      updated_at = unixepoch()
+    WHERE purpose = 'legacy_manual';
+
+    PRAGMA user_version = 11;
+    """
+
+  static let migrationV11ToV12 = """
+    CREATE TABLE IF NOT EXISTS owner_notifications (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL
+          CHECK (kind IN ('needs_input', 'refinement_complete', 'new_reply')),
+        target_kind TEXT NOT NULL
+          CHECK (target_kind IN ('ticket', 'epic', 'conversation_thread')),
+        target_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        read_at REAL,
+        resolved_at REAL,
+        CHECK (
+          resolved_at IS NULL
+          OR (kind = 'needs_input' AND read_at IS NOT NULL)
+        )
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_owner_notifications_product_active
+      ON owner_notifications(product_id, created_at DESC)
+      WHERE read_at IS NULL
+        OR (kind = 'needs_input' AND resolved_at IS NULL);
+    CREATE INDEX IF NOT EXISTS idx_owner_notifications_target
+      ON owner_notifications(product_id, target_kind, target_id, created_at DESC);
+
+    PRAGMA user_version = 12;
+    """
+
+  static let migrationV12ToV13 = """
+    DELETE FROM ticket_comments
+    WHERE author_kind = 'external'
+      AND body = 'GitHub review: Review comment.'
+      AND external_id GLOB 'github:*:review:*';
+
+    PRAGMA user_version = 13;
+    """
+
   static let legacyCopyTableOrder = [
     "products",
     "remote_repository_connections",
@@ -1412,5 +1498,6 @@ enum ProductDatabaseSchema {
     "retrospective_notes",
     "retrospective_synthesis_sources",
     "retrospective_action_sources",
+    "owner_notifications",
   ]
 }

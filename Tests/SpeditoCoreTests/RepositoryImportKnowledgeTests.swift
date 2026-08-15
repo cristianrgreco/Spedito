@@ -818,7 +818,7 @@ struct RepositoryImportKnowledgeTests {
     let registry = try ProductStoreRegistry(productWorkspacesRootURL: productsRoot)
     let manager = GitWorkspaceManager(executableURL: gitWrapper)
     let importer = ProductRepositoryImporter(
-      storeRegistry: registry,
+      registration: registry,
       gitWorkspaceManager: manager,
       stagingRootURL: stagingRoot
     )
@@ -864,6 +864,73 @@ struct RepositoryImportKnowledgeTests {
     )
   }
 
+  @MainActor
+  @Test("Activation failure removes only importer-owned staging and destination paths")
+  func activationFailureCleansOwnedPaths() async throws {
+    let root = temporaryDirectory(named: "import-activation-failure")
+    let sourceRepository = root.appendingPathComponent("source", isDirectory: true)
+    let productsRoot = root.appendingPathComponent("products", isDirectory: true)
+    let stagingRoot = root.appendingPathComponent("staging", isDirectory: true)
+    let gitWrapper = root.appendingPathComponent("git-wrapper")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(
+      at: sourceRepository,
+      withIntermediateDirectories: true
+    )
+    _ = try runGit(["init", "-b", "main"], at: sourceRepository)
+    _ = try runGit(["config", "user.name", "Source Author"], at: sourceRepository)
+    _ = try runGit(["config", "user.email", "source@example.com"], at: sourceRepository)
+    try Data("# Product\n".utf8).write(
+      to: sourceRepository.appendingPathComponent("README.md")
+    )
+    _ = try runGit(["add", "-A"], at: sourceRepository)
+    _ = try runGit(["commit", "-m", "Initial product"], at: sourceRepository)
+
+    let publicURL = "https://github.com/example/failing-activation.git"
+    let wrapper = """
+      #!/bin/sh
+      is_clone=0
+      last=
+      for argument do
+        [ "$argument" = "clone" ] && is_clone=1
+        last="$argument"
+      done
+      if [ "$is_clone" = "1" ]; then
+        /usr/bin/git clone --no-recurse-submodules --origin origin -- "\(sourceRepository.path)" "$last" || exit $?
+        /usr/bin/git -C "$last" remote set-url origin "\(publicURL)" || exit $?
+        exit 0
+      fi
+      exec /usr/bin/git "$@"
+
+      """
+    try Data(wrapper.utf8).write(to: gitWrapper)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: gitWrapper.path
+    )
+    let registration = try FailingImportedProductRegistration(
+      productWorkspacesRootURL: productsRoot
+    )
+    let importer = ProductRepositoryImporter(
+      registration: registration,
+      gitWorkspaceManager: GitWorkspaceManager(executableURL: gitWrapper),
+      stagingRootURL: stagingRoot
+    )
+
+    await #expect(throws: ImportRegistrationFailure.self) {
+      try await importer.importProduct(
+        name: "Failing activation",
+        from: PublicGitRepositoryURL(publicURL)
+      )
+    }
+
+    #expect(registration.preparedProductID != nil)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: stagingRoot.path).isEmpty)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: productsRoot.path).isEmpty)
+    #expect(FileManager.default.fileExists(atPath: sourceRepository.path))
+  }
+
+
   @Test("Repository recovery is versioned and publication resumes in place")
   func recoveryPolicy() {
     let productID = UUID()
@@ -878,13 +945,7 @@ struct RepositoryImportKnowledgeTests {
     #expect(policy.action(for: base) == .startPendingAnalysis)
     var interrupted = base
     interrupted.status = .interrupted
-    #expect(
-      policy.action(for: interrupted, alreadyCreatedRecoveryAttempt: false)
-        == .createRecoveryAttempt
-    )
-    #expect(
-      policy.action(for: interrupted, alreadyCreatedRecoveryAttempt: true) == .none
-    )
+    #expect(policy.action(for: interrupted) == .createRecoveryAttempt)
     var publishing = base
     publishing.status = .publishing
     #expect(policy.action(for: publishing) == .resumePublication)
@@ -900,18 +961,20 @@ struct RepositoryImportKnowledgeTests {
     var completed = base
     completed.status = .completed
     #expect(policy.action(for: completed) == .none)
+    for _ in 0..<3 {
+      #expect(policy.action(for: completed) == .none)
+    }
+    let overview = KnowledgePage(
+      productID: productID,
+      title: "Overview",
+      slug: "overview"
+    )
     #expect(
-      policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview"
-          )
-        ]
-      )
+        pages: [overview]
+      ) == .noPublishableKnowledge
     )
     let rejectedDraft = RepositoryKnowledgeDraft(
       runID: completed.id,
@@ -923,39 +986,30 @@ struct RepositoryImportKnowledgeTests {
       status: .rejected
     )
     #expect(
-      policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [rejectedDraft],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview"
-          )
-        ]
-      )
+        pages: [overview]
+      ) == .noPublishableKnowledge
+    )
+    let publishedOverview = KnowledgePage(
+      productID: productID,
+      title: "Overview",
+      slug: "overview",
+      sourceRepositoryKnowledgeRunID: completed.id
     )
     #expect(
-      !policy.shouldRetryUnproductiveCompletedAnalysis(
-        run: completed,
+      policy.completionOutcome(
+        for: completed,
         drafts: [],
-        pages: [
-          KnowledgePage(
-            productID: productID,
-            title: "Overview",
-            slug: "overview",
-            sourceRepositoryKnowledgeRunID: UUID()
-          )
-        ]
-      )
+        pages: [publishedOverview]
+      ) == .publishedKnowledge
     )
     var legacyLaunchFailure = base
     legacyLaunchFailure.status = .failed
     legacyLaunchFailure.errorMessage =
       "The demo could not be prepared safely: demo paths must be relative to the reviewed preview."
-    #expect(policy.shouldRetryLegacyInvalidLaunchProposal(run: legacyLaunchFailure))
-    legacyLaunchFailure.errorMessage = "The repository analysis response was malformed."
-    #expect(!policy.shouldRetryLegacyInvalidLaunchProposal(run: legacyLaunchFailure))
+    #expect(policy.action(for: legacyLaunchFailure) == .none)
   }
 
   @Test("Repository analysis process environment is minimal and credential free")
@@ -1034,5 +1088,37 @@ struct RepositoryImportKnowledgeTests {
       throw GitWorkspaceError.commandFailed(arguments: arguments, output: output)
     }
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}
+
+private struct ImportRegistrationFailure: Error {}
+
+@MainActor
+private final class FailingImportedProductRegistration: ImportedProductRegistering {
+  let productWorkspacesRootURL: URL
+  private(set) var preparedProductID: UUID?
+
+  init(productWorkspacesRootURL: URL) throws {
+    self.productWorkspacesRootURL = productWorkspacesRootURL
+    try FileManager.default.createDirectory(
+      at: productWorkspacesRootURL,
+      withIntermediateDirectories: true
+    )
+  }
+
+  func prepareImportedProduct(
+    name: String,
+    id: UUID,
+    workspaceURL: URL,
+    repository: ProductRepository
+  ) async throws -> Product {
+    _ = (workspaceURL, repository)
+    preparedProductID = id
+    return Product(id: id, name: name)
+  }
+
+  func registerPreparedProduct(id: UUID) async throws -> ImportedProduct {
+    _ = id
+    throw ImportRegistrationFailure()
   }
 }

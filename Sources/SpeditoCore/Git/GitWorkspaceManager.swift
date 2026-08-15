@@ -4,6 +4,7 @@ public enum GitWorkspaceError: Error, LocalizedError, Sendable {
   case commandFailed(arguments: [String], output: String)
   case invalidRepository(String)
   case mergeConflict(worktreePath: String, conflictedFiles: [String], output: String)
+  case operationInProgress
 
   public var errorDescription: String? {
     switch self {
@@ -15,6 +16,8 @@ public enum GitWorkspaceError: Error, LocalizedError, Sendable {
     case .mergeConflict(_, let conflictedFiles, _):
       return
         "Candidate integration needs conflict resolution in: \(conflictedFiles.joined(separator: ", "))."
+    case .operationInProgress:
+      return "Another Git operation is already changing this Product workspace. Try again shortly."
     }
   }
 }
@@ -266,6 +269,15 @@ public actor GitWorkspaceManager {
   private let executableURL: URL
   let fileManager: FileManager
   private let commandHomeURL: URL
+  @TaskLocal private static var repositoryOperationID: UUID?
+
+  private struct RepositoryOperationWaiter {
+    let id: UUID
+    let continuation: CheckedContinuation<Void, Never>
+  }
+
+  private var activeRepositoryOperationIDs: [String: UUID] = [:]
+  private var repositoryOperationWaiters: [String: [RepositoryOperationWaiter]] = [:]
 
   public init(
     executableURL: URL = URL(fileURLWithPath: "/usr/bin/git"),
@@ -1764,6 +1776,70 @@ public actor GitWorkspaceManager {
     )
   }
 
+  func withRepositoryOperation<T: Sendable>(
+    at repositoryURL: URL,
+    operation: @Sendable () async throws -> T
+  ) async throws -> T {
+    let key = repositoryOperationKey(repositoryURL)
+    if let operationID = Self.repositoryOperationID,
+      activeRepositoryOperationIDs[key] == operationID
+    {
+      return try await operation()
+    }
+
+    let operationID = UUID()
+    await acquireRepositoryOperation(key: key, operationID: operationID)
+    do {
+      let value = try await Self.$repositoryOperationID.withValue(operationID) {
+        try await operation()
+      }
+      releaseRepositoryOperation(key: key, operationID: operationID)
+      return value
+    } catch {
+      releaseRepositoryOperation(key: key, operationID: operationID)
+      throw error
+    }
+  }
+
+  private func acquireRepositoryOperation(key: String, operationID: UUID) async {
+    guard activeRepositoryOperationIDs[key] != nil else {
+      activeRepositoryOperationIDs[key] = operationID
+      return
+    }
+    await withCheckedContinuation { continuation in
+      repositoryOperationWaiters[key, default: []].append(
+        RepositoryOperationWaiter(id: operationID, continuation: continuation)
+      )
+    }
+  }
+
+  private func releaseRepositoryOperation(key: String, operationID: UUID) {
+    guard activeRepositoryOperationIDs[key] == operationID else { return }
+    if var waiters = repositoryOperationWaiters[key], !waiters.isEmpty {
+      let next = waiters.removeFirst()
+      repositoryOperationWaiters[key] = waiters.isEmpty ? nil : waiters
+      activeRepositoryOperationIDs[key] = next.id
+      next.continuation.resume()
+    } else {
+      activeRepositoryOperationIDs.removeValue(forKey: key)
+    }
+  }
+
+  private func repositoryOperationKey(_ repositoryURL: URL) -> String {
+    repositoryURL.standardizedFileURL.resolvingSymlinksInPath().path
+  }
+
+  private func validateRepositoryOperationAccess(at directoryURL: URL) throws {
+    let path = repositoryOperationKey(directoryURL)
+    let operationID = Self.repositoryOperationID
+    let conflictingOperation = activeRepositoryOperationIDs.first { key, ownerID in
+      ownerID != operationID && (path == key || path.hasPrefix(key + "/"))
+    }
+    guard conflictingOperation == nil else {
+      throw GitWorkspaceError.operationInProgress
+    }
+  }
+
   func run(
     _ arguments: [String],
     at directoryURL: URL,
@@ -1836,6 +1912,7 @@ public actor GitWorkspaceManager {
     process.environment = try commandEnvironment(authorName: nil)
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = outputPipe
+    try validateRepositoryOperationAccess(at: directoryURL)
     process.standardError = outputPipe
     try process.run()
 
@@ -1883,6 +1960,7 @@ public actor GitWorkspaceManager {
     } else {
       process.standardInput = FileHandle.nullDevice
     }
+    try validateRepositoryOperationAccess(at: directoryURL)
     try process.run()
     if let standardInput, let inputPipe {
       inputPipe.fileHandleForWriting.write(standardInput)
@@ -1910,6 +1988,7 @@ public actor GitWorkspaceManager {
       authorName: nil,
       overrides: environmentOverrides
     )
+    try validateRepositoryOperationAccess(at: directoryURL)
     process.standardOutput = outputPipe
     process.standardError = outputPipe
     let execution = GitAsyncProcess(process: process, outputPipe: outputPipe)

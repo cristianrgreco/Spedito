@@ -688,6 +688,12 @@ public enum CodexApprovalError: Error, Equatable, LocalizedError, Sendable {
 
 public enum AgentPermissionRequestStatus: String, Codable, Sendable {
   case pending
+  case allowOncePendingDelivery = "allow_once_pending_delivery"
+  case allowProductPendingDelivery = "allow_product_pending_delivery"
+  case existingAccessPendingDelivery = "existing_access_pending_delivery"
+  case grantAccessPendingDelivery = "grant_access_pending_delivery"
+  case denyPendingDelivery = "deny_pending_delivery"
+  case policyDenyPendingDelivery = "policy_deny_pending_delivery"
   case allowed
   case existingAccess = "existing_access"
   case policyDenied = "policy_denied"
@@ -696,6 +702,65 @@ public enum AgentPermissionRequestStatus: String, Codable, Sendable {
 
   public var needsOwnerDecision: Bool {
     self == .pending || self == .interrupted
+  }
+
+  public var isPendingDelivery: Bool {
+    switch self {
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery,
+      .denyPendingDelivery, .policyDenyPendingDelivery:
+      true
+    case .pending, .allowed, .existingAccess, .policyDenied, .denied, .interrupted:
+      false
+    }
+  }
+
+  public var allowsRequest: Bool? {
+    switch self {
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery,
+      .allowed, .existingAccess:
+      true
+    case .denyPendingDelivery, .policyDenyPendingDelivery, .policyDenied, .denied:
+      false
+    case .pending, .interrupted:
+      nil
+    }
+  }
+
+  public var acknowledgedStatus: Self? {
+    switch self {
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .grantAccessPendingDelivery:
+      .allowed
+    case .existingAccessPendingDelivery:
+      .existingAccess
+    case .denyPendingDelivery:
+      .denied
+    case .policyDenyPendingDelivery:
+      .policyDenied
+    case .pending, .allowed, .existingAccess, .policyDenied, .denied, .interrupted:
+      nil
+    }
+  }
+
+  public var replayIntent: Self? {
+    switch self {
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .existingAccessPendingDelivery, .grantAccessPendingDelivery,
+      .denyPendingDelivery, .policyDenyPendingDelivery:
+      self
+    case .allowed:
+      .allowOncePendingDelivery
+    case .existingAccess:
+      .existingAccessPendingDelivery
+    case .policyDenied:
+      .policyDenyPendingDelivery
+    case .denied:
+      .denyPendingDelivery
+    case .pending, .interrupted:
+      nil
+    }
   }
 }
 

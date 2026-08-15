@@ -287,7 +287,28 @@ struct RemoteRepositoryServiceTests {
     #expect(inlineComment.githubReviewContext?.lineDescription == "Lines 8-9 (new)")
     #expect(inlineComment.githubReviewContext?.commitSHA == localSHA)
     #expect(inlineComment.agentContextBody.contains("BEGIN GITHUB DIFF HUNK"))
+    #if DEBUG
+      await store.resetPreparedStatementCount()
+    #endif
     _ = try await service.syncTicketPullRequest(publicationID: publication.id)
+    #if DEBUG
+      let boundedPollingQueryCount = await store.currentPreparedStatementCount()
+      let unrelatedTicket = try await store.createWorkItem(
+        productID: product.id,
+        title: "Unrelated historical ticket"
+      )
+      for index in 0..<20 {
+        _ = try await store.appendComment(
+          workItemID: unrelatedTicket.id,
+          authorKind: .owner,
+          authorName: "Product owner",
+          body: "Historical comment \(index)"
+        )
+      }
+      await store.resetPreparedStatementCount()
+      _ = try await service.syncTicketPullRequest(publicationID: publication.id)
+      #expect(await store.currentPreparedStatementCount() == boundedPollingQueryCount)
+    #endif
     #expect(try await store.fetchComments(workItemID: ticket.id).count == 2)
     let externalWorkspace = root.appendingPathComponent(
       "external-change",
@@ -871,6 +892,33 @@ struct RemoteRepositoryServiceTests {
     await store.close()
   }
 
+  @Test("Remote state and commands report persistence failures")
+  func persistenceFailuresRemainOwnerVisible() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-Persistence-Failure-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Persistence failure")
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      credentialStore: ServiceCountingCredentialStore(),
+      credentialSession: GitCredentialSession(temporaryDirectory: root),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    await store.close()
+
+    let state = await service.state(productID: product.id)
+
+    #expect(state.errorMessage?.isEmpty == false)
+    await service.shutdown()
+  }
+
   @Test("Idle connected Products do not query Keychain during recovery")
   func idleConnectedProductRecovery() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -912,6 +960,58 @@ struct RemoteRepositoryServiceTests {
 
     #expect(await credentialStore.accessCount == 0)
     #expect(await service.state(productID: product.id).errorMessage == nil)
+    await service.shutdown()
+    await store.close()
+  }
+
+  @Test("Archived Products retain remote audit state without recovery access")
+  func archivedProductRecoveryDoesNoExternalWork() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-Archived-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Archived Product")
+    let connection = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .localEmptyRepository,
+        accountID: UUID(),
+        installationID: 1,
+        repositoryID: 2,
+        owner: "owner",
+        name: "repository",
+        fullName: "owner/repository",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/repository.git")!,
+        isPrivate: true,
+        defaultBranch: "main",
+        status: .initializingRemote,
+        bootstrapRootSHA: String(repeating: "1", count: 40),
+        bootstrapRootTree: String(repeating: "2", count: 40),
+        initializationAttemptCount: 1
+      )
+    )
+    _ = try await store.archiveProduct(id: product.id)
+    let credentialStore = ServiceCountingCredentialStore()
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(temporaryDirectory: root),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+
+    await service.recover(productID: product.id)
+    let state = await service.state(productID: product.id)
+
+    #expect(await credentialStore.accessCount == 0)
+    #expect(state.connection?.id == connection.id)
+    #expect(state.connection?.status == .initializingRemote)
+    #expect(state.errorMessage == nil)
     await service.shutdown()
     await store.close()
   }
@@ -1258,7 +1358,19 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
             "updated_at": "2026-08-05T12:00:00Z",
             "html_url": "https://github.com/example/service/pull/1#pullrequestreview-71",
             "submitted_at": "2026-08-05T12:00:00Z",
-          ]
+          ],
+          [
+            "id": 73,
+            "user": [
+              "login": "reviewer",
+              "avatar_url": "https://avatars.githubusercontent.com/u/71",
+            ],
+            "body": "",
+            "state": "COMMENTED",
+            "updated_at": NSNull(),
+            "html_url": "https://github.com/example/service/pull/1#pullrequestreview-73",
+            "submitted_at": "2026-08-05T12:01:00Z",
+          ],
         ]
         : []
       return response(request, json: reviews)

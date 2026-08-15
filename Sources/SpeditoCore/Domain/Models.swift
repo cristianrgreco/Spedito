@@ -628,6 +628,74 @@ public enum CommentAuthorKind: String, Codable, Sendable {
   case external
 }
 
+public enum OwnerNotificationKind: String, Codable, CaseIterable, Sendable {
+  case needsInput = "needs_input"
+  case refinementComplete = "refinement_complete"
+  case newReply = "new_reply"
+
+  public var requiresAction: Bool {
+    self == .needsInput
+  }
+}
+
+public enum OwnerNotificationTargetKind: String, Codable, CaseIterable, Sendable {
+  case ticket
+  case epic
+  case conversationThread = "conversation_thread"
+}
+
+public struct OwnerNotificationTarget: Codable, Hashable, Sendable {
+  public let kind: OwnerNotificationTargetKind
+  public let id: UUID
+
+  public init(kind: OwnerNotificationTargetKind, id: UUID) {
+    self.kind = kind
+    self.id = id
+  }
+}
+
+public struct OwnerNotification: Identifiable, Codable, Hashable, Sendable {
+  public let id: UUID
+  public let productID: UUID
+  public let kind: OwnerNotificationKind
+  public let target: OwnerNotificationTarget
+  public let title: String
+  public let body: String
+  public let createdAt: Date
+  public var readAt: Date?
+  public var resolvedAt: Date?
+
+  public init(
+    id: UUID = UUID(),
+    productID: UUID,
+    kind: OwnerNotificationKind,
+    target: OwnerNotificationTarget,
+    title: String,
+    body: String,
+    createdAt: Date = Date(),
+    readAt: Date? = nil,
+    resolvedAt: Date? = nil
+  ) {
+    self.id = id
+    self.productID = productID
+    self.kind = kind
+    self.target = target
+    self.title = title
+    self.body = body
+    self.createdAt = createdAt
+    self.readAt = readAt
+    self.resolvedAt = resolvedAt
+  }
+
+  public var isUnread: Bool {
+    readAt == nil
+  }
+
+  public var isActive: Bool {
+    isUnread || (kind.requiresAction && resolvedAt == nil)
+  }
+}
+
 public enum ConversationThreadStatus: String, Codable, CaseIterable, Sendable {
   case working
   case complete

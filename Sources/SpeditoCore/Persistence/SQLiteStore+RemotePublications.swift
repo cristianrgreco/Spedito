@@ -58,25 +58,6 @@ extension SQLiteStore {
     return value
   }
 
-  public func cancelRemotePublication(
-    id: UUID,
-    expectedVersion: Int,
-    expectedStatus: RemotePublicationStatus
-  ) throws -> RemotePublication {
-    guard expectedStatus == .awaitingConfirmation else {
-      throw PersistenceError.corruptData(
-        "A publication can only be cancelled before GitHub changes begin.")
-    }
-    return try mutateRemotePublication(
-      id: id,
-      expectedVersion: expectedVersion,
-      expectedStatus: expectedStatus
-    ) {
-      $0.status = .cancelled
-      $0.errorCode = nil
-    }
-  }
-
   public func prepareRemotePublicationCheck(
     id: UUID,
     expectedVersion: Int,

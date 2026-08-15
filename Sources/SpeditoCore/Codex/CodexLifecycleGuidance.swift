@@ -411,6 +411,24 @@ enum CodexLifecycleGuidance {
       """
 
     return switch request.status {
+    case .allowOncePendingDelivery, .allowProductPendingDelivery,
+      .grantAccessPendingDelivery, .existingAccessPendingDelivery:
+      """
+      Spedito durably saved an approval for this matching capability before the previous response
+      was interrupted:
+      \(request.detail)
+      \(commandContinuation)
+      \(coherentCapability)
+      Reissue the complete capability only if it is still needed. Spedito will deliver the saved
+      decision without asking the product owner again.
+      """
+    case .denyPendingDelivery, .policyDenyPendingDelivery:
+      """
+      Spedito durably saved a denial for this matching capability before the previous response was
+      interrupted:
+      \(request.detail)
+      Do not reissue the same request. Adapt within the existing permission boundary.
+      """
     case .allowed:
       """
       The product owner already allowed this matching capability for the existing \(subject):

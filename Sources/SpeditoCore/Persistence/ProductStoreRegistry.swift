@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 @MainActor
-public final class ProductStoreRegistry {
+public final class ProductStoreRegistry: ImportedProductRegistering {
   public nonisolated static let controlDirectoryName = ".spedito"
   nonisolated static let legacyControlDirectoryName = ".storypointless"
   public nonisolated static let databaseFilename = "product.sqlite"
@@ -57,7 +57,7 @@ public final class ProductStoreRegistry {
     Array(stores.values)
   }
 
-  public func fetchProducts(status: ProductStatus = .active) async throws -> [Product] {
+  public func fetchProducts(status: ProductStatus? = .active) async throws -> [Product] {
     var products: [Product] = []
     for store in stores.values {
       products.append(contentsOf: try await store.fetchProducts(status: status))
@@ -111,7 +111,7 @@ public final class ProductStoreRegistry {
     return try await store.restoreProduct(id: id, color: restoredColor)
   }
 
-  func prepareImportedProduct(
+  public func prepareImportedProduct(
     name: String,
     id: UUID,
     workspaceURL: URL,
@@ -160,7 +160,7 @@ public final class ProductStoreRegistry {
     }
   }
 
-  func registerPreparedProduct(id: UUID) async throws -> Product {
+  public func registerPreparedProduct(id: UUID) async throws -> ImportedProduct {
     guard stores[id] == nil else {
       throw PersistenceError.corruptData("The imported product is already registered")
     }
@@ -174,13 +174,23 @@ public final class ProductStoreRegistry {
           "The prepared product database does not contain exactly one matching product"
         )
       }
-      guard try await store.fetchProductRepository(productID: id) != nil else {
+      guard let repository = try await store.fetchProductRepository(productID: id) else {
         throw PersistenceError.corruptData(
           "The prepared product database is missing repository provenance"
         )
       }
+      guard let knowledgeRun = try await store.fetchLatestRepositoryKnowledgeRun(productID: id)
+      else {
+        throw PersistenceError.corruptData(
+          "The prepared product database is missing its repository analysis"
+        )
+      }
       stores[id] = store
-      return product
+      return ImportedProduct(
+        product: product,
+        repository: repository,
+        knowledgeRun: knowledgeRun
+      )
     } catch {
       await store.close()
       throw error

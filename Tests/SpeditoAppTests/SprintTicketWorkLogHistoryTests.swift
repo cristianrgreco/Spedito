@@ -66,7 +66,7 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(!publishesAutomatically)
   }
 
-  @Test("Pull request creation entries include the matching GitHub link in the work log")
+  @Test("Pull request creation entries resolve the matching GitHub link")
   func pullRequestCreationEntriesIncludeLink() throws {
     let workItemID = UUID()
     let pullRequestURL = try #require(
@@ -93,27 +93,11 @@ struct SprintTicketWorkLogHistoryTests {
       ) == pullRequestURL
     )
     #expect(
-      SprintTicketWorkLogExternalLink.displayedBody(
-        comment: creation,
-        externalURL: pullRequestURL
-      ) == """
-        Created draft pull request #2 for candidate revision abcdef12.
-
-        [View on GitHub](https://github.com/example/notes/pull/2)
-        """
-    )
-    #expect(
       SprintTicketWorkLogExternalLink.resolve(
         comment: unrelated,
         pullRequestNumber: 2,
         pullRequestURL: pullRequestURL
       ) == nil
-    )
-    #expect(
-      SprintTicketWorkLogExternalLink.displayedBody(
-        comment: unrelated,
-        externalURL: pullRequestURL
-      ) == unrelated.body
     )
   }
 

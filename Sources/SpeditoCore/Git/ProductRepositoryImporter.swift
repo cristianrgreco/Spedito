@@ -140,19 +140,31 @@ public enum ProductRepositoryImportError: Error, Equatable, LocalizedError, Send
 }
 
 @MainActor
-public final class ProductRepositoryImporter {
-  private let storeRegistry: ProductStoreRegistry
+public protocol ImportedProductRegistering: Sendable {
+  var productWorkspacesRootURL: URL { get }
+  func prepareImportedProduct(
+    name: String,
+    id: UUID,
+    workspaceURL: URL,
+    repository: ProductRepository
+  ) async throws -> Product
+  func registerPreparedProduct(id: UUID) async throws -> ImportedProduct
+}
+
+@MainActor
+public final class ProductRepositoryImporter: RepositoryImportActivating {
+  private let registration: any ImportedProductRegistering
   private let gitWorkspaceManager: GitWorkspaceManager
   private let stagingRootURL: URL
   private let fileManager: FileManager
 
   public init(
-    storeRegistry: ProductStoreRegistry,
+    registration: any ImportedProductRegistering,
     gitWorkspaceManager: GitWorkspaceManager,
     stagingRootURL: URL,
     fileManager: FileManager = .default
   ) {
-    self.storeRegistry = storeRegistry
+    self.registration = registration
     self.gitWorkspaceManager = gitWorkspaceManager
     self.stagingRootURL = stagingRootURL
     self.fileManager = fileManager
@@ -173,18 +185,20 @@ public final class ProductRepositoryImporter {
   public func importProduct(
     name: String,
     from source: PublicGitRepositoryURL,
-    credentialConfiguration: GitCredentialSessionConfiguration? = nil
+    credentialConfiguration: GitCredentialSessionConfiguration? = nil,
+    onProgress: @escaping @Sendable (RepositoryImportActivationProgress) async -> Void = { _ in }
   ) async throws -> ImportedProduct {
     let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedName.isEmpty else { throw ProductRepositoryImportError.missingName }
     try prepare()
+    await onProgress(.cloningAndStaging)
 
     let productID = UUID()
     let stagingURL = stagingRootURL.appendingPathComponent(
       productID.uuidString,
       isDirectory: true
     )
-    let canonicalURL = storeRegistry.productWorkspacesRootURL.appendingPathComponent(
+    let canonicalURL = registration.productWorkspacesRootURL.appendingPathComponent(
       productID.uuidString,
       isDirectory: true
     )
@@ -225,7 +239,8 @@ public final class ProductRepositoryImporter {
       sourceDefaultBranch: importedGit.sourceDefaultBranch,
       importedSHA: importedGit.importedSHA
     )
-    let product = try await storeRegistry.prepareImportedProduct(
+    await onProgress(.activatingProduct)
+    let product = try await registration.prepareImportedProduct(
       name: trimmedName,
       id: productID,
       workspaceURL: stagingURL,
@@ -237,16 +252,22 @@ public final class ProductRepositoryImporter {
       )
     }
     try fileManager.moveItem(at: stagingURL, to: canonicalURL)
-    let registeredProduct = try await storeRegistry.registerPreparedProduct(id: productID)
-    guard registeredProduct.id == product.id,
-      let store = storeRegistry.store(for: productID),
-      let run = try await store.fetchLatestRepositoryKnowledgeRun(productID: productID)
+    let importedProduct = try await registration.registerPreparedProduct(id: productID)
+    guard importedProduct.product.id == product.id,
+      importedProduct.repository.productID == repository.productID,
+      importedProduct.repository.originURL == repository.originURL,
+      importedProduct.repository.sourceDefaultBranch == repository.sourceDefaultBranch,
+      importedProduct.repository.importedSHA == repository.importedSHA,
+      importedProduct.repository.protectedKnowledgePaths == repository.protectedKnowledgePaths,
+      importedProduct.repository.blocksKnowledgeExport == repository.blocksKnowledgeExport,
+      importedProduct.knowledgeRun.analyzedSHA == repository.importedSHA,
+      importedProduct.knowledgeRun.productID == productID
     else {
       throw ProductRepositoryImportError.activationFailed(
         "Spedito couldn't activate the imported product."
       )
     }
     didActivate = true
-    return ImportedProduct(product: registeredProduct, repository: repository, knowledgeRun: run)
+    return importedProduct
   }
 }

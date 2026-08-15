@@ -287,6 +287,11 @@ preserves its backlog, work logs, product knowledge, source workspace, and
 delivery history. Archived products remain available from the product library
 and can be restored and reopened. Product archival does not silently cancel
 ticket scope, discard worktrees, or physically delete audit records.
+Archived products do not resume repository setup, incoming-change acceptance,
+publication, pull-request reconciliation, or branch cleanup in the background.
+Their remote history remains readable locally; restoring the product is required
+before preserved repository work can continue.
+
 
 ### 8.2 Human owner
 
@@ -571,6 +576,11 @@ and a separate tech lead independently approves or rejects every proposal.
 Only approved pages become versioned, automatically verified product knowledge.
 Interrupted work is recovered as a new versioned attempt; a changed accepted
 revision makes the old attempt stale.
+A completed analysis with no approved product knowledge is a valid terminal
+outcome. Spedito explains that result without starting another Codex turn on
+later launches. The owner may explicitly start one new versioned analysis
+attempt when another pass is useful.
+
 
 SQLite in `.spedito` remains the only authoritative and maintained copy of
 product knowledge. Repository analysis and accepted ticket knowledge changes
@@ -603,9 +613,10 @@ A verified repository check compares the accepted local `trunk` with two
 observations of the repository identity and default-branch head around an
 isolated Git fetch. Spedito runs that check automatically when setup, recovery,
 or ticket integration requires it instead of asking the product owner to refresh
-routine status. The product owner can see the latest verified relationship,
-ahead/behind counts, commits, files, and observation time. A fast-forward remote
-change may be accepted directly only after Spedito validates the exact incoming
+routine status. Routine repository diagnostics do not appear as a separate
+Codebase status or action; the sprint journey surfaces only results that need
+the product owner's attention.
+A fast-forward remote change may be accepted directly only after Spedito validates the exact incoming
 tree and the owner reviews and confirms it. A merged Spedito pull request may
 align rewritten GitHub history only when Git proves that the published commit,
 resulting tree, and current local base match.
@@ -641,7 +652,8 @@ local work does not turn Product settings into a warning.
 For a connected Product, every reviewed repository-changing ticket revision is
 published automatically as a draft pull request from its exact integrated commit.
 Spedito prefills the title from the ticket key and title and the description from the
-ticket context, acceptance criteria, and immutable revision. Pull-request
+ticket context and acceptance criteria; the reviewed revision is not repeated in
+the description because GitHub already shows the pull request's commit. Pull-request
 creation is recorded as an inline ticket work-log entry with its GitHub link;
 the sprint board and ticket header do not expose pull-request numbers, status
 banners, or manual review-refresh controls. Pull-request reviews and inline
@@ -1603,19 +1615,50 @@ source ticket; it does not add a second notification sound. Reloading an
 existing attention state does not replay the sound or notification, and shutdown
 does not start new attention presentation.
 
-The product switcher carries an accent-colored count of unresolved **Needs your
-input** tickets in products other than the selected product. Attention in the
-selected product remains represented by its workspace destination, such as the
-**Sprint board** badge, so two visible counts never describe the same required
-navigation. The product library places affected non-selected products in a
-text-only **Needs your input** section. Its section count uses an orange capsule,
-while each product's inline attention label uses orange text; only the
-product-switcher badge uses the app accent color. Opening a different product
-with one request opens that ticket directly. Opening a different product with
-several requests opens its sprint
-board filtered to those tickets, where the product owner can clear the filter.
-Counts represent unresolved actions rather than unread notifications: viewing a
-request does not clear it, while resolving the underlying ticket question does.
+The product switcher carries an accent-colored count of targets needing the
+owner's attention in products other than the selected product. The count
+combines tickets that are **Ready for demo**, unresolved **Needs your input**
+actions, and unread background results and replies, counting one source target
+once. Attention in the selected product remains represented by its workspace
+destination, so two visible counts never describe the same required navigation.
+The product library places affected non-selected products in a **Needs your
+attention** section. Its section count and product labels use orange when an
+unresolved action is present and purple when the product contains only unread
+updates. Opening a different product with one target opens that exact ticket,
+epic, or Chat thread. Opening one with several targets selects the product and
+leaves its workspace and row indicators visible; the existing multiple-ticket
+**Needs your input** filter remains available when every target is an active
+sprint ticket. Unresolved action labels remain until the underlying question is
+answered, while unread update labels clear when their exact source is opened.
+
+Background agent results use the same presentation and deep-linking conventions
+without treating every update as an unresolved blocker. Switching products does
+not interrupt ticket or epic refinement, ticket or epic conversation replies, or
+Chat replies; only product archival, an explicit stop, or application shutdown
+ends that work. If the exact ticket, epic, or Chat thread is visible while
+Spedito is active, the result appears inline and no banner is added. Otherwise an
+active Spedito window slides one transient banner in at the bottom right; an
+inactive app sends one macOS notification instead. Opening either presentation
+selects the product only after the product owner chooses the action and opens
+the exact source.
+
+| Durable state | Entered by | SQLite evidence | What the owner sees | Available actions | Relaunch recovery |
+| --- | --- | --- | --- | --- | --- |
+| Needs input | A ticket or epic refinement turn returns one or more owner questions | The source conversation or work-log question plus an unresolved owner notification | Orange **Needs your input** treatment and one chime unless the source is already visible | Open the source and answer; dismissing or viewing does not resolve it | It remains discoverable until the answer is saved |
+| Refinement complete | A ticket refinement is applied or an epic plan is ready for review | The applied ticket version or completed epic suggestion session plus an unread owner notification | Purple **Refinement complete** or **Plan ready for review** treatment without a chime | Open the ticket or epic | Its unread indicator remains until the source is opened |
+| New reply | A team member appends a ticket, epic, or Chat reply | The durable reply plus an unread owner notification | Purple **New reply** treatment without a chime | Open the ticket, epic, or exact Chat thread | Its unread indicator remains until the source is opened |
+
+Unread updates are distinct from unresolved actions. Opening their exact source
+marks completion and reply notifications read. Answering a refinement question
+resolves its action notification. When either operation makes a delivered macOS
+notification obsolete, Spedito removes that notification from Notification
+Center so a stale alert cannot route to an already-cleared state. Sidebar and
+row indicators identify unread backlog and Chat destinations; they do not turn
+ordinary completions or replies into **Needs your input** counts.
+
+This notification flow does not create a general notification center, notify
+for title-generation helpers, or replay historical results that predate its
+durable notification record.
 
 ### 10.2 State transition rules
 
@@ -2204,6 +2247,10 @@ combinations. Owners may also add shared product guidance and optional
 per-profile custom instructions. Spedito's versioned role and lifecycle
 guidance remains internal; the owner-visible custom field starts empty and its
 contents are appended last. Clearing it removes only the custom overlay.
+Saving Team settings commits the shared guidance and every active member
+configuration atomically. The sheet remains open with the owner's edits and an
+inline retryable error if the complete update cannot be saved.
+
 Max and Ultra are not defaults because
 they materially increase usage and, for Ultra, change orchestration behaviour.
 

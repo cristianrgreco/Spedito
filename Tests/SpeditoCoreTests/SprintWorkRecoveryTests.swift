@@ -320,6 +320,58 @@ struct SprintWorkRecoveryTests {
     #expect(recovered.map(\.id) == [runID])
   }
 
+  @Test("A saved permission decision recovers without asking the owner again")
+  func savedPermissionDecisionIsRecoveredWithoutOwnerInput() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let runID = UUID()
+    let decisionDate = Date()
+    let run = AgentRun(
+      id: runID,
+      productID: productID,
+      workItemID: workItemID,
+      profileID: UUID(),
+      status: .awaitingOwner,
+      updatedAt: decisionDate.addingTimeInterval(-1)
+    )
+    let request = AgentPermissionRequest(
+      productID: productID,
+      workItemID: workItemID,
+      agentRunID: runID,
+      threadID: "thread",
+      turnID: "turn",
+      serverRequestID: "request",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift test",
+      signature: "command|swift test",
+      status: .allowOncePendingDelivery,
+      updatedAt: decisionDate
+    )
+    let policy = SprintWorkRecoveryPolicy()
+
+    #expect(
+      policy.runsWithExpiredPermissionDecisions(
+        runs: [run],
+        permissionRequests: [request]
+      ).map(\.id) == [runID]
+    )
+    #expect(
+      policy.actionablePermissionRequest(
+        for: workItemID,
+        runs: [run],
+        permissionRequests: [request]
+      ) == nil
+    )
+    #expect(
+      policy.latestPermissionContinuation(
+        for: runID,
+        permissionRequests: [request]
+      )?.id == request.id
+    )
+  }
+
   @Test("A later owner question is not mistaken for an expired permission decision")
   func laterOwnerQuestionIsNotPermissionRecovery() {
     let productID = UUID()

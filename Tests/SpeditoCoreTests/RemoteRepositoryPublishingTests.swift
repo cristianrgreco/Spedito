@@ -62,6 +62,122 @@ struct RemoteRepositoryPublishingTests {
     await store.close()
   }
 
+  @Test("Remote repository persistence snapshot reads one coherent product aggregate")
+  func remoteRepositoryPersistenceSnapshot() async throws {
+    let root = temporaryDirectory(named: "persistence-snapshot")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Snapshot product")
+    let accountID = UUID()
+    let connection = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .importedSource,
+        accountID: accountID,
+        installationID: 42,
+        repositoryID: 71,
+        owner: "owner",
+        name: "snapshot",
+        fullName: "owner/snapshot",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/snapshot.git")!,
+        isPrivate: false,
+        defaultBranch: "main",
+        permissions: publicationPermissions,
+        status: .connected
+      )
+    )
+    var olderSync = try await store.createRemoteSafeSync(
+      RemoteSafeSync(
+        productID: product.id,
+        connectionID: connection.id,
+        connectionVersion: connection.version,
+        kind: .fastForward,
+        observationRef: "refs/spedito/observations/older",
+        localSHA: sha("1"),
+        localTree: sha("2"),
+        remoteSHA: sha("3"),
+        remoteTree: sha("4"),
+        mergeBaseSHA: sha("1"),
+        candidateSHA: sha("3"),
+        candidateTree: sha("4"),
+        createdAt: Date(timeIntervalSince1970: 1),
+        updatedAt: Date(timeIntervalSince1970: 1)
+      )
+    )
+    olderSync = try await store.rejectRemoteSafeSync(
+      id: olderSync.id,
+      expectedVersion: olderSync.version,
+      expectedStatus: olderSync.status,
+      candidateSHA: olderSync.candidateSHA
+    )
+    let latestSyncDate = olderSync.updatedAt.addingTimeInterval(1)
+    let latestSync = try await store.createRemoteSafeSync(
+      RemoteSafeSync(
+        productID: product.id,
+        connectionID: connection.id,
+        connectionVersion: connection.version,
+        kind: .fastForward,
+        observationRef: "refs/spedito/observations/latest",
+        localSHA: sha("5"),
+        localTree: sha("6"),
+        remoteSHA: sha("7"),
+        remoteTree: sha("8"),
+        mergeBaseSHA: sha("5"),
+        candidateSHA: sha("7"),
+        candidateTree: sha("8"),
+        createdAt: latestSyncDate,
+        updatedAt: latestSyncDate
+      )
+    )
+    let publication = try await store.createRemotePublication(
+      RemotePublication(
+        productID: product.id,
+        connectionID: connection.id,
+        purpose: .existingProductHistory,
+        accountID: accountID,
+        repositoryID: 71,
+        owner: "owner",
+        name: "snapshot",
+        fullName: "owner/snapshot",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/snapshot.git")!,
+        isPrivate: false,
+        permissions: publicationPermissions,
+        capturedLocalSHA: sha("c"),
+        capturedLocalTree: sha("d"),
+        remoteBaseSHA: sha("e"),
+        remoteBaseTree: sha("f"),
+        targetBranch: "main",
+        publicationBranch: "spedito/snapshot",
+        manifestDigest: String(repeating: "1", count: 64),
+        manifestObjectCount: 1,
+        manifestCommitCount: 1,
+        manifestPathCount: 1,
+        commits: [RemoteCommitSummary(sha: sha("c"), subject: "Snapshot")],
+        paths: ["README.md"],
+        title: "Snapshot",
+        body: "Coherent state"
+      )
+    )
+
+    let snapshot = try await store.fetchRemoteRepositoryPersistenceSnapshot(
+      productID: product.id
+    )
+
+    #expect(snapshot.connection?.id == connection.id)
+    #expect(snapshot.latestSafeSync?.id == latestSync.id)
+    #expect(snapshot.latestSafeSync?.id != olderSync.id)
+    #expect(snapshot.publications.map(\.id) == [publication.id])
+    #expect(snapshot.latestSafeSync?.connectionID == snapshot.connection?.id)
+    #expect(snapshot.publications.allSatisfy { $0.connectionID == snapshot.connection?.id })
+
+    _ = try await store.archiveProduct(id: product.id)
+    let archivedSnapshot = try await store.fetchRemoteRepositoryPersistenceSnapshot(
+      productID: product.id
+    )
+    #expect(archivedSnapshot == snapshot)
+    await store.close()
+  }
+
   @Test("Safe synchronization and publication reject stale transitions")
   func persistenceCAS() async throws {
     let root = temporaryDirectory(named: "cas")
@@ -142,6 +258,7 @@ struct RemoteRepositoryPublishingTests {
       RemotePublication(
         productID: product.id,
         connectionID: connection.id,
+        purpose: .existingProductHistory,
         accountID: accountID,
         repositoryID: 9,
         owner: "owner",
@@ -802,6 +919,22 @@ struct RemoteRepositoryPublishingTests {
     #expect(requests[1].value(forHTTPHeaderField: "If-None-Match") == #""pull-1""#)
     #expect(requests[2].value(forHTTPHeaderField: "If-None-Match") == nil)
   }
+
+  @Test("GitHub comment reviews accept a null update timestamp")
+  func commentReviewNullableUpdateTimestamp() async throws {
+    let api = GitHubAPIClient(transport: CommentReviewGitHubTransport())
+    let feedback = try await api.pullRequestFeedback(
+      owner: "example",
+      name: "product",
+      number: 3,
+      accessToken: "ghu_test"
+    )
+    let review = try #require(feedback.first { $0.id == "review:71" })
+    let inlineComment = try #require(feedback.first { $0.id == "comment:72" })
+    #expect(review.decision == .commented)
+    #expect(review.createdAt == inlineComment.createdAt)
+    #expect(inlineComment.body == "Why is this all inline?")
+  }
   private var publicationPermissions: RemoteRepositoryPermissions {
     RemoteRepositoryPermissions(
       metadataRead: true,
@@ -939,6 +1072,63 @@ private actor ConditionalGitHubTransport: GitHubHTTPTransport {
         statusCode: 200,
         httpVersion: "HTTP/1.1",
         headerFields: ["ETag": #""pull-1""#]
+      )!
+    )
+  }
+}
+
+private actor CommentReviewGitHubTransport: GitHubHTTPTransport {
+  func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    let json: String
+    switch request.url?.path {
+    case "/repos/example/product/pulls/3/reviews":
+      json = #"""
+        [{
+          "id": 71,
+          "user": {
+            "login": "reviewer",
+            "avatar_url": "https://avatars.githubusercontent.com/u/71"
+          },
+          "body": "",
+          "state": "COMMENTED",
+          "html_url": "https://github.com/example/product/pull/3#pullrequestreview-71",
+          "submitted_at": "2026-08-15T09:56:48Z",
+          "updated_at": null
+        }]
+        """#
+    case "/repos/example/product/pulls/3/comments":
+      json = #"""
+        [{
+          "id": 72,
+          "user": {
+            "login": "reviewer",
+            "avatar_url": "https://avatars.githubusercontent.com/u/71"
+          },
+          "body": "Why is this all inline?",
+          "html_url": "https://github.com/example/product/pull/3#discussion_r72",
+          "created_at": "2026-08-15T09:56:48Z",
+          "path": "src/App.css",
+          "commit_id": "1111111111111111111111111111111111111111",
+          "original_commit_id": "1111111111111111111111111111111111111111",
+          "diff_hunk": "@@ -1 +1 @@\n-old\n+new",
+          "start_line": null,
+          "line": 2,
+          "start_side": null,
+          "side": "RIGHT",
+          "original_start_line": null,
+          "original_line": 2
+        }]
+        """#
+    default:
+      throw GitHubAPIError.invalidResponse
+    }
+    return (
+      Data(json.utf8),
+      HTTPURLResponse(
+        url: request.url!,
+        statusCode: 200,
+        httpVersion: "HTTP/1.1",
+        headerFields: [:]
       )!
     )
   }

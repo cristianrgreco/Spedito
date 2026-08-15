@@ -43,6 +43,11 @@ public struct GitRemoteObservation: Equatable, Sendable {
 public struct GitBootstrapRoot: Equatable, Sendable {
   public let sha: String
   public let tree: String
+
+  public init(sha: String, tree: String) {
+    self.sha = sha
+    self.tree = tree
+  }
 }
 
 public struct GitOutboundManifest: Equatable, Sendable {
@@ -77,6 +82,26 @@ public enum GitRemoteOperationError: Error, Equatable, LocalizedError, Sendable 
 
 extension GitWorkspaceManager {
   public func fetchRemoteObservation(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    targetBranch: String,
+    observationID: UUID,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(120)
+  ) async throws -> GitRemoteObservation {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.fetchRemoteObservationWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        targetBranch: targetBranch,
+        observationID: observationID,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func fetchRemoteObservationWithinRepositoryOperation(
     repositoryURL: URL,
     canonicalHTTPSURL: URL,
     targetBranch: String,
@@ -352,6 +377,22 @@ extension GitWorkspaceManager {
     credentialConfiguration: GitCredentialSessionConfiguration,
     timeout: Duration = .seconds(60)
   ) async throws -> [String: String] {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.remoteHeadSHAsWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func remoteHeadSHAsWithinRepositoryOperation(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(60)
+  ) async throws -> [String: String] {
     try validateCanonicalGitHubURL(canonicalHTTPSURL)
     let result = try await runDataAsync(
       credentialConfiguration.gitConfigurationArguments + [
@@ -378,7 +419,87 @@ extension GitWorkspaceManager {
     return heads
   }
 
+  public func remoteHeadSHA(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    fullRef: String,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(60)
+  ) async throws -> String? {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.remoteHeadSHAWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        fullRef: fullRef,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func remoteHeadSHAWithinRepositoryOperation(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    fullRef: String,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration
+  ) async throws -> String? {
+    try validateCanonicalGitHubURL(canonicalHTTPSURL)
+    guard fullRef.hasPrefix("refs/heads/"),
+      try runAllowingFailure(["check-ref-format", fullRef], at: repositoryURL).status == 0
+    else {
+      throw GitRemoteOperationError.unsafeRepository("The GitHub branch name is invalid.")
+    }
+    let result = try await runDataAsync(
+      credentialConfiguration.gitConfigurationArguments + [
+        "-c", "http.followRedirects=false", "ls-remote", "--heads", "--",
+        canonicalHTTPSURL.absoluteString, fullRef,
+      ],
+      at: repositoryURL,
+      timeout: timeout
+    )
+    guard result.status == 0,
+      let output = String(data: result.output, encoding: .utf8)
+    else {
+      throw GitRemoteOperationError.unsafeRepository("GitHub branch information is unavailable.")
+    }
+    let lines = output.split(separator: "\n")
+    guard lines.count <= 1 else {
+      throw GitRemoteOperationError.unsafeRepository(
+        "GitHub returned ambiguous branch information."
+      )
+    }
+    guard let line = lines.first else { return nil }
+    let fields = line.split(separator: "\t", maxSplits: 1).map(String.init)
+    guard fields.count == 2, fields[1] == fullRef else {
+      throw GitRemoteOperationError.unsafeRepository(
+        "GitHub returned malformed branch information."
+      )
+    }
+    return fields[0]
+  }
+
   public func initializeEmptyRemote(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    defaultBranch: String,
+    bootstrapSHA: String,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(120)
+  ) async throws {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.initializeEmptyRemoteWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        defaultBranch: defaultBranch,
+        bootstrapSHA: bootstrapSHA,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func initializeEmptyRemoteWithinRepositoryOperation(
     repositoryURL: URL,
     canonicalHTTPSURL: URL,
     defaultBranch: String,
@@ -467,19 +588,42 @@ extension GitWorkspaceManager {
     credentialConfiguration: GitCredentialSessionConfiguration,
     timeout: Duration = .seconds(120)
   ) async throws {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.createRemoteReviewBranchWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        fullRef: fullRef,
+        localSHA: localSHA,
+        expectedCurrentSHA: expectedCurrentSHA,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func createRemoteReviewBranchWithinRepositoryOperation(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    fullRef: String,
+    localSHA: String,
+    expectedCurrentSHA: String? = nil,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(120)
+  ) async throws {
     guard fullRef.hasPrefix("refs/heads/spedito/"),
       try runAllowingFailure(["check-ref-format", fullRef], at: repositoryURL).status == 0,
       try run(["rev-parse", "\(localSHA)^{commit}"], at: repositoryURL) == localSHA
     else {
       throw GitRemoteOperationError.unsafeRepository("The review branch is invalid.")
     }
-    let before = try await remoteHeadSHAs(
+    let before = try await remoteHeadSHA(
       repositoryURL: repositoryURL,
       canonicalHTTPSURL: canonicalHTTPSURL,
+      fullRef: fullRef,
       credentialConfiguration: credentialConfiguration
     )
-    if before[fullRef] == localSHA { return }
-    guard before[fullRef] == expectedCurrentSHA else {
+    if before == localSHA { return }
+    guard before == expectedCurrentSHA else {
       throw GitRemoteOperationError.remoteRefConflict
     }
     let result = try await runDataAsync(
@@ -492,19 +636,40 @@ extension GitWorkspaceManager {
       at: repositoryURL,
       timeout: timeout
     )
-    let after = try await remoteHeadSHAs(
+    let after = try await remoteHeadSHA(
       repositoryURL: repositoryURL,
       canonicalHTTPSURL: canonicalHTTPSURL,
+      fullRef: fullRef,
       credentialConfiguration: credentialConfiguration
     )
-    guard after[fullRef] == localSHA else {
-      if after[fullRef] != nil { throw GitRemoteOperationError.remoteRefConflict }
+    guard after == localSHA else {
+      if after != nil { throw GitRemoteOperationError.remoteRefConflict }
       guard result.status == 0 else { throw GitRemoteOperationError.remoteMoved }
       throw GitRemoteOperationError.remoteMoved
     }
   }
 
   func deleteRemoteReviewBranch(
+    repositoryURL: URL,
+    canonicalHTTPSURL: URL,
+    fullRef: String,
+    expectedSHA: String,
+    credentialConfiguration: GitCredentialSessionConfiguration,
+    timeout: Duration = .seconds(120)
+  ) async throws {
+    try await withRepositoryOperation(at: repositoryURL) {
+      try await self.deleteRemoteReviewBranchWithinRepositoryOperation(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        fullRef: fullRef,
+        expectedSHA: expectedSHA,
+        credentialConfiguration: credentialConfiguration,
+        timeout: timeout
+      )
+    }
+  }
+
+  private func deleteRemoteReviewBranchWithinRepositoryOperation(
     repositoryURL: URL,
     canonicalHTTPSURL: URL,
     fullRef: String,
@@ -521,12 +686,14 @@ extension GitWorkspaceManager {
     else {
       throw GitRemoteOperationError.unsafeRepository("The review branch is invalid.")
     }
-    let before = try await remoteHeadSHAs(
-      repositoryURL: repositoryURL,
-      canonicalHTTPSURL: canonicalHTTPSURL,
-      credentialConfiguration: credentialConfiguration
-    )
-    guard let currentSHA = before[fullRef] else { return }
+    guard
+      let currentSHA = try await remoteHeadSHA(
+        repositoryURL: repositoryURL,
+        canonicalHTTPSURL: canonicalHTTPSURL,
+        fullRef: fullRef,
+        credentialConfiguration: credentialConfiguration
+      )
+    else { return }
     guard currentSHA == expectedSHA else {
       throw GitRemoteOperationError.remoteRefConflict
     }
@@ -540,12 +707,13 @@ extension GitWorkspaceManager {
       at: repositoryURL,
       timeout: timeout
     )
-    let after = try await remoteHeadSHAs(
+    let remainingSHA = try await remoteHeadSHA(
       repositoryURL: repositoryURL,
       canonicalHTTPSURL: canonicalHTTPSURL,
+      fullRef: fullRef,
       credentialConfiguration: credentialConfiguration
     )
-    guard let remainingSHA = after[fullRef] else { return }
+    guard let remainingSHA else { return }
     guard remainingSHA == expectedSHA else {
       throw GitRemoteOperationError.remoteRefConflict
     }

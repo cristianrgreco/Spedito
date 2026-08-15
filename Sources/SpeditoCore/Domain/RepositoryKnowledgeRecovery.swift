@@ -7,18 +7,20 @@ public enum RepositoryKnowledgeRecoveryAction: Equatable, Sendable {
   case none
 }
 
+public enum RepositoryKnowledgeCompletionOutcome: Equatable, Sendable {
+  case publishedKnowledge
+  case noPublishableKnowledge
+}
+
 public struct RepositoryKnowledgeRecoveryPolicy: Sendable {
   public init() {}
 
-  public func action(
-    for run: RepositoryKnowledgeRun,
-    alreadyCreatedRecoveryAttempt: Bool = false
-  ) -> RepositoryKnowledgeRecoveryAction {
+  public func action(for run: RepositoryKnowledgeRun) -> RepositoryKnowledgeRecoveryAction {
     switch run.status {
     case .pendingAnalysis:
       return .startPendingAnalysis
     case .analyzing, .reviewing, .interrupted:
-      return alreadyCreatedRecoveryAttempt ? .none : .createRecoveryAttempt
+      return .createRecoveryAttempt
     case .publishing:
       return .resumePublication
     case .completed, .failed, .stale:
@@ -40,22 +42,18 @@ public struct RepositoryKnowledgeRecoveryPolicy: Sendable {
     }
   }
 
-  public func shouldRetryUnproductiveCompletedAnalysis(
-    run: RepositoryKnowledgeRun,
+  public func completionOutcome(
+    for run: RepositoryKnowledgeRun,
     drafts: [RepositoryKnowledgeDraft],
     pages: [KnowledgePage]
-  ) -> Bool {
-    run.status == .completed
-      && !drafts.contains { $0.status == .approved }
-      && pages.allSatisfy { $0.sourceRepositoryKnowledgeRunID == nil }
-  }
-
-  public func shouldRetryLegacyInvalidLaunchProposal(
-    run: RepositoryKnowledgeRun
-  ) -> Bool {
-    guard run.status == .failed, let errorMessage = run.errorMessage else { return false }
-    return errorMessage.hasPrefix(
-      "The demo could not be prepared safely:"
-    )
+  ) -> RepositoryKnowledgeCompletionOutcome? {
+    guard run.status == .completed else { return nil }
+    let hasPublishableKnowledge =
+      drafts.contains { $0.status == .approved }
+      || pages.contains { $0.sourceRepositoryKnowledgeRunID == run.id }
+    if hasPublishableKnowledge {
+      return .publishedKnowledge
+    }
+    return .noPublishableKnowledge
   }
 }
