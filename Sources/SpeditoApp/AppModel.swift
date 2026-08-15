@@ -2102,7 +2102,10 @@ final class AppModel: ObservableObject {
     }
     await applyExecutionLifecycle(.productSelectionChanged)
     if let departingProductID = selectedProductID {
-      await settleFeatureRuntimes(productID: departingProductID)
+      await settleFeatureRuntimes(
+        productID: departingProductID,
+        preservingOwnerAgentTurns: true
+      )
     }
     selectedProductID = product.id
     repositoryKnowledgeSnapshot = repositoryKnowledgeCoordinator.snapshot(for: product.id)
@@ -5240,7 +5243,8 @@ final class AppModel: ObservableObject {
       canPlanEpic,
       let product = selectedProduct,
       epic.productID == product.id,
-      epic.status == .open
+      epic.status == .open,
+      let store = store(for: product.id)
     else { return }
 
     let existingMessages =
@@ -5263,7 +5267,14 @@ final class AppModel: ObservableObject {
       guard let self else { return }
       do {
         guard let client = codexClient else { throw CodexClientError.notConnected }
-        let analyst = profiles.first { $0.role == .businessAnalyst }
+        let analyst = try await store.fetchAgentProfiles(productID: product.id)
+          .first { $0.role == .businessAnalyst }
+        let existingItems = try await store.fetchWorkItems(productID: product.id)
+          .filter { $0.state != .cancelled }
+        let planningKnowledge = KnowledgeContextSelector.selectForEpic(
+          pages: try await store.fetchKnowledgePages(productID: product.id),
+          epic: epic
+        )
         let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
         let threadID = try await client.startReadOnlyThread(
           workingDirectory: workingDirectory,
@@ -5283,8 +5294,8 @@ final class AppModel: ObservableObject {
           prompt: CodexEpicClarificationGenerator.initialPrompt(
             product: product,
             epic: epic,
-            existingItems: workItems,
-            verifiedKnowledge: epicPlanningKnowledge(for: epic)
+            existingItems: existingItems,
+            verifiedKnowledge: planningKnowledge
           ),
           effort: analyst?.reasoningEffort ?? "medium",
           outputSchema: CodexEpicClarificationGenerator.outputSchema
@@ -5345,7 +5356,8 @@ final class AppModel: ObservableObject {
       let client = codexClient,
       let product = selectedProduct,
       product.id == epic.productID,
-      let analyst = profiles.first(where: { $0.role == .businessAnalyst })
+      let analyst = profiles.first(where: { $0.role == .businessAnalyst }),
+      let store = store(for: product.id)
     else { return }
 
     updateEpicPlanningConversation(for: epic.id) {
@@ -5365,6 +5377,7 @@ final class AppModel: ObservableObject {
     let messages = epicPlanningConversation?.messages ?? []
     let preferredThreadID =
       requiresReplacementThread ? nil : epicPlanningRuntime.threadID
+    let planningKnowledge = epicPlanningKnowledge(for: epic)
     epicPlanningRuntime.start(productID: product.id) { [weak self] in
       guard let self else { return }
       await ownerNotificationCoordinator.resolve(
@@ -5379,9 +5392,10 @@ final class AppModel: ObservableObject {
           recoveryPrompt: CodexEpicClarificationGenerator.recoveryPrompt(
             product: product,
             epic: epic,
-            existingItems: workItems,
+            existingItems: try await store.fetchWorkItems(productID: product.id)
+              .filter { $0.state != .cancelled },
             messages: messages,
-            verifiedKnowledge: epicPlanningKnowledge(for: epic)
+            verifiedKnowledge: planningKnowledge
           ),
           product: product,
           analyst: analyst
@@ -5576,21 +5590,9 @@ final class AppModel: ObservableObject {
   ) {
     guard
       let client = codexClient,
-      let product = selectedProduct,
-      product.id == epic.productID,
+      let product = products.first(where: { $0.id == epic.productID }),
       let store = store(for: epic.productID)
     else { return }
-
-    let analyst = profiles.first { $0.role == .businessAnalyst }
-    let existingItems = workItems.filter { $0.state != .cancelled }
-    let previouslyRejectedSuggestions =
-      suggestionBatch?.session.epicID == epic.id
-      ? suggestionBatch?.suggestions.filter { $0.status == .rejected } ?? []
-      : []
-    let durableMessages =
-      epicPlanningConversation?.epicID == epic.id
-      ? epicPlanningConversation?.messages ?? []
-      : []
     updateEpicPlanningConversation(for: epic.id) {
       $0.isRunning = false
       $0.isGeneratingPlan = true
@@ -5600,6 +5602,23 @@ final class AppModel: ObservableObject {
       guard let self else { return }
       var session: SuggestionSession?
       do {
+        let analyst = try await store.fetchAgentProfiles(productID: product.id)
+          .first { $0.role == .businessAnalyst }
+        let existingItems = try await store.fetchWorkItems(productID: product.id)
+          .filter { $0.state != .cancelled }
+        let latestBatch = try await store.fetchLatestTicketSuggestionBatch(
+          productID: product.id
+        )
+        let previouslyRejectedSuggestions =
+          latestBatch?.session.epicID == epic.id
+          ? latestBatch?.suggestions.filter { $0.status == .rejected } ?? []
+          : []
+        let durableMessages =
+          try await store.fetchEpicPlanningConversation(epicID: epic.id)?.messages ?? []
+        let planningKnowledge = KnowledgeContextSelector.selectForEpic(
+          pages: try await store.fetchKnowledgePages(productID: product.id),
+          epic: epic
+        )
         let startedSession = try await store.beginTicketSuggestionSession(
           productID: product.id,
           epicID: epic.id
@@ -5619,7 +5638,8 @@ final class AppModel: ObservableObject {
           existingItems: existingItems,
           rejectedSuggestions: previouslyRejectedSuggestions,
           durableMessages: durableMessages,
-          analyst: analyst
+          analyst: analyst,
+          planningKnowledge: planningKnowledge
         )
         try Task.checkCancellation()
         let plan: EpicPlanDraft
@@ -5732,9 +5752,9 @@ final class AppModel: ObservableObject {
     existingItems: [WorkItem],
     rejectedSuggestions: [TicketSuggestion],
     durableMessages: [EpicPlanningConversationMessage],
-    analyst: AgentProfile?
+    analyst: AgentProfile?,
+    planningKnowledge: [KnowledgePage]
   ) async throws -> String {
-    let planningKnowledge = epicPlanningKnowledge(for: epic)
     let developerInstructions = CodexTicketSuggestionGenerator.developerInstructions(
       productInstructions: inheritedAgentInstructions(
         for: product,
@@ -10881,15 +10901,20 @@ final class AppModel: ObservableObject {
     )
   }
 
-  private func settleFeatureRuntimes(productID: UUID) async {
+  private func settleFeatureRuntimes(
+    productID: UUID,
+    preservingOwnerAgentTurns: Bool = false
+  ) async {
     await transientOwnerCommandRuntime.cancel(productID: productID)
     await ticketSuggestionRuntime.cancel(productID: productID)
-    await planningConversationRuntime.cancel(productID: productID) {
-      [weak self] turn in
-      await self?.interruptFeatureTurn(turn)
-    }
-    await epicPlanningRuntime.cancel(productID: productID) { [weak self] turn in
-      await self?.interruptFeatureTurn(turn)
+    if !preservingOwnerAgentTurns {
+      await planningConversationRuntime.cancel(productID: productID) {
+        [weak self] turn in
+        await self?.interruptFeatureTurn(turn)
+      }
+      await epicPlanningRuntime.cancel(productID: productID) { [weak self] turn in
+        await self?.interruptFeatureTurn(turn)
+      }
     }
     await retrospectiveSynthesisRuntime.cancel(productID: productID) {
       [weak self] turn in

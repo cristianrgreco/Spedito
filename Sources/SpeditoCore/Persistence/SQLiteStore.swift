@@ -215,6 +215,8 @@ public actor SQLiteStore {
           migration = ProductDatabaseSchema.migrationV10ToV11
         case 11:
           migration = ProductDatabaseSchema.migrationV11ToV12
+        case 12:
+          migration = ProductDatabaseSchema.migrationV12ToV13
         default:
           throw PersistenceError.corruptData(
             "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."

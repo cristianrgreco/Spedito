@@ -876,7 +876,7 @@ struct SQLiteStoreTests {
     #expect(lead.role.title == "Tech lead")
     #expect(lead.role.capabilityTitle == "Architecture, planning & review")
     #expect(implementer.model == "gpt-5.6-terra")
-    #expect(implementer.reasoningEffort == "low")
+    #expect(implementer.reasoningEffort == "medium")
 
     let item = try await store.createWorkItem(
       productID: product.id,
@@ -4295,6 +4295,50 @@ struct SQLiteStoreTests {
     #expect(stored.title == notification.title)
     #expect(stored.body == notification.body)
     #expect(stored.isUnread)
+    await migratedStore.close()
+  }
+
+  @Test("Version 12 databases remove redundant empty GitHub review entries")
+  func emptyGitHubReviewMigration() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let currentStore = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await currentStore.createProduct(name: "Migrated GitHub reviews")
+    let ticket = try await currentStore.createWorkItem(
+      productID: product.id,
+      title: "Review GitHub feedback"
+    )
+    let reviewURL = try #require(
+      URL(string: "https://github.com/example/product/pull/3#pullrequestreview-73")
+    )
+    let commentURL = try #require(
+      URL(string: "https://github.com/example/product/pull/3#discussion_r72")
+    )
+    _ = try await currentStore.appendExternalCommentIfNeeded(
+      workItemID: ticket.id,
+      authorName: "reviewer",
+      body: "GitHub review: Review comment.",
+      authorAvatarURL: nil,
+      externalURL: reviewURL,
+      externalID: "github:91:3:review:73",
+      createdAt: Date(timeIntervalSince1970: 1_786_787_808)
+    )
+    _ = try await currentStore.appendExternalCommentIfNeeded(
+      workItemID: ticket.id,
+      authorName: "reviewer",
+      body: "Why is this all inline?",
+      authorAvatarURL: nil,
+      externalURL: commentURL,
+      externalID: "github:91:3:comment:72",
+      createdAt: Date(timeIntervalSince1970: 1_786_787_808)
+    )
+    await currentStore.close()
+    try fixture.execute("PRAGMA user_version = 12;")
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let comments = try await migratedStore.fetchComments(workItemID: ticket.id)
+    #expect(comments.map(\.body) == ["Why is this all inline?"])
     await migratedStore.close()
   }
 

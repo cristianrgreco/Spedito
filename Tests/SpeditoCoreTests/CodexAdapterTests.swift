@@ -2933,7 +2933,7 @@ struct CodexAdapterTests {
       (.businessAnalyst, "medium"),
       (.uxDesigner, "medium"),
       (.lead, "high"),
-      (.implementer, "low"),
+      (.implementer, "medium"),
       (.frontendEngineer, "medium"),
       (.backendEngineer, "high"),
       (.reviewer, "high"),

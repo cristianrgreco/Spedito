@@ -1,0 +1,572 @@
+# Owner journey test research and implementation plan
+
+- **Date:** 15 August 2026
+- **Status:** Proposed; research complete, implementation not started
+- **Product authority:** `docs/product-spec.md`
+- **Architecture authority:** `docs/technical-design.md`
+- **Related execution ledger:** `docs/architecture/stabilization-plan.md`
+- **Sequenced work packets:** `docs/architecture/execution-plan.md`
+- **Evidence commit:** `69227e6`; every repository measurement below is taken at that commit and must be re-pinned when it is refreshed.
+
+## 1. Conclusion
+
+A comprehensive journey suite is feasible and valuable, but it should not mean one large XCUITest for every state-machine branch.
+
+The right shape is layered:
+
+1. **Deterministic coordinator journeys** prove owner commands, durable SQLite and Git effects, interruption, recovery, and presentation snapshots.
+2. **Presentation scenarios and policy tests** prove meaningful empty, busy, failed, stale, actionable, and completed states without launching the whole app.
+3. **A small full-application UI contract suite** proves that the application shell wires controls, sheets, product switching, notifications, and destination routing correctly.
+4. **Controlled external smoke checks** cover the few contracts that cannot be represented faithfully by bounded fakes, especially real macOS Notification Center and GitHub authorization.
+
+This extends the stabilization plan. It does not replace its strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
+
+The inventory below defines **124 owner journey contracts to implement**. None of them exists yet. Some contracts should become parameterized tests or several interruption variants, so the eventual test-method count will be higher. Only the 19 contracts marked **Shell = Y** are proved by a launched application process, and the initial UI suite in section 7.4 covers those 19 rows with 14 scenarios.
+
+## 2. Repository evidence
+
+The assessment inspected the current app surfaces, the product specification, the stabilization plan, and the existing tests.
+
+Current scale:
+
+- 42 Swift source files in `Sources/SpeditoApp`, approximately 44,700 lines.
+- 55 Swift test files: 28 app-layer files and 27 Core files.
+- `swift test list` exposed 464 automated tests, including 191 app-layer tests. The same commit declares 463 `@Test` functions and the current working tree already declares 466, so these counts are evidence about one commit rather than a durable figure.
+- No XCUITest target, Xcode project, workspace, or UI test plan exists.
+- No `XCUIApplication` tests exist.
+- No `.accessibilityIdentifier(...)` contracts exist in `Sources/SpeditoApp`.
+- `SpeditoApplication` constructs the normal production `AppModel`; there is no launch-argument fixture composition for a separately launched UI test process.
+- No app-layer test drives `AppModel` through a scripted Codex turn. `codexClient` is a private concrete `CodexAppServerClient` created inside the connect path (`Sources/SpeditoApp/AppModel.swift:816` and `:11679`), the existing test initializers (`:887`, `:911`) inject only a store, registry, sound player, notifier, and remote feature, and every scripted `CodexRPCTransport` fake lives in `Tests/SpeditoCoreTests/CodexAdapterTests.swift`.
+- `Sources/SpeditoApp/ContentView.swift:607` dismisses the owner-notification banner after a fixed eight-second `Task.sleep`, so any test that must observe or click the banner has a wall-clock deadline unless that interval becomes injectable.
+- `Sources/SpeditoCore/Persistence/ProductDatabaseSchema.swift` carries in-place migrations from schema V1 to V13, and only one test exercises the `product-schema-v1` fixture.
+- `Sources/SpeditoApp/AppModel.swift:4577` completes a sprint through `completeSprintIfFinished` when the last ticket is accepted, which changes the board, Retrospectives, Reports, and Start sprint eligibility.
+
+Strong existing foundations include:
+
+| Area | Existing evidence |
+| --- | --- |
+| Owner notifications | `TicketAttentionTests`, `TicketAttentionSoundPolicyTests`, and `SQLiteStoreTests` cover routing, read/resolved state, archived targets, sound policy, and restart durability. |
+| Product-scoped background work | `ProductScopedPersistenceTests` covers product switching while refinement and epic planning turns remain active. |
+| Epic and ticket presentation policy | `EpicPlanningPresentationTests`, `TicketRefinementApplicationTests`, and `TicketConversationHistoryTests` cover substantial state mapping and apply/conflict rules. |
+| Backlog and sprint policy | `PlanningDropPolicyTests`, `SprintStartAvailabilityTests`, `SprintBoardSelectionTests`, `SprintGoalSuggestionPolicyTests`, and `WorkflowPolicyTests` cover deterministic planning rules. |
+| Delivery and recovery | `TicketDeliveryRuntimeCoordinatorTests`, `SprintWorkRecoveryTests`, `ProductExecutionLifecycleTests`, and work-log presentation tests cover many individual transitions and durable recovery paths. |
+| Repository workflows | Repository import, knowledge, remote connection, publication, account, credential, and AppModel suites already use temporary stores, local Git, bounded transports, and explicit operation events. |
+| Knowledge | Knowledge markdown, context selection, proposal validation/materialization, read-state, and table rendering have focused tests. |
+| Demos and app versions | Demo guidance, launch, macOS launcher, lifecycle, and app-resource tests cover the execution boundary. |
+| Retrospectives and reports | Retrospective guidance/selection and sprint report presentation have focused policy coverage. |
+| Codebase and Codex UI policy | Commit-origin, diff-layout, connection-presentation, and installation tests cover deterministic mapping. |
+
+The missing proof is composition across those boundaries. A route test can prove that an epic notification creates an `OwnerNotificationNavigationRequest`; an epic persistence test can prove that questions survive a product switch; neither alone proves that selecting the banner changes Product, opens Backlog, presents the correct Epic, and renders the restored questions.
+
+## 3. Stabilization-plan alignment and status finding
+
+### 3.1 Alignment
+
+The proposal directly implements the stabilization plan's stated intent:
+
+- Section 4.4 names the owner-journey verification gap.
+- Section 8.3 defines coordinator journeys using a temporary product database, temporary Git repository, bounded fake external transport, public commands, explicit state events, interruption, a fresh coordinator, and durable evidence.
+- Section 8.4 prohibits arbitrary sleeps as asynchronous proof.
+- Section 8.5 requires finite presentation scenarios.
+- Section 8.6 retains product-owner inspection for visual and interaction quality.
+- Section 6 explicitly rejects replacing strong component tests with broad but shallow UI tests.
+
+The repository now contains the coordinator, operation-event, temporary-store, temporary-Git, and bounded-transport patterns needed to implement this plan incrementally. The remote repository presentation catalog is a concrete precedent.
+
+### 3.2 Currency and ledger inconsistency
+
+The stabilization document is date-current and its implementation-status prose is accurate about the remaining gap: it says the suite does not yet represent every product-owner journey and that most non-remote feature state still lives on `AppModel` even where long-lived task ownership is bounded.
+
+Most of that program landed, and at considerable scale. Commit `69227e6` reduced `ContentView.swift` from 24,806 lines to 611, added 63 files, split `SQLiteStore` into 20 aggregate extensions and `GitHubRemoteRepositoryService` into five, and cut long-lived task sites in `AppModel` and `ContentView` from 59 and 97 to 1 and 2. The finding below is therefore narrow: one region did not move.
+
+Its checkbox ledger is not fully internally consistent:
+
+- The header and implementation-status section say remaining application-state extraction is open.
+- The Phase 6 and Phase 7 work lists are checked.
+- The definition-of-done section marks the `AppModel` composition-boundary and `ContentView` shell outcomes complete.
+- Section 14.6's correction and acceptance boxes are checked, while the implementation-status prose says broad reload and query amplification has not yet been measured and removed.
+- `AppModel.swift` is 12,484 lines and still owns feature orchestration directly: `runEpicClarificationTurn` (`:5465`), `generateEpicPlan` (`:5587`), `retryEpicPlanning` (`:5423`), `saveSprintPlan` (`:6475`), and `startSprint`/`pauseSprint`/`stopSprint` (`:6593`, `:6621`, `:6670`). `ContentView` still owns cross-screen notification routing (`:345`, `:378`, `:511`) and timed banner presentation (`:607`).
+- Phase 6 is checked, but `TicketDeliveryRuntimeCoordinator` owns task lifecycle only — registries, active turns, wake continuations, busy and snapshot state. The workflow transitions remain in `AppModel`: `recoverOrphanedExecutionRuns` (747 lines), `executeImplementationRun` (406), `resumeTechLeadReview` (372), `completeSprintTicketAcceptance` (356), `applyTechLeadReviewResult` (332), `reviewCompletedImplementation` (302), and `runIntegrationConflictResolution` (197). This is the single region that did not move, and it is why `AppModel.swift` fell only from 13,442 lines to 12,459.
+
+Before treating the stabilization plan as a completed execution ledger, reconcile those checked claims with the more accurate status prose. This journey plan should remain a separate work packet; it should not conceal unfinished extraction by redefining task ownership as end-to-end journey coverage.
+
+The stabilization plan's known-good baseline gate also remains open. New implementation should begin only after the product owner completes the existing inspection and accepts the baseline, unless the product owner explicitly changes that sequence. One deliberate exemption applies: a test-only failing reproduction that changes no production code may be written and committed before the gate, because accepting a known-good baseline that silently contains the known cross-Product Epic defect is worse than recording that defect with an executable proof.
+
+### 3.3 Binding to the stabilization audit
+
+The stabilization plan's section 14 audit is the reason several of these journeys are Priority 0. Each corrected finding must keep a durable journey owner in this inventory rather than resting only on the focused defect test that closed it:
+
+| Audit finding | Journey rows that must keep proving it |
+| --- | --- |
+| 14.1 permission decisions cross the durable boundary in the wrong order | D08, D09, S02 |
+| 14.2 recovery performs multi-record transitions as best-effort fragments | D04, D10, D18, A11 |
+| 14.3 archived products are included in remote recovery | A06, A07, R14 |
+| 14.4 completed repository analysis can retry forever | R08, R09 |
+| 14.5 team settings are neither atomic nor completion-aware | S04 |
+| 14.7 polling substitutes for observable state transitions | D06, D23, A12 |
+| 14.8 remote Git work is broader and less serialized than necessary | R10, R13, D17 |
+| 14.9 one observable object invalidates unrelated presentation | A12, D23 |
+
+Two audit items remain open and are inherited by Gate 0 rather than by any journey row: the body-recomputation measurement for backlog, sprint board, ticket sheet, and repository settings (14.9) and the Phase 0 reconciliation, inspection, and known-good checkpoint (14.11, step 5).
+
+## 4. Test taxonomy
+
+| Code | Proof type | Contract |
+| --- | --- | --- |
+| **J** | Coordinator journey | Drive public feature commands. Use real temporary SQLite and local Git where applicable, bounded fakes at external boundaries, explicit operation events, and fresh-instance recovery. Assert snapshot and durable evidence. |
+| **P** | Presentation scenario/policy | Render or resolve a bounded presentation state. Cover normal, empty, busy, interrupted, failed, retryable, stale, actionable, and completed states. |
+| **M** | Controlled external smoke | Run manually or in a dedicated controlled macOS/GitHub environment. Keep outside the deterministic pull-request suite. |
+
+The inventory carries a separate **Shell** column because proof type and application-shell wiring are different questions. `Shell = Y` means the contract cannot be proved without launching the application, because it crosses control wiring, sheet or window routing, product switching, or destination selection. `Shell = —` means the deterministic proof is sufficient and no XCUITest may be added for it until a real shell-wiring defect demonstrates the need. A `Y` never replaces the row's deterministic proof; it is added on top of it.
+
+Full-app UI contracts launch an isolated debug composition and exercise actual owner controls, asserting stable accessibility identifiers, window and sheet routing, and visible state. They must not use display strings as the only selector.
+
+Priority meanings:
+
+- **P0:** authority, destructive behavior, cross-product routing, acceptance, permissions, exact-candidate safety, or a known defect path.
+- **P1:** primary product workflow and recovery.
+- **P2:** secondary navigation, filtering, display preference, or low-risk convenience behavior.
+
+## 5. Comprehensive owner journey inventory — 124
+
+Two rules apply to every row before it is scheduled.
+
+**Record existing evidence first.** The repository already contains 464 automated tests, and many rows are partly covered by them. Before implementing a row, list the existing tests that already prove part of it in the header comment of the new journey test, and implement only the uncovered composition. A row is not an instruction to rewrite passing component tests, and the effort estimates in section 10 assume this deduplication happens.
+
+**Keep the row ID in the test name.** Each journey test is named for its row (`A02_…`, `D17_…`) so that the inventory, the test suite, and any future defect report share one identifier. Coordinator journeys live beside the feature they exercise in `Tests/SpeditoAppTests` or `Tests/SpeditoCoreTests`; only the launched-process contracts live in the separate UI target.
+
+### 5.1 Application shell and Product lifecycle — 12
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| A01 | P1 | Launch with no Products and reach onboarding; canceling creation leaves the empty state usable. | J | — |
+| A02 | P0 | Create a blank Product; its directory, Git repository, database, starter team, selection, and Backlog destination become durable. | J | Y |
+| A03 | P1 | Open Products, search, select another active Product, and restore that Product's last valid workspace destination. | J | — |
+| A04 | P0 | Switch Products while background work is active; work continues only for its owning Product and the sidebar exposes bounded activity/attention. | J | — |
+| A05 | P0 | Quit and relaunch; the last valid selected Product, destination, and selected sprint return without leaking state from another Product. | J | Y |
+| A06 | P0 | Archive a Product through its destructive confirmation; active work is safely suspended, data remains durable, and navigation selects another valid Product or the empty state. | J | Y |
+| A07 | P1 | Show archived Products and restore one; its backlog, work logs, knowledge, repository provenance, and delivery history remain available. | J | Y |
+| A08 | P2 | Use the Go menu and keyboard shortcuts for Backlog, Sprint board, App versions, Retrospectives, Reports, Product knowledge, Codebase, Chat, and settings. | P | — |
+| A09 | P0 | Open a Product database written by an earlier Spedito version; every schema migration applies in place and backlog, work logs, knowledge, repository provenance, and delivery history remain readable and unchanged in meaning. | J | — |
+| A10 | P0 | Quit while work is active; stop admitting queued work, checkpoint each active run, honor the bounded grace period and its **Quit now** action, release scheduler leases, and preserve threads and workspaces for resume rather than cancellation. | J | — |
+| A11 | P0 | Recover after force quit, crash, or power loss; reconcile stale leases, processes, and worktrees, record the labelled system recovery note from the last durable milestone, and explain the fallback when a ticket workspace is missing. | J | — |
+| A12 | P1 | Present a background failure in its owning feature; a failure raised while another destination is visible neither replaces valid presentation there nor disappears without an owner-visible retry path. | J+P | — |
+
+Two rows describe specification contracts whose implementation must be confirmed before they are scheduled: A10's bounded grace period and **Quit now** action, and S08's definition-of-ready and definition-of-done profile. `applicationShouldTerminate` currently returns `.terminateLater` and awaits `AppModel.shutdown()` with no owner-facing grace affordance, and no definition-of-ready symbol exists in `Sources`. If either contract is unimplemented, the row records a specification gap for the product owner rather than a missing test.
+
+### 5.2 Repository import, GitHub connection, and synchronization — 14
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| R01 | P0 | Import a canonical public repository URL; activate full history and exact provenance, open the Product, then continue repository understanding in the background. | J | — |
+| R02 | P1 | Reject unsupported or credential-bearing repository input, including embedded credentials, query/fragment data, non-default ports, and unsupported hosts, without creating partial Product state. | J | — |
+| R03 | P1 | Authorize GitHub with Device Flow and list accessible public/private repositories without persisting a credential in source URLs or Git configuration. | J+M | — |
+| R04 | P1 | Open GitHub App repository-access settings, return to Spedito, automatically refresh the repository list, and retain a manual refresh for propagation delay. | J+M | — |
+| R05 | P0 | Select an empty GitHub repository; create a blank local Product, prove eligibility, initialize the exact remote default branch, and finish setup. | J | Y |
+| R06 | P0 | Select a repository with history; import the exact accepted default-branch head rather than initializing or rewriting it. | J | — |
+| R07 | P0 | Cancel, interrupt, or relaunch during import; no half-activated Product leaks into normal navigation and the durable operation recovers or fails with a retryable explanation. | J | — |
+| R08 | P0 | Analyze the imported exact revision, independently review proposals, publish only approved knowledge, and treat a completed no-pages result as terminal across relaunch. | J+P | — |
+| R09 | P0 | Retry failed/interrupted/stale repository understanding as one new versioned attempt without overwriting an accepted newer revision. | J+P | — |
+| R10 | P0 | Connect a mature local Product to an eligible empty GitHub repository; publish captured history through the dedicated pull request and reconcile the unchanged merged head. | J | — |
+| R11 | P1 | Connect an imported Product only to its preserved GitHub repository; handle missing installation access without offering an unrelated target. | J | — |
+| R12 | P0 | Detect changed repository identity/default branch, then require the owner to use the observed target or disconnect; never silently retarget. | J | — |
+| R13 | P0 | With no active sprint, prepare incoming fast-forward changes for exact review; accept or reject them atomically and recover safely after interruption. | J | Y |
+| R14 | P0 | While a sprint is active, defer incoming history to ticket integration; disconnecting or signing out affects the intended Product/account set and remains correct after relaunch. | J | — |
+
+### 5.3 Epics, clarification, and ticket suggestions — 15
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| E01 | P0 | Create an Epic from an owner outcome; persist only submitted scope initially and begin Business Analyst clarification without inventing durable metadata. | J | — |
+| E02 | P0 | Close the Epic, switch Products, release a scripted clarification response, see the cross-Product notification, choose Open epic, return to the owning Product, and see the exact pending questions. | J | Y |
+| E03 | P0 | Answer one or several clarification rounds using listed choices and Other; only Submit answers advances governed refinement and every answer remains attributed and durable. | J | — |
+| E04 | P1 | Send ordinary Epic chat while structured questions remain pending; chat stays chronological and never becomes an authoritative clarification answer. | J | — |
+| E05 | P0 | Complete Epic planning in the background, show a plan-ready notification, open the exact Epic, and render the persisted metadata and proposed ticket plan. | J | — |
+| E06 | P0 | Relaunch with pending Epic questions; restore them, and replace an expired Codex thread using the preserved transcript without asking the owner to re-enter answers. | J | — |
+| E07 | P1 | Stop, interrupt, or fail Epic clarification/planning; preserve the transcript and expose one contextual retry/continue action rather than looping silently. | J+P | — |
+| E08 | P1 | Reject an invalid structured plan, attempt the bounded repair once, and retain a reviewable terminal failure if repair is still invalid. | J+P | — |
+| E09 | P1 | Review one suggested ticket: inspect rationale/dependencies, edit or discuss it, then accept or reject it without changing unrelated proposals. | J | — |
+| E10 | P1 | Accept all remaining Epic proposals or dismiss all with explicit scope and confirmation; neither action starts or scopes a sprint. | J | — |
+| E11 | P0 | Accept a suggestion whose proposed prerequisites are unresolved; preview and atomically accept its full transitive prerequisite set with dependency edges. | J | — |
+| E12 | P0 | Reject a prerequisite with dependants; preview and atomically reject or archive the permitted cascade, while delivered work blocks an unsafe cascade. | J | — |
+| E13 | P1 | Finish one suggestion batch, run Suggest missing tickets, and keep multiple outstanding batches queued and independently reviewable. | J+P | — |
+| E14 | P0 | Archive an Epic; archive unfinished backlog tickets and proposals while preserving delivered tickets and historical links. | J | — |
+| E15 | P2 | Reorder Epics by drag or top/bottom actions, and preserve each Product's completed-Epic disclosure preference. | J | — |
+
+### 5.4 Backlog and editable Ticket workflow — 11
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| B01 | P1 | Create a Ticket manually, optionally attach it to an Epic, and start initial refinement only when the saved contract is incomplete. | J | — |
+| B02 | P0 | Close an incomplete Ticket, switch Products, receive Business Analyst questions, open the notification, and return to the exact editable Ticket. | J | Y |
+| B03 | P0 | Answer Ticket refinement questions across rounds and relaunch; answered cards, pending cards, comments, and refinement state remain in the correct chronology. | J | — |
+| B04 | P1 | Review completed refinement, apply one field/dependency or all remaining suggestions, dismiss others, then explicitly save the resulting Ticket source of truth. | J | — |
+| B05 | P0 | Change a Ticket while a refinement/chat proposal is in flight; stale results expose a conflict and never overwrite the newer owner draft or saved version. | J | — |
+| B06 | P1 | Ask a team member to review a Ticket; prose alone changes nothing, while explicitly accepted proposal fields remain unsaved until Save. | J | — |
+| B07 | P1 | Edit title, context, type, priority, assignee, acceptance criteria, custom fields, and blockers; invalid/duplicate fields prevent save without losing the draft. | J | — |
+| B08 | P1 | Open Epic and dependency/dependant links from Ticket details, then return with unsaved Ticket edits intact. | P | — |
+| B09 | P0 | Multi-select and move Tickets between Backlog and Next sprint by row drag or section action; valid dependency branches persist atomically and invalid partial scope explains the missing relationship. | J | — |
+| B10 | P1 | Reorder backlog rank by drag and top/bottom actions; show stable valid/invalid drop positions and never violate dependency order. | J | — |
+| B11 | P1 | Archive a Ticket through confirmation; remove it from active planning, dependency choices, and suggestions while preserving historical work. | J | — |
+
+### 5.5 Sprint planning — 7
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| P01 | P1 | Open Sprint planning with every Next sprint Ticket in scope and no second hidden inclusion/exclusion mechanism. | J | — |
+| P02 | P1 | Walk Ticket by Ticket, edit the draft, choose an assignee, ask one team member, and selectively apply a version-safe proposal. | J | — |
+| P03 | P0 | Save a partial plan to the draft board, or close with Discard changes and restore the last saved draft without leaking picker state into Backlog. | J | — |
+| P04 | P1 | Review dependency order, forecast, remaining usage, and owner acceptance load in the planning summary before saving. | P | — |
+| P05 | P0 | Block Start sprint for unassigned work, missing estimates, readiness failures, invalid dependencies, or another active/paused sprint, with the exact owner-facing reason. | J | Y |
+| P06 | P1 | Save a plan and lazily generate one bounded goal; starting does not wait, stale generation cannot overwrite changed scope, and failure leaves delivery usable. | J+P | — |
+| P07 | P1 | Relaunch a saved draft plan and restore the valid selected planning/board context without resurrecting unsaved changes. | J | — |
+
+### 5.6 Sprint delivery, review, demo, and acceptance — 23
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| D01 | P0 | Start a valid sprint, freeze its initial plan, and admit only dependency-eligible Tickets rather than launching every Ticket blindly. | J | — |
+| D02 | P0 | Run independent Tickets in parallel; keep direct dependants waiting until prerequisites are Done, then admit the next wave exactly once. | J+P | — |
+| D03 | P0 | Switch Products during active delivery; execution continues in isolation and owner attention routes back to the correct Product/Ticket. | J | — |
+| D04 | P0 | Pause a sprint, interrupt active turns, preserve workspaces/logs/candidates/queues, relaunch while paused, and resume rather than restart work. | J | — |
+| D05 | P0 | Stop a sprint through destructive confirmation; keep Done work accepted, supersede unaccepted candidates, return unfinished Tickets to Ready, and preserve audit history. | J | — |
+| D06 | P1 | Open a delivery Ticket and observe trusted status/work-log changes, latest-action focus, relationships, run context, candidates, and evidence without raw reasoning. | J | — |
+| D07 | P1 | Add an informational owner comment or explicitly ask the active/fallback team member; the read-only question receives a reply without changing delivery or a pending permission. | J | — |
+| D08 | P0 | Review a permission request and choose Deny, Allow once, or Always allow; persist before delivery, recover across relaunch, and apply saved access only to equivalent/narrower requests. | J | Y |
+| D09 | P0 | Answer an owner question with a listed choice or Other and choose Submit answers; record the attributed answer and resume the exact paused run. | J | Y |
+| D10 | P0 | Recover a failed/interrupted implementation by adding direction and choosing Retry work; reuse the durable workspace/thread contract without duplicating a completed transition. | J | — |
+| D11 | P0 | Complete implementation, persist an immutable candidate and handoff, integrate against current trunk, and bind independent review to the exact candidate/revision. | J+P | — |
+| D12 | P0 | Resolve a merge conflict in the preserved integrator run; continue automatically for safe resolution, ask for material owner input, and require focused re-review when the result changed. | J | — |
+| D13 | P0 | Ingest GitHub review comments with bounded context; requested changes return the Ticket to In progress and update the same publication branch. | J | — |
+| D14 | P0 | Launch, reopen, stop, or retry the exact reviewed demo; a host preparation failure retries preparation only, while a candidate failure requires a new candidate. | J | Y |
+| D15 | P0 | While Ready for demo, send a question/comment without invalidating the candidate, or choose Request changes to begin an explicit revision loop from the reviewed baseline. | J | Y |
+| D16 | P0 | Review ticket knowledge changes; when owner approval is enabled, accept/reject each before completion, and never publish rejected/unreviewed content as truth. | J | — |
+| D17 | P0 | Approve a repository-changing Ticket; close the detail immediately, show Completing, recheck exact GitHub heads, merge/reconcile/publish serially, and mark Done only after success. | J | Y |
+| D18 | P0 | Fail or interrupt acceptance after acknowledgement; retain the reviewed result, log a recoverable failure, and retry exactly once without optimistic completion or duplicate promotion. | J | — |
+| D19 | P0 | Approve a repository-free research outcome; publish handoff/knowledge without Git, pull request, empty commit, managed demo, or Codebase change. | J | — |
+| D20 | P1 | Approve research follow-up proposals only after Tech Lead review; publish them as reviewable backlog suggestions with Epic/prerequisite provenance, and publish none when active scope already covers them. | J | — |
+| D21 | P1 | Accept the final outstanding Ticket; the sprint completes durably in the same transition, the board and Team sidebar present a completed sprint, Retrospectives and Reports admit it, and a new sprint becomes startable. | J | — |
+| D22 | P1 | Reach an account rate limit or safety back-pressure during delivery; admitted runs wait instead of failing, the constrained-execution reason is owner-visible, and work resumes when the window resets without duplicating a turn. | J+P | — |
+| D23 | P2 | Render sprint board lanes, per-ticket activity (working, waiting, blocked, reviewing, awaiting owner), run telemetry, and compaction and context-health summaries from one coherent durable snapshot. | P | — |
+
+### 5.7 Chat and owner notifications — 11
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| C01 | P1 | Start a Product Chat thread to exactly one selected team member; persist its generated subject, bounded context, owner message, and attributed reply. | J | — |
+| C02 | P0 | Start several independent threads and allow replies to complete out of order; each result, unread state, and notification remains attached to its own thread. | J | — |
+| C03 | P1 | Reply to the same member using the existing session, or select a different member and start a role-specific session with the visible transcript and current Product evidence. | J | — |
+| C04 | P1 | Stop or time out an inactive response; retain a durable authored failure and allow a bounded retry without an unending spinner. | J+P | — |
+| C05 | P1 | Archive, show archived, and restore a completed Chat thread without losing messages or Codex context. | J | — |
+| C06 | P1 | Use Ticket/Epic conversation defaults and recipient selection; route each message to one profile and persist replies in the owning work log/timeline. | J | — |
+| C07 | P0 | Receive a new reply for another Product, choose its notification action, switch Product, open Chat, and focus the exact thread with its unread state cleared. | J | Y |
+| C08 | P1 | While the app is active, present the in-app banner; while inactive, post the macOS notification; play sound only for owner-action attention. | J+P+M | — |
+| C09 | P0 | Suppress a banner for an already visible target, mark an opened target read, resolve completed attention, and keep cross-Product counts deduplicated. | J+P | — |
+| C10 | P0 | Route Ticket, Epic, and conversation notifications; if the target was archived/deleted or the route is malformed, fail closed and resolve stale attention without navigating elsewhere. | J | — |
+| C11 | P1 | Decline or leave undetermined the macOS notification authorization; in-app attention remains the only channel, the sound policy still applies, no attention is lost, and the request is not retried on every launch. | J+P+M | — |
+
+### 5.8 Product knowledge — 6
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| K01 | P1 | Open Product knowledge, select a changed page, clear only that Product/page's unread count, and retain read state across relaunch. | J | — |
+| K02 | P2 | Search pages and navigate tree branches, breadcrumbs, children, and backlinks without losing the selected valid page. | P | — |
+| K03 | P1 | Create a page beneath the current section, edit/cancel/save it, and append durable version history with the canonical result. | J | — |
+| K04 | P0 | Prevent owner edits while repository knowledge publication is running, and recover cleanly from publication failure without two authorities. | J+P | — |
+| K05 | P1 | Ask a question, render a grounded answer or Unknown result, list only cited verified pages, and navigate from a citation to the exact page. | J | Y |
+| K06 | P1 | Open accepted Ticket knowledge from the work log and focus the published canonical page; rejected/historical proposals remain audit history, not current truth. | J | — |
+
+### 5.9 Codebase and App versions — 7
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| V01 | P1 | Open Codebase and load accepted trunk history; refresh after accepted changes without presenting ordinary unpublished local work as a warning. | J | — |
+| V02 | P2 | Switch history among trunk, one Ticket's logical stream, and All activity; inspect the selected branch/commit with semantic delivery labels. | P | — |
+| V03 | P2 | Select changed files, render unified/side-by-side diffs, and persist a valid display preference while falling back safely for narrow content. | P | — |
+| V04 | P1 | Open the originating Ticket from a commit and render delivery history in the correct editable/delivery detail mode. | J | Y |
+| V05 | P1 | List independently verified imported and accepted runnable versions newest first; omit artifacts and command-output results. | J+P | — |
+| V06 | P0 | Open, revisit, switch, stop, and retry exact App versions; opening another version stops the active one and reconstructs the selected revision. | J | Y |
+| V07 | P1 | When import has no approved launch recipe, run Check imported source, handle invalid/failure/retry, require independent approval, and add only the verified version. | J | — |
+
+### 5.10 Retrospectives and Reports — 10
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| I01 | P1 | During an active sprint, open Retrospectives, select the preferred sprint, and show accumulating immutable evidence without premature decisions. | J | — |
+| I02 | P1 | Add and delete the Product owner's action idea while the sprint is active; keep team-member evidence immutable and do not apply the idea early. | J | — |
+| I03 | P0 | Complete the sprint and prepare one durable synthesis; recover interruption, retry failure, or explicitly continue without AI suggestions without rewriting source notes. | J | — |
+| I04 | P1 | Add an owner proposal after sprint completion and choose Ways of working or Backlog ticket as its explicit destination. | J | — |
+| I05 | P1 | Review proposed actions individually or in valid bulk; accept/dismiss decisions remain attributed and no unresolved action is silently skipped. | J | — |
+| I06 | P0 | Accept a Ways of working action and update the inherited verified page exactly once with source provenance. | J | — |
+| I07 | P0 | Accept a Backlog ticket action, create the Ticket, and immediately open its normal Business Analyst refinement flow. | J | Y |
+| I08 | P1 | Block conclusion until synthesis is resolved and every proposal decided; conclude, return to Backlog, and retain read-only accepted/dismissed history. | J | — |
+| I09 | P2 | Open Reports with no evidence, active work, and completed sprints; select the intended sprint range without treating incomplete work as accepted output. | P | — |
+| I10 | P2 | Switch report chart/metric views and verify forecast, duration, outcome, rework, blocker, and improvement presentations from the same durable sprint evidence. | P | — |
+
+### 5.11 Product settings, Team settings, and Codex — 8
+
+| ID | Priority | Owner journey contract | Proof | Shell |
+| --- | --- | --- | --- | --- |
+| S01 | P1 | Rename a Product and Save, or Cancel without mutation; reflect the durable name consistently in navigation and notifications. | J | — |
+| S02 | P0 | Revoke one saved access group or revoke all through confirmation; preserve audit history and require approval for future matching requests. | J | — |
+| S03 | P1 | Manage GitHub connection, Product archive, and other destructive settings through explicit confirmations without changing repositories or history unintentionally. | J | — |
+| S04 | P0 | Edit shared guidance and each member's model, effort, and instructions; save atomically, keep the sheet open with an error on failure, and never expose a partial team. | J | — |
+| S05 | P1 | Add a custom team member from blank or a template, validate model/effort compatibility, then remove only a non-built-in member. | J | — |
+| S06 | P1 | Discover official/included Codex, explicitly add/select/remove a custom installation, block changes during active work, and retry incompatible/unavailable connection. | J | — |
+| S07 | P2 | Display live Codex usage windows, reset timing, limit-reached state, refresh transitions, and accessible summaries without conflating separate windows. | P | — |
+| S08 | P1 | Edit the definition-of-ready and definition-of-done profile; the saved profile governs readiness warnings in Backlog, Sprint planning, and Start sprint from one authority rather than a second hidden policy source. | J | — |
+
+## 6. The proving Epic notification tests
+
+The reported defect deserves three deterministic tests and one full-app UI contract, not one oversized test.
+
+### 6.1 Coordinator journey: clarification needs input across Products
+
+1. Create Products A and B in isolated temporary workspaces.
+2. Create an Epic in Product A and start clarification with a scripted Codex transport held behind an explicit operation gate.
+3. Close the Epic and select Product B.
+4. Release a structured clarification reply containing known questions and choices.
+5. Assert Product A's SQLite store contains the Epic conversation and active `needsInput` notification; Product B contains neither.
+6. Invoke the notification's public Open action.
+7. Assert Product A is selected and the navigation request targets the exact Epic.
+8. Construct a fresh model/store instance and assert the questions and unread/resolved state recover identically.
+
+### 6.2 Coordinator journey: plan ready across Products
+
+Repeat the setup with a ready-to-plan reply, release the plan result after switching to Product B, and assert that the exact Epic metadata, suggestion batch, `refinementComplete` notification, and navigation target are durable. Verify that opening does not accept any proposed Ticket.
+
+### 6.3 Coordinator journey: interruption and expired-thread recovery
+
+Interrupt after questions or answers are persisted, close the first instance, construct a fresh instance over the same Product workspace, and continue through a replacement read-only thread. Assert that no answer is duplicated and no previously resolved question is asked again.
+
+### 6.4 Full-app UI contract
+
+Launch the isolated debug app with the scripted scenario, use stable identifiers to create/open the Epic and switch Products, release the response from the test controller, choose **Open epic**, and assert:
+
+- Product A's row is selected;
+- Backlog is the active destination;
+- the Epic detail surface exists;
+- the expected Business Analyst message exists;
+- every expected question card and choice exists; and
+- selecting/typing an answer enables **Submit answers** without treating ordinary Chat as the answer.
+
+This is the smallest test that proves the current cross-layer wiring in `AppModel`, `OwnerNotificationCoordinator`, `ContentView`, `BacklogView`, and `EpicDetailView`.
+
+The banner in `ContentView.swift:607` dismisses itself after a fixed eight-second `Task.sleep`, so this test currently has a hidden wall-clock deadline between releasing the scripted response and choosing **Open epic**. Make that interval a presentation input supplied by the composition, and disable automatic dismissal in the test configuration, before writing the contract. A test that merely runs faster than the timer is the timing dependency section 8.4 prohibits, only hidden in the application instead of the test.
+
+## 7. Full-app UI runner design
+
+### 7.1 Runner
+
+Add a small macOS XCUITest project/scheme around the existing package sources. Keep the Swift package and `scripts/build_app.sh` as the normal developer/release build. The UI runner is a test-only host, not a second product architecture.
+
+A UI target is needed because `swift test` alone has no target-application configuration for `XCUIApplication`. The runner must be maintained as a separate, serialized test job.
+
+Prefer a project that contains **only a UI test bundle**, with no second application target. `scripts/build_app.sh debug` already assembles `.build/app/debug/Spedito.app` from the package binary, `Distribution/Info.plist`, and the packaged resources, and it accepts `SPEDITO_BUNDLE_IDENTIFIER`, `SPEDITO_GITHUB_CLIENT_ID`, and `SPEDITO_GITHUB_APP_SLUG`. The test bundle launches that exact artifact through `XCUIApplication(url:)`. This keeps one build authority; duplicating the app as an Xcode target would fork the Info.plist, resource copying, signing, and GitHub configuration and let the tested binary drift from the released one.
+
+Build the UI-test bundle with a distinct bundle identifier, for example `io.spedito.app.uitest`. That guarantees the launched process can never read, write, or destroy the product owner's real defaults domain or an installed release build's state.
+
+Prove the runner before committing to it. macOS XCUITest needs a real GUI login session, a signed bundle, and automation permission for the test runner, and CI currently runs `swift test` only. Spike one trivial launch-and-assert test end to end in the target CI environment as the first task of work packet 2. If it cannot be made reliable there, the fallback is explicit and acceptable: keep the launched-process contracts as a product-owner-run local suite, mark the 19 `Shell = Y` rows as owner-verified, and do not weaken their deterministic coordinator proofs to compensate.
+
+### 7.2 Debug-only composition
+
+Add an explicit debug-only launch configuration, selected by launch arguments/environment:
+
+- isolated Product workspaces root;
+- isolated UserDefaults suite;
+- scenario identifier;
+- scripted Codex transport endpoint;
+- scripted GitHub transport endpoint;
+- deterministic notification/sound adapters;
+- disabled or injected owner-notification banner dismissal interval; and
+- a control endpoint for releasing bounded asynchronous responses.
+
+Two of those are cheaper than they look, and one is more expensive.
+
+- **Workspaces root:** `AppModel.migratedApplicationSupportURL(in:)` already accepts a root; only the private `applicationSupportURL()` hardcodes `FileManager.default.urls(...)`. One debug-only environment override there covers every product workspace, import staging directory, and legacy database path.
+- **Defaults:** a distinct UI-test bundle identifier gives the launched process its own `UserDefaults.standard` domain, so the roughly twelve hardcoded `.standard` call sites in `AppModel` and `ContentView` do not need to be threaded first.
+- **Codex:** this is the real work. `AppModel.codexClient` is a private concrete `CodexAppServerClient` built inside the connect path at `AppModel.swift:11679`, and no application-layer test can substitute it today. `CodexAppServerClient(transport:)` is the seam, so the composition needs an injectable transport factory on `AppModel`. That seam is a precondition for the launched-process suite *and* for every coordinator journey in section 5, so it belongs to work packet 1 rather than here.
+
+Use the same production coordinators, stores, Git services, presentation models, and views. Fake only external boundaries. Never seed a notification as a substitute for testing the operation that is supposed to publish it when the contract under test is completion-to-notification.
+
+The UI test process can host a localhost or Unix-domain-socket fixture controller and pass its endpoint at launch. The app blocks scripted external responses on explicit gates; the test releases a named gate and waits for an accessibility predicate. This avoids arbitrary sleep and cross-process polling.
+
+Compile fixture composition only for debug/testing. It must not appear as fake owner functionality in release builds.
+
+### 7.3 Accessibility contracts
+
+Identifiers should describe stable roles and domain identity, not layout or localized display text. Add them only as journeys require them.
+
+Initial contract for the proving test:
+
+```text
+nav.products
+product.row.<product-id>
+nav.backlog
+epic.row.<epic-id>
+epic.detail.<epic-id>
+epic.refine
+owner-notification.banner
+owner-notification.open
+owner-notification.dismiss
+epic.question.<question-index>
+epic.question.<question-index>.choice.<choice-index>
+epic.question.<question-index>.other
+epic.submit-answers
+```
+
+Prefer durable UUID-backed identifiers for rows and details. Use stable semantic identifiers for singleton controls. Labels remain important for accessibility, but UI tests should not depend only on owner-facing copy.
+
+### 7.4 Initial full-app smoke suite
+
+Keep the first UI suite to high-value shell wiring. These 14 scenarios cover exactly the 19 rows marked `Shell = Y`, and no other row may add a launched-process test without a demonstrated shell-wiring defect:
+
+1. blank Product creation and selection — A02;
+2. Product switch and relaunch restoration — A05;
+3. Epic clarification notification and return navigation — E02;
+4. Ticket refinement notification and return navigation — B02;
+5. Backlog-to-planning-to-start gating — P05;
+6. permission decision and owner-question resume — D08, D09;
+7. demo, comment, request changes, and approval controls — D14, D15, D17;
+8. Product Chat background reply notification — C07;
+9. knowledge answer citation navigation — K05;
+10. GitHub setup and incoming review using the scripted transport — R05, R13;
+11. retrospective action-to-backlog refinement — I07;
+12. App version open/switch/stop — V06;
+13. Product archive and restore — A06, A07;
+14. Codebase commit-to-Ticket navigation — V04.
+
+Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
+
+### 7.5 External smoke boundary
+
+Do not put real GitHub authorization, real Notification Center timing, or general desktop visual assertions in the deterministic suite.
+
+Maintain controlled smoke scripts for:
+
+- real GitHub Device Flow and installation access;
+- one real macOS Notification Center delivery/open route;
+- app bundle launch/relaunch; and
+- product-owner inspection in representative light/dark and laptop-sized layouts.
+
+Repository rules prohibit agents from driving or inspecting the product owner's Mac. These checks must run in controlled CI infrastructure or be performed by the product owner using an explicit inspection script.
+
+## 8. Implementation sequence
+
+These are the journey program's own packets. The repository-wide execution order, including the ledger reconciliation, CI ratchets, and delivery extraction that surround them, is in `docs/architecture/execution-plan.md`, where work packet 1 here is packet 4 and 5, work packet 2 is packet 7 and 8, and work packet 3 is packet 9.
+
+### Gate 0 — Reconcile and accept the stabilization baseline
+
+1. Complete the existing Phase 0 owner inspection.
+2. Reconcile the stabilization ledger's extraction/definition-of-done inconsistency, including the section 14.6 boxes that are checked while the status prose still calls query amplification unmeasured.
+3. Complete the two audit items that no journey row inherits: the body-recomputation measurement for backlog, sprint board, ticket sheet, and repository settings (14.9) and the Phase 0 reconciliation and checkpoint (14.11, step 5).
+4. Establish the owner-approved known-good commit without rewriting history, and record the known cross-Product Epic defect as an accepted known issue of that baseline rather than allowing "known-good" to imply its absence.
+
+No new harness or feature extraction should bypass this gate without explicit product-owner direction. One exemption applies, as stated in section 3.2: a failing reproduction test that changes no production code may be written before the gate.
+
+### Work packet 1 — Exact Epic coordinator journeys
+
+1. Add the Codex transport seam. Reuse the existing temporary Product registry and store fixtures, but note that the scripted `CodexRPCTransport` fakes exist only in `Tests/SpeditoCoreTests/CodexAdapterTests.swift` and that `AppModel.codexClient` is private and concrete (`AppModel.swift:816`, constructed at `:11679`). Give `AppModel` an injectable transport factory so an application-layer test can drive a scripted Codex turn, and extend the existing test initializers to accept it. Nothing else in this plan can start until this exists.
+2. Add explicit operation gates/events only where the Epic planning public surface lacks them.
+3. Implement the three coordinator journeys in section 6.
+4. Assert both presentation state and SQLite records.
+5. Include fresh-instance recovery and stale-result protection.
+
+Acceptance: the known cross-Product Epic issue is reproducible before a fix and protected after a fix without launching a UI runner.
+
+The Codex seam is shared infrastructure for all 124 rows, not Epic-specific work. Budget it separately from the three journeys themselves.
+
+### Work packet 2 — Full-app UI runner and proving contract
+
+1. Spike one trivial launch-and-assert test against the `scripts/build_app.sh debug` bundle in the target CI environment, and stop here if it cannot be made reliable.
+2. Add the minimal Xcode UI-test bundle and serialized scheme, with no second application target.
+3. Add debug-only dependency composition and cross-process fixture control, including the injectable banner dismissal interval.
+4. Add only the accessibility identifiers needed by the Epic test.
+5. Implement the exact UI contract in section 6.4.
+6. Run UI tests in an isolated temporary root under a distinct bundle identifier and leave normal app data untouched.
+
+Acceptance: one launched-process test proves operation completion, banner presentation, Product switching, Epic navigation, and restored question controls without sleeps.
+
+### Work packet 3 — P0 authority and recovery matrix
+
+Implement P0 journeys feature by feature, in this order:
+
+1. durable schema migration on upgrade (A09), because every other durable proof assumes an owner's existing database survives the next release;
+2. notifications and cross-Product routing;
+3. permissions and owner questions;
+4. pause, stop, graceful quit, crash recovery, and relaunch (D04, D05, A10, A11);
+5. immutable candidate, integration, review, and demo;
+6. repository-changing and repository-free acceptance;
+7. Product archive/restore;
+8. repository import/connection/synchronization;
+9. version-safe Epic/Ticket refinement and suggestion cascades;
+10. atomic Team settings; and
+11. retrospective actions that mutate Ways of working or Backlog.
+
+For each feature, write the state table first and cover every durable intermediate state with interruption and fresh-instance recovery. Extend the UI smoke suite only when the contract crosses application-shell wiring.
+
+### Work packet 4 — P1 primary owner journeys
+
+Add the normal workflows for Backlog editing, planning, Chat, Knowledge, Codebase navigation, App versions, and Retrospectives. Reuse presentation-policy tests for branches that do not need full coordinator state.
+
+### Work packet 5 — P2 convenience and presentation journeys
+
+Cover shortcuts, filters, display preferences, report variants, counts, and secondary navigation with policy/presentation tests. Add no full-process test unless a real shell-wiring defect demonstrates the need.
+
+### Work packet 6 — CI and maintenance ratchet
+
+1. Keep `swift test -Xswiftc -warnings-as-errors` as the fast required suite, and hold it to a stated wall-clock budget. CI currently allows 30 minutes for the whole job; journeys that open real SQLite stores and real temporary Git repositories are the expensive tests, so each work packet reports the suite's runtime before and after and states which suites must be `.serialized` and why.
+2. Add a separate serialized `xcodebuild test` job for the small UI contract suite.
+3. Run bounded fake external journeys on pull requests.
+4. Run real external smoke checks manually or on a controlled schedule.
+5. Require every future long-running or multi-screen feature to add/update its journey row, state table, coordinator proof, and UI-shell proof only when needed.
+6. Quarantine no flaky test silently: fix its synchronization contract or remove the invalid assertion.
+
+## 9. Cross-cutting acceptance rules
+
+Every coordinator journey must:
+
+- drive a public owner command;
+- observe an explicit operation event or continuation, never an arbitrary sleep;
+- assert a bounded presentation snapshot;
+- inspect the underlying durable SQLite/Git result;
+- prove Product isolation;
+- inject interruption at each new durable phase;
+- close the first instance and recover with a fresh one where state is expected to survive;
+- prove stale callbacks cannot overwrite newer state; and
+- fail if the final durable transition is omitted.
+
+Interruption coverage is tiered by priority so that the rule stays affordable: every P0 row injects interruption at each durable phase, every P1 row injects interruption at its single riskiest durable phase, and P2 rows need none unless they own durable state.
+
+Every full-app UI test must:
+
+- use an isolated root and defaults suite;
+- launch a debug/test composition, not production credentials or owner data;
+- use stable accessibility identifiers for actions and destinations;
+- wait on accessibility predicates rather than sleep;
+- assert shell wiring, not re-test every Core invariant;
+- capture no product-owner desktop state; and
+- leave no app process, temporary repository, database, or fixture server behind.
+
+## 10. Effort and delivery risk
+
+[INFERENCE] For one engineer already familiar with the repository:
+
+| Scope | Likely effort |
+| --- | --- |
+| Codex transport seam on `AppModel` and its test initializers | 2–4 working days |
+| Three Epic coordinator journeys, after the seam exists | 3–5 working days |
+| UI runner CI spike | 1–2 working days, and it decides whether the next row happens at all |
+| UI runner, isolated debug composition, fixture controller, and first UI contract | 7–12 working days |
+| P0 journey matrix and initial 14-scenario UI smoke suite | 6–10 weeks total, including the runner |
+| All 124 journey contracts with recovery variants | Approximately 4–7 engineer-months |
+
+The final row assumes the deduplication rule in section 5: rows that are already partly proved by the existing 464 tests are completed rather than rewritten. Without that discipline the same range is optimistic by a wide margin.
+
+The main cost is not writing assertions. It is establishing trustworthy seams for separately launched UI processes, deterministic long-running operations, exact durable-state inspection, and clean recovery. The existing coordinator and fake-transport work removes substantial risk, but external GitHub, managed demos, drag/drop, macOS notifications, and relaunch paths will remain the most expensive.
+
+## 11. Decision
+
+Proceed after the known-good baseline is accepted.
+
+Start with the Codex transport seam, then the exact cross-Product Epic notification journey, because that journey is a real defect path and crosses every layer the suite must prove. Use it to validate the harness. Then expand by P0 risk, not by source-file order and not by trying to convert all 464 existing tests into UI tests.

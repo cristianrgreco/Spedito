@@ -1358,7 +1358,19 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
             "updated_at": "2026-08-05T12:00:00Z",
             "html_url": "https://github.com/example/service/pull/1#pullrequestreview-71",
             "submitted_at": "2026-08-05T12:00:00Z",
-          ]
+          ],
+          [
+            "id": 73,
+            "user": [
+              "login": "reviewer",
+              "avatar_url": "https://avatars.githubusercontent.com/u/71",
+            ],
+            "body": "",
+            "state": "COMMENTED",
+            "updated_at": NSNull(),
+            "html_url": "https://github.com/example/service/pull/1#pullrequestreview-73",
+            "submitted_at": "2026-08-05T12:01:00Z",
+          ],
         ]
         : []
       return response(request, json: reviews)

@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 12
+  static let version: Int32 = 13
 
   static let sql = """
     CREATE TABLE products (
@@ -808,6 +808,7 @@ enum ProductDatabaseSchema {
     \(migrationV9ToV10)
     \(migrationV10ToV11)
     \(migrationV11ToV12)
+    \(migrationV12ToV13)
     """
 
   static let migrationV1ToV2 = """
@@ -1451,6 +1452,15 @@ enum ProductDatabaseSchema {
       ON owner_notifications(product_id, target_kind, target_id, created_at DESC);
 
     PRAGMA user_version = 12;
+    """
+
+  static let migrationV12ToV13 = """
+    DELETE FROM ticket_comments
+    WHERE author_kind = 'external'
+      AND body = 'GitHub review: Review comment.'
+      AND external_id GLOB 'github:*:review:*';
+
+    PRAGMA user_version = 13;
     """
 
   static let legacyCopyTableOrder = [

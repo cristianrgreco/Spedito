@@ -919,6 +919,22 @@ struct RemoteRepositoryPublishingTests {
     #expect(requests[1].value(forHTTPHeaderField: "If-None-Match") == #""pull-1""#)
     #expect(requests[2].value(forHTTPHeaderField: "If-None-Match") == nil)
   }
+
+  @Test("GitHub comment reviews accept a null update timestamp")
+  func commentReviewNullableUpdateTimestamp() async throws {
+    let api = GitHubAPIClient(transport: CommentReviewGitHubTransport())
+    let feedback = try await api.pullRequestFeedback(
+      owner: "example",
+      name: "product",
+      number: 3,
+      accessToken: "ghu_test"
+    )
+    let review = try #require(feedback.first { $0.id == "review:71" })
+    let inlineComment = try #require(feedback.first { $0.id == "comment:72" })
+    #expect(review.decision == .commented)
+    #expect(review.createdAt == inlineComment.createdAt)
+    #expect(inlineComment.body == "Why is this all inline?")
+  }
   private var publicationPermissions: RemoteRepositoryPermissions {
     RemoteRepositoryPermissions(
       metadataRead: true,
@@ -1056,6 +1072,63 @@ private actor ConditionalGitHubTransport: GitHubHTTPTransport {
         statusCode: 200,
         httpVersion: "HTTP/1.1",
         headerFields: ["ETag": #""pull-1""#]
+      )!
+    )
+  }
+}
+
+private actor CommentReviewGitHubTransport: GitHubHTTPTransport {
+  func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    let json: String
+    switch request.url?.path {
+    case "/repos/example/product/pulls/3/reviews":
+      json = #"""
+        [{
+          "id": 71,
+          "user": {
+            "login": "reviewer",
+            "avatar_url": "https://avatars.githubusercontent.com/u/71"
+          },
+          "body": "",
+          "state": "COMMENTED",
+          "html_url": "https://github.com/example/product/pull/3#pullrequestreview-71",
+          "submitted_at": "2026-08-15T09:56:48Z",
+          "updated_at": null
+        }]
+        """#
+    case "/repos/example/product/pulls/3/comments":
+      json = #"""
+        [{
+          "id": 72,
+          "user": {
+            "login": "reviewer",
+            "avatar_url": "https://avatars.githubusercontent.com/u/71"
+          },
+          "body": "Why is this all inline?",
+          "html_url": "https://github.com/example/product/pull/3#discussion_r72",
+          "created_at": "2026-08-15T09:56:48Z",
+          "path": "src/App.css",
+          "commit_id": "1111111111111111111111111111111111111111",
+          "original_commit_id": "1111111111111111111111111111111111111111",
+          "diff_hunk": "@@ -1 +1 @@\n-old\n+new",
+          "start_line": null,
+          "line": 2,
+          "start_side": null,
+          "side": "RIGHT",
+          "original_start_line": null,
+          "original_line": 2
+        }]
+        """#
+    default:
+      throw GitHubAPIError.invalidResponse
+    }
+    return (
+      Data(json.utf8),
+      HTTPURLResponse(
+        url: request.url!,
+        statusCode: 200,
+        httpVersion: "HTTP/1.1",
+        headerFields: [:]
       )!
     )
   }

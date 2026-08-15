@@ -1542,14 +1542,7 @@ private struct CodebaseDiffViewer: View {
     return ScrollView(.vertical) {
       LazyVStack(alignment: .leading, spacing: 0) {
         ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-          Text(line.isEmpty ? " " : line)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(diffForeground(line))
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 1)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(diffBackground(line))
+          UnifiedDiffLineRow(line: line)
         }
         truncationNotice
       }
@@ -1574,14 +1567,15 @@ private struct CodebaseDiffViewer: View {
       LazyVStack(alignment: .leading, spacing: 0) {
         ForEach(rows) { row in
           if let metadata = row.metadata {
+            let presentation = UnifiedDiffLinePresentation(line: metadata)
             Text(metadata.isEmpty ? " " : metadata)
               .font(.system(size: 11, design: .monospaced))
-              .foregroundStyle(diffForeground(metadata))
+              .foregroundStyle(presentation.foreground)
               .fixedSize(horizontal: false, vertical: true)
               .padding(.horizontal, 10)
               .padding(.vertical, 2)
               .frame(width: minimumWidth, alignment: .leading)
-              .background(diffBackground(metadata))
+              .background(presentation.background)
           } else {
             HStack(spacing: 0) {
               splitCell(
@@ -1641,20 +1635,73 @@ private struct CodebaseDiffViewer: View {
     }
   }
 
-  private func diffForeground(_ line: String) -> Color {
-    if line.hasPrefix("@@") { return .purple }
-    if line.hasPrefix("diff --git") || line.hasPrefix("index ") { return .secondary }
-    if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
-    if line.hasPrefix("+") { return .green }
-    if line.hasPrefix("-") { return .red }
-    return .primary
+}
+
+enum UnifiedDiffLinePresentation: Equatable {
+  case context
+  case metadata
+  case hunk
+  case added
+  case removed
+
+  init(line: String) {
+    if line.hasPrefix("@@") {
+      self = .hunk
+    } else if line.hasPrefix("diff --git")
+      || line.hasPrefix("index ")
+      || line.hasPrefix("+++")
+      || line.hasPrefix("---")
+    {
+      self = .metadata
+    } else if line.hasPrefix("+") {
+      self = .added
+    } else if line.hasPrefix("-") {
+      self = .removed
+    } else {
+      self = .context
+    }
   }
 
-  private func diffBackground(_ line: String) -> Color {
-    if line.hasPrefix("+"), !line.hasPrefix("+++") { return .green.opacity(0.08) }
-    if line.hasPrefix("-"), !line.hasPrefix("---") { return .red.opacity(0.08) }
-    if line.hasPrefix("@@") { return .purple.opacity(0.07) }
-    return .clear
+  var foreground: Color {
+    switch self {
+    case .context: .primary
+    case .metadata: .secondary
+    case .hunk: .purple
+    case .added: .green
+    case .removed: .red
+    }
+  }
+
+  var background: Color {
+    switch self {
+    case .context, .metadata: .clear
+    case .hunk: .purple.opacity(0.07)
+    case .added: .green.opacity(0.08)
+    case .removed: .red.opacity(0.08)
+    }
+  }
+}
+
+struct UnifiedDiffLineRow: View {
+  let line: String
+  var fillsAvailableWidth = true
+
+  private var presentation: UnifiedDiffLinePresentation {
+    UnifiedDiffLinePresentation(line: line)
+  }
+
+  var body: some View {
+    Text(line.isEmpty ? " " : line)
+      .font(.system(size: 11, design: .monospaced))
+      .foregroundStyle(presentation.foreground)
+      .fixedSize(horizontal: !fillsAvailableWidth, vertical: true)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 1)
+      .frame(
+        maxWidth: fillsAvailableWidth ? .infinity : nil,
+        alignment: .leading
+      )
+      .background(presentation.background)
   }
 }
 

@@ -2180,20 +2180,6 @@ enum SprintTicketWorkLogExternalLink {
     return pullRequestURL
   }
 
-  static func displayedBody(
-    comment: TicketComment,
-    externalURL: URL?
-  ) -> String {
-    guard comment.authorKind == .system,
-      comment.authorName == "Spedito",
-      comment.body.hasPrefix("Created draft pull request #"),
-      let externalURL,
-      !comment.body.contains(externalURL.absoluteString)
-    else {
-      return comment.body
-    }
-    return "\(comment.body)\n\n[View on GitHub](\(externalURL.absoluteString))"
-  }
 }
 
 enum SprintTicketWorkLogAttention {
@@ -2738,18 +2724,6 @@ struct SprintTicketDetailView: View {
     }
   }
 
-  private func workLogPanel<Content: View>(
-    tint: Color,
-    @ViewBuilder content: () -> Content
-  ) -> some View {
-    content()
-      .padding(14)
-      .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
-      .overlay {
-        RoundedRectangle(cornerRadius: 11)
-          .stroke(tint.opacity(0.3), lineWidth: 1)
-      }
-  }
 
   private func contextSection(
     _ context: SprintTicketRunContextLogItem,
@@ -2762,15 +2736,14 @@ struct SprintTicketDetailView: View {
       createdAt: context.createdAt,
       showsBottomSeparator: showsBottomSeparator
     ) {
-      workLogPanel(tint: .indigo) {
-        SprintTicketSectionCard(title: "Knowledge used") {
-          VStack(alignment: .leading, spacing: 10) {
-            Label(
-              "\(context.pages.count) knowledge page\(context.pages.count == 1 ? "" : "s")",
-              systemImage: "books.vertical"
-            )
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
+      WorkLogArtifactCard(
+        title: "Knowledge used",
+        subtitle:
+          "\(context.pages.count) knowledge page\(context.pages.count == 1 ? "" : "s")",
+        systemImage: "books.vertical.fill",
+        tint: .indigo
+      ) {
+        VStack(alignment: .leading, spacing: 10) {
 
             if !context.mandatoryPages.isEmpty {
               VStack(alignment: .leading, spacing: 6) {
@@ -2801,7 +2774,6 @@ struct SprintTicketDetailView: View {
             }
           }
         }
-      }
     }
   }
 
@@ -2864,10 +2836,14 @@ struct SprintTicketDetailView: View {
       createdAt: candidate.createdAt,
       showsBottomSeparator: showsBottomSeparator
     ) {
-      workLogPanel(tint: .purple) {
-        SprintTicketSectionCard(
-          title: candidate.deliveryKind == .localOutcome ? "Delivery outcome" : "Delivery revision"
-        ) {
+      WorkLogArtifactCard(
+        title: candidate.deliveryKind == .localOutcome ? "Delivery outcome" : "Delivery revision",
+        systemImage:
+          candidate.deliveryKind == .localOutcome
+          ? "doc.text.magnifyingglass"
+          : "shippingbox.fill",
+        tint: .purple
+      ) {
           VStack(alignment: .leading, spacing: 10) {
             LazyVGrid(
               columns: Array(
@@ -2960,7 +2936,6 @@ struct SprintTicketDetailView: View {
           }
           .textSelection(.enabled)
         }
-      }
     }
   }
 
@@ -3006,21 +2981,12 @@ struct SprintTicketDetailView: View {
       showsBottomSeparator: showsBottomSeparator
     ) {
       if request.status == .existingAccess {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .top, spacing: 11) {
-            Image(systemName: "lock.open.fill")
-              .font(.title3)
-              .foregroundStyle(.green)
-            VStack(alignment: .leading, spacing: 3) {
-              Text(SprintPermissionRequestPresentation.existingAccessTitle)
-                .font(.headline)
-              Text(SprintPermissionRequestPresentation.existingAccessSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-          }
-
+        WorkLogArtifactCard(
+          title: SprintPermissionRequestPresentation.existingAccessTitle,
+          subtitle: SprintPermissionRequestPresentation.existingAccessSummary,
+          systemImage: "lock.open.fill",
+          tint: .green
+        ) {
           WorkLogDisclosure(
             collapsedTitle: "Requested access",
             tint: .green,
@@ -3033,66 +2999,40 @@ struct SprintTicketDetailView: View {
           }
           .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(15)
-        .background(Color.green.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
-        .overlay {
-          RoundedRectangle(cornerRadius: 13)
-            .stroke(Color.green.opacity(0.3), lineWidth: 1)
-        }
       } else if request.status == .policyDenied {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .top, spacing: 11) {
-            Image(systemName: "lock.shield.fill")
-              .font(.title3)
-              .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 3) {
-              Text(SprintPermissionRequestPresentation.protectedStorageTitle)
-                .font(.headline)
-              Text(SprintPermissionRequestPresentation.protectedStorageSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        WorkLogArtifactCard(
+          title: SprintPermissionRequestPresentation.protectedStorageTitle,
+          subtitle: SprintPermissionRequestPresentation.protectedStorageSummary,
+          systemImage: "lock.shield.fill",
+          tint: .orange
+        ) {
+          VStack(alignment: .leading, spacing: 10) {
+            if let reason = request.reason {
+              TicketMarkdownDocument(source: reason, baseFont: .callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-          }
 
-          if let reason = request.reason {
-            TicketMarkdownDocument(source: reason, baseFont: .callout)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
+            WorkLogDisclosure(
+              collapsedTitle: "Requested access",
+              tint: .orange,
+              labelFont: .caption.weight(.semibold)
+            ) {
+              Text(request.detail)
+                .font(.callout)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .fixedSize(horizontal: false, vertical: true)
           }
-
-          WorkLogDisclosure(
-            collapsedTitle: "Requested access",
-            tint: .orange,
-            labelFont: .caption.weight(.semibold)
-          ) {
-            Text(request.detail)
-              .font(.callout)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(15)
-        .background(Color.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 13))
-        .overlay {
-          RoundedRectangle(cornerRadius: 13)
-            .stroke(Color.orange.opacity(0.3), lineWidth: 1)
         }
       } else {
-        VStack(alignment: .leading, spacing: 13) {
-          HStack(alignment: .top, spacing: 11) {
-            Image(systemName: "lock.shield.fill")
-              .font(.title3)
-              .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 3) {
-              Text(request.title)
-                .font(.headline)
-              Text(presentation.context)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
+        WorkLogArtifactCard(
+          title: request.title,
+          subtitle: presentation.context,
+          systemImage: "lock.shield.fill",
+          tint: .orange,
+          headerAccessory: {
             Text(
               permissionStatusTitle(
                 request.status,
@@ -3115,7 +3055,9 @@ struct SprintTicketDetailView: View {
               ).opacity(0.1),
               in: Capsule()
             )
-          }
+          },
+          content: {
+            VStack(alignment: .leading, spacing: 13) {
 
           VStack(alignment: .leading, spacing: 5) {
             Text("Why this is needed")
@@ -3178,14 +3120,10 @@ struct SprintTicketDetailView: View {
               .fixedSize(horizontal: false, vertical: true)
           }
         }
-        .padding(17)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
-        .overlay {
-          RoundedRectangle(cornerRadius: 13)
-            .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
-        }
       }
+        )
     }
+  }
   }
 
   private func permissionStatusTitle(
@@ -3262,63 +3200,58 @@ struct SprintTicketDetailView: View {
       && candidate.id == currentCandidate?.id
       && candidate.status == .readyForDemo
       && currentItem.state == .acceptance
+    let demoTint = Color.blue
     return workLogArtifactRow(
       actorName: eventProfile?.name ?? demo.event.actor,
       profile: eventProfile,
       createdAt: demo.createdAt,
       showsBottomSeparator: showsBottomSeparator
     ) {
-      VStack(alignment: .leading, spacing: 14) {
-        HStack(spacing: 10) {
-          Image(
-            systemName: candidate.deliveryKind == .localOutcome
-              ? "doc.text.magnifyingglass"
-              : "play.rectangle.fill"
-          )
-          .font(.title3)
-          .foregroundStyle(.orange)
-          VStack(alignment: .leading, spacing: 2) {
-            Text(
-              candidate.deliveryKind == .localOutcome
-                ? "Review outcome"
-                : specification?.title ?? "Demo"
-            )
-            .font(.headline)
-            Text(
-              localOutcomePresentation?.subtitle
-                ?? specification?.presentation.kind.title
-                ?? "Demo setup unavailable"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          }
-          Spacer()
-          if canOpenDemo,
-            session?.status == .ready,
-            specification?.presentation.kind == .browser
-              || specification?.presentation.kind == .macApplication
-          {
-            Button("Stop demo") {
-              stopDemo(candidate)
+      WorkLogArtifactCard(
+        title:
+          candidate.deliveryKind == .localOutcome
+          ? "Review outcome"
+          : specification?.title ?? "Demo",
+        subtitle:
+          localOutcomePresentation?.subtitle
+          ?? specification?.presentation.kind.title
+          ?? "Demo setup unavailable",
+        systemImage:
+          candidate.deliveryKind == .localOutcome
+          ? "doc.text.magnifyingglass"
+          : "play.rectangle.fill",
+        tint: demoTint,
+        headerAccessory: {
+          HStack(spacing: 8) {
+            if canOpenDemo,
+              session?.status == .ready,
+              specification?.presentation.kind == .browser
+                || specification?.presentation.kind == .macApplication
+            {
+              Button("Stop demo") {
+                stopDemo(candidate)
+              }
+              .buttonStyle(.bordered)
+              .disabled(isDemoActionRunning)
             }
-            .buttonStyle(.bordered)
-            .disabled(isDemoActionRunning)
-          }
-          if canOpenDemo {
-            Button(demoButtonTitle(specification: specification, session: session)) {
-              launchDemo(candidate)
+            if canOpenDemo {
+              Button(demoButtonTitle(specification: specification, session: session)) {
+                launchDemo(candidate)
+              }
+              .buttonStyle(.borderedProminent)
+              .disabled(isDemoActionRunning || specification == nil)
+            } else {
+              Text(demoStatusTitle(candidate.status))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(demoStatusTint(candidate.status))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(demoStatusTint(candidate.status).opacity(0.1), in: Capsule())
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(isDemoActionRunning || specification == nil)
-          } else {
-            Text(demoStatusTitle(candidate.status))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(demoStatusTint(candidate.status))
-              .padding(.horizontal, 8)
-              .padding(.vertical, 4)
-              .background(demoStatusTint(candidate.status).opacity(0.1), in: Capsule())
           }
-        }
+        },
+        content: {
+          VStack(alignment: .leading, spacing: 14) {
 
         Text(
           localOutcomePresentation?.explanation
@@ -3348,7 +3281,7 @@ struct SprintTicketDetailView: View {
           WorkLogDisclosure(
             collapsedTitle: "Read the full analysis and evidence",
             expandedTitle: "Hide the full analysis and evidence",
-            tint: .orange
+            tint: demoTint
           ) {
             TicketMarkdownDocument(source: handoff, baseFont: .callout)
               .textSelection(.enabled)
@@ -3368,7 +3301,7 @@ struct SprintTicketDetailView: View {
               HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "checkmark.circle")
                   .font(.caption)
-                  .foregroundStyle(.orange)
+                  .foregroundStyle(demoTint)
                   .padding(.top, 1)
                 Text(instruction)
                   .font(.callout)
@@ -3400,13 +3333,9 @@ struct SprintTicketDetailView: View {
             .foregroundStyle(.orange)
             .fixedSize(horizontal: false, vertical: true)
         }
-      }
-      .padding(17)
-      .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
-      .overlay {
-        RoundedRectangle(cornerRadius: 13)
-          .stroke(Color.orange.opacity(0.38), lineWidth: 1.2)
-      }
+          }
+        }
+      )
     }
   }
 
@@ -3443,7 +3372,7 @@ struct SprintTicketDetailView: View {
   private func demoStatusTint(_ status: CandidateRevisionStatus) -> Color {
     switch status {
     case .accepted: .green
-    case .readyForDemo: .orange
+    case .readyForDemo: .blue
     case .changesRequested, .failed: .red
     default: .secondary
     }
@@ -3539,14 +3468,15 @@ struct SprintTicketDetailView: View {
         createdAt: followUp.createdAt,
         showsBottomSeparator: showsBottomSeparator
       ) {
-        VStack(alignment: .leading, spacing: 12) {
-          Label("Recommended follow-up work", systemImage: "arrow.triangle.branch")
-            .font(.headline)
-            .foregroundStyle(.purple)
-
-          Text(followUpExplanation(followUp.candidate.status))
-            .font(.callout)
-            .foregroundStyle(.secondary)
+        WorkLogArtifactCard(
+          title: "Recommended follow-up work",
+          systemImage: "arrow.triangle.branch",
+          tint: .purple
+        ) {
+          VStack(alignment: .leading, spacing: 12) {
+            Text(followUpExplanation(followUp.candidate.status))
+              .font(.callout)
+              .foregroundStyle(.secondary)
 
           ForEach(result.followUpTicketProposals, id: \.reference) { proposal in
             HStack(alignment: .top, spacing: 10) {
@@ -3573,12 +3503,7 @@ struct SprintTicketDetailView: View {
             .padding(11)
             .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
           }
-        }
-        .padding(17)
-        .background(Color.purple.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
-        .overlay {
-          RoundedRectangle(cornerRadius: 13)
-            .stroke(Color.purple.opacity(0.34), lineWidth: 1.2)
+          }
         }
       }
     }
@@ -3614,12 +3539,11 @@ struct SprintTicketDetailView: View {
       createdAt: knowledge.createdAt,
       showsBottomSeparator: showsBottomSeparator
     ) {
-      VStack(alignment: .leading, spacing: 12) {
-        HStack(spacing: 9) {
-          Label("Knowledge changes", systemImage: "books.vertical.fill")
-            .font(.headline)
-            .foregroundStyle(.indigo)
-          Spacer()
+      WorkLogArtifactCard(
+        title: "Knowledge changes",
+        systemImage: "books.vertical.fill",
+        tint: .indigo,
+        headerAccessory: {
           Text(knowledgeProposalStatusTitle(knowledge.proposals))
             .font(.caption.weight(.semibold))
             .foregroundStyle(knowledgeProposalStatusTint(knowledge.proposals))
@@ -3629,7 +3553,9 @@ struct SprintTicketDetailView: View {
               knowledgeProposalStatusTint(knowledge.proposals).opacity(0.1),
               in: Capsule()
             )
-        }
+        },
+        content: {
+          VStack(alignment: .leading, spacing: 12) {
 
         Text(knowledgeProposalExplanation(knowledge.proposals))
           .font(.callout)
@@ -3660,13 +3586,9 @@ struct SprintTicketDetailView: View {
             }
           )
         }
-      }
-      .padding(17)
-      .background(Color.indigo.opacity(0.085), in: RoundedRectangle(cornerRadius: 13))
-      .overlay {
-        RoundedRectangle(cornerRadius: 13)
-          .stroke(Color.indigo.opacity(0.38), lineWidth: 1.25)
-      }
+          }
+        }
+      )
     }
   }
 
@@ -4789,6 +4711,78 @@ private struct CanonicalKnowledgeProposalCard: View {
   }
 }
 
+private struct WorkLogArtifactCard<HeaderAccessory: View, Content: View>: View {
+  let title: String
+  let subtitle: String?
+  let systemImage: String
+  let tint: Color
+  let headerAccessory: HeaderAccessory
+  let content: Content
+
+  init(
+    title: String,
+    subtitle: String? = nil,
+    systemImage: String,
+    tint: Color,
+    @ViewBuilder headerAccessory: () -> HeaderAccessory,
+    @ViewBuilder content: () -> Content
+  ) {
+    self.title = title
+    self.subtitle = subtitle
+    self.systemImage = systemImage
+    self.tint = tint
+    self.headerAccessory = headerAccessory()
+    self.content = content()
+  }
+
+  init(
+    title: String,
+    subtitle: String? = nil,
+    systemImage: String,
+    tint: Color,
+    @ViewBuilder content: () -> Content
+  ) where HeaderAccessory == EmptyView {
+    self.title = title
+    self.subtitle = subtitle
+    self.systemImage = systemImage
+    self.tint = tint
+    headerAccessory = EmptyView()
+    self.content = content()
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 11) {
+        Image(systemName: systemImage)
+          .font(.title3)
+          .foregroundStyle(tint)
+          .frame(width: 22)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(title)
+            .font(.headline)
+            .fixedSize(horizontal: false, vertical: true)
+          if let subtitle, !subtitle.isEmpty {
+            Text(subtitle)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer(minLength: 0)
+        headerAccessory
+      }
+
+      content
+    }
+    .padding(15)
+    .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 13))
+    .overlay {
+      RoundedRectangle(cornerRadius: 13)
+        .stroke(tint.opacity(0.34), lineWidth: 1.1)
+    }
+  }
+}
+
 private struct WorkLogDisclosure<Content: View>: View {
   let collapsedTitle: String
   let expandedTitle: String
@@ -5820,16 +5814,6 @@ private struct SprintTicketCommentRow: View {
     return comment.answeredQuestions.first?.answer
   }
 
-  private var displayedBody: String {
-    SprintTicketWorkLogExternalLink.displayedBody(
-      comment: comment,
-      externalURL: externalURL
-    )
-  }
-
-  private var displaysExternalLinkInBody: Bool {
-    displayedBody != comment.body
-  }
 
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
@@ -5862,7 +5846,7 @@ private struct SprintTicketCommentRow: View {
           )
           .font(.caption)
           .foregroundStyle(.secondary)
-          if let externalURL, !displaysExternalLinkInBody {
+          if let externalURL {
             Link("View on GitHub", destination: externalURL)
               .font(.caption)
           }
@@ -5882,7 +5866,7 @@ private struct SprintTicketCommentRow: View {
             .padding(.top, ownerQuestionPresentation.context.isEmpty ? 0 : 10)
         } else {
           TicketMarkdownDocument(
-            source: displayedBody,
+            source: comment.body,
             baseFont: .body,
             highlightedText: mentionedProfile.map { "@\($0.name)" },
             highlightedColor: mentionedProfile?.role.tint
@@ -5891,33 +5875,43 @@ private struct SprintTicketCommentRow: View {
           .frame(maxWidth: .infinity, alignment: .leading)
         }
         if let context = comment.githubReviewContext {
-          VStack(alignment: .leading, spacing: 5) {
-            Text(context.path)
-              .font(.caption.monospaced().weight(.semibold))
-              .textSelection(.enabled)
-            Text(context.lineDescription)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-            Text("Reviewed commit \(context.commitSHA.prefix(12))")
-              .font(.caption.monospaced())
-              .foregroundStyle(.secondary)
-              .textSelection(.enabled)
+          WorkLogArtifactCard(
+            title: context.path,
+            subtitle:
+              "\(context.lineDescription) · Reviewed commit \(context.commitSHA.prefix(12))",
+            systemImage: "chevron.left.forwardslash.chevron.right",
+            tint: .indigo
+          ) {
             if !context.diffHunk.isEmpty {
-              DisclosureGroup("Reviewed code") {
-                ScrollView(.horizontal) {
-                  Text(context.diffHunk)
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.top, 4)
+              WorkLogDisclosure(
+                collapsedTitle: "Reviewed code",
+                expandedTitle: "Hide reviewed code",
+                tint: .indigo,
+                labelFont: .caption.weight(.semibold)
+              ) {
+                ScrollView(.vertical) {
+                  LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(
+                      Array(context.diffHunk.components(separatedBy: "\n").enumerated()),
+                      id: \.offset
+                    ) { _, line in
+                      UnifiedDiffLineRow(line: line)
+                    }
+                  }
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .textSelection(.enabled)
                 }
-                .frame(maxHeight: 180)
+                .defaultScrollAnchor(.top)
+                .scrollIndicators(.visible)
+                .frame(maxWidth: .infinity, maxHeight: 180, alignment: .topLeading)
+                .clipped()
+                .background(
+                  Color(nsColor: .textBackgroundColor).opacity(0.5),
+                  in: RoundedRectangle(cornerRadius: 7)
+                )
               }
-              .font(.caption)
             }
           }
-          .padding(10)
-          .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
         }
         if let routedRecipientName, let onRoute {
           Button(isRouting ? "Asking…" : "Ask \(routedRecipientName) about this") {

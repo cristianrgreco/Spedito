@@ -170,7 +170,7 @@ struct ProductStoreRegistryTests {
 
     let database = try ProductRegistryFixture.openReadOnly(databaseURL)
     defer { sqlite3_close(database) }
-    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 12)
+    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 13)
     #expect(
       try ProductRegistryFixture.scalarInt(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'owner_notifications';",
@@ -282,7 +282,7 @@ struct ProductStoreRegistryTests {
     await originalStore.close()
     try ProductRegistryFixture.execute(
       """
-      PRAGMA user_version = 13;
+      PRAGMA user_version = 14;
       """,
       at: databaseURL
     )

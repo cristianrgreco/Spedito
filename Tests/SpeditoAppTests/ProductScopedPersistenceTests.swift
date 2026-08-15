@@ -125,6 +125,54 @@ struct ProductScopedPersistenceTests {
     }
   }
 
+  @Test("Product switches preserve in-flight refinement and epic planning turns")
+  func productSelectionPreservesOwnerAgentTurns() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let first = try await registry.createProduct(name: "Planning product")
+    let second = try await registry.createProduct(name: "Other product")
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: first.id
+    )
+    await model.reload()
+
+    let epicGate = ProductSwitchOperationGate()
+    model.epicPlanningRuntime.start(productID: first.id) {
+      await epicGate.wait()
+    }
+    let refinementTurn = CodexTurnIdentity(
+      threadID: "refinement-thread",
+      turnID: "refinement-turn"
+    )
+    let refinementToken = model.planningConversationRuntime.beginTurn(
+      .ticketRefinement,
+      productID: first.id,
+      threadID: refinementTurn.threadID,
+      turnID: refinementTurn.turnID
+    )
+
+    await model.selectProduct(second)
+
+    #expect(model.selectedProduct?.id == second.id)
+    #expect(model.epicPlanningRuntime.isBusy)
+    #expect(
+      model.planningConversationRuntime.activeTurn(.ticketRefinement)
+        == refinementTurn
+    )
+
+    epicGate.open()
+    model.planningConversationRuntime.finishTurn(refinementToken)
+    await model.epicPlanningRuntime.cancel(productID: first.id) { _ in }
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
   @Test("Epic, ticket, and work log writes use the entity's owning product")
   func entityWritesUseOwningProductStore() async throws {
     let fixture = try ProductScopedPersistenceFixture()
@@ -574,5 +622,28 @@ private struct ProductScopedAppInstance {
     for store in registry.allStores {
       await store.close()
     }
+  }
+}
+
+@MainActor
+private final class ProductSwitchOperationGate {
+  private let stream: AsyncStream<Void>
+  private let continuation: AsyncStream<Void>.Continuation
+
+  init() {
+    let pair = AsyncStream<Void>.makeStream()
+    stream = pair.stream
+    continuation = pair.continuation
+  }
+
+  func wait() async {
+    for await _ in stream {
+      return
+    }
+  }
+
+  func open() {
+    continuation.yield()
+    continuation.finish()
   }
 }

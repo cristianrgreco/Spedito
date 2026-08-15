@@ -595,12 +595,14 @@ private struct OwnerNotificationBanner: View {
     }
     .padding(12)
     .frame(width: 560)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .background(
+      Color(nsColor: .controlBackgroundColor),
+      in: RoundedRectangle(cornerRadius: 12)
+    )
     .overlay {
       RoundedRectangle(cornerRadius: 12)
-        .stroke(tint.opacity(0.45), lineWidth: 1)
+        .stroke(Color(nsColor: .separatorColor).opacity(0.65), lineWidth: 1)
     }
-    .shadow(color: .black.opacity(0.15), radius: 12, y: 5)
     .padding(.horizontal, 16)
     .task(id: notification.id) {
       try? await Task.sleep(for: .seconds(8))

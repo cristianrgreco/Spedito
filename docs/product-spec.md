@@ -652,7 +652,8 @@ local work does not turn Product settings into a warning.
 For a connected Product, every reviewed repository-changing ticket revision is
 published automatically as a draft pull request from its exact integrated commit.
 Spedito prefills the title from the ticket key and title and the description from the
-ticket context, acceptance criteria, and immutable revision. Pull-request
+ticket context and acceptance criteria; the reviewed revision is not repeated in
+the description because GitHub already shows the pull request's commit. Pull-request
 creation is recorded as an inline ticket work-log entry with its GitHub link;
 the sprint board and ticket header do not expose pull-request numbers, status
 banners, or manual review-refresh controls. Pull-request reviews and inline
@@ -1631,12 +1632,14 @@ sprint ticket. Unresolved action labels remain until the underlying question is
 answered, while unread update labels clear when their exact source is opened.
 
 Background agent results use the same presentation and deep-linking conventions
-without treating every update as an unresolved blocker. If the exact ticket,
-epic, or Chat thread is visible while Spedito is active, the result appears
-inline and no banner is added. Otherwise an active Spedito window shows one
-transient banner; an inactive app sends one macOS notification instead. Opening
-either presentation selects the product only after the product owner chooses
-the action and opens the exact source.
+without treating every update as an unresolved blocker. Switching products does
+not interrupt ticket or epic refinement, ticket or epic conversation replies, or
+Chat replies; only product archival, an explicit stop, or application shutdown
+ends that work. If the exact ticket, epic, or Chat thread is visible while
+Spedito is active, the result appears inline and no banner is added. Otherwise an
+active Spedito window shows one transient banner; an inactive app sends one macOS
+notification instead. Opening either presentation selects the product only after
+the product owner chooses the action and opens the exact source.
 
 | Durable state | Entered by | SQLite evidence | What the owner sees | Available actions | Relaunch recovery |
 | --- | --- | --- | --- | --- | --- |

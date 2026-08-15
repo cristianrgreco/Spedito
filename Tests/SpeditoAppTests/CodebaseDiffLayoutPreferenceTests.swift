@@ -32,6 +32,16 @@ struct CodebaseDiffLayoutPreferenceTests {
     }
   }
 
+  @Test("Unified diff lines distinguish changes from file headers")
+  func classifiesUnifiedDiffLines() {
+    #expect(UnifiedDiffLinePresentation(line: "+added") == .added)
+    #expect(UnifiedDiffLinePresentation(line: "-removed") == .removed)
+    #expect(UnifiedDiffLinePresentation(line: "@@ -1 +1 @@") == .hunk)
+    #expect(UnifiedDiffLinePresentation(line: "+++ b/File.swift") == .metadata)
+    #expect(UnifiedDiffLinePresentation(line: "--- a/File.swift") == .metadata)
+    #expect(UnifiedDiffLinePresentation(line: " unchanged") == .context)
+  }
+
   private func withDefaults(
     _ operation: (UserDefaults) throws -> Void
   ) throws {

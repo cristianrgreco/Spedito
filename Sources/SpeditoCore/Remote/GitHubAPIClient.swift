@@ -685,6 +685,9 @@ public final class GitHubAPIClient: GitHubOAuthAuthorizing, @unchecked Sendable 
       : paginatedArray(url: commentsURL, accessToken: accessToken)
     let (reviews, comments) = try await (reviewValues, commentValues)
     var feedback = try reviews.map { value in
+      guard let createdAt = value.submittedAt ?? value.updatedAt else {
+        throw GitHubAPIError.invalidResponse
+      }
       let decision = GitHubPullRequestReviewDecision(
         rawValue: value.state.lowercased()
       )
@@ -695,7 +698,7 @@ public final class GitHubAPIClient: GitHubOAuthAuthorizing, @unchecked Sendable 
         body: value.body ?? "",
         decision: decision,
         htmlURL: value.htmlURL,
-        createdAt: value.submittedAt ?? value.updatedAt
+        createdAt: createdAt
       )
     }
     feedback += try comments.map { value in
@@ -1527,7 +1530,7 @@ private struct PullRequestReviewResponse: Decodable, Sendable {
   let state: String
   let htmlURL: String
   let submittedAt: Date?
-  let updatedAt: Date
+  let updatedAt: Date?
 
   enum CodingKeys: String, CodingKey {
     case id

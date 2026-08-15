@@ -129,7 +129,7 @@ extension GitHubRemoteRepositoryService {
     let body: String
     if let ticket {
       title = "\(ticket.key): \(ticket.title)"
-      body = Self.ticketPullRequestBody(ticket: ticket, localSHA: localSHA)
+      body = Self.ticketPullRequestBody(ticket: ticket)
     } else if purpose == .existingProductHistory {
       title = "Publish existing Product history"
       body = """
@@ -384,6 +384,9 @@ extension GitHubRemoteRepositoryService {
           case .pending: "Pending review"
           }
         let detail = feedback.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        if decision == .commented, detail.isEmpty {
+          continue
+        }
         body = detail.isEmpty ? "GitHub review: \(label)." : "GitHub review — \(label)\n\n\(detail)"
       } else {
         body = feedback.body
@@ -958,7 +961,7 @@ extension GitHubRemoteRepositoryService {
     return await makeState(productID: publication.productID)
   }
 
-  private static func ticketPullRequestBody(ticket: WorkItem, localSHA: String) -> String {
+  private static func ticketPullRequestBody(ticket: WorkItem) -> String {
     let acceptanceCriteria =
       ticket.acceptanceCriteria.isEmpty
       ? "No separate acceptance criteria."
@@ -973,10 +976,6 @@ extension GitHubRemoteRepositoryService {
       ## Acceptance criteria
 
       \(acceptanceCriteria)
-
-      ## Reviewed revision
-
-      `\(localSHA)`
 
       Spedito created this pull request for review and did not merge it.
       """

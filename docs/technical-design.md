@@ -1141,11 +1141,15 @@ last-activity time, and fails independently of the main conversation turn. The
 durable conversation turn returns a plain Markdown answer without a title
 schema. Same-member
 follow-ups resume the stored Codex thread without regenerating the title.
-Product selection changes replace only the loaded Chat presentation. Active
-response operations remain keyed by product and thread; returning to a product
-reconstructs its responding-thread set from that runtime, and the eventual
-durable reply reloads the thread. Only explicit product archival or application
-shutdown cancels those turns.
+Product selection changes replace only the loaded presentation. Active product
+Chat responses, ticket and epic conversation turns, ticket refinement, and epic
+clarification or plan generation remain keyed by their owning product and source.
+Returning to a product reconstructs its visible state from the runtime or durable
+store, and the eventual result reloads the selected projection. Epic plan
+generation reloads tickets, profiles, prior suggestions, conversation messages,
+and verified knowledge from the owning product store rather than from the
+currently selected product. Only explicit product archival or application
+shutdown cancels these turns.
 When the owner selects another member, the persistence write atomically changes
 the current recipient and clears the former role-specific Codex identifier; the
 new member starts a fresh read-only session whose prompt contains the durable
