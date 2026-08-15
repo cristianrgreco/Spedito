@@ -1,0 +1,27 @@
+name: SpeditoUITests
+options:
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+targets:
+  SpeditoUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests/SpeditoUITests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: io.spedito.app.uitests
+schemes:
+  SpeditoUITests:
+    build:
+      targets:
+        SpeditoUITests: test
+    test:
+      gatherCoverageData: false
+      targets:
+        - SpeditoUITests
