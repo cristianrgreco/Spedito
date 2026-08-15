@@ -764,7 +764,7 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Write a state-transition table for each subdomain from current code and tests before moving it.
 - [x] Identify all AppModel task dictionaries, product-ID maps, active turns, continuations, and manually stopped/paused sets associated with delivery.
 - [x] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
-- [ ] Migrate implementation execution next, including permissions and live activity ownership.
+- [x] Migrate implementation execution next, including permissions and live activity ownership.
 - [ ] Extract candidate review without combining it with implementation.
 - [ ] Extract integration and conflict resolution with exact candidate/review provenance.
 - [ ] Extract acceptance only after review and integration snapshots are stable.
@@ -773,9 +773,14 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Preserve product isolation and concurrent product execution.
 - [x] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
 
-`TicketDeliveryRuntimeCoordinator` took ownership of task registries, active
-turns, wake continuations, and busy and snapshot state. The transition functions
-named in the implementation evidence above remain in `AppModel`.
+`TicketDeliveryRuntimeCoordinator` owns delivery task registries, active turns,
+wake continuations, and busy state. `TicketDeliveryWorkflowCoordinator` now
+owns implementation worktree/thread execution, evidence validation, candidate
+production, delivery notes, and knowledge proposals;
+`TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
+durable decisions, automatic replay, and saved-grant delivery. Candidate
+review, integration/conflict resolution, acceptance/finalization, and recovery
+transitions remain in `AppModel`.
 
 ### Required journey tests
 
@@ -783,7 +788,7 @@ named in the implementation evidence above remain in `AppModel`.
 - [x] Product switching does not suspend active delivery (`ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`).
 - [x] Product archival suspends only that product (`ProductExecutionLifecycleTests.productArchivalHasProductScope`).
 - [ ] Normal shutdown suspends all owned work and recovery resumes safely.
-- [ ] Implementation interruption preserves the workspace and durable run.
+- [x] Failed or interrupted implementation preserves and requeues the same workspace, thread, and durable run (`ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity` / D10).
 - [ ] Permission request, approval, denial, and relaunch retain least privilege.
 - [ ] Review is bound to an immutable candidate and cannot attest its own work.
 - [ ] Clean integration retains candidate review.

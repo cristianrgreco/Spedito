@@ -131,7 +131,7 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Sprint execution snapshots exclude unrelated backlog history")
+  @Test("[D01] Starting a sprint freezes its scoped execution plan")
   func sprintExecutionSnapshotIsScoped() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }

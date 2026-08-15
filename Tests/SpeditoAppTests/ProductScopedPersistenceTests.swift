@@ -488,6 +488,96 @@ struct ProductScopedPersistenceTests {
       await store.close()
     }
   }
+  @Test(
+    "[D10] Retry work requeues a failed or interrupted implementation in its preserved workspace",
+    arguments: [AgentRunStatus.failed, .interrupted]
+  )
+  func implementationRetryPreservesRunIdentity(status: AgentRunStatus) async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Recover delivery")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let createdItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Preserve interrupted work",
+      acceptanceCriteria: ["Retry continues the existing work"]
+    )
+    _ = try await store.transitionWorkItem(
+      id: createdItem.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refined"
+    )
+    let readyItem = try await store.transitionWorkItem(
+      id: createdItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Recover without duplication",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: readyItem.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    _ = try await store.startSprint(id: draft.sprint.id)
+    _ = try await store.transitionWorkItem(
+      id: readyItem.id,
+      to: .running,
+      actor: "Spedito",
+      reason: "Implementation started"
+    )
+    let initialRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let workspacePath = fixture.directoryURL
+      .appendingPathComponent("ticket-worktree", isDirectory: true)
+      .path
+    _ = try await store.updateAgentRun(
+      id: initialRun.id,
+      status: status,
+      codexThreadID: "implementation-thread",
+      worktreePath: workspacePath,
+      eventActor: "Spedito",
+      eventDetail: "The implementation stopped unexpectedly"
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+
+    let comment = await model.resumeSprintWork(
+      productID: product.id,
+      workItemID: readyItem.id,
+      body: "Keep the existing approach and retry."
+    )
+
+    #expect(comment?.body == "Keep the existing approach and retry.")
+    let recoveredRuns = try await store.fetchAgentRuns(productID: product.id)
+    let recoveredRun = try #require(recoveredRuns.first)
+    #expect(recoveredRuns.count == 1)
+    #expect(recoveredRun.id == initialRun.id)
+    #expect(recoveredRun.status == .queued)
+    #expect(recoveredRun.codexThreadID == "implementation-thread")
+    #expect(recoveredRun.worktreePath == workspacePath)
+    #expect(
+      try await store.fetchComments(workItemID: readyItem.id)
+        .contains { $0.body == "Keep the existing approach and retry." }
+    )
+
+    await model.shutdown()
+  }
+
   @Test("Team settings failure stays retryable and success updates the bounded snapshot")
   func teamSettingsCommandReturnsCommittedSnapshot() async throws {
     let fixture = try ProductScopedPersistenceFixture()
