@@ -814,6 +814,7 @@ final class AppModel: ObservableObject {
   private let codexInstallationPreferences: CodexInstallationPreferences
   private var knowledgePageReadState = KnowledgePageReadState()
   private var codexClient: CodexAppServerClient?
+  private let codexTransportFactory: CodexTransportFactory
   private var codexRuntimeExecutableURL: URL?
 
   private var didLoad = false
@@ -825,9 +826,12 @@ final class AppModel: ObservableObject {
   private static let legacyDefaultsMigrationKey =
     "migration.preSpeditoDefaultsCompleted"
 
-  init() {
+  init(
+    codexTransportFactory: @escaping CodexTransportFactory = makeProductionCodexTransport
+  ) {
     Self.migrateLegacyDefaults()
     codexInstallationPreferences = CodexInstallationPreferences()
+    self.codexTransportFactory = codexTransportFactory
     let gitWorkspaceManager = GitWorkspaceManager()
     var remoteService: (any GitHubRemoteRepositoryServing)?
     self.gitWorkspaceManager = gitWorkspaceManager
@@ -887,6 +891,7 @@ final class AppModel: ObservableObject {
   init(
     store: SQLiteStore?,
     selectedProductID: UUID? = nil,
+    codexTransportFactory: @escaping CodexTransportFactory = makeProductionCodexTransport,
     ownerNotificationSoundPlayer: any OwnerNotificationSoundPlaying =
       BundledOwnerNotificationSoundPlayer(),
     ownerNotificationSystemNotifier: any OwnerNotificationSystemNotifying =
@@ -896,6 +901,7 @@ final class AppModel: ObservableObject {
     )
   ) {
     codexInstallationPreferences = CodexInstallationPreferences()
+    self.codexTransportFactory = codexTransportFactory
     gitWorkspaceManager = GitWorkspaceManager()
     productRepositoryImporter = nil
     storeRegistry = nil
@@ -911,6 +917,7 @@ final class AppModel: ObservableObject {
   init(
     storeRegistry: ProductStoreRegistry,
     selectedProductID: UUID? = nil,
+    codexTransportFactory: @escaping CodexTransportFactory = makeProductionCodexTransport,
     ownerNotificationSoundPlayer: any OwnerNotificationSoundPlaying =
       BundledOwnerNotificationSoundPlayer(),
     ownerNotificationSystemNotifier: any OwnerNotificationSystemNotifying =
@@ -920,6 +927,7 @@ final class AppModel: ObservableObject {
     )
   ) {
     codexInstallationPreferences = CodexInstallationPreferences()
+    self.codexTransportFactory = codexTransportFactory
     let gitWorkspaceManager = GitWorkspaceManager()
     self.gitWorkspaceManager = gitWorkspaceManager
     self.storeRegistry = storeRegistry
@@ -11693,17 +11701,9 @@ final class AppModel: ObservableObject {
     let candidates = selectedCodexInstallation.map(\.runtimeCandidate).map { [$0] } ?? []
 
     do {
-      let descriptor = try await Task.detached(priority: .userInitiated) {
-        try CodexRuntimeResolver().resolve(candidates: candidates)
-      }.value
-      let transport = CodexJSONLTransport(
-        configuration: .init(
-          executableURL: descriptor.executableURL,
-          environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment,
-          environmentMode: .replace
-        )
-      )
-      let client = CodexAppServerClient(transport: transport)
+      let factoryOutput = try await codexTransportFactory(candidates)
+      let descriptor = factoryOutput.descriptor
+      let client = CodexAppServerClient(transport: factoryOutput.transport)
       let info: CodexConnectionInfo
       let models: [CodexModelOption]
       do {

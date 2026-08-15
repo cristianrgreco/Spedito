@@ -34,16 +34,21 @@ let package = Package(
         .copy("Resources/ticket-attention.wav")
       ]
     ),
+    .target(
+      name: "SpeditoTestSupport",
+      dependencies: ["SpeditoCore"],
+      path: "Tests/SpeditoTestSupport"
+    ),
     .testTarget(
       name: "SpeditoCoreTests",
-      dependencies: ["SpeditoCore"],
+      dependencies: ["SpeditoCore", "SpeditoTestSupport"],
       resources: [
         .copy("Fixtures/product-schema-v1.sql")
       ]
     ),
     .testTarget(
       name: "SpeditoAppTests",
-      dependencies: ["SpeditoApp"]
+      dependencies: ["SpeditoApp", "SpeditoTestSupport"]
     ),
   ],
   swiftLanguageModes: [.v6]

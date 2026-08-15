@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import SpeditoTestSupport
 
 @testable import SpeditoCore
 
@@ -1484,7 +1485,40 @@ struct CodexAdapterTests {
 
   @Test("A completed turn recovers the final agent message from its item snapshot")
   func completedTurnRecoversFinalMessage() async throws {
-    let transport = CompletedTurnTransport()
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/test"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        )
+      ],
+      inboundMessages: [
+        .notification(
+          CodexNotification(
+            method: "turn/completed",
+            params: .object([
+              "threadId": .string("thread-complete"),
+              "turn": .object([
+                "id": .string("turn-complete"),
+                "status": .string("completed"),
+                "items": .array([
+                  .object([
+                    "id": .string("message-complete"),
+                    "type": .string("agentMessage"),
+                    "text": .string(#"{"message":"Ready to refine.","proposal":null}"#),
+                  ])
+                ]),
+              ]),
+            ])
+          )
+        )
+      ]
+    )
     let client = CodexAppServerClient(transport: transport)
     _ = try await client.connect()
 
@@ -4231,54 +4265,6 @@ private actor SuggestionTransport: CodexRPCTransport {
   func requests() -> [Request] { recorded }
 }
 
-private actor CompletedTurnTransport: CodexRPCTransport {
-  private let stream: AsyncStream<CodexInboundMessage>
-
-  init() {
-    stream = AsyncStream { continuation in
-      continuation.yield(
-        .notification(
-          CodexNotification(
-            method: "turn/completed",
-            params: .object([
-              "threadId": .string("thread-complete"),
-              "turn": .object([
-                "id": .string("turn-complete"),
-                "status": .string("completed"),
-                "items": .array([
-                  .object([
-                    "id": .string("message-complete"),
-                    "type": .string("agentMessage"),
-                    "text": .string(#"{"message":"Ready to refine.","proposal":null}"#),
-                  ])
-                ]),
-              ]),
-            ])
-          )
-        )
-      )
-      continuation.finish()
-    }
-  }
-
-  func start() {}
-
-  func request(method: String, params: JSONValue) throws -> JSONValue {
-    guard method == "initialize" else {
-      throw CodexRPCError(code: -32_601, message: "Unexpected request")
-    }
-    return .object([
-      "userAgent": .string("codex-cli/test"),
-      "codexHome": .string("/private/tmp/codex"),
-      "platformFamily": .string("unix"),
-      "platformOs": .string("macos"),
-    ])
-  }
-
-  func notify(method: String, params: JSONValue) {}
-  func inboundMessages() -> AsyncStream<CodexInboundMessage> { stream }
-  func stop() {}
-}
 
 private actor ReconciledTurnTransport: CodexRPCTransport {
   private var recorded: [String] = []
