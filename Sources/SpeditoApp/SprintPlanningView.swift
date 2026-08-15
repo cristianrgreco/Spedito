@@ -7,13 +7,44 @@ enum SprintGoalSuggestionPolicy {
   }
 }
 
+struct SprintPlanningDraftAssignments: Equatable {
+  private(set) var saved: [UUID: UUID]
+  private(set) var selected: [UUID: UUID]
+
+  init(saved: [UUID: UUID] = [:]) {
+    self.saved = saved
+    selected = saved
+  }
+
+  var hasUnsavedChanges: Bool {
+    selected != saved
+  }
+
+  mutating func select(_ profileID: UUID?, for workItemID: UUID) {
+    if let profileID {
+      selected[workItemID] = profileID
+    } else {
+      selected.removeValue(forKey: workItemID)
+    }
+  }
+
+  mutating func markSaved() {
+    saved = selected
+  }
+
+  mutating func discardChanges() {
+    selected = saved
+  }
+}
+
 struct SprintPlanningView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   let onSaved: (UUID) -> Void
   @State private var didPrepare = false
   @State private var isSaving = false
-  @State private var selectedAssigneeIDs: [UUID: UUID] = [:]
+  @State private var assignments = SprintPlanningDraftAssignments()
+  @State private var isShowingDiscardConfirmation = false
 
   private var sprintNumber: Int {
     model.candidateSprintPlan?.sprint.number ?? 1
@@ -111,7 +142,6 @@ struct SprintPlanningView: View {
 
   private var canSave: Bool {
     !lines.isEmpty
-      && lines.allSatisfy { $0.owner != nil && !$0.item.acceptanceCriteria.isEmpty }
   }
 
   var body: some View {
@@ -124,7 +154,7 @@ struct SprintPlanningView: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Close") { isPresented = false }
+        Button("Close") { requestClose() }
       }
 
       if scopedItems.isEmpty {
@@ -237,18 +267,25 @@ struct SprintPlanningView: View {
       Divider()
 
       HStack {
-        if !canSave && !lines.isEmpty {
-          Label(saveBlockerText, systemImage: "exclamationmark.circle")
+        if !lines.isEmpty && lines.contains(where: { $0.owner == nil }) {
+          Text("Unassigned tickets can be finished later.")
             .font(.caption)
-            .foregroundStyle(.orange)
+            .foregroundStyle(.secondary)
         } else {
           Text("Estimates are forecasts, not token budgets.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
         Spacer()
-        Button("Cancel") { isPresented = false }
+        if assignments.hasUnsavedChanges {
+          Button("Discard changes", role: .destructive) {
+            discardAndClose()
+          }
           .disabled(isSaving)
+        } else {
+          Button("Cancel") { isPresented = false }
+            .disabled(isSaving)
+        }
         Button {
           savePlan()
         } label: {
@@ -271,24 +308,32 @@ struct SprintPlanningView: View {
     .onAppear {
       prepare()
     }
-  }
-
-  private var saveBlockerText: String {
-    if lines.contains(where: { $0.owner == nil }) {
-      return "Choose an assignee for every sprint ticket."
+    .confirmationDialog(
+      "Discard sprint planning changes?",
+      isPresented: $isShowingDiscardConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("Discard changes", role: .destructive) {
+        discardAndClose()
+      }
+      Button("Keep planning", role: .cancel) {}
+    } message: {
+      Text("The last saved draft remains unchanged.")
     }
-    return "Every sprint ticket needs acceptance criteria."
+    .interactiveDismissDisabled(assignments.hasUnsavedChanges || isSaving)
   }
 
   private func prepare() {
     guard !didPrepare else { return }
     didPrepare = true
-    selectedAssigneeIDs = scopedItems.reduce(into: [:]) { result, item in
-      let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
-      if let ownerID = plannedOwnerID ?? item.ownerProfileID {
-        result[item.id] = ownerID
+    assignments = SprintPlanningDraftAssignments(
+      saved: scopedItems.reduce(into: [:]) { result, item in
+        let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
+        if let ownerID = plannedOwnerID ?? item.ownerProfileID {
+          result[item.id] = ownerID
+        }
       }
-    }
+    )
   }
 
   private func savePlan() {
@@ -297,11 +342,10 @@ struct SprintPlanningView: View {
       let sprintID = model.candidateSprintPlan?.sprint.id
     else { return }
     isSaving = true
-    let inputs = lines.compactMap { line -> SprintDraftItemInput? in
-      guard let owner = line.owner else { return nil }
-      return SprintDraftItemInput(
+    let inputs = lines.map { line in
+      SprintDraftItemInput(
         workItemID: line.item.id,
-        implementerProfileID: owner.id,
+        implementerProfileID: line.owner?.id,
         estimatedTokens: line.forecast.tokenMidpoint
       )
     }
@@ -312,27 +356,37 @@ struct SprintPlanningView: View {
       )
       isSaving = false
       guard saved else { return }
+      assignments.markSaved()
       isPresented = false
       onSaved(sprintID)
     }
   }
 
   private func resolvedOwner(for item: WorkItem) -> AgentProfile? {
-    guard let ownerID = selectedAssigneeIDs[item.id] else { return nil }
+    guard let ownerID = assignments.selected[item.id] else { return nil }
     return deliveryProfiles.first { $0.id == ownerID }
   }
 
   private func assigneeBinding(for itemID: UUID) -> Binding<UUID?> {
     Binding(
-      get: { selectedAssigneeIDs[itemID] },
+      get: { assignments.selected[itemID] },
       set: { ownerID in
-        if let ownerID {
-          selectedAssigneeIDs[itemID] = ownerID
-        } else {
-          selectedAssigneeIDs.removeValue(forKey: itemID)
-        }
+        assignments.select(ownerID, for: itemID)
       }
     )
+  }
+
+  private func requestClose() {
+    guard assignments.hasUnsavedChanges else {
+      isPresented = false
+      return
+    }
+    isShowingDiscardConfirmation = true
+  }
+
+  private func discardAndClose() {
+    assignments.discardChanges()
+    isPresented = false
   }
 
   private func risks(for item: WorkItem, scopedIDs: Set<UUID>) -> [String] {

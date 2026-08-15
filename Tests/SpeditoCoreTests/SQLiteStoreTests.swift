@@ -4298,6 +4298,186 @@ struct SQLiteStoreTests {
     await migratedStore.close()
   }
 
+  @Test("A09 schema migration preserves the complete Product history")
+  func a09SchemaMigrationPreservesCompleteProductHistory() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Long-lived Product")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+
+    let backlogItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Preserve the owner backlog",
+      body: "Keep the accepted scope intact.",
+      acceptanceCriteria: ["The backlog survives every schema upgrade"]
+    )
+    let workLogBody = "The owner-approved scope must survive migration."
+    _ = try await store.appendComment(
+      workItemID: backlogItem.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: workLogBody
+    )
+
+    let seededPages = try await store.seedKnowledgeBase(productID: product.id)
+    let overview = try #require(seededPages.first { $0.slug == "overview" })
+    let knowledgeBody = "The Product preserves its complete local history."
+    _ = try await store.updateKnowledgePage(
+      id: overview.id,
+      title: overview.title,
+      bodyMarkdown: knowledgeBody,
+      authorName: "Me",
+      changeSummary: "Recorded the durable migration requirement"
+    )
+
+    let repository = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .importedSource,
+        accountID: UUID(),
+        installationID: 41,
+        repositoryID: 42,
+        owner: "owner",
+        name: "long-lived-product",
+        fullName: "owner/long-lived-product",
+        canonicalHTTPSURL: URL(string: "https://github.com/owner/long-lived-product.git")!,
+        isPrivate: true,
+        defaultBranch: "trunk",
+        permissions: RemoteRepositoryPermissions(
+          metadataRead: true,
+          contentsWrite: true,
+          pullRequestsWrite: true,
+          workflowsWrite: false
+        ),
+        status: .connected
+      )
+    )
+
+    let deliveredItem = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Retain reviewed delivery evidence"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Preserve durable Product history",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: deliveredItem.id,
+          implementerProfileID: implementer.id
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    _ = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      codexThreadID: "thread-before-migration",
+      worktreePath: "/tmp/long-lived-product",
+      eventActor: implementer.name,
+      eventDetail: "Delivered the reviewed candidate"
+    )
+    var deliveryState = deliveredItem
+    for state: WorkItemState in [.running, .integrating, .verifying, .acceptance] {
+      deliveryState = try await store.transitionWorkItem(
+        id: deliveryState.id,
+        to: state,
+        actor: "Spedito",
+        reason: "Recorded delivery history"
+      )
+    }
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: deliveredItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: "ticket/\(deliveredItem.key)",
+        baseSHA: "base-before-migration",
+        headSHA: "head-before-migration",
+        worktreePath: "/tmp/\(deliveredItem.key)",
+        status: .readyForDemo,
+        commitCount: 1,
+        executionResultJSON: #"{"summary":"Reviewed delivery"}"#
+      )
+    )
+    await store.close()
+
+    try fixture.execute(
+      """
+      ALTER TABLE candidate_revisions DROP COLUMN delivery_kind;
+      DROP INDEX IF EXISTS idx_repository_knowledge_runs_one_active;
+      DROP TABLE owner_notifications;
+      PRAGMA user_version = 7;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    #expect(try fixture.scalarInt("PRAGMA user_version;") == ProductDatabaseSchema.version)
+
+    let migratedProducts = try await migratedStore.fetchProducts()
+    #expect(migratedProducts.map(\.id) == [product.id])
+    #expect(migratedProducts.map(\.name) == ["Long-lived Product"])
+
+    let migratedItems = try await migratedStore.fetchWorkItems(productID: product.id)
+    #expect(migratedItems.first { $0.id == backlogItem.id }?.state == .backlog)
+    #expect(
+      migratedItems.first { $0.id == backlogItem.id }?.acceptanceCriteria
+        == ["The backlog survives every schema upgrade"]
+    )
+    #expect(migratedItems.first { $0.id == deliveredItem.id }?.state == .acceptance)
+    #expect(
+      try await migratedStore.fetchComments(workItemID: backlogItem.id).map(\.body)
+        == [workLogBody]
+    )
+
+    let migratedKnowledge = try #require(
+      try await migratedStore.fetchKnowledgePages(productID: product.id)
+        .first { $0.id == overview.id }
+    )
+    #expect(migratedKnowledge.bodyMarkdown == knowledgeBody)
+    #expect(
+      try await migratedStore.fetchKnowledgePageRevisions(pageID: overview.id).count == 2
+    )
+
+    let migratedRepository = try #require(
+      try await migratedStore.fetchRemoteRepositoryConnection(productID: product.id)
+    )
+    #expect(migratedRepository.id == repository.id)
+    #expect(migratedRepository.fullName == "owner/long-lived-product")
+    #expect(migratedRepository.defaultBranch == "trunk")
+    #expect(migratedRepository.status == .connected)
+
+    let migratedCandidate = try #require(
+      try await migratedStore.fetchCandidateRevisions(productID: product.id)
+        .first { $0.id == candidate.id }
+    )
+    #expect(migratedCandidate.deliveryKind == .repositoryChange)
+    #expect(migratedCandidate.status == .readyForDemo)
+    #expect(migratedCandidate.headSHA == "head-before-migration")
+    let migratedRun = try #require(
+      try await migratedStore.fetchAgentRuns(productID: product.id)
+        .first { $0.id == implementationRun.id }
+    )
+    #expect(migratedRun.status == .completed)
+    #expect(migratedRun.codexThreadID == "thread-before-migration")
+    #expect(
+      try await migratedStore.fetchActivity(workItemID: deliveredItem.id)
+        .contains { $0.kind == "work_item.transitioned" }
+    )
+    await migratedStore.close()
+  }
+
   @Test("Version 12 databases remove redundant empty GitHub review entries")
   func emptyGitHubReviewMigration() async throws {
     let fixture = try DatabaseFixture()
@@ -4426,5 +4606,32 @@ private struct DatabaseFixture {
       sqlite3_free(errorMessage)
       throw PersistenceError.sqlite(code: result, message: message)
     }
+  }
+
+  func scalarInt(_ sql: String) throws -> Int32 {
+    var database: OpaquePointer?
+    let openResult = sqlite3_open(databaseURL.path, &database)
+    guard openResult == SQLITE_OK, let database else {
+      if let database {
+        sqlite3_close(database)
+      }
+      throw PersistenceError.sqlite(code: openResult, message: "Could not open test database")
+    }
+    defer { sqlite3_close(database) }
+
+    var statement: OpaquePointer?
+    let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+    guard prepareResult == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: prepareResult,
+        message: "Could not prepare scalar test query"
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+      throw PersistenceError.sqlite(
+        code: SQLITE_ERROR, message: "Scalar test query returned no row")
+    }
+    return sqlite3_column_int(statement, 0)
   }
 }

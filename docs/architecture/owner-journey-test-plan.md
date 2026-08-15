@@ -109,6 +109,85 @@ The stabilization plan's section 14 audit is the reason several of these journey
 
 Two audit items remain open and are inherited by Gate 0 rather than by any journey row: the body-recomputation measurement for backlog, sprint board, ticket sheet, and repository settings (14.9) and the Phase 0 reconciliation, inspection, and known-good checkpoint (14.11, step 5).
 
+### 3.4 Priority 0 executable coverage ledger — 15 August 2026
+
+This ledger applies the section 5 deduplication rule to every Priority 0 row.
+**Named** means a test carries the row ID. **Composed** means existing tests
+jointly prove the contract and a wrapper test is intentionally omitted because
+it would repeat the same commands and assertions. **Recorded gap** is the
+required reason that no row-level test exists yet; it names the smallest
+unimplemented behavior or missing composition rather than presenting component
+coverage as an end-to-end journey.
+
+| Row | Existing executable evidence | Status or recorded reason |
+| --- | --- | --- |
+| A02 | `ProductStoreRegistryTests.productCreationOnlyNeedsAName`, `.finalSchemaAndAgentViews` | **Recorded gap:** no application-shell journey proves directory, Git, database, starter team, selection, and Backlog routing together. |
+| A04 | `ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`, `TicketAttentionTests.reloadAggregatesBackgroundProductAttention` | **Composed:** Product-scoped continuation and bounded cross-Product attention are independently deterministic; a wrapper would duplicate them. |
+| A05 | `AppModelStartupTests.legacyDefaultsMigration`, `SprintBoardSelectionTests.newlyPlannedSprintBecomesSelected` | **Recorded gap:** no relaunch test restores the Product, destination, and Product-scoped sprint tuple together. |
+| A06 | `ProductExecutionLifecycleTests.productArchivalHasProductScope`, `SQLiteStoreTests.productArchiveAndRestorePreserveHistory` | **Recorded gap:** destructive shell confirmation and post-archive navigation are not automated. |
+| A09 | `SQLiteStoreTests.a09SchemaMigrationPreservesCompleteProductHistory` | **Named:** the A09 fixture migrates one version-7 Product containing backlog, work log, knowledge, repository provenance, and delivery history through the complete migration chain. |
+| A10 | `ProductExecutionLifecycleTests.appShutdownHasGlobalScope`, `FeatureOperationRegistryTests.scopedAndGlobalSettlement` | **Recorded product gap:** the bounded grace period and **Quit now** action do not exist; section 5.1 already prohibits inventing a test for them. |
+| A11 | `TicketDeliveryWorkflowCoordinatorTests.crashRecoveryUsesLastDurableMilestone`, `SQLiteStoreTests.invalidCandidateRecoveryIsAtomic` | **Named:** A11 covers durable-workspace reuse and the labelled missing-workspace explanation; lower-level recovery tests retain atomicity and stale-candidate protection. |
+| R01 | `RepositoryImportCoordinatorTests.publicImport`, `RepositoryImportKnowledgeTests.stagedRepositoryImport` | **Recorded gap:** activation and exact provenance are covered, but no journey proves navigation before background understanding continues. |
+| R05 | `RemoteRepositoryAppModelTests.emptyGitHubRepositoryCreation`, `RepositoryImportCoordinatorTests.emptyAuthorizedRepository` | **Recorded gap:** no single journey asserts initialization of the exact observed remote default branch. |
+| R06 | `RepositoryImportCoordinatorTests.publicImport`, `RemoteRepositoryServiceTests.importedProductConnection` | **Recorded gap:** no row-level assertion binds the imported revision to the accepted default-branch head while proving history was not rewritten. |
+| R07 | `RepositoryImportCoordinatorTests.authorizationCancellationAndRetry`, `RepositoryImportKnowledgeTests.activationFailureCleansOwnedPaths`, `RemoteRepositoryAppModelTests.relaunchedRepositorySetupRecovery` | **Composed:** cancellation, cleanup, retry, and relaunch recovery already cross the coordinator and application boundaries. |
+| R08 | `RepositoryImportKnowledgeTests.importedAppLaunchReviewContract`, `.schemaMigrationAndPublication`, `ProductScopedPersistenceTests.completedEmptyRepositoryAnalysisIsTerminal` | **Composed:** exact-revision analysis, independent review, atomic publication, and terminal no-pages recovery are already executable. |
+| R09 | `RepositoryKnowledgeCoordinatorTests.concurrentExplicitRetries`, `.refreshUsesExactDurableState`, `SQLiteStoreTests.repositoryKnowledgeActiveRunMigrationAndRecovery` | **Recorded gap:** no test races a stale retry against an already accepted newer repository revision. |
+| R10 | `RemoteRepositoryServiceTests.matureLocalProductConnection`, `.localProductLifecycle`, `RemoteRepositoryPublishingTests.localBootstrapAndReviewBranch` | **Composed:** captured history, one immutable pull request, and unchanged-head reconciliation are directly covered. |
+| R12 | `RemoteRepositoryServiceTests.importedProductConnection`, `RemoteRepositoryAppModelTests.repositoryAttentionPolicy` | **Recorded gap:** the owner choice between the newly observed target and disconnect is not implemented as one journey. |
+| R13 | `RemoteRepositoryPublishingTests.safeSynchronizationPaths`, `SQLiteStoreTests.invalidCandidateRecoveryIsAtomic`, `GitWorkspaceManagerTests.repositoryOperationRejectsOverlap` | **Recorded gap:** the launched review path does not cover both atomic acceptance and atomic rejection of incoming changes. |
+| R14 | `RemoteRepositoryAppModelTests.deliveryRemoteSafety`, `.remoteLifecycle`, `GitHubAccountCatalogTests.signOutWaitsForLease` | **Composed:** active-delivery deferral, Product-scoped disconnect, account-scoped sign-out, and relaunch-safe state are covered at their owning boundaries. |
+| E01 | `SQLiteStoreTests.newEpicsPersistOnlyOwnerOutcomeUntilAnalysis`, `WorkflowPolicyTests.governanceGatesCannotBeSkipped` | **Recorded gap:** no public-command test proves that creating the minimally persisted Epic immediately begins clarification. |
+| E02 | `EpicPlanningJourneyTests.e02ClarificationNeedsInputAcrossProducts`, `EpicOwnerNotificationUITests.testE02NeedsInputOpensTheExactEpicAcrossProducts` | **Named:** deterministic and launched-shell E02 journeys protect the original cross-Product defect. |
+| E03 | `EpicPlanningPresentationTests.submittedEpicAnswersPreserveQuestionPosition`, `.failedEpicClarificationRetriesAnswers`, `SQLiteStoreTests.epicPlanningConversationsAreDurable` | **Recorded gap:** listed choice, **Other**, and the exclusive **Submit answers** advancement rule are not exercised together. |
+| E05 | `EpicPlanningJourneyTests.e05PlanReadyAcrossProducts` | **Named:** E05 drives background completion and exact-Epic notification routing. |
+| E06 | `EpicPlanningJourneyTests.e06ExpiredThreadRecovery` | **Named:** E06 recreates an expired thread from the durable transcript without repeating owner answers. |
+| E11 | `SQLiteStoreTests.ticketSuggestionsAreOwnerControlled`, `.suggestionsCanDependOnExistingWork`, `.dependencyAwareRanking` | **Recorded gap:** the full transitive acceptance preview is not exercised before the atomic write. |
+| E12 | `SQLiteStoreTests.rejectingSuggestionCascadesThroughDependentWork`, `.bulkArchiveWorkItems` | **Recorded gap:** no journey proves that delivered work blocks an unsafe rejection cascade. |
+| E14 | `SQLiteStoreTests.archivingEpicArchivesUnfinishedTickets`, `.archivingEpicCancelsSuggestionGeneration`, `.archivingEpicRejectsActiveDeliveryTickets` | **Recorded gap:** disposition of already persisted Epic proposals during archival is not explicit. |
+| B02 | `TicketAttentionTests.reloadAggregatesBackgroundProductAttention`, `.openingAttentionTargetsTicket`, `ProductScopedPersistenceTests.productSelectionPreservesOwnerAgentTurns` | **Recorded gap:** no launched-shell journey closes an incomplete Ticket and returns from another Product to its exact editable sheet. |
+| B03 | `TicketConversationHistoryTests.submittedChoiceRemainsAnsweredQuestion`, `.pendingQuestionStaysInChronologicalPosition`, `SQLiteStoreTests.durableWorkflow` | **Recorded gap:** answered cards, pending cards, comments, and refinement state are not restored together in one relaunch test. |
+| B05 | `SQLiteStoreTests.ticketEditVersionConflict`, `TicketRefinementApplicationTests.completedRefinementIsAppliedAsOneUpdate`, `.unresolvedRefinementIsNotApplied` | **Recorded gap:** no in-flight stale completion proves both conflict presentation and preservation of the newer owner draft. |
+| B09 | `PlanningDropPolicyTests.completeBranchCanEnterSprint`, `.dependantNeedsPrerequisiteInSprint`, `.bulkActionsPersistWholeSectionMoves` | **Recorded gap:** invalid partial scope does not have a journey assertion for the exact owner-facing missing-relationship explanation. |
+| P03 | `SprintBoardSelectionTests.p03PartialPlanAndDiscardedPickerState` | **Named:** P03 saves an intentionally partial plan, proves unsaved picker state is not durable, discards to the saved assignment set, and reopens the same durable draft. |
+| P05 | `SprintStartAvailabilityTests.activeSprintBlocksDraftStart`, `.pausedSprintBlocksDraftStart`, `SQLiteStoreTests.sprintReadinessBlocksStart` | **Recorded gap:** missing-estimate and invalid-dependency blockers and their exact shell copy are not covered together. |
+| D01 | `SQLiteStoreTests.sprintExecutionSnapshotIsScoped`, `.sprintStartIsDurableAndIdempotent` | **Named:** D01 freezes the scoped execution snapshot; persistence coverage proves one durable start. |
+| D02 | `WorkflowPolicyTests.dependencyAwareRunAdmission`, `.uncappedIndependentRunAdmission`, `TicketDeliveryRuntimeCoordinatorTests.duplicateSchedulingWakesExistingScheduler` | **Named:** D02 covers the independent first wave, prerequisite release, and identity-safe scheduler wake. |
+| D03 | `ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`, `SprintTicketWorkLogHistoryTests.activeTicketQuestionRouting` | **Recorded gap:** Product switching and exact Ticket attention routing are not driven in one active-delivery journey. |
+| D04 | `TicketDeliveryWorkflowCoordinatorTests.pausedDeliveryResumesExistingRun`, `SQLiteStoreTests.sprintPauseAndResumeAreDurable` | **Named:** D04 relaunches a paused durable run and resumes its preserved workspace instead of restarting. |
+| D05 | `TicketDeliveryWorkflowCoordinatorTests.stoppedDeliveryPreservesAuditAndReturnsTicketToReady`, `SQLiteStoreTests.stoppingSprintPreservesAcceptedWorkAndSupersedesUnacceptedWork` | **Named, partial shell:** the durable D05 transition is covered; destructive confirmation remains a shell gap. |
+| D08 | `SQLiteStoreTests.agentPermissionRequests`, `AgentPermissionResolutionTests.persistenceFailureFailsClosed`, `AgentPermissionGrantPolicyTests.structuredCoverage` | **Recorded gap:** Deny, Allow once, and Always allow are not exercised together through the review action. |
+| D09 | `SprintTicketWorkLogHistoryTests.selectedAnswerRemainsOnQuestionAndInWorkLog`, `.customAnswerRemainsOnQuestionAndInWorkLog`, `.activeTicketQuestionRouting` | **Recorded gap:** **Submit answers** does not have one journey proving that it resumes the exact paused run. |
+| D10 | `ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity`, `TicketDeliveryRuntimeCoordinatorTests.staleCompletionCannotClearReplacement` | **Named:** D10 requeues failed and interrupted implementations with the preserved run identity, workspace, and thread while stale completion remains harmless. |
+| D11 | `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `GitWorkspaceManagerTests.candidateLifecycle` | **Named:** D11 binds independent review and its handoff to the immutable integrated candidate. |
+| D12 | `GitWorkspaceManagerTests.candidateLifecycle`, `.conflictResolutionLifecycle`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview` | **Named:** D12 serializes exact integration and covers conflict resolution plus changed-result review ordering. |
+| D13 | `RemoteRepositoryPublishingTests.commentReviewNullableUpdateTimestamp`, `.pullRequestConditionalRequests`, `GitWorkspaceManagerTests.verifiedRemoteIntegration` | **Recorded gap:** requested changes do not have a journey that returns the Ticket to In progress and updates the same publication branch. |
+| D14 | `SQLiteStoreTests.managedDemoSessions`, `MacOSDemoLauncherTests.hostFailureDisposition`, `.candidateFailureDisposition`, `SprintWorkRecoveryTests.failedPostReviewDemoIsRecoverable` | **Recorded gap:** no exact-demo journey proves that host preparation retry reruns preparation only. |
+| D15 | `SprintTicketWorkLogHistoryTests.readyForDemoCommentRouting`, `.demoFeedbackCommentReplacesTransitionEvent`, `GitWorkspaceManagerTests.reviewedIntegrationBecomesRevisionBaseline` | **Recorded gap:** no journey asserts that a Ready-for-demo question/comment leaves the current candidate valid. |
+| D16 | `SQLiteStoreTests.candidateKnowledgeProposals`, `.knowledgeBaseLifecycle`, `SprintTicketWorkLogHistoryTests.reviewedKnowledgeNeedsAttentionWhenOwnerApprovalIsEnabled` | **Recorded gap:** rejected and unreviewed proposals are not jointly proven unable to become canonical truth. |
+| D17 | `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision` | **Named:** D17 promotes the exact reviewed repository revision and records Done only after successful finalization. |
+| D18 | `TicketDeliveryWorkflowCoordinatorTests.failedAcceptanceRetriesWithoutDuplicateCompletion` | **Named:** D18 preserves the reviewed result and retries without duplicate promotion. |
+| D19 | `TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` | **Named:** D19 publishes repository-free handoff and knowledge without a Git mutation. |
+| C02 | `ProductConversationTests.durableThreads`, `FeatureOperationRegistryTests.productConversationResponsesRemainDiscoverable` | **Recorded gap:** no test releases concurrent replies out of order and verifies per-thread unread and notification identity. |
+| C07 | `TicketAttentionTests.productAttentionRoutesSingleBackgroundResult`, `.notificationRouteRoundTrips` | **Recorded gap:** no cross-Product Chat journey focuses the exact thread and clears only its unread state. |
+| C09 | `TicketAttentionTests.notificationKindControlsSoundAndResolution`, `.reloadAggregatesBackgroundProductAttention` | **Recorded gap:** visible-target suppression, read, resolution, and deduplicated counts are not composed in one test. |
+| C10 | `TicketAttentionTests.notificationRouteRoundTrips`, `.archivedTargetDoesNotNavigate` | **Composed:** every target kind round-trips and an archived target fails closed without navigation. |
+| K04 | `RepositoryKnowledgeCoordinatorTests.publicationRecoveryOrdersDurabilityBeforeCompletion`, `.refreshUsesExactDurableState` | **Recorded gap:** owner-edit locking during publication and failure recovery are not exercised together. |
+| V06 | `DemoLaunchTests.acceptedAppVersionHistory`, `.unifiedAppVersionHistory`, `MacOSDemoLauncherTests.candidateFailureDisposition` | **Recorded gap:** switching exact App versions while stopping the active version and reconstructing the selected revision is not one journey. |
+| I03 | `SQLiteStoreTests.retrospectiveSynthesisLifecycle`, `RetrospectiveSprintSelectionTests.retrospectivePhasesFollowSprintLifecycle` | **Recorded gap:** interruption, retry failure, and explicit continue-without-AI are not covered through one durable synthesis command. |
+| I06 | `SQLiteStoreTests.retrospectivePracticeLifecycle` | **Composed/direct:** the accepted action updates the inherited verified Ways of working page once with source provenance; no wrapper is needed. |
+| I07 | `SQLiteStoreTests.retrospectiveEvidenceLifecycle` | **Composed/direct:** the accepted action creates its durable Backlog ticket; the normal refinement policy is already independently covered. |
+| S02 | `SQLiteStoreTests.agentPermissionRequests`, `AgentPermissionGrantPolicyTests.effectiveAccessGroups` | **Recorded gap:** revoke-one and revoke-all confirmation, audit retention, and subsequent re-prompt are not one executable journey. |
+| S04 | `SQLiteStoreTests.teamSettingsUpdateIsAtomic`, `ProductScopedPersistenceTests.teamSettingsCommandReturnsCommittedSnapshot` | **Composed:** atomic persistence and retryable application presentation cover the shared-guidance/member-settings boundary. |
+
+The ledger therefore adds the two previously wholly uncovered deterministic
+compositions, A09 and P03, and does not manufacture passing wrappers around
+partial behavior. Rows marked **Recorded gap** remain explicit product or
+test-packet inputs. The implementation plan's definition of done permits that
+outcome: each Priority 0 row now has a named test, a non-duplicative composed
+proof, or a recorded reason it does not.
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |
