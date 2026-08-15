@@ -32,41 +32,12 @@ a compatible Codex app or `codex` installation.
 
 ## What it does
 
-- Organises products into epics, tickets, a backlog, and sprints.
-- Creates blank Products or imports a public or private repository selected from
-  the repositories available to an authorized GitHub account, with canonical
-  public HTTPS links from GitHub, GitLab, Bitbucket, or Codeberg as a fallback;
-  full Git history, `origin`, default branch, and exact accepted revision are
-  preserved.
-- Connects imported or local Products through a guided GitHub authorization and
-  repository-access flow, reuses the sole authorized account for later Products,
-  and links to existing installation settings when access must change. It checks
-  GitHub automatically before tech lead review, incorporates verified incoming
-  changes through the ticket lifecycle, reuses the ticket's Integrator and owner
-  questions for conflicts, and runs one tech lead review against each exact
-  candidate. Repository-changing candidates publish as draft pull requests,
-  bring actionable inline GitHub review context into the ticket work log, and
-  merge the exact revision on product owner approval. Repository-free business
-  analyst outcomes remain in Spedito for review and acceptance without an empty
-  commit or pull request. Pull-request mechanics stay out of the sprint board
-  and ticket header; the work log keeps any publication link.
-- Coordinates specialist AI team members for refinement, implementation, and
-  independent review.
-- Isolates delivery in Git branches and worktrees before product owner approval.
-- Lists independently verified imported source and accepted runnable browser or
-  macOS app revisions in the product's **App versions** workspace, and reopens
-  any selected version from its exact commit.
-- Keeps questions, permission requests, progress, and decisions in each ticket's
-  work log.
-- Keeps delivery running across products and surfaces **Ready for demo** and
-  unresolved **Needs your input** tickets alongside unread background refinement
-  results and agent replies through cross-product and workspace counts,
-  contextual in-app and macOS notifications, and direct navigation back to the
-  ticket, epic, or Chat thread.
-- Builds versioned product knowledge from an isolated repository snapshot,
-  requires independent tech lead approval, and stores the verified result only
-  in the Product's local `.spedito` control data rather than its Git history.
-- Runs locally, with product state stored in the product workspace.
+- Organises ideas into epics, tickets, a backlog, and sprints.
+- Coordinates specialist AI team members to refine, implement, and independently
+  review work while the product owner controls permissions, demos, and
+  acceptance.
+- Isolates code changes in Git, supports GitHub delivery, and keeps product
+  state, work logs, and verified knowledge local.
 
 ## Build from source
 

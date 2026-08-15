@@ -14,11 +14,14 @@ Use the following documents as the durable source of truth:
 - `docs/product-spec.md` for product behavior, terminology, journeys, and scope.
 - `docs/technical-design.md` for architecture, persistence, execution, and
   recovery boundaries.
-- `README.md` for the current implemented state and developer entry points.
+- `README.md` for a concise user-facing overview and developer entry points.
 
 Keep those documents accurate when a change materially alters their claims.
 Record agreed future product work in the product specification rather than
 leaving it only in a code comment or chat.
+
+Keep the README short and lean. Link to `https://spedito.io/` for detailed
+feature descriptions instead of cataloguing product workflows in the README.
 
 ## Product language and workflow
 
