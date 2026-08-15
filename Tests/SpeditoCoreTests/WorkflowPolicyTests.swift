@@ -140,7 +140,7 @@ struct WorkflowPolicyTests {
     )
   }
 
-  @Test("Scheduler admits only unblocked implementation runs in backlog order")
+  @Test("[D02] Scheduler runs independent tickets before their direct dependant")
   func dependencyAwareRunAdmission() throws {
     let productID = UUID()
     let sprint = Sprint(productID: productID, number: 1, goal: "Deliver in order", state: .active)
@@ -248,7 +248,7 @@ struct WorkflowPolicyTests {
     #expect(secondEligible?.id == secondRun.id)
   }
 
-  @Test("Scheduler admits every independent implementation run without a ticket cap")
+  @Test("[D02] Scheduler admits every independent ticket in parallel")
   func uncappedIndependentRunAdmission() {
     let productID = UUID()
     let implementerID = UUID()
@@ -295,7 +295,7 @@ struct WorkflowPolicyTests {
     #expect(eligible.map(\.id) == runs.map(\.id))
   }
 
-  @Test("Completed candidates integrate before review while integrations remain uncapped")
+  @Test("[D12] Completed candidates integrate before review without a concurrency cap")
   func candidateIntegrationsPrecedeReview() {
     let productID = UUID()
     let sprintID = UUID()

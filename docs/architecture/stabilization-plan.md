@@ -34,6 +34,23 @@ inspection and explicit approval are also required before establishing the
 known-good commit. Do not interpret the checked extraction work as approval to
 skip those remaining gates.
 
+### Current implementation evidence — 15 August 2026
+
+- `AppModel.swift` is 12,511 lines with 319 functions, 34 `@Published`
+  properties, 122 `try?` sites, and one task-launch site.
+- `ContentView.swift` is 613 lines with two task-launch sites.
+- `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery task
+  lifecycle. Transition execution remains in `AppModel`, including
+  `completeSprintTicketAcceptance` at line 4,287,
+  `recoverOrphanedExecutionRuns` at line 6,839,
+  `executeImplementationRun` at line 7,910, `resumeTechLeadReview` at line
+  8,651, `reviewCompletedImplementation` at line 9,457,
+  `applyTechLeadReviewResult` at line 9,759,
+  `runIntegrationConflictResolution` at line 10,223, and
+  `handleServerRequest` at line 11,977. The recovery function alone spans 746
+  lines and contains 29 awaits.
+
+
 ## 2. Instructions for the implementing agent
 
 Before starting any phase:
@@ -327,24 +344,27 @@ Create a truthful known-good boundary before changing architecture. Do not refac
 - [x] Relaunch the app with `./scripts/relaunch.sh` and leave it running.
 - [x] Give the product owner the inspection checklist below.
 - [x] Fix only defects that prevent establishing the baseline; do not begin coordinator extraction in the same work packet.
-- [ ] Obtain explicit product-owner confirmation before committing all accumulated current changes.
-- [ ] Establish the known-good baseline commit without rewriting prior history.
+- [x] Obtain explicit product-owner confirmation before committing all accumulated current changes.
+- [x] Establish the known-good baseline commit without rewriting prior history.
 
 ### Owner inspection checklist
 
-- [ ] Create and open a blank product.
-- [ ] Import a public repository link.
-- [ ] Authorize GitHub from product creation and import an accessible private repository.
-- [ ] Cancel GitHub authorization and retry it.
-- [ ] Switch products while repository knowledge analysis is active.
-- [ ] Quit and relaunch while repository knowledge analysis is in a durable non-terminal phase.
-- [ ] Connect an imported product to its preserved GitHub repository.
-- [ ] Connect a local product to an eligible empty GitHub repository.
-- [ ] Review and either accept or reject incoming safe changes.
-- [ ] Publish a reviewed ticket as a draft pull request.
-- [ ] Observe GitHub review feedback in the ticket work log.
-- [ ] Approve the exact pull-request-backed ticket revision and verify local completion.
-- [ ] Confirm that error, retry, cancel, and dismissal actions are understandable without Git terminology beyond the product contract.
+- [x] Create and open a blank product.
+- [x] Import a public repository link.
+- [x] Authorize GitHub from product creation and import an accessible private repository.
+- [x] Cancel GitHub authorization and retry it.
+- [x] Switch products while repository knowledge analysis is active.
+- [x] Quit and relaunch while repository knowledge analysis is in a durable non-terminal phase.
+- [x] Connect an imported product to its preserved GitHub repository.
+- [x] Connect a local product to an eligible empty GitHub repository.
+- [x] Review and either accept or reject incoming safe changes.
+- [x] Publish a reviewed ticket as a draft pull request.
+- [x] Observe GitHub review feedback in the ticket work log.
+- [x] Approve the exact pull-request-backed ticket revision and verify local completion.
+- [x] Confirm that error, retry, cancel, and dismissal actions are understandable without Git terminology beyond the product contract.
+
+The product owner confirmed the completed inspection and accepted `f3e1fc3` as
+the known-good boundary on 15 August 2026.
 
 ### Acceptance
 
@@ -753,21 +773,33 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Preserve product isolation and concurrent product execution.
 - [x] Preserve shutdown semantics: suspend active work without semantically cancelling tickets.
 
+`TicketDeliveryRuntimeCoordinator` owns delivery task registries, active turns,
+wake continuations, and busy state. `TicketDeliveryWorkflowCoordinator` now
+owns implementation worktree/thread execution, evidence validation, candidate
+production, delivery notes, knowledge proposals, exact-candidate Tech Lead
+review, integration queueing, clean integration, conflict resolution, targeted
+review and integration recovery, return-to-implementation decisions, exact
+candidate acceptance, remote or local promotion, completion handoff
+publication, reviewed knowledge publication, demo-failure correction, sprint
+pause/stop execution, and delivery-wide interruption recovery.
+`TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
+durable decisions, automatic replay, and saved-grant delivery.
+
 ### Required journey tests
 
-- [x] Dependency-ready tickets are admitted and blocked dependants wait.
-- [x] Product switching does not suspend active delivery.
-- [x] Product archival suspends only that product.
-- [x] Normal shutdown suspends all owned work and recovery resumes safely.
-- [x] Implementation interruption preserves the workspace and durable run.
-- [x] Permission request, approval, denial, and relaunch retain least privilege.
-- [x] Review is bound to an immutable candidate and cannot attest its own work.
-- [x] Clean integration retains candidate review.
-- [x] Conflict resolution that changes the result requires focused re-review.
-- [x] Parallel candidates serialize promotion against current local `trunk`.
-- [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
-- [x] Remote merge followed by interruption completes local reconciliation exactly once.
-- [x] Completed tickets leave the required self-contained handoff for dependants.
+- [x] Dependency-ready tickets are admitted and blocked dependants wait (`WorkflowPolicyTests.dependencyAwareRunAdmission`).
+- [x] Product switching does not suspend active delivery (`ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`).
+- [x] Product archival suspends only that product (`ProductExecutionLifecycleTests.productArchivalHasProductScope`).
+- [ ] Normal shutdown suspends all owned work and recovery resumes safely.
+- [x] Failed or interrupted implementation preserves and requeues the same workspace, thread, and durable run (`ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity` / D10).
+- [ ] Permission request, approval, denial, and relaunch retain least privilege.
+- [x] Review is bound to an immutable candidate and cannot attest its own work (`TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound` and `SprintWorkRecoveryTests` / D11).
+- [x] Clean integration preserves the exact candidate into review (`GitWorkspaceManagerTests.candidateLifecycle`, `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview`, and `SprintWorkRecoveryTests.queuedIntegratedReviewIsRecoverable` / D12).
+- [ ] Conflict resolution that changes the result requires focused re-review.
+- [ ] Parallel candidates serialize promotion against current local `trunk`.
+- [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews (`TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`, `RemoteRepositoryServiceTests.localProductLifecycle`, and `MacOSDemoLauncherTests.candidateFailureDisposition` / D17).
+- [ ] Remote merge followed by interruption completes local reconciliation exactly once.
+- [x] Completed repository-free tickets preserve the implementation handoff and publish reviewed knowledge without creating repository state (`TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` / D19).
 
 ### Acceptance
 
@@ -792,9 +824,9 @@ Finish turning `AppModel` into a composition and navigation boundary and `Conten
 Complete these in the order indicated by current defect frequency and feature work, not by arbitrary file position:
 
 - [x] Product conversations and title/activity lifecycle.
-- [x] Ticket and epic conversations/refinement.
-- [x] Epic planning and ticket suggestions.
-- [x] Sprint planning and goal generation.
+- [ ] Ticket and epic conversations/refinement.
+- [ ] Epic planning and ticket suggestions.
+- [ ] Sprint planning and goal generation.
 - [x] Demo/app-version launch and recovery.
 - [x] Retrospective synthesis.
 - [x] Codex connection and usage monitoring.
@@ -927,14 +959,14 @@ Use this template when starting every extraction or later feature:
 The stabilization program is done only when:
 
 - [x] The current product specification, technical design, and README agree.
-- [ ] The initial accumulated work has a product-owner-approved known-good commit.
+- [x] The initial accumulated work has a product-owner-approved known-good commit.
 - [x] Generated development output no longer pollutes repository status.
 - [x] Repository import has one coordinator and deterministic journey coverage.
 - [x] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
 - [x] Remote account, connection, synchronization, and publication responsibilities are separated.
 - [x] Remote application state is no longer distributed across AppModel dictionaries and view state.
-- [x] Delivery execution, review, integration, and acceptance are Core-owned workflows.
-- [x] `AppModel` is an application composition/navigation boundary.
+- [ ] Delivery execution, review, integration, and acceptance are Core-owned workflows.
+- [ ] `AppModel` is an application composition/navigation boundary.
 - [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
 - [x] Persistence code is organized by aggregate without changing database authority.
 - [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
@@ -1094,14 +1126,14 @@ Required correction:
 - [x] Fetch all product statuses once and partition them in memory.
 - [x] Pass product ID through remote operation commands and perform direct store lookup.
 - [x] Move status filtering into indexed SQL queries.
-- [x] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
+- [ ] Instrument query counts for launch, product selection, settings save, scheduler wake, and remote polling before and after the change.
 
 Acceptance:
 
-- [x] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
-- [x] A product with long conversation history has bounded launch and product-selection work.
-- [x] A coordinator snapshot cannot combine records from different durable versions.
-- [x] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
+- [ ] A one-field product edit performs no unrelated conversation, sprint, repository, permission, or knowledge queries.
+- [ ] A product with long conversation history has bounded launch and product-selection work.
+- [ ] A coordinator snapshot cannot combine records from different durable versions.
+- [ ] Scheduler wake work is proportional to the changed delivery aggregate rather than the full product history.
 
 ### 14.7 Priority 1 — Polling substitutes for observable state transitions
 
@@ -1185,7 +1217,7 @@ These findings amend the first work packet in section 13:
 2. [x] Stop archived-product remote recovery and unbounded completed-analysis retry as a second focused defect packet.
 3. [x] Make team-settings save atomic and completion-aware.
 4. [x] Add failure-injection coverage for partial delivery recovery; perform the durable transition cutover in the owning Phase 6 packet rather than adding more AppModel repair branches.
-5. [ ] Complete the original Phase 0 specification reconciliation, full verification, relaunch, owner inspection, and known-good checkpoint.
+5. [x] Complete the original Phase 0 specification reconciliation, full verification, relaunch, owner inspection, and known-good checkpoint.
 6. [x] Execute Phase 1 and Phase 2 as previously ordered.
 7. [x] Address read amplification and Git serialization inside the relevant extraction phase, using measurements rather than speculative caching.
 8. [x] Delete legacy publication and protocol fallback paths during Phase 4 after durable-record migration is proven.

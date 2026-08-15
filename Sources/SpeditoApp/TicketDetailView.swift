@@ -1982,6 +1982,7 @@ struct MultipleChoiceQuestionCards: View {
   private let presentation: Presentation
   private let otherChoiceKey: String
   private let tint: Color
+  private let accessibilityPrefix: String?
   @Binding private var selectedOptions: [Int: String]
   @Binding private var otherAnswers: [Int: String]
 
@@ -1990,24 +1991,28 @@ struct MultipleChoiceQuestionCards: View {
     selectedOptions: Binding<[Int: String]>,
     otherAnswers: Binding<[Int: String]>,
     otherChoiceKey: String,
-    tint: Color
+    tint: Color,
+    accessibilityPrefix: String? = nil
   ) {
     presentation = .unanswered(questions)
     _selectedOptions = selectedOptions
     _otherAnswers = otherAnswers
     self.otherChoiceKey = otherChoiceKey
     self.tint = tint
+    self.accessibilityPrefix = accessibilityPrefix
   }
 
   init(
     answeredQuestions: [TicketAnsweredQuestion],
-    tint: Color
+    tint: Color,
+    accessibilityPrefix: String? = nil
   ) {
     presentation = .answered(answeredQuestions)
     _selectedOptions = .constant([:])
     _otherAnswers = .constant([:])
     otherChoiceKey = ""
     self.tint = tint
+    self.accessibilityPrefix = accessibilityPrefix
   }
 
   @ViewBuilder
@@ -2033,15 +2038,24 @@ struct MultipleChoiceQuestionCards: View {
           }
           Text(question.prompt)
             .font(.callout.weight(.medium))
+            .accessibilityIdentifier(accessibilityIdentifier("question.\(index)"))
           VStack(spacing: 6) {
-            ForEach(question.options, id: \.self) { option in
+            ForEach(Array(question.options.enumerated()), id: \.offset) {
+              choiceIndex,
+              option in
               choiceRow(option, selected: selectedOptions[index] == option) {
                 selectedOptions[index] = option
               }
+              .accessibilityIdentifier(
+                accessibilityIdentifier("question.\(index).choice.\(choiceIndex)")
+              )
             }
             choiceRow("Other", selected: selectedOptions[index] == otherChoiceKey) {
               selectedOptions[index] = otherChoiceKey
             }
+            .accessibilityIdentifier(
+              accessibilityIdentifier("question.\(index).choice.other")
+            )
           }
           if selectedOptions[index] == otherChoiceKey {
             TextField(
@@ -2052,6 +2066,9 @@ struct MultipleChoiceQuestionCards: View {
               )
             )
             .textFieldStyle(.roundedBorder)
+            .accessibilityIdentifier(
+              accessibilityIdentifier("question.\(index).other")
+            )
           }
         }
         .padding(11)
@@ -2152,6 +2169,11 @@ struct MultipleChoiceQuestionCards: View {
       )
     }
     .buttonStyle(.plain)
+  }
+
+  private func accessibilityIdentifier(_ suffix: String) -> String {
+    guard let accessibilityPrefix else { return "" }
+    return "\(accessibilityPrefix).\(suffix)"
   }
 }
 
@@ -2440,17 +2462,9 @@ struct NewEpicView: View {
   @Binding var isPresented: Bool
   @State private var outcome = ""
   @State private var isCreating = false
-  @State private var createdEpic: Epic?
 
   var body: some View {
-    if let createdEpic {
-      EpicDetailView(
-        epic: createdEpic,
-        onClose: { isPresented = false }
-      )
-    } else {
-      captureView
-    }
+    captureView
   }
 
   private var captureView: some View {
@@ -2473,7 +2487,8 @@ struct NewEpicView: View {
           prompt: "e.g. Customers can save locations and quickly compare their forecasts.",
           text: $outcome,
           minHeight: 150,
-          focusOnAppear: true
+          focusOnAppear: true,
+          accessibilityIdentifier: "epic.outcome"
         )
         Label(
           model.canPlanEpic
@@ -2499,6 +2514,7 @@ struct NewEpicView: View {
         .buttonStyle(.borderedProminent)
         .tint(.purple)
         .disabled(!canCreate)
+        .accessibilityIdentifier("epic.create")
       }
       .padding(20)
     }
@@ -2517,8 +2533,8 @@ struct NewEpicView: View {
         outcome: outcome.trimmingCharacters(in: .whitespacesAndNewlines)
       )
       isCreating = false
-      if let epic {
-        createdEpic = epic
+      if epic != nil {
+        isPresented = false
       }
     }
   }

@@ -474,6 +474,10 @@ final class EpicPlanningRuntime: ObservableObject {
     await operations.settle(.persistence)
   }
 
+  func settle() async {
+    await operations.settle(.planning)
+  }
+
   func requestCancellation(
     interrupt: @escaping @MainActor (CodexTurnIdentity) async -> Void
   ) {

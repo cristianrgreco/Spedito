@@ -179,7 +179,7 @@ struct GitWorkspaceManagerTests {
     }
   }
 
-  @Test("Ticket branches preserve multiple commits and promote one exact integrated revision")
+  @Test("[D12] Candidate integration serializes exact revisions against current trunk")
   func candidateLifecycle() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-git-\(UUID().uuidString)", isDirectory: true)

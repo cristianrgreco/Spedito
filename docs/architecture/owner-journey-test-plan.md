@@ -352,7 +352,7 @@ Launch the isolated debug app with the scripted scenario, use stable identifiers
 
 This is the smallest test that proves the current cross-layer wiring in `AppModel`, `OwnerNotificationCoordinator`, `ContentView`, `BacklogView`, and `EpicDetailView`.
 
-The banner in `ContentView.swift:607` dismisses itself after a fixed eight-second `Task.sleep`, so this test currently has a hidden wall-clock deadline between releasing the scripted response and choosing **Open epic**. Make that interval a presentation input supplied by the composition, and disable automatic dismissal in the test configuration, before writing the contract. A test that merely runs faster than the timer is the timing dependency section 8.4 prohibits, only hidden in the application instead of the test.
+Before packet 8, the banner in `ContentView` dismissed itself after a fixed eight-second `Task.sleep`, which gave this test a hidden wall-clock deadline between releasing the scripted response and choosing **Open epic**. The implemented `OwnerNotificationBanner` takes that interval from the presentation environment, and the debug fixture disables automatic dismissal. A test that merely ran faster than the timer would still violate the timing dependency rule in section 8.4.
 
 ## 7. Full-app UI runner design
 
@@ -367,6 +367,15 @@ Prefer a project that contains **only a UI test bundle**, with no second applica
 Build the UI-test bundle with a distinct bundle identifier, for example `io.spedito.app.uitest`. That guarantees the launched process can never read, write, or destroy the product owner's real defaults domain or an installed release build's state.
 
 Prove the runner before committing to it. macOS XCUITest needs a real GUI login session, a signed bundle, and automation permission for the test runner, and CI currently runs `swift test` only. Spike one trivial launch-and-assert test end to end in the target CI environment as the first task of work packet 2. If it cannot be made reliable there, the fallback is explicit and acceptable: keep the launched-process contracts as a product-owner-run local suite, mark the 19 `Shell = Y` rows as owner-verified, and do not weaken their deterministic coordinator proofs to compensate.
+
+**Runner decision — 15 August 2026:** proceed to work packet 2. The
+test-only `SpeditoUITests.xcodeproj` built the ad-hoc-signed debug bundle with a
+distinct application and runner bundle identifier, launched it through
+`XCUIApplication(url:)`, and passed in the repository's pinned macOS 26 /
+Xcode 26.6 GitHub Actions environment. The serialized spike completed in
+1 minute 41 seconds in
+[CI run 31887927106](https://github.com/cristianrgreco/Spedito/actions/runs/31887927106).
+No second application target was introduced.
 
 ### 7.2 Debug-only composition
 
@@ -435,6 +444,17 @@ Keep the first UI suite to high-value shell wiring. These 14 scenarios cover exa
 12. App version open/switch/stop — V06;
 13. Product archive and restore — A06, A07;
 14. Codebase commit-to-Ticket navigation — V04.
+
+**Implementation status — 15 August 2026:** the debug-only composition now
+uses an isolated application-support root and defaults domain, deterministic
+Codex and GitHub boundaries, no-op sound/system-notification adapters, and a
+file-system response gate. `EpicOwnerNotificationUITests` creates the Epic
+through the launched app, switches Products before releasing the structured
+reply, opens the non-expiring in-app banner, and verifies the exact Epic,
+Backlog destination, Business Analyst reply, question choices, custom answer,
+and enabled **Submit answers** control through stable accessibility
+identifiers. Release compilation excludes the fixture types. The serialized
+target-environment run remains this packet's acceptance gate.
 
 Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
 

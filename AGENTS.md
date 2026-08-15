@@ -69,6 +69,31 @@ or defaults that refer specifically to the weather-app development example.
 Archived records remain available for audit history but must not leak into
 active planning, dependency, or suggestion calculations.
 
+### Feature navigation map
+
+Start at the state owner, not at a caller or view. Persistence entries name the
+`SQLiteStore` extension that owns the durable operations. Journey IDs refer to
+`docs/architecture/owner-journey-test-plan.md`.
+
+| Feature | State owner | Persistence operations | Main views | Journey rows |
+| --- | --- | --- | --- | --- |
+| Product library and lifecycle | `AppModel.swift`; `ProductLibraryFeatureModel` and `TransientOwnerCommandRuntime` in `FeatureRuntimeOwners.swift` | `ProductStoreRegistry.swift`, `SQLiteStore+Products.swift`, `ProductDatabaseSchema.swift` | `ProductLibraryView.swift`, `ProductCreationView.swift`, `ProductSettingsView.swift`, `ContentView.swift` | A01–A12 |
+| Repository import | `RepositoryImportCoordinator.swift`; composition in `RemoteRepositoryFeatureModel.swift` and `AppModel.swift` | `SQLiteStore+Products.swift`, `SQLiteStore+ProductRepositories.swift`, `SQLiteStore+RepositoryAnalysis.swift` | `ProductCreationView.swift`, `ProductOnboardingView.swift` | R01–R07 |
+| Repository knowledge | `RepositoryKnowledgeCoordinator.swift` and `RepositoryKnowledgeRecovery.swift` | `SQLiteStore+RepositoryAnalysis.swift`, `SQLiteStore+KnowledgePages.swift` | `ProductOnboardingView.swift`, `KnowledgeBaseView.swift` | R08–R09, V07 |
+| Remote repository | `RemoteRepositoryFeatureModel.swift`; `GitHubRemoteRepositoryService*.swift` | `SQLiteStore+RemoteConnections.swift`, `SQLiteStore+RemoteSafeSyncs.swift`, `SQLiteStore+RemotePublications.swift` | `RemoteRepositorySetupView.swift`, `RemoteRepositorySettingsView.swift`, `IncomingRepositoryReviewView.swift`, `SprintBoardRepositoryStatusView.swift` | R03–R06, R10–R14, D13, D17 |
+| Epics and suggestions | `AppModel.swift`; `EpicPlanningRuntime`, `TicketSuggestionRuntime`, and `PlanningConversationRuntime` in `FeatureRuntimeOwners.swift` | `SQLiteStore+Epics.swift`, `SQLiteStore+TicketSuggestions.swift`, `SQLiteStore+Conversations.swift` | `BacklogView.swift`, `EpicDetailView.swift` | E01–E15 |
+| Backlog and tickets | `AppModel.swift`; `PlanningConversationRuntime` in `FeatureRuntimeOwners.swift` | `SQLiteStore+WorkItems.swift`, `SQLiteStore+WorkItemHistory.swift`, `SQLiteStore+Epics.swift` | `BacklogView.swift`, `TicketDetailView.swift`, `TicketEditorComponents.swift` | B01–B11 |
+| Sprint planning | `AppModel.swift`; `SprintPlanningFeatureModel` and `PlanningConversationRuntime` in `FeatureRuntimeOwners.swift` | `SQLiteStore+Sprints.swift`, `SQLiteStore+WorkItems.swift` | `SprintPlanningView.swift`, `BacklogView.swift` | P01–P07 |
+| Delivery | Transition execution in `AppModel.swift`; task lifecycle in `TicketDeliveryRuntimeCoordinator.swift`; recovery policy in `SprintWorkRecovery.swift` | `SQLiteStore+Sprints.swift`, `SQLiteStore+AgentRuns.swift`, `SQLiteStore+CandidateDelivery.swift`, `SQLiteStore+AgentPermissions.swift`, `SQLiteStore+WorkItemHistory.swift` | `SprintBoardView.swift`, `TicketDetailView.swift`, `TeamSidebar.swift` | D01–D23, A10–A11 |
+| Chat and notifications | `ProductConversationFeatureModel.swift`, `ProductConversationRuntime` in `FeatureRuntimeOwners.swift`, `OwnerNotificationCoordinator.swift` | `SQLiteStore+Conversations.swift`, `SQLiteStore+OwnerNotifications.swift`, `SQLiteStore+Activity.swift` | `ProductConversationView.swift`, `TicketDetailView.swift`, `EpicDetailView.swift`, `ContentView.swift` | C01–C11, E02, E05, B02, D03 |
+| Knowledge | `AppModel.swift`; repository publication remains in `RepositoryKnowledgeCoordinator.swift` | `SQLiteStore+KnowledgePages.swift`, `SQLiteStore+KnowledgeProposals.swift`, `SQLiteStore+RepositoryAnalysis.swift` | `KnowledgeBaseView.swift`, `TicketDetailView.swift` | K01–K06, D16, D19 |
+| Codebase and app versions | `AppModel.swift`; `DemoSessionFeatureModel` in `FeatureRuntimeOwners.swift`; `MacOSDemoLauncher.swift` | `SQLiteStore+CandidateDelivery.swift`, `SQLiteStore+ProductRepositories.swift` | `CodebaseView.swift`, `AppVersionsView.swift`, `TicketDetailView.swift` | V01–V07, D14 |
+| Retrospectives and reports | `AppModel.swift`; `RetrospectiveSynthesisRuntime` in `FeatureRuntimeOwners.swift` | `SQLiteStore+Retrospectives.swift`, `SQLiteStore+Sprints.swift`, `SQLiteStore+AgentRuns.swift` | `RetrospectivesView.swift`, `ReportsView.swift` | I01–I10, D21 |
+| Settings and Codex | `AppModel.swift`; `CodexConnectionRuntime` in `FeatureRuntimeOwners.swift`; `CodexInstallation.swift` | `SQLiteStore+Products.swift`, `SQLiteStore+AgentProfiles.swift`, `SQLiteStore+AgentPermissions.swift` | `ProductSettingsView.swift`, `CodexStatusView.swift` | S01–S08 |
+
+A packet that introduces a coordinator or moves ownership between coordinators
+must update this table in the same commit.
+
 ## Agent execution model
 
 - Refinement, suggestions, planning, and ordinary review turns are read-only
@@ -243,6 +268,9 @@ Review uses these architecture ratchets:
   packet.
 - Commit an accepted work packet before starting unrelated implementation, and
   do not rewrite prior history to create that checkpoint.
+- Lower a value in `scripts/architecture_ratchets.baseline` whenever an
+  extraction improves it, so the improvement is locked in. Raising a baseline
+  requires an explicit reason in the accepted work packet.
 
 ## Validate changes
 

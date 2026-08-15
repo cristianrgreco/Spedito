@@ -67,7 +67,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.codexThreadID == "review-thread")
   }
 
-  @Test("A queued integrated review is recovered after restart")
+  @Test("[D12] A queued integrated review is recovered after restart")
   func queuedIntegratedReviewIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
@@ -140,7 +140,7 @@ struct SprintWorkRecoveryTests {
     )
   }
 
-  @Test("A completed review run remains recoverable for an interrupted post-review handoff")
+  @Test("[D11] A completed exact-candidate review resumes its interrupted handoff")
   func completedReviewRunIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
@@ -187,7 +187,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.id == completedReviewRun.id)
   }
 
-  @Test("An interrupted tech lead run remains bound to its reviewing candidate")
+  @Test("[D11] An interrupted Tech Lead run remains bound to its reviewing candidate")
   func interruptedReviewRunIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
@@ -236,7 +236,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.codexThreadID == "interrupted-review-thread")
   }
 
-  @Test("Review recovery rejects a mismatched workspace")
+  @Test("[D11] Review recovery rejects a workspace from another candidate")
   func mismatchedReviewWorkspaceIsNotRecoverable() {
     let productID = UUID()
     let sprintID = UUID()

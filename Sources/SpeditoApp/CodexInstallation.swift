@@ -2,6 +2,35 @@ import AppKit
 import Foundation
 import SpeditoCore
 
+struct CodexTransportFactoryOutput: Sendable {
+  let descriptor: CodexRuntimeDescriptor
+  let transport: any CodexRPCTransport
+}
+
+typealias CodexTransportFactory =
+  @Sendable ([CodexRuntimeCandidate]) async throws -> CodexTransportFactoryOutput
+
+func makeProductionCodexTransport(
+  candidates: [CodexRuntimeCandidate]
+) async throws -> CodexTransportFactoryOutput {
+  #if DEBUG
+    if let fixture = await UIFixtureRuntime.transportFactoryOutput() {
+      return fixture
+    }
+  #endif
+  let descriptor = try await Task.detached(priority: .userInitiated) {
+    try CodexRuntimeResolver().resolve(candidates: candidates)
+  }.value
+  let transport = CodexJSONLTransport(
+    configuration: .init(
+      executableURL: descriptor.executableURL,
+      environmentOverrides: CodexPermissionProfiles.agentProcessEnvironment,
+      environmentMode: .replace
+    )
+  )
+  return CodexTransportFactoryOutput(descriptor: descriptor, transport: transport)
+}
+
 struct CodexInstallation: Identifiable, Equatable, Sendable {
   enum Kind: String, Codable, Equatable, Sendable {
     case officialApplication

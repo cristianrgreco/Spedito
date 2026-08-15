@@ -833,6 +833,7 @@ struct EpicPlanningList: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(.purple)
+        .accessibilityIdentifier("epic.new")
         .help("Plan a substantial product outcome with the business analyst")
       }
       .padding(.horizontal, 2)
@@ -1195,6 +1196,7 @@ struct EpicPlanningRow: View {
       }
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("epic.row.\(epic.id.uuidString)")
     .onHover { hovering in
       withAnimation(.easeOut(duration: 0.12)) {
         isHovering = hovering
@@ -1215,6 +1217,7 @@ struct EpicPlanningRow: View {
       Button(action: onRefine) {
         Label("Refine with AI", systemImage: "wand.and.stars")
       }
+      .accessibilityIdentifier("epic.refine")
       .disabled(epic.status != .open)
       Divider()
       Button(action: onMoveTop) {

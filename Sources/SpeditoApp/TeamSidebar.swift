@@ -282,6 +282,8 @@ struct TeamSidebar: View {
                 .contentShape(Rectangle())
               }
               .buttonStyle(.plain)
+              .accessibilityIdentifier("nav.products")
+              .accessibilityValue(product.name)
               .help("Browse and switch products")
 
               Button {
@@ -344,7 +346,10 @@ struct TeamSidebar: View {
                 )
             }
           }
+          .accessibilityElement(children: .combine)
           .tag(WorkspaceDestination.backlog)
+          .accessibilityIdentifier("nav.backlog")
+          .accessibilityAddTraits(selection == .backlog ? .isSelected : [])
           HStack {
             Label("Sprint board", systemImage: "rectangle.3.group")
             Spacer()

@@ -126,6 +126,7 @@ struct SidebarCodexStatus: View {
     .help(model.codexConnectionState.diagnostic ?? "Choose the Codex installation")
     .accessibilityLabel("Codex connection")
     .accessibilityValue(model.codexConnectionState.detail)
+    .accessibilityIdentifier("codex.connection")
     .popover(isPresented: $showingConnectionPopover, arrowEdge: .bottom) {
       connectionPopover
     }
