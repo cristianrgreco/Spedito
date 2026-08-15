@@ -299,6 +299,17 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     rootURL.appendingPathComponent("integrations", isDirectory: true)
   }
 
+  func deliveryIntegrateLatestGitHubChanges(
+    candidate: CandidateRevision,
+    integration: GitIntegrationSnapshot
+  ) async throws -> TicketDeliveryRemoteIntegration {
+    TicketDeliveryRemoteIntegration(
+      snapshot: integration,
+      incorporatedChanges: false,
+      remoteSHA: nil
+    )
+  }
+
   func deliveryInheritedAgentInstructions(
     for product: Product,
     includesMandatoryKnowledge: Bool

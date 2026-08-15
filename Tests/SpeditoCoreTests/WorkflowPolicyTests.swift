@@ -295,7 +295,7 @@ struct WorkflowPolicyTests {
     #expect(eligible.map(\.id) == runs.map(\.id))
   }
 
-  @Test("Completed candidates integrate before review while integrations remain uncapped")
+  @Test("[D12] Completed candidates integrate before review without a concurrency cap")
   func candidateIntegrationsPrecedeReview() {
     let productID = UUID()
     let sprintID = UUID()

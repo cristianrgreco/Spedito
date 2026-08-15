@@ -766,7 +766,7 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Extract the sprint scheduler first while leaving run executors behind a narrow protocol.
 - [x] Migrate implementation execution next, including permissions and live activity ownership.
 - [x] Extract candidate review without combining it with implementation.
-- [ ] Extract integration and conflict resolution with exact candidate/review provenance.
+- [x] Extract integration and conflict resolution with exact candidate/review provenance.
 - [ ] Extract acceptance only after review and integration snapshots are stable.
 - [x] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
 - [x] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
@@ -777,10 +777,11 @@ This is the highest-risk extraction and must begin only after the repository wor
 wake continuations, and busy state. `TicketDeliveryWorkflowCoordinator` now
 owns implementation worktree/thread execution, evidence validation, candidate
 production, delivery notes, knowledge proposals, exact-candidate Tech Lead
-review, review recovery, and return-to-implementation decisions;
+review, integration queueing, clean integration, conflict resolution, recovery,
+and return-to-implementation decisions;
 `TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
-durable decisions, automatic replay, and saved-grant delivery. Integration and
-conflict resolution plus acceptance and finalization remain in `AppModel`.
+durable decisions, automatic replay, and saved-grant delivery. Acceptance and
+finalization remain in `AppModel`.
 
 ### Required journey tests
 
@@ -791,7 +792,7 @@ conflict resolution plus acceptance and finalization remain in `AppModel`.
 - [x] Failed or interrupted implementation preserves and requeues the same workspace, thread, and durable run (`ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity` / D10).
 - [ ] Permission request, approval, denial, and relaunch retain least privilege.
 - [x] Review is bound to an immutable candidate and cannot attest its own work (`TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound` and `SprintWorkRecoveryTests` / D11).
-- [ ] Clean integration retains candidate review.
+- [x] Clean integration preserves the exact candidate into review (`GitWorkspaceManagerTests.candidateLifecycle`, `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview`, and `SprintWorkRecoveryTests.queuedIntegratedReviewIsRecoverable` / D12).
 - [ ] Conflict resolution that changes the result requires focused re-review.
 - [ ] Parallel candidates serialize promotion against current local `trunk`.
 - [ ] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.

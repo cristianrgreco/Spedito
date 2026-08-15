@@ -179,7 +179,7 @@ struct GitWorkspaceManagerTests {
     }
   }
 
-  @Test("[D11] Candidate lifecycle binds review and integration to one immutable revision")
+  @Test("[D12] Candidate integration serializes exact revisions against current trunk")
   func candidateLifecycle() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-git-\(UUID().uuidString)", isDirectory: true)

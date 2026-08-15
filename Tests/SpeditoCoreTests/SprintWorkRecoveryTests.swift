@@ -67,7 +67,7 @@ struct SprintWorkRecoveryTests {
     #expect(recovered?.codexThreadID == "review-thread")
   }
 
-  @Test("A queued integrated review is recovered after restart")
+  @Test("[D12] A queued integrated review is recovered after restart")
   func queuedIntegratedReviewIsRecoverable() {
     let productID = UUID()
     let sprintID = UUID()
