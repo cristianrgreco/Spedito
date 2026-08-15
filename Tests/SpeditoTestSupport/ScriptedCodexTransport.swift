@@ -4,11 +4,16 @@ import SpeditoCore
 public actor ScriptedCodexTransport: CodexRPCTransport {
   public struct Response: Sendable {
     public let method: String
-    public let result: JSONValue
+    fileprivate let outcome: Result<JSONValue, CodexRPCError>
 
     public init(method: String, result: JSONValue) {
       self.method = method
-      self.result = result
+      outcome = .success(result)
+    }
+
+    public init(method: String, error: CodexRPCError) {
+      self.method = method
+      outcome = .failure(error)
     }
   }
 
@@ -17,9 +22,15 @@ public actor ScriptedCodexTransport: CodexRPCTransport {
     public let params: JSONValue
   }
 
+  private struct RequestWaiter {
+    let count: Int
+    let continuation: CheckedContinuation<Void, Never>
+  }
+
   private var responses: [Response]
   private var requests: [Request] = []
   private var notifications: [Request] = []
+  private var requestWaitersByMethod: [String: [RequestWaiter]] = [:]
   private let inboundStream: AsyncStream<CodexInboundMessage>
   private let inboundContinuation: AsyncStream<CodexInboundMessage>.Continuation
   private let scriptedInboundMessages: [CodexInboundMessage]
@@ -46,6 +57,7 @@ public actor ScriptedCodexTransport: CodexRPCTransport {
 
   public func request(method: String, params: JSONValue) throws -> JSONValue {
     requests.append(Request(method: method, params: params))
+    resumeRequestWaiters(for: method)
     guard let response = responses.first else {
       throw CodexRPCError(code: -32_601, message: "Unexpected request: \(method)")
     }
@@ -56,7 +68,7 @@ public actor ScriptedCodexTransport: CodexRPCTransport {
       )
     }
     responses.removeFirst()
-    return response.result
+    return try response.outcome.get()
   }
 
   public func notify(method: String, params: JSONValue) {
@@ -67,7 +79,26 @@ public actor ScriptedCodexTransport: CodexRPCTransport {
     inboundStream
   }
 
+  public func emit(_ message: CodexInboundMessage) {
+    inboundContinuation.yield(message)
+  }
+
+  public func waitForRequest(_ method: String, count: Int = 1) async {
+    guard requests.lazy.filter({ $0.method == method }).count < count else { return }
+    await withCheckedContinuation { continuation in
+      requestWaitersByMethod[method, default: []].append(
+        RequestWaiter(count: count, continuation: continuation)
+      )
+    }
+  }
+
   public func stop() {
+    for waiters in requestWaitersByMethod.values {
+      for waiter in waiters {
+        waiter.continuation.resume()
+      }
+    }
+    requestWaitersByMethod.removeAll()
     inboundContinuation.finish()
   }
 
@@ -81,5 +112,23 @@ public actor ScriptedCodexTransport: CodexRPCTransport {
 
   public func remainingResponseCount() -> Int {
     responses.count
+  }
+
+  private func resumeRequestWaiters(for method: String) {
+    guard let waiters = requestWaitersByMethod[method] else { return }
+    let requestCount = requests.lazy.filter { $0.method == method }.count
+    var pending: [RequestWaiter] = []
+    for waiter in waiters {
+      if requestCount >= waiter.count {
+        waiter.continuation.resume()
+      } else {
+        pending.append(waiter)
+      }
+    }
+    if pending.isEmpty {
+      requestWaitersByMethod.removeValue(forKey: method)
+    } else {
+      requestWaitersByMethod[method] = pending
+    }
   }
 }
