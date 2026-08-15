@@ -1,7 +1,7 @@
 # Spedito: product specification
 
 - **Status:** Public working draft
-- **Date:** 1 August 2026
+- **Date:** 15 August 2026
 - **Product name:** Spedito
 - **Website:** [spedito.io](https://spedito.io/)
 - **Audience:** Users, contributors, product, design, and engineering
@@ -1108,6 +1108,13 @@ save and open the draft board part-way through the guided review. Closing with
 **Discard changes** restores the last saved draft, so partial planning is
 captured only when the owner asks for it and the backlog never presents unsaved
 picker state as fact.
+
+An unassigned ticket does not prevent saving a partial draft; it remains an
+explicit Start sprint blocker. Assignee picker changes remain sheet-local until
+**Save and open board** succeeds. While those choices differ from the saved
+draft, the footer offers **Discard changes**, and **Close** asks whether to
+discard or keep planning. Discard restores the persisted assignment set rather
+than projecting unsaved choices into the backlog.
 
 ### 9.5 Start sprint
 

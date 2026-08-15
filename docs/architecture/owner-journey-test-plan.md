@@ -1,12 +1,12 @@
 # Owner journey test research and implementation plan
 
 - **Date:** 15 August 2026
-- **Status:** Proposed; research complete, implementation not started
+- **Status:** Priority 0 ledger reconciled; remaining Priority 1 and 2 journeys stay planned
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Related execution ledger:** `docs/architecture/stabilization-plan.md`
 - **Sequenced work packets:** `docs/architecture/execution-plan.md`
-- **Evidence commit:** `69227e6`; every repository measurement below is taken at that commit and must be re-pinned when it is refreshed.
+- **Evidence baseline:** `69227e6`; sections 2 and 3.2 preserve measurements from that commit, while sections 3.4 and 7.4 record implemented packet evidence.
 
 ## 1. Conclusion
 
@@ -21,17 +21,27 @@ The right shape is layered:
 
 This extends the stabilization plan. It does not replace its strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
 
-The inventory below defines **124 owner journey contracts to implement**. None of them exists yet. Some contracts should become parameterized tests or several interruption variants, so the eventual test-method count will be higher. Only the 19 contracts marked **Shell = Y** are proved by a launched application process, and the initial UI suite in section 7.4 covers those 19 rows with 14 scenarios.
+The inventory below defines **124 owner journey contracts**. The Priority 0
+ledger in section 3.4 now gives every Priority 0 row a named test, a
+non-duplicative composed proof, or a recorded reason it is not automated.
+Priority 1 and 2 rows remain future journey work. Some contracts should become
+parameterized tests or several interruption variants, so the eventual
+test-method count will be higher. Only the 19 contracts marked **Shell = Y**
+need proof from a launched application process, and the accepted UI runner
+contract in section 7.4 covers the first cross-Product shell journey.
 
 ## 2. Repository evidence
 
 The assessment inspected the current app surfaces, the product specification, the stabilization plan, and the existing tests.
 
-Current scale:
+Baseline scale at evidence commit `69227e6`:
 
 - 42 Swift source files in `Sources/SpeditoApp`, approximately 44,700 lines.
 - 55 Swift test files: 28 app-layer files and 27 Core files.
-- `swift test list` exposed 464 automated tests, including 191 app-layer tests. The same commit declares 463 `@Test` functions and the current working tree already declares 466, so these counts are evidence about one commit rather than a durable figure.
+- `swift test list` exposed 464 automated tests, including 191 app-layer tests,
+  and the commit declared 463 `@Test` functions. The close-out tree declares
+  483 `@Test` functions, so all counts remain pinned evidence rather than a
+  durable invariant.
 - No XCUITest target, Xcode project, workspace, or UI test plan exists.
 - No `XCUIApplication` tests exist.
 - No `.accessibilityIdentifier(...)` contracts exist in `Sources/SpeditoApp`.
@@ -73,7 +83,7 @@ The proposal directly implements the stabilization plan's stated intent:
 
 The repository now contains the coordinator, operation-event, temporary-store, temporary-Git, and bounded-transport patterns needed to implement this plan incrementally. The remote repository presentation catalog is a concrete precedent.
 
-### 3.2 Currency and ledger inconsistency
+### 3.2 Baseline currency and ledger inconsistency at `69227e6`
 
 The stabilization document is date-current and its implementation-status prose is accurate about the remaining gap: it says the suite does not yet represent every product-owner journey and that most non-remote feature state still lives on `AppModel` even where long-lived task ownership is bounded.
 
@@ -91,6 +101,19 @@ Its checkbox ledger is not fully internally consistent:
 Before treating the stabilization plan as a completed execution ledger, reconcile those checked claims with the more accurate status prose. This journey plan should remain a separate work packet; it should not conceal unfinished extraction by redefining task ownership as end-to-end journey coverage.
 
 The stabilization plan's known-good baseline gate also remains open. New implementation should begin only after the product owner completes the existing inspection and accepts the baseline, unless the product owner explicitly changes that sequence. One deliberate exemption applies: a test-only failing reproduction that changes no production code may be written and committed before the gate, because accepting a known-good baseline that silently contains the known cross-Product Epic defect is worse than recording that defect with an executable proof.
+
+#### Close-out status — 15 August 2026
+
+The known-good gate was accepted and the ledger was reconciled before the
+remaining packets ran. Delivery transitions now belong to
+`TicketDeliveryWorkflowCoordinator`, capability decisions to
+`TicketDeliveryPermissionWorkflowCoordinator`, and scheduler and child-task
+lifecycle to `TicketDeliveryRuntimeCoordinator`; `AppModel` forwards delivery
+commands and supplies adapters. Three non-delivery Phase 7 slices remain
+explicitly open in `AppModel`. Section 14.6 no longer claims the four missing
+interactive query/recomputation measurements. The Priority 0 coverage result is
+recorded in section 3.4 rather than treating the full 124-row future inventory
+as implemented.
 
 ### 3.3 Binding to the stabilization audit
 
@@ -532,8 +555,9 @@ through the launched app, switches Products before releasing the structured
 reply, opens the non-expiring in-app banner, and verifies the exact Epic,
 Backlog destination, Business Analyst reply, question choices, custom answer,
 and enabled **Submit answers** control through stable accessibility
-identifiers. Release compilation excludes the fixture types. The serialized
-target-environment run remains this packet's acceptance gate.
+identifiers. Release compilation excludes the fixture types. The complete
+serialized launched-process contract passed in the target environment in
+[CI run 31891394137](https://github.com/cristianrgreco/Spedito/actions/runs/31891394137).
 
 Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
 

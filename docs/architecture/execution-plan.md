@@ -1,8 +1,8 @@
 # Execution plan: reconcile, protect, extract, verify
 
 - **Date:** 15 August 2026
-- **Status:** Proposed; ready to execute packet by packet
-- **Evidence commit:** `69227e6`, plus the current working tree where noted
+- **Status:** Implemented; close-out evidence recorded
+- **Evidence:** Packet commits after `f4b0c37`, plus this close-out packet
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Journey inventory:** `docs/architecture/owner-journey-test-plan.md`
@@ -14,7 +14,8 @@ Every packet follows the change and commit protocol in section 9 of the stabiliz
 
 ## 1. What this plan fixes
 
-Three findings, each measured rather than assumed.
+Three findings at evidence commit `69227e6`, each measured rather than assumed.
+Sections 2 and 10 record the implemented result.
 
 **The stabilization ledger overclaims.** Commit `69227e6` was an enormous, genuine decomposition: `ContentView.swift` went from 24,806 lines to 611, 63 files were added, `SQLiteStore` was split into 20 aggregate extensions, `GitHubRemoteRepositoryService` into five, and long-lived task sites in `AppModel` and `ContentView` fell from 59 and 97 to 1 and 2. Almost everything on that program landed. But `AppModel.swift` shrank only 13,442 → 12,459 lines, and the Phase 6 and Phase 7 boxes covering delivery execution, epic planning, and sprint planning are checked while that code is still in `AppModel`. The plan's own implementation-status prose says exactly this. The prose is right and the boxes are wrong, so the boxes must move.
 
@@ -24,21 +25,30 @@ Three findings, each measured rather than assumed.
 
 ## 2. Ground truth
 
-Measured facts, so no packet has to re-derive them. Re-measure before starting, and update this table if the working tree has moved.
+Measured final facts. The ratchet file stores the six concentration values and
+CI rejects either growth or an unrecorded improvement.
 
 | Metric | Value | How to reproduce |
 | --- | --- | --- |
-| `AppModel.swift` lines | 12,511 | `wc -l Sources/SpeditoApp/AppModel.swift` |
-| `ContentView.swift` lines | 613 | `wc -l Sources/SpeditoApp/ContentView.swift` |
-| `AppModel` functions | 319 | `grep -c "func " Sources/SpeditoApp/AppModel.swift` |
-| `AppModel` `@Published` | 34 | `grep -c "@Published" Sources/SpeditoApp/AppModel.swift` |
-| `AppModel` `try?` | 122 | `grep -c "try?" Sources/SpeditoApp/AppModel.swift` |
-| Task-launch sites, `AppModel` / `ContentView` | 1 / 2 | `grep -c "Task {\|Task(priority" <file>` |
-| Longest function | `recoverOrphanedExecutionRuns`, 746 lines, 29 awaits | `AppModel.swift:6839` |
-| Automated tests | 469 `@Test` declarations at `f4b0c37` | Count `@Test` declarations under `Tests/` |
+| `AppModel.swift` lines | 7,586 | `wc -l Sources/SpeditoApp/AppModel.swift` |
+| `ContentView.swift` lines | 556 | `wc -l Sources/SpeditoApp/ContentView.swift` |
+| `AppModel` function declarations | 315 | Count lines containing `func ` in `Sources/SpeditoApp/AppModel.swift` |
+| `AppModel` `@Published` | 34 | Count `@Published` lines in `Sources/SpeditoApp/AppModel.swift` |
+| `AppModel` `try?` | 50 | Count `try?` lines in `Sources/SpeditoApp/AppModel.swift` |
+| Task-launch sites, `AppModel` / `ContentView` | 0 / 2 | Count `Task {` or `Task(priority` in each file |
+| Longest remaining `AppModel` function | `sendTicketConversationMessage`, 168 lines | `AppModel.swift:2600-2767` |
+| Automated tests | 483 `@Test` declarations | Count `@Test` declarations under `Tests/` |
 | Schema versions | V1 → V13, in-place migrations | `Sources/SpeditoCore/Persistence/ProductDatabaseSchema.swift` |
 
-What the delivery extraction actually produced: `TicketDeliveryRuntimeCoordinator` (556 lines) owns task lifecycle — registries, active turns, wake continuations, busy and snapshot state. The workflow transitions did not move. `executeImplementationRun` (405 lines), `resumeTechLeadReview` (371), `completeSprintTicketAcceptance` (355), `applyTechLeadReviewResult` (331), `reviewCompletedImplementation` (301), `handleServerRequest` (246), and `runIntegrationConflictResolution` (196) still create worktrees, run Codex turns, produce candidates, bind review, integrate, and accept — all inside `AppModel`. Of its 319 functions, 49 are delivery, 31 epic, 26 sprint.
+The delivery extraction now has three explicit Core authorities.
+`TicketDeliveryRuntimeCoordinator` owns scheduler and child-task lifecycle;
+`TicketDeliveryWorkflowCoordinator` owns implementation, review, integration,
+acceptance, pause/stop, and recovery transitions; and
+`TicketDeliveryPermissionWorkflowCoordinator` owns durable capability decisions
+and replay. `AppModel` supplies adapters and forwards commands but executes none
+of those delivery transitions. The stabilization ledger records the three
+non-delivery Phase 7 slices and two delivery journey-evidence clauses that
+remain outside this execution plan's completed packets.
 
 By contrast, the large view files are not a problem and are out of scope: `BacklogView.swift` averages 83 lines per type and `SprintBoardView.swift` 237. Length there is composition, not concentration.
 
@@ -246,12 +256,19 @@ for release builds. `OwnerNotificationBanner` accepts a composition-supplied
 dismissal interval, and `EpicOwnerNotificationUITests` drives E02 through the
 ad-hoc-signed app bundle with UUID-backed controls and an explicit
 cross-process response gate. The Swift suite, release compilation, UI-test
-bundle compilation, and six architecture ratchets pass locally; the final
-serialized launched-process run is pending in the target CI environment.
+bundle compilation, six architecture ratchets, and complete serialized
+launched-process contract passed; target-environment evidence is
+[CI run 31891394137](https://github.com/cristianrgreco/Spedito/actions/runs/31891394137).
 
 ## Packet 9 — P0 journey matrix
 
 Implements the P0 rows in the order given by work packet 3 of the journey plan, starting with A09 schema migration. Applies the deduplication rule: record which of the 464 existing tests already cover part of a row and implement only the uncovered composition. Names each test for its row ID.
+
+**Implementation evidence — 15 August 2026:** A09 migrates a version-7 Product
+fixture through V13 while preserving its full history; P03 proves intentional
+partial-plan persistence and sheet-local discarded assignee choices. Section
+3.4 of the journey plan maps every Priority 0 row to a named test, a
+non-duplicative composed proof, or a specific recorded automation gap.
 
 ## Packet 10 — Close-out
 
@@ -260,17 +277,25 @@ Implements the P0 rows in the order given by work packet 3 of the journey plan, 
 3. Update `docs/technical-design.md` with the delivery boundaries actually implemented.
 4. Confirm every ratchet baseline reflects the improved code.
 
+**Close-out evidence — 15 August 2026:** the stabilization ledger names the
+three remaining Phase 7 slices and two incomplete delivery journey clauses.
+Approved sprint-planning behavior is in the product specification. The
+technical design and `AGENTS.md` feature map name the three Core delivery
+authorities and the `AppModel` forwarding boundary. All six ratchet values
+match the final implementation; none improved after its packet baseline, so no
+baseline value was changed during close-out.
+
 ## Definition of done
 
-- [ ] Every checked box in the stabilization plan is defensible against the code.
-- [ ] CI fails when `AppModel` or `ContentView` concentration regrows.
-- [ ] `AGENTS.md` names the owner of every feature.
-- [ ] An application-layer test can drive a scripted Codex turn.
-- [ ] The cross-Product Epic defect has a failing-then-passing journey test.
-- [ ] `AppModel` executes no delivery workflow transition.
-- [ ] The UI runner question is decided either way and recorded.
-- [ ] Every P0 journey row has a named test, or a recorded reason it does not.
-- [ ] Full suite passes with warnings as errors; `git diff --check` passes; the app has been relaunched and left running.
+- [x] Every checked box in the stabilization plan is defensible against the code.
+- [x] CI fails when `AppModel` or `ContentView` concentration regrows.
+- [x] `AGENTS.md` names the owner of every feature.
+- [x] An application-layer test can drive a scripted Codex turn.
+- [x] The cross-Product Epic defect has a failing-then-passing journey test.
+- [x] `AppModel` executes no delivery workflow transition.
+- [x] The UI runner question is decided either way and recorded.
+- [x] Every P0 journey row has a named test, or a recorded reason it does not.
+- [x] Full suite passes with warnings as errors; `git diff --check` passes; the app has been relaunched and left running.
 
 ## What this plan does not authorize
 

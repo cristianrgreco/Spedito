@@ -207,25 +207,35 @@ are read-only. The product catalog is fetched across stores once and
 partitioned into active and archived records in memory. Conversation thread
 summaries are part of the selected product snapshot, while message bodies are
 loaded only for the selected thread, so query count does not grow with archived
-or inactive conversation history. Focused observable application models own
-product-library selection, ticket and epic conversations, epic and sprint
-planning, ticket suggestions, retrospective synthesis, managed demos, Codex
-connection and usage, and product conversation title/activity lifecycles.
-`AppModel` composes their dependencies, forwards compatibility commands, and
-retains application lifecycle and navigation authority rather than their
-transient task registries or presentation storage.
+or inactive conversation history. Focused observable application models hold
+bounded product-library, conversation, planning, suggestion, retrospective,
+demo, Codex, and delivery presentation snapshots. `AppModel` composes those
+dependencies and retains application lifecycle, selected-Product, and
+navigation authority. It still executes three Phase 7 slices—ticket and Epic
+conversations/refinement, Epic planning and ticket suggestions, and sprint
+planning and goal generation—so it is not yet a pure composition boundary.
 
 Ticket delivery uses Core-owned workflow boundaries rather than AppModel-owned
-task dictionaries. `TicketDeliveryRuntimeCoordinator` owns scheduler wake-ups,
-implementation, review, integration, live-activity, permission, and acceptance
-operation lifecycles, including product-scoped cancellation and settlement.
+transitions or task dictionaries. `TicketDeliveryRuntimeCoordinator` owns
+scheduler wake-ups and the identity-safe lifecycle and settlement of
+implementation, review, integration, live-activity, permission, acceptance,
+and product-cancellation tasks. `TicketDeliveryWorkflowCoordinator` owns the
+delivery commands and transitions: implementation execution and evidence,
+candidate creation, exact-candidate review, serialized integration and conflict
+resolution, return-to-implementation decisions, acceptance and promotion,
+completion handoffs and reviewed knowledge, sprint pause/stop, and relaunch
+recovery. `TicketDeliveryPermissionWorkflowCoordinator` owns server-request
+routing, durable intent-before-delivery resolution, saved-grant replay, and
+recoverable acknowledgement.
+
 `SprintWorkRecoveryPolicy` derives restart actions from durable evidence;
 `SQLiteStore.performTicketDeliveryRecovery` applies each resulting multi-record
 cutover atomically; `AgentPermissionResolver` preserves decision intent across
 transport failure; and `GitWorkspaceManager` serializes repository mutations.
-The application composition layer supplies the current store, Codex, remote,
-demo, and presentation adapters, but those adapters cannot bypass the Core
-persistence, permission, cancellation, or Git invariants.
+The application composition layer supplies store, Codex, remote, demo, and
+presentation adapters through the coordinator delegate and forwards owner
+commands. Those adapters cannot bypass Core persistence, permission,
+cancellation, candidate, or Git invariants.
 
 Repository-changing candidate execution results also retain a schema-versioned
 demo launch specification. Durable demo-session rows record the candidate, state,
@@ -287,17 +297,22 @@ post-approval finalization into four decision-oriented stages: **In progress**,
 **In review**, **Ready for demo**, and **Done**. Integration and tech lead review
 share **In review**, with the card and work log stating which activity is current.
 
-`TicketDeliveryRuntimeCoordinator` is the single runtime owner for product
-schedulers, implementation and review turns, integration, live activity,
-permission-routing state, acceptance, and sprint cancellation intent. It keys
-every operation by durable product, run, candidate, or work-item identity;
-duplicate scheduling wakes the existing scheduler, replacement tokens prevent
-stale completions from clearing newer work, and product cancellation or shutdown
-cancels and awaits every owned child. Focused non-delivery runtimes apply the
-same ownership rule to ticket suggestions, planning conversations, retrospective
-synthesis, product conversations, and Codex connection monitoring. Short-lived
-owner commands are retained by a product-scoped command runtime so product
-archival and application shutdown also settle them before persistence closes.
+`TicketDeliveryRuntimeCoordinator` is the single lifecycle registry for product
+schedulers and delivery child operations. It keys every operation by durable
+product, run, candidate, or work-item identity; duplicate scheduling wakes the
+existing scheduler, replacement tokens prevent stale completions from clearing
+newer work, and product cancellation or shutdown cancels and awaits every owned
+child. `TicketDeliveryWorkflowCoordinator` is the corresponding transition
+authority and uses the runtime registry to admit implementation, review,
+integration, acceptance, and recovery work without storing a second workflow
+state. `TicketDeliveryPermissionWorkflowCoordinator` applies the same boundary
+to live and recovered capability decisions.
+
+Focused non-delivery runtimes apply the lifecycle-ownership rule to ticket
+suggestions, planning conversations, retrospective synthesis, product
+conversations, and Codex connection monitoring. Short-lived owner commands are
+retained by a product-scoped command runtime so product archival and
+application shutdown also settle them before persistence closes.
 
 Thirty dependency-free tickets produce thirty admitted runs in the local MVP.
 Account or machine back-pressure may delay the underlying turns, but there is no

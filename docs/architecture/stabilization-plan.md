@@ -20,35 +20,47 @@ This plan introduces those missing boundaries incrementally. It is deliberately 
 
 ## Implementation status
 
-The completed checkboxes below describe the accumulated working tree, not a
-known-good commit. Repository import, repository knowledge, remote repository
-Core and application boundaries, aggregate-organized persistence, deterministic
-operation ownership, and the Priority 0 permission, archive/retry, and team
-settings corrections are implemented and covered by focused tests.
+The repository and delivery stabilization packets have landed on reviewed
+commits. Repository import, repository knowledge, remote repository boundaries,
+aggregate-organized persistence, deterministic operation ownership, the
+Priority 0 audit corrections, and the Core-owned delivery workflow are
+implemented and covered by focused tests.
 
-Two architecture goals remain deliberately unchecked: delivery transition
-execution and most non-remote feature state still live on `AppModel`, even
-though their long-lived task ownership is now bounded, and broad reload/query
-amplification has not yet been fully measured and removed. Phase 0 owner
-inspection and explicit approval are also required before establishing the
-known-good commit. Do not interpret the checked extraction work as approval to
-skip those remaining gates.
+This plan is not fully closed. Three Phase 7 feature slices remain in
+`AppModel`: ticket and Epic conversations/refinement, Epic planning and ticket
+suggestions, and sprint planning and goal generation. Phase 6 still lacks
+complete journey evidence for changed-result conflict re-review and
+post-remote-merge interruption. Section 14.9 still requires the four interactive
+body-recomputation traces during product-owner inspection. The Priority 0
+journey ledger in `owner-journey-test-plan.md` records additional product or
+composition gaps rather than manufacturing passing wrappers around partial
+behavior.
 
 ### Current implementation evidence — 15 August 2026
 
-- `AppModel.swift` is 12,511 lines with 319 functions, 34 `@Published`
-  properties, 122 `try?` sites, and one task-launch site.
-- `ContentView.swift` is 613 lines with two task-launch sites.
-- `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery task
-  lifecycle. Transition execution remains in `AppModel`, including
-  `completeSprintTicketAcceptance` at line 4,287,
-  `recoverOrphanedExecutionRuns` at line 6,839,
-  `executeImplementationRun` at line 7,910, `resumeTechLeadReview` at line
-  8,651, `reviewCompletedImplementation` at line 9,457,
-  `applyTechLeadReviewResult` at line 9,759,
-  `runIntegrationConflictResolution` at line 10,223, and
-  `handleServerRequest` at line 11,977. The recovery function alone spans 746
-  lines and contains 29 awaits.
+- `AppModel.swift` is 7,586 lines with 315 function declarations, 34 `@Published`
+  properties, 50 `try?` sites, and no task-launch sites.
+- `ContentView.swift` is 556 lines with two task-launch sites.
+- `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery scheduler
+  and child-task lifecycle. `TicketDeliveryWorkflowCoordinator` is 5,243 lines
+  and owns implementation, candidate review, integration, acceptance, sprint
+  pause/stop, and interruption recovery transitions.
+  `TicketDeliveryPermissionWorkflowCoordinator` is 476 lines and owns durable,
+  least-privilege request resolution and replay.
+- `AppModel` retains adapter composition and command forwarding for delivery;
+  none of `recoverOrphanedExecutionRuns`, `executeImplementationRun`,
+  `resumeTechLeadReview`, `reviewCompletedImplementation`,
+  `applyTechLeadReviewResult`, `runIntegrationConflictResolution`, or
+  `completeSprintTicketAcceptance` remains there. Its server-request handler is
+  a four-line forwarder to the permission coordinator.
+- The remaining Phase 7 ownership is concrete: `refineTicket` and
+  `sendTicketConversationMessage`, `retryEpicPlanning`,
+  `runEpicClarificationTurn`, `generateEpicPlan`,
+  `generateAndSaveSprintGoal`, and `saveSprintPlan` still execute from
+  `AppModel`.
+- Final verification passed 483 warning-strict tests in 60 suites, all six
+  architecture ratchets, and `git diff --check`; the development app was
+  relaunched and left running.
 
 
 ## 2. Instructions for the implementing agent
@@ -790,13 +802,13 @@ durable decisions, automatic replay, and saved-grant delivery.
 - [x] Dependency-ready tickets are admitted and blocked dependants wait (`WorkflowPolicyTests.dependencyAwareRunAdmission`).
 - [x] Product switching does not suspend active delivery (`ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`).
 - [x] Product archival suspends only that product (`ProductExecutionLifecycleTests.productArchivalHasProductScope`).
-- [ ] Normal shutdown suspends all owned work and recovery resumes safely.
+- [x] Normal shutdown suspends all owned work and recovery resumes safely (`ProductExecutionLifecycleTests.appShutdownHasGlobalScope`, `FeatureOperationRegistryTests.scopedAndGlobalSettlement`, and `TicketDeliveryWorkflowCoordinatorTests.pausedDeliveryResumesExistingRun`).
 - [x] Failed or interrupted implementation preserves and requeues the same workspace, thread, and durable run (`ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity` / D10).
-- [ ] Permission request, approval, denial, and relaunch retain least privilege.
+- [x] Permission request, approval, denial, and relaunch retain least privilege (`AgentPermissionResolutionTests`, `SprintWorkRecoveryTests.interruptedPermissionDecisionIsRecoverable`, and `AgentPermissionGrantPolicyTests`).
 - [x] Review is bound to an immutable candidate and cannot attest its own work (`TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound` and `SprintWorkRecoveryTests` / D11).
 - [x] Clean integration preserves the exact candidate into review (`GitWorkspaceManagerTests.candidateLifecycle`, `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview`, and `SprintWorkRecoveryTests.queuedIntegratedReviewIsRecoverable` / D12).
 - [ ] Conflict resolution that changes the result requires focused re-review.
-- [ ] Parallel candidates serialize promotion against current local `trunk`.
+- [x] Parallel candidates serialize promotion against current local `trunk` (`GitWorkspaceManagerTests.sameProductCommandsSerialize` and `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`).
 - [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews (`TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`, `RemoteRepositoryServiceTests.localProductLifecycle`, and `MacOSDemoLauncherTests.candidateFailureDisposition` / D17).
 - [ ] Remote merge followed by interruption completes local reconciliation exactly once.
 - [x] Completed repository-free tickets preserve the implementation handoff and publish reviewed knowledge without creating repository state (`TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` / D19).
@@ -965,21 +977,23 @@ The stabilization program is done only when:
 - [x] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
 - [x] Remote account, connection, synchronization, and publication responsibilities are separated.
 - [x] Remote application state is no longer distributed across AppModel dictionaries and view state.
-- [ ] Delivery execution, review, integration, and acceptance are Core-owned workflows.
-- [ ] `AppModel` is an application composition/navigation boundary.
+- [x] Delivery execution, review, integration, and acceptance are Core-owned workflows.
+- [ ] `AppModel` is an application composition/navigation boundary; the three Phase 7 slices named in the implementation status remain.
 - [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
 - [x] Persistence code is organized by aggregate without changing database authority.
 - [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
-- [x] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage.
+- [ ] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage; post-remote-merge reconciliation remains open in Phase 6.
 - [x] Important owner-facing states are available in a preview or development scenario catalog.
 - [x] The full suite passes with warnings treated as errors.
 - [x] `git diff --check` passes.
 - [x] The development app has been relaunched and left running after the final app-affecting packet.
 - [x] The durable architecture documents describe the implemented result.
 
-## 13. First work packet to start
+## 13. Historical first work packet
 
-Unless the current baseline still has unresolved product defects, the first implementing agent should execute **Phase 0 only**:
+This section records the original starting gate. Phase 0, the owner inspection,
+and the known-good checkpoint are complete; these steps are not the next action.
+They were:
 
 1. verify the specification correction and implemented boundary;
 2. confirm `.build-launch/` is disposable generated output and ignore it;
@@ -988,7 +1002,9 @@ Unless the current baseline still has unresolved product defects, the first impl
 5. provide the Phase 0 owner inspection checklist; and
 6. stop before committing accumulated work or starting refactoring unless the product owner explicitly accepts the baseline.
 
-After that checkpoint, start Phase 1 and Phase 2 together as one bounded migration sequence: first make repository-import transitions deterministic in tests, then move repository-import task ownership out of `AppModel`. Do not begin repository knowledge, remote synchronization, or delivery extraction until that clean cutover passes full verification.
+The completed sequence then ran Phase 1 and Phase 2 together: repository-import
+transitions became deterministic before repository-import task ownership moved
+out of `AppModel`. Later packets preserved that clean-cutover ordering.
 
 
 ## 14. Targeted runtime and implementation audit
@@ -1184,16 +1200,22 @@ Required tests:
 
 ### 14.9 Priority 1 — One observable object invalidates unrelated presentation
 
-`AppModel` has 74 `@Published` properties and 59 task-launch sites. `ContentView.swift` contains 97 task-launch sites. Remote polling, Codex usage, ticket activity, repository analysis, settings, navigation, and delivery state therefore share one broad observation and lifecycle surface.
+`AppModel` now has 34 `@Published` properties and no task-launch sites;
+`ContentView.swift` has two task-launch sites. Focused feature models own remote
+polling, Codex usage, repository analysis, settings, product navigation, and
+delivery presentation, while three non-remote Phase 7 orchestration slices
+remain in `AppModel`.
 
-This is not only a file-size concern. A remote polling update can invalidate views that depend only on backlog state, and a global `errorMessage` can present a background failure in the wrong workspace.
+The static concentration and idle-trace results are materially improved, but
+the four owner-driven traces below remain the evidence needed to close this
+finding.
 
 Required correction:
 
-- [x] Complete the feature-model extractions in Phases 2, 3, 5, 6, and 7.
-- [x] Give each feature local loading, operation, and failure state.
-- [x] Keep global application state limited to composition, product selection, navigation, and truly global service availability.
-- [ ] Measure body recomputation for the backlog, sprint board, ticket sheet, and repository settings before and after extraction. The static ownership baseline moved from 79 to 33 `AppModel` `@Published` values, and a five-second idle trace of the relaunched build recorded no view-body updates; complete the four named interactive traces during product-owner inspection.
+- [ ] Complete the feature-model extractions in Phases 2, 3, 5, 6, and 7; Phase 7 still has three open slices.
+- [x] Give each extracted feature local loading, operation, and failure state.
+- [ ] Keep global application state limited to composition, product selection, navigation, and truly global service availability; the remaining Phase 7 orchestration must move first.
+- [ ] Measure body recomputation for the backlog, sprint board, ticket sheet, and repository settings before and after extraction. The static ownership baseline moved from 79 to 34 `AppModel` `@Published` values, and a five-second idle trace of the relaunched build recorded no view-body updates; complete the four named interactive traces during product-owner inspection.
 
 ### 14.10 Priority 2 — Dead compatibility paths weaken compile-time guarantees
 
