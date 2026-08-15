@@ -50,3 +50,6 @@ jobs:
             SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
             CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
             swift test -Xswiftc -warnings-as-errors
+
+      - name: Check architecture ratchets
+        run: ./scripts/check_architecture_ratchets.sh

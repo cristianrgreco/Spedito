@@ -243,6 +243,9 @@ Review uses these architecture ratchets:
   packet.
 - Commit an accepted work packet before starting unrelated implementation, and
   do not rewrite prior history to create that checkpoint.
+- Lower a value in `scripts/architecture_ratchets.baseline` whenever an
+  extraction improves it, so the improvement is locked in. Raising a baseline
+  requires an explicit reason in the accepted work packet.
 
 ## Validate changes
 
