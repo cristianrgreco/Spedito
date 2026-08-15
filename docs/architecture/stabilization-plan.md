@@ -767,7 +767,7 @@ This is the highest-risk extraction and must begin only after the repository wor
 - [x] Migrate implementation execution next, including permissions and live activity ownership.
 - [x] Extract candidate review without combining it with implementation.
 - [x] Extract integration and conflict resolution with exact candidate/review provenance.
-- [ ] Extract acceptance only after review and integration snapshots are stable.
+- [x] Extract acceptance only after review and integration snapshots are stable.
 - [x] Ensure each coordinator can recover from SQLite, Git workspaces, and Codex thread/turn evidence without prior AppModel memory.
 - [x] Remove migrated task registries and transition policy from `AppModel` after each complete cutover.
 - [x] Preserve product isolation and concurrent product execution.
@@ -777,11 +777,13 @@ This is the highest-risk extraction and must begin only after the repository wor
 wake continuations, and busy state. `TicketDeliveryWorkflowCoordinator` now
 owns implementation worktree/thread execution, evidence validation, candidate
 production, delivery notes, knowledge proposals, exact-candidate Tech Lead
-review, integration queueing, clean integration, conflict resolution, recovery,
-and return-to-implementation decisions;
+review, integration queueing, clean integration, conflict resolution, targeted
+review and integration recovery, return-to-implementation decisions, exact
+candidate acceptance, remote or local promotion, completion handoff
+publication, reviewed knowledge publication, and demo-failure correction.
 `TicketDeliveryPermissionWorkflowCoordinator` owns scoped request routing,
-durable decisions, automatic replay, and saved-grant delivery. Acceptance and
-finalization remain in `AppModel`.
+durable decisions, automatic replay, and saved-grant delivery. Delivery-wide
+interruption recovery remains in `AppModel` for the next clean subdomain cutover.
 
 ### Required journey tests
 
@@ -795,9 +797,9 @@ finalization remain in `AppModel`.
 - [x] Clean integration preserves the exact candidate into review (`GitWorkspaceManagerTests.candidateLifecycle`, `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview`, and `SprintWorkRecoveryTests.queuedIntegratedReviewIsRecoverable` / D12).
 - [ ] Conflict resolution that changes the result requires focused re-review.
 - [ ] Parallel candidates serialize promotion against current local `trunk`.
-- [ ] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews.
+- [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews (`TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`, `RemoteRepositoryServiceTests.localProductLifecycle`, and `MacOSDemoLauncherTests.candidateFailureDisposition` / D17).
 - [ ] Remote merge followed by interruption completes local reconciliation exactly once.
-- [ ] Completed tickets leave the required self-contained handoff for dependants.
+- [x] Completed repository-free tickets preserve the implementation handoff and publish reviewed knowledge without creating repository state (`TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` / D19).
 
 ### Acceptance
 

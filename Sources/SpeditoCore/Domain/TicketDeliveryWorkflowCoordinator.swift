@@ -98,6 +98,50 @@ public protocol TicketDeliveryWorkflowDelegate: AnyObject {
     candidate: CandidateRevision,
     integration: GitIntegrationSnapshot
   ) async throws -> TicketDeliveryRemoteIntegration
+  var deliveryRequiresKnowledgeApproval: Bool { get }
+  var deliveryDemoSessions: [DemoSession] { get }
+  func deliveryRemoteRepositoryState(productID: UUID) async -> GitHubRemoteRepositoryState?
+  func deliverySyncTicketPullRequestForDelivery(
+    productID: UUID,
+    publicationID: UUID
+  ) async throws -> GitHubTicketPullRequestSync
+  func deliveryHandleGitHubPullRequestSync(
+    _ sync: GitHubTicketPullRequestSync,
+    productID: UUID
+  ) async
+  func deliveryCheckRemoteRepositoryForDelivery(
+    productID: UUID
+  ) async throws -> GitHubRemoteRepositoryState?
+  func deliveryAcceptSafeRemoteSync(syncID: UUID, productID: UUID) async throws
+  func deliveryMergeTicketPullRequest(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws -> GitHubTicketPullRequestMergeResult?
+  func deliveryReturnTicketPullRequestToDraft(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws
+  func deliveryPrepareTicketPullRequestIfConnected(
+    productID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID
+  ) async throws -> RemotePublication?
+  func deliveryMarkTicketPullRequestReadyIfNeeded(
+    _ publication: RemotePublication?
+  ) async throws
+  func deliveryPrepareDemoForAcceptance(
+    candidate: CandidateRevision,
+    integratedSHA: String,
+    specification: DemoLaunchSpecification
+  ) async throws
+  func deliveryDemoPreparationShouldCorrectCandidate(_ error: Error) -> Bool
+  func deliveryStopManagedSession(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    removesPreview: Bool
+  ) async
+  func deliveryScheduleRetrospectiveSyntheses()
   func deliveryInheritedAgentInstructions(
     for product: Product,
     includesMandatoryKnowledge: Bool
@@ -121,23 +165,6 @@ public protocol TicketDeliveryWorkflowDelegate: AnyObject {
     _ candidate: CandidateRevision,
     removesPreview: Bool
   ) async
-  func deliveryFinalizeReviewedIntegration(
-    candidateID: UUID,
-    implementation: TicketExecutionResult,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws
-  func deliveryFinalizeReviewedLocalOutcome(
-    candidate: CandidateRevision,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws
-  func deliveryAdoptIntegratedBaselineForRevision(
-    candidate: CandidateRevision,
-    integratedSHA: String
-  ) async throws -> TicketRevisionBaseline
 }
 
 @MainActor
@@ -170,6 +197,15 @@ public final class TicketDeliveryWorkflowCoordinator {
     runtimeCoordinator
   }
   private var sprintWorkRecoveryPolicy: SprintWorkRecoveryPolicy { recoveryPolicy }
+
+  private var errorMessage: String? {
+    get { delegate?.deliveryErrorMessage }
+    set { delegate?.deliveryErrorMessage = newValue }
+  }
+
+  private func scheduleSprintExecution(productID: UUID) {
+    delegate?.deliveryScheduleSprintExecution(productID: productID)
+  }
 
   private var agentRunKnowledgeContext: [AgentRunKnowledgePage] {
     get { delegate?.deliveryAgentRunKnowledgeContext ?? [] }
@@ -210,6 +246,127 @@ public final class TicketDeliveryWorkflowCoordinator {
       candidate: candidate,
       integration: integration
     )
+  }
+
+  private var requiresKnowledgeApproval: Bool {
+    delegate?.deliveryRequiresKnowledgeApproval ?? false
+  }
+
+  private var demoSessions: [DemoSession] {
+    delegate?.deliveryDemoSessions ?? []
+  }
+
+  private func remoteRepositoryState(
+    productID: UUID
+  ) async -> GitHubRemoteRepositoryState? {
+    await delegate?.deliveryRemoteRepositoryState(productID: productID)
+  }
+
+  private func syncTicketPullRequestForDelivery(
+    productID: UUID,
+    publicationID: UUID
+  ) async throws -> GitHubTicketPullRequestSync {
+    guard let delegate else { throw CodexClientError.notConnected }
+    return try await delegate.deliverySyncTicketPullRequestForDelivery(
+      productID: productID,
+      publicationID: publicationID
+    )
+  }
+
+  private func handleGitHubPullRequestSync(
+    _ sync: GitHubTicketPullRequestSync,
+    productID: UUID
+  ) async {
+    await delegate?.deliveryHandleGitHubPullRequestSync(sync, productID: productID)
+  }
+
+  private func checkRemoteRepositoryForDelivery(
+    productID: UUID
+  ) async throws -> GitHubRemoteRepositoryState? {
+    guard let delegate else { throw CodexClientError.notConnected }
+    return try await delegate.deliveryCheckRemoteRepositoryForDelivery(productID: productID)
+  }
+
+  private func acceptSafeRemoteSync(syncID: UUID, productID: UUID) async throws {
+    guard let delegate else { throw CodexClientError.notConnected }
+    try await delegate.deliveryAcceptSafeRemoteSync(syncID: syncID, productID: productID)
+  }
+
+  private func mergeTicketPullRequest(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws -> GitHubTicketPullRequestMergeResult? {
+    guard let delegate else { throw CodexClientError.notConnected }
+    return try await delegate.deliveryMergeTicketPullRequest(
+      publicationID: publicationID,
+      productID: productID
+    )
+  }
+
+  private func returnTicketPullRequestToDraft(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws {
+    guard let delegate else { throw CodexClientError.notConnected }
+    try await delegate.deliveryReturnTicketPullRequestToDraft(
+      publicationID: publicationID,
+      productID: productID
+    )
+  }
+
+  private func prepareTicketPullRequestIfConnected(
+    productID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID
+  ) async throws -> RemotePublication? {
+    guard let delegate else { throw CodexClientError.notConnected }
+    return try await delegate.deliveryPrepareTicketPullRequestIfConnected(
+      productID: productID,
+      workItemID: workItemID,
+      candidateRevisionID: candidateRevisionID
+    )
+  }
+
+  private func markTicketPullRequestReadyIfNeeded(
+    _ publication: RemotePublication?
+  ) async throws {
+    guard let delegate else { throw CodexClientError.notConnected }
+    try await delegate.deliveryMarkTicketPullRequestReadyIfNeeded(publication)
+  }
+
+  private func prepareDemoForAcceptance(
+    candidate: CandidateRevision,
+    integratedSHA: String,
+    specification: DemoLaunchSpecification
+  ) async throws {
+    guard let delegate else { throw CodexClientError.notConnected }
+    try await delegate.deliveryPrepareDemoForAcceptance(
+      candidate: candidate,
+      integratedSHA: integratedSHA,
+      specification: specification
+    )
+  }
+
+  private func demoPreparationShouldCorrectCandidate(_ error: Error) -> Bool {
+    delegate?.deliveryDemoPreparationShouldCorrectCandidate(error) ?? false
+  }
+
+  private func stopManagedSession(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    removesPreview: Bool
+  ) async {
+    await delegate?.deliveryStopManagedSession(
+      productID: productID,
+      sourceKind: sourceKind,
+      launchID: launchID,
+      removesPreview: removesPreview
+    )
+  }
+
+  private func scheduleRetrospectiveSyntheses() {
+    delegate?.deliveryScheduleRetrospectiveSyntheses()
   }
 
   private func inheritedAgentInstructions(
@@ -259,48 +416,6 @@ public final class TicketDeliveryWorkflowCoordinator {
     await delegate?.deliveryStopDemoSession(candidate, removesPreview: removesPreview)
   }
 
-  private func finalizeReviewedIntegration(
-    candidateID: UUID,
-    implementation: TicketExecutionResult,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws {
-    guard let delegate else { throw CodexClientError.notConnected }
-    try await delegate.deliveryFinalizeReviewedIntegration(
-      candidateID: candidateID,
-      implementation: implementation,
-      implementationRun: implementationRun,
-      workItem: workItem,
-      reviewerName: reviewerName
-    )
-  }
-
-  private func finalizeReviewedLocalOutcome(
-    candidate: CandidateRevision,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws {
-    guard let delegate else { throw CodexClientError.notConnected }
-    try await delegate.deliveryFinalizeReviewedLocalOutcome(
-      candidate: candidate,
-      implementationRun: implementationRun,
-      workItem: workItem,
-      reviewerName: reviewerName
-    )
-  }
-
-  private func adoptIntegratedBaselineForRevision(
-    candidate: CandidateRevision,
-    integratedSHA: String
-  ) async throws -> TicketRevisionBaseline {
-    guard let delegate else { throw CodexClientError.notConnected }
-    return try await delegate.deliveryAdoptIntegratedBaselineForRevision(
-      candidate: candidate,
-      integratedSHA: integratedSHA
-    )
-  }
 
   @discardableResult
   public func updateAgentRun(
@@ -3113,5 +3228,635 @@ public final class TicketDeliveryWorkflowCoordinator {
       presentExecutionError(error, productID: candidate.productID)
     }
     await reloadSelectedProductIfCurrent(productID: candidate.productID)
+  }
+  private func finalizeReviewedIntegration(
+    candidateID: UUID,
+    implementation: TicketExecutionResult,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    reviewerName: String
+  ) async throws {
+    guard let store = store(for: workItem.productID) else { return }
+    let integratedCandidate = try await store.fetchCandidateRevision(id: candidateID)
+    guard
+      let integratedSHA = integratedCandidate.integratedSHA,
+      let demo = implementation.demo
+    else {
+      throw DemoLaunchValidationError.invalid(
+        "the reviewed candidate has no managed demo recipe."
+      )
+    }
+    let ticketPublication: RemotePublication?
+    do {
+      ticketPublication = try await prepareTicketPullRequestIfConnected(
+        productID: workItem.productID,
+        workItemID: workItem.id,
+        candidateRevisionID: integratedCandidate.id
+      )
+    } catch GitHubRemoteRepositoryServiceError.ticketIntegrationRequired {
+      try await requeueStaleReadyCandidate(
+        integratedCandidate,
+        reason:
+          "GitHub changed while this ticket was being prepared for review. Spedito will integrate the latest verified changes and review the ticket again."
+      )
+      await reloadSelectedProductIfCurrent(productID: workItem.productID)
+      scheduleSprintExecution(productID: workItem.productID)
+      return
+    }
+    do {
+      try await prepareDemoForAcceptance(
+        candidate: integratedCandidate,
+        integratedSHA: integratedSHA,
+        specification: demo
+      )
+    } catch {
+      guard
+        demoPreparationShouldCorrectCandidate(error)
+      else {
+        throw error
+      }
+      try await returnDemoFailureForCorrection(
+        candidateID: candidateID,
+        implementationRun: implementationRun,
+        workItem: workItem,
+        error: error
+      )
+      return
+    }
+    let repositoryURL = try productWorkspaceURL(productID: workItem.productID)
+    guard
+      try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+        repositoryURL: repositoryURL,
+        integratedSHA: integratedSHA
+      )
+    else {
+      try await requeueStaleReadyCandidate(
+        integratedCandidate,
+        reason: "Accepted trunk advanced while this demo revision was being prepared."
+      )
+      return
+    }
+    _ = try await store.updateCandidateRevision(
+      id: candidateID,
+      status: .readyForDemo
+    )
+    try await markTicketPullRequestReadyIfNeeded(ticketPublication)
+    _ = try await updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      eventActor: reviewerName,
+      eventDetail: "Reviewed candidate integrated and prepared for demo"
+    )
+    if let currentState = try await store.fetchWorkItems(productID: workItem.productID)
+      .first(where: { $0.id == workItem.id })?.state
+    {
+      if currentState == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .verifying,
+          actor: reviewerName,
+          reason: "Recovered the reviewed candidate"
+        )
+      }
+      if currentState == .integrating || currentState == .verifying {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .acceptance,
+          actor: reviewerName,
+          reason: "Reviewed candidate integrated; ready for product owner demo"
+        )
+      }
+    }
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+  }
+
+  private func finalizeReviewedLocalOutcome(
+    candidate: CandidateRevision,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    reviewerName: String
+  ) async throws {
+    guard let store = store(for: workItem.productID) else { return }
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .readyForDemo
+    )
+    _ = try await updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      eventActor: reviewerName,
+      eventDetail: "Reviewed local outcome ready for product owner review"
+    )
+    if let currentState = try await store.fetchWorkItems(productID: workItem.productID)
+      .first(where: { $0.id == workItem.id })?.state
+    {
+      if currentState == .integrating {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .verifying,
+          actor: reviewerName,
+          reason: "Recovered the reviewed local outcome"
+        )
+      }
+      if currentState == .integrating || currentState == .verifying {
+        _ = try await store.transitionWorkItem(
+          id: workItem.id,
+          to: .acceptance,
+          actor: reviewerName,
+          reason: "Reviewed local outcome ready for product owner review"
+        )
+      }
+    }
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+  }
+
+  public func returnDemoFailureForCorrection(
+    candidateID: UUID,
+    implementationRun: AgentRun,
+    workItem: WorkItem,
+    error: Error
+  ) async throws {
+    guard let store = store(for: workItem.productID) else { return }
+    let candidate = try await store.fetchCandidateRevision(id: candidateID)
+    guard let integratedSHA = candidate.integratedSHA else {
+      throw PersistenceError.corruptData(
+        "The failed demo candidate has no integrated revision to preserve."
+      )
+    }
+
+    let errorDetail = error.localizedDescription
+    await stopDemoSession(candidate, removesPreview: true)
+    _ = try await adoptIntegratedBaselineForRevision(
+      candidate: candidate,
+      integratedSHA: integratedSHA
+    )
+    _ = try await store.updateCandidateRevision(
+      id: candidate.id,
+      status: .changesRequested
+    )
+    try await store.markKnowledgePageProposals(
+      candidateRevisionID: candidate.id,
+      status: .superseded
+    )
+    if let integrationPath = candidate.integrationWorktreePath {
+      try? await gitWorkspaceManager.removeWorktree(
+        repositoryURL: productWorkspaceURL(productID: workItem.productID),
+        worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
+      )
+    }
+    if let currentState = try await store.fetchWorkItems(
+      productID: workItem.productID
+    ).first(where: { $0.id == workItem.id })?.state,
+      currentState == .integrating || currentState == .verifying
+    {
+      _ = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: .running,
+        actor: "Spedito",
+        reason: "Demo verification failed; correction queued"
+      )
+    }
+
+    let reviewCycle = max(0, candidate.version - 1)
+    let automaticallyRevises = SprintReviewCorrectionPolicy.shouldAutomaticallyRevise(
+      reviewCycle: reviewCycle
+    )
+    _ = try await updateAgentRun(
+      id: implementationRun.id,
+      status: automaticallyRevises ? .queued : .awaitingOwner,
+      eventActor: "Spedito",
+      eventDetail: automaticallyRevises
+        ? "Demo verification failed; correction queued for the implementer"
+        : "Automatic corrections paused after repeated demo verification failures"
+    )
+    _ = try await store.appendComment(
+      workItemID: workItem.id,
+      authorKind: .system,
+      authorName: "Spedito",
+      body:
+        automaticallyRevises
+        ? """
+        The reviewed candidate failed its managed demo verification, so I returned it to the implementer automatically. No product owner decision is needed.
+
+        Error:
+        \(errorDetail)
+
+        The reviewed integrated revision is now the ticket workspace baseline. The correction must produce a new candidate and pass tech lead review again.
+        """
+        : """
+        The reviewed candidate failed its managed demo verification:
+
+        \(errorDetail)
+
+        I preserved the integrated revision but paused automatic correction after \(SprintReviewCorrectionPolicy.changeRequestNumber(reviewCycle: reviewCycle)) revision attempts. Add product owner direction to resume the implementer.
+        """
+    )
+    await reloadSelectedProductIfCurrent(productID: workItem.productID)
+    if automaticallyRevises {
+      scheduleSprintExecution(productID: workItem.productID)
+    }
+  }
+
+
+
+  public func adoptIntegratedBaselineForRevision(
+    candidate: CandidateRevision,
+    integratedSHA: String
+  ) async throws -> TicketRevisionBaseline {
+    let workspace = URL(
+      fileURLWithPath: candidate.worktreePath,
+      isDirectory: true
+    )
+    try await gitWorkspaceManager.adoptIntegratedRevision(
+      ticketWorkspaceURL: workspace,
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integratedSHA
+    )
+    return TicketRevisionBaseline(
+      candidateHeadSHA: candidate.headSHA,
+      integratedSHA: integratedSHA
+    )
+  }
+  public func completeSprintTicketAcceptance(
+    workItemID: UUID,
+    productID: UUID
+  ) async -> Bool {
+    guard let store = store(for: productID) else { return false }
+    do {
+      guard
+        let current = try await store.fetchWorkItems(productID: productID)
+          .first(where: { $0.id == workItemID }),
+        current.state == .acceptance || current.state == .readyToRelease
+      else {
+        return false
+      }
+      let candidates = try await store.fetchCandidateRevisions(productID: productID)
+      let resumableCandidates = candidates.filter { candidate in
+        candidate.workItemID == workItemID
+          && (candidate.status == .readyForDemo
+            || candidate.status == .promoting
+            || candidate.status == .accepted)
+      }
+      guard
+        let candidate = resumableCandidates.max(by: { $0.version < $1.version })
+      else {
+        throw PersistenceError.corruptData(
+          "This ticket has no reviewed candidate revision ready to promote."
+        )
+      }
+      var ticketPublication: RemotePublication?
+      if candidate.deliveryKind.changesRepository,
+        let remoteState = await remoteRepositoryState(productID: productID),
+        remoteState.connection?.status == .connected
+      {
+        guard
+          let publication = remoteState.publications.first(where: {
+            $0.workItemID == workItemID && $0.candidateRevisionID == candidate.id
+              && ($0.status.isActive || $0.status == .merged)
+          })
+        else {
+          throw PersistenceError.corruptData(
+            "This reviewed ticket has no GitHub pull request."
+          )
+        }
+        if publication.status == .merged {
+          ticketPublication = publication
+        } else {
+          let sync = try await syncTicketPullRequestForDelivery(
+            productID: productID,
+            publicationID: publication.id
+          )
+          if sync.changesRequested {
+            await handleGitHubPullRequestSync(sync, productID: productID)
+            return false
+          }
+          guard !sync.closedWithoutMerge,
+            let refreshed = sync.state.publications.first(where: { $0.id == publication.id }),
+            refreshed.status == .open,
+            refreshed.pullRequest?.isDraft == false
+          else {
+            throw PersistenceError.corruptData(
+              "The GitHub pull request must be open and ready for review before approval."
+            )
+          }
+          ticketPublication = refreshed
+        }
+      }
+      let executionResult = try CodexTicketExecutor.decode(candidate.executionResultJSON)
+      let allProposals = try await store.fetchKnowledgePageProposals(productID: productID)
+      let proposals = allProposals.filter { $0.candidateRevisionID == candidate.id }
+      let publishableProposals: [KnowledgePageProposal]
+      if requiresKnowledgeApproval {
+        guard
+          !proposals.contains(where: {
+            $0.status == .proposed || $0.status == .reviewed
+          })
+        else {
+          throw PersistenceError.corruptData(
+            "Accept or reject every product knowledge proposal before completing the ticket."
+          )
+        }
+        publishableProposals = proposals.filter { $0.status == .accepted }
+      } else {
+        guard !proposals.contains(where: { $0.status == .proposed }) else {
+          throw PersistenceError.corruptData(
+            "Tech lead review must finish every product knowledge proposal before completing the ticket."
+          )
+        }
+        publishableProposals = proposals.filter {
+          $0.status == .reviewed || $0.status == .accepted
+        }
+      }
+      let canonicalPages = try await store.fetchKnowledgePages(productID: productID)
+      _ = try KnowledgePageProposalMaterializer.applying(
+        publishableProposals,
+        to: canonicalPages
+      )
+
+      if candidate.status == .readyForDemo {
+        _ = try await store.updateCandidateRevision(id: candidate.id, status: .promoting)
+      }
+      await stopDemoSession(candidate, removesPreview: true)
+      let repositoryURL = try productWorkspaceURL(productID: productID)
+      if candidate.deliveryKind.changesRepository {
+        guard let integratedSHA = candidate.integratedSHA else {
+          throw PersistenceError.corruptData(
+            "This repository-changing ticket has no reviewed integrated revision."
+          )
+        }
+        if let ticketPublication {
+          let mergedSHA: String
+          if ticketPublication.status == .merged,
+            let existingMergedSHA = ticketPublication.pullRequest?.mergedSHA
+          {
+            guard
+              let checked = try await checkRemoteRepositoryForDelivery(
+                productID: productID
+              )
+            else {
+              throw GitHubRemoteRepositoryServiceError.notConfigured
+            }
+            if let sync = checked.safeSync, sync.status == .awaitingConfirmation {
+              try await acceptSafeRemoteSync(
+                syncID: sync.id,
+                productID: productID
+              )
+            }
+            mergedSHA = existingMergedSHA
+          } else {
+            do {
+              guard
+                let result = try await mergeTicketPullRequest(
+                  publicationID: ticketPublication.id,
+                  productID: productID
+                )
+              else {
+                throw GitHubRemoteRepositoryServiceError.notConfigured
+              }
+              mergedSHA = result.mergedSHA
+            } catch GitHubRemoteRepositoryServiceError.ticketIntegrationRequired {
+              if ticketPublication.pullRequest?.isDraft == false {
+                try await returnTicketPullRequestToDraft(
+                  publicationID: ticketPublication.id,
+                  productID: productID
+                )
+              }
+              try await requeueStaleReadyCandidate(
+                candidate,
+                reason:
+                  "GitHub changed after this demo revision was prepared. Spedito will integrate the latest verified changes and review the ticket again."
+              )
+              await reloadSelectedProductIfCurrent(productID: productID)
+              scheduleSprintExecution(productID: productID)
+              return false
+            }
+          }
+          let acceptedSHA = try await gitWorkspaceManager.acceptedTrunkSHA(at: repositoryURL)
+          let acceptedTree = try await gitWorkspaceManager.revisionTreeSHA(
+            repositoryURL: repositoryURL,
+            revisionSHA: acceptedSHA
+          )
+          let integratedTree = try await gitWorkspaceManager.revisionTreeSHA(
+            repositoryURL: repositoryURL,
+            revisionSHA: integratedSHA
+          )
+          guard acceptedSHA == mergedSHA, acceptedTree == integratedTree else {
+            throw PersistenceError.corruptData(
+              "The merged GitHub revision did not reconcile to the reviewed ticket result."
+            )
+          }
+        } else {
+          let acceptedTrunkSHA = try await gitWorkspaceManager.acceptedTrunkSHA(at: repositoryURL)
+          if acceptedTrunkSHA != integratedSHA {
+            guard
+              try await gitWorkspaceManager.integratedRevisionContainsCurrentTrunk(
+                repositoryURL: repositoryURL,
+                integratedSHA: integratedSHA
+              )
+            else {
+              try await requeueStaleReadyCandidate(
+                candidate,
+                reason: "Accepted trunk advanced after this demo revision was prepared."
+              )
+              await reloadSelectedProductIfCurrent(productID: productID)
+              scheduleSprintExecution(productID: productID)
+              return false
+            }
+            try await gitWorkspaceManager.promote(
+              repositoryURL: repositoryURL,
+              integratedSHA: integratedSHA
+            )
+          }
+        }
+      }
+
+      if let specification = executionResult.demo,
+        specification.presentation.kind == .browser
+          || specification.presentation.kind == .macApplication,
+        (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
+      {
+        let previousLatestCandidateID = AcceptedAppLaunchPolicy.latest(in: candidates)?.candidate.id
+        if let previousLatestCandidateID {
+          await stopManagedSession(
+            productID: productID,
+            sourceKind: .acceptedCandidate,
+            launchID: previousLatestCandidateID,
+            removesPreview: true
+          )
+        }
+        let activeStatuses: Set<DemoSessionStatus> = [.preparing, .starting, .ready]
+        for session in demoSessions
+        where activeStatuses.contains(session.status)
+          && !(session.sourceKind == .acceptedCandidate
+            && session.launchID == previousLatestCandidateID)
+        {
+          await stopManagedSession(
+            productID: session.productID,
+            sourceKind: session.sourceKind,
+            launchID: session.launchID,
+            removesPreview: false
+          )
+        }
+      }
+      for proposal in publishableProposals {
+        _ = try await store.publishKnowledgePageProposal(
+          id: proposal.id,
+          authorName: requiresKnowledgeApproval ? "Me" : "Spedito"
+        )
+      }
+      if !publishableProposals.isEmpty {
+        _ = try await store.appendComment(
+          workItemID: current.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body:
+            "Published \(publishableProposals.count) approved product knowledge change\(publishableProposals.count == 1 ? "" : "s") to this Product's local knowledge."
+        )
+      }
+      if !executionResult.followUpTicketProposals.isEmpty {
+        _ = try await store.createFollowUpTicketSuggestionSession(
+          sourceWorkItemID: current.id,
+          drafts: followUpSuggestionDrafts(
+            executionResult.followUpTicketProposals,
+            source: current
+          )
+        )
+      }
+      _ = try await store.updateCandidateRevision(id: candidate.id, status: .accepted)
+
+      var latest = try await store.fetchWorkItems(productID: productID)
+        .first(where: { $0.id == current.id })
+      if latest?.state == .acceptance {
+        latest = try await store.transitionWorkItem(
+          id: current.id,
+          to: .readyToRelease,
+          actor: "Product owner",
+          reason:
+            candidate.deliveryKind == .localOutcome
+            ? "Reviewed outcome approved"
+            : "Demo approved"
+        )
+      }
+      if latest?.state == .readyToRelease {
+        latest = try await store.transitionWorkItem(
+          id: current.id,
+          to: .released,
+          actor: "Product owner",
+          reason: "Accepted outcome completed"
+        )
+      }
+      guard latest?.state == .released else {
+        throw PersistenceError.corruptData(
+          "The accepted ticket could not complete its workflow transitions."
+        )
+      }
+
+      let followUpSuffix =
+        executionResult.followUpTicketProposals.isEmpty
+        ? ""
+        : " \(executionResult.followUpTicketProposals.count) follow-up "
+          + (executionResult.followUpTicketProposals.count == 1
+            ? "ticket is"
+            : "tickets are")
+          + " ready for review in the backlog."
+      let completionComment: String
+      if candidate.deliveryKind == .localOutcome {
+        completionComment =
+          "Product owner approved local outcome v\(candidate.version). No repository revision was created or promoted."
+          + followUpSuffix
+      } else if let integratedSHA = candidate.integratedSHA {
+        completionComment =
+          "Product owner approved candidate v\(candidate.version). Integrated revision "
+          + "\(String(integratedSHA.prefix(8))) is now the accepted trunk."
+          + followUpSuffix
+      } else {
+        throw PersistenceError.corruptData(
+          "The accepted repository candidate has no integrated revision."
+        )
+      }
+      let existingComments = try await store.fetchComments(workItemID: current.id)
+      if !existingComments.contains(where: { $0.body == completionComment }) {
+        _ = try await store.appendComment(
+          workItemID: current.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body: completionComment
+        )
+      }
+      try await requeueStaleReadyCandidates(
+        productID: productID,
+        excluding: candidate.id
+      )
+      if let activePlan = try await store.fetchCurrentSprint(productID: productID),
+        activePlan.sprint.state.isInProgress,
+        activePlan.items.contains(where: { $0.workItemID == current.id })
+      {
+        _ = try await store.completeSprintIfFinished(id: activePlan.sprint.id)
+      }
+      if let integrationPath = candidate.integrationWorktreePath {
+        try? await gitWorkspaceManager.removeWorktree(
+          repositoryURL: repositoryURL,
+          worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
+        )
+      }
+      try? await gitWorkspaceManager.removeTicketWorkspace(
+        repositoryURL: repositoryURL,
+        worktreeURL: URL(fileURLWithPath: candidate.worktreePath, isDirectory: true),
+        branchName: candidate.branchName
+      )
+      await reloadSelectedProductIfCurrent(productID: productID)
+      scheduleRetrospectiveSyntheses()
+      scheduleSprintExecution(productID: productID)
+      return true
+    } catch {
+      if let candidate = try? await store.fetchCandidateRevisions(productID: productID)
+        .filter({
+          $0.workItemID == workItemID && $0.status == .promoting
+        })
+        .max(by: { $0.version < $1.version })
+      {
+        _ = try? await store.updateCandidateRevision(
+          id: candidate.id,
+          status: .readyForDemo
+        )
+      }
+      _ = try? await store.appendComment(
+        workItemID: workItemID,
+        authorKind: .system,
+        authorName: "Spedito",
+        body:
+          "Ticket completion stopped: \(error.localizedDescription)\n\nThe reviewed result remains ready for approval. Choose Approve and complete to retry."
+      )
+      errorMessage = error.localizedDescription
+      await reloadSelectedProductIfCurrent(productID: productID)
+      return false
+    }
+  }
+
+  private func followUpSuggestionDrafts(
+    _ proposals: [FollowUpTicketProposalDraft],
+    source: WorkItem
+  ) -> [TicketSuggestionDraft] {
+    let referenceMap = Dictionary(
+      uniqueKeysWithValues: proposals.enumerated().map { index, proposal in
+        (proposal.reference, "S\(index + 1)")
+      }
+    )
+    return proposals.enumerated().map { index, proposal in
+      TicketSuggestionDraft(
+        reference: "S\(index + 1)",
+        title: proposal.title,
+        type: proposal.type,
+        body: proposal.body,
+        acceptanceCriteria: proposal.acceptanceCriteria,
+        suggestedRole: proposal.suggestedRole,
+        priority: proposal.priority,
+        rationale: proposal.rationale,
+        dependsOnReferences: proposal.dependsOnReferences.compactMap {
+          referenceMap[$0]
+        },
+        dependsOnExistingWorkItemKeys: [source.key]
+      )
+    }
   }
 }

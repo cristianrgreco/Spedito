@@ -15,6 +15,9 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     )
     defer { try? FileManager.default.removeItem(at: root) }
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let productRepository = root.appendingPathComponent("product", isDirectory: true)
+    let reviewedSHA = try await gitWorkspaceManager.ensureRepository(at: productRepository)
 
     let databaseURL = root.appendingPathComponent("product.sqlite")
     let store = try SQLiteStore(url: databaseURL)
@@ -90,6 +93,10 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       tests: ["Focused checks passed"],
       knowledgeNotes: [],
       reviewInstructions: ["Inspect the exact candidate revision."],
+      demo: DemoLaunchSpecification(
+        title: "Reviewed evidence",
+        presentation: DemoPresentation(kind: .artifact, path: "evidence/result.txt")
+      ),
       retrospectiveWentWell: [],
       retrospectiveCouldImprove: [],
       retrospectiveActions: []
@@ -107,8 +114,8 @@ struct TicketDeliveryWorkflowCoordinatorTests {
         implementationRunID: implementationRun.id,
         version: 1,
         branchName: "ticket/T1",
-        baseSHA: "base-sha",
-        headSHA: "candidate-sha",
+        baseSHA: reviewedSHA,
+        headSHA: reviewedSHA,
         worktreePath: implementationRun.worktreePath ?? root.path,
         status: .queuedForReview,
         commitCount: 1,
@@ -122,7 +129,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     )
     let integration = GitIntegrationSnapshot(
       url: reviewWorkspace,
-      integratedSHA: "integrated-sha"
+      integratedSHA: reviewedSHA
     )
 
     let transport = ScriptedCodexTransport(
@@ -181,7 +188,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     )
     let coordinator = TicketDeliveryWorkflowCoordinator(
       delegate: delegate,
-      gitWorkspaceManager: GitWorkspaceManager(),
+      gitWorkspaceManager: gitWorkspaceManager,
       runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
         prepareScheduler: { _ in },
         drainScheduler: { _ in .finished }
@@ -208,20 +215,391 @@ struct TicketDeliveryWorkflowCoordinatorTests {
 
     #expect(delegate.errorMessage == nil)
 
-    #expect(persistedCandidate.status == .reviewing)
-    #expect(persistedCandidate.headSHA == "candidate-sha")
-    #expect(persistedCandidate.integratedSHA == "integrated-sha")
+    #expect(persistedCandidate.status == .readyForDemo)
+    #expect(persistedCandidate.headSHA == reviewedSHA)
+    #expect(persistedCandidate.integratedSHA == reviewedSHA)
     #expect(persistedCandidate.integrationWorktreePath == reviewWorkspace.path)
-    #expect(persistedItem.state == .verifying)
+    #expect(persistedItem.state == .acceptance)
     #expect(reviewRun.status == .completed)
     #expect(reviewRun.worktreePath == reviewWorkspace.path)
     #expect(comments.contains { $0.authorName == techLead.name && $0.body == "Approved the exact candidate." })
-    #expect(delegate.finalizedCandidateID == candidate.id)
     #expect(delegate.presentedRuns.contains { $0.id == reviewRun.id && $0.status == .completed })
     #expect(await transport.remainingResponseCount() == 0)
 
     await client.disconnect()
     await store.close()
+  }
+
+  @Test("[D17] Repository approval promotes the exact reviewed revision before Done")
+  @MainActor
+  func repositoryAcceptancePromotesExactRevision() async throws {
+    let harness = try await makeAcceptanceHarness(deliveryKind: .repositoryChange)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    #expect(harness.delegate.errorMessage == nil)
+
+    let candidate = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    let item = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first(where: { $0.id == harness.workItem.id })
+    )
+    let repository = harness.root.appendingPathComponent("product", isDirectory: true)
+    let acceptedSHA = try await harness.gitWorkspaceManager.currentSHA(at: repository)
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+
+    #expect(candidate.status == .accepted)
+    #expect(item.state == .released)
+    #expect(acceptedSHA == harness.candidate.integratedSHA)
+    #expect(
+      comments.filter { $0.body.contains("is now the accepted trunk") }.count == 1
+    )
+
+    await harness.store.close()
+  }
+
+  @Test("[D18] Failed acceptance preserves one reviewed result and retries once")
+  @MainActor
+  func failedAcceptanceRetriesWithoutDuplicateCompletion() async throws {
+    let harness = try await makeAcceptanceHarness(deliveryKind: .localOutcome)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let proposalParent = try await harness.store.createKnowledgePage(
+      productID: harness.product.id,
+      parentID: nil,
+      title: "Delivery notes"
+    )
+    let proposal = KnowledgePageProposal(
+      productID: harness.product.id,
+      sprintID: harness.candidate.sprintID,
+      workItemID: harness.workItem.id,
+      candidateRevisionID: harness.candidate.id,
+      operation: .create,
+      parentPageID: proposalParent.id,
+      title: "Rejected proposal",
+      proposedBodyMarkdown: "This must not become product truth.",
+      rationale: "Exercise recoverable completion."
+    )
+    try await harness.store.createKnowledgePageProposals([proposal])
+
+    #expect(
+      !(await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      ))
+    )
+    #expect(
+      try await harness.store.fetchCandidateRevision(id: harness.candidate.id).status
+        == .readyForDemo
+    )
+    _ = try await harness.store.recordKnowledgePageProposalDecision(
+      id: proposal.id,
+      accept: false,
+      authorName: "Product owner"
+    )
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    #expect(comments.filter { $0.body.contains("Ticket completion stopped:") }.count == 1)
+    #expect(
+      comments.filter { $0.body.contains("approved local outcome") }.count == 1
+    )
+    #expect(
+      try await harness.store.fetchCandidateRevision(id: harness.candidate.id).status
+        == .accepted
+    )
+
+    await harness.store.close()
+  }
+
+  @Test("[D19] Repository-free outcome publishes its handoff without Git")
+  @MainActor
+  func repositoryFreeAcceptanceCompletesWithoutGit() async throws {
+    let harness = try await makeAcceptanceHarness(deliveryKind: .localOutcome)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let repository = harness.root.appendingPathComponent("product", isDirectory: true)
+    let knowledgePages = try await harness.store.seedKnowledgeBase(
+      productID: harness.product.id
+    )
+    let deliveryHistory = try #require(
+      knowledgePages.first { $0.slug == "delivery-history" }
+    )
+    let knowledgeProposal = KnowledgePageProposal(
+      productID: harness.product.id,
+      sprintID: harness.candidate.sprintID,
+      workItemID: harness.workItem.id,
+      candidateRevisionID: harness.candidate.id,
+      operation: .create,
+      parentPageID: deliveryHistory.id,
+      title: "Reviewed recommendation",
+      proposedBodyMarkdown: "The durable reviewed recommendation.",
+      rationale: "Dependants need the approved outcome.",
+      status: .reviewed
+    )
+    try await harness.store.createKnowledgePageProposals([knowledgeProposal])
+    #expect(!FileManager.default.fileExists(atPath: repository.path))
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    #expect(harness.delegate.errorMessage == nil)
+
+    let candidate = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    let item = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first(where: { $0.id == harness.workItem.id })
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    let publishedKnowledge = try #require(
+      try await harness.store.fetchKnowledgePages(productID: harness.product.id)
+        .first(where: { $0.title == knowledgeProposal.title })
+    )
+    #expect(candidate.status == .accepted)
+    #expect(candidate.commitCount == 0)
+    #expect(item.state == .released)
+    #expect(!FileManager.default.fileExists(atPath: repository.path))
+    #expect(publishedKnowledge.bodyMarkdown == "The durable reviewed recommendation.")
+    #expect(publishedKnowledge.sourceWorkItemID == harness.workItem.id)
+    #expect(comments.contains { $0.body.contains("Completion handoff:") })
+    #expect(
+      comments.contains {
+        $0.body
+          == "Product owner approved local outcome v1. No repository revision was created or promoted."
+      }
+    )
+
+    await harness.store.close()
+  }
+
+  @MainActor
+  private func makeAcceptanceHarness(
+    deliveryKind: CandidateDeliveryKind
+  ) async throws -> AcceptanceHarness {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-acceptance-coordinator-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Acceptance authority")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: deliveryKind == .localOutcome
+        ? "Approve the reviewed recommendation"
+        : "Approve the reviewed product change",
+      type: .story,
+      body: "Complete only the exact reviewed result.",
+      acceptanceCriteria: ["The accepted result becomes durable exactly once."],
+      priority: .normal
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refinement started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready for delivery"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Complete one reviewed result",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .integrating,
+      actor: implementer.name,
+      reason: "Reviewed result produced"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .verifying,
+      actor: techLead.name,
+      reason: "Exact result reviewed"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .acceptance,
+      actor: techLead.name,
+      reason: "Ready for product owner approval"
+    )
+
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the accepted outcome.",
+      question: nil,
+      options: [],
+      summary: "The reviewed outcome is complete.",
+      changedFiles: deliveryKind == .repositoryChange ? ["feature.txt"] : [],
+      tests: ["Acceptance journey fixture"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Approve the exact reviewed result."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let resultData = try JSONEncoder().encode(result)
+    let resultJSON = try #require(String(data: resultData, encoding: .utf8))
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let candidateID = UUID()
+    let candidate: CandidateRevision
+    if deliveryKind == .repositoryChange {
+      let repository = root.appendingPathComponent("product", isDirectory: true)
+      let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+      let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+      try FileManager.default.createDirectory(
+        at: repository,
+        withIntermediateDirectories: true
+      )
+      _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+      let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+        repositoryURL: repository,
+        worktreesRootURL: ticketWorktrees,
+        ticketKey: workItem.key,
+        runID: implementationRun.id,
+        authorName: implementer.name
+      )
+      try Data("reviewed product change\n".utf8).write(
+        to: workspace.url.appendingPathComponent("feature.txt")
+      )
+      let snapshot = try await gitWorkspaceManager.createCandidate(
+        ticketWorkspaceURL: workspace.url,
+        ticketKey: workItem.key,
+        version: 1,
+        authorName: implementer.name,
+        summary: "Deliver the reviewed product change"
+      )
+      let integration = try await gitWorkspaceManager.integrateCandidate(
+        repositoryURL: repository,
+        integrationsRootURL: integrations,
+        candidateID: candidateID,
+        headSHA: snapshot.headSHA
+      )
+      candidate = CandidateRevision(
+        id: candidateID,
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        integratedSHA: integration.integratedSHA,
+        worktreePath: workspace.url.path,
+        integrationWorktreePath: integration.url.path,
+        status: .readyForDemo,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: resultJSON
+      )
+    } else {
+      candidate = CandidateRevision(
+        id: candidateID,
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        deliveryKind: .localOutcome,
+        branchName: "ticket/\(workItem.key)",
+        baseSHA: "local-outcome",
+        headSHA: "local-outcome",
+        worktreePath: root.appendingPathComponent("ticket", isDirectory: true).path,
+        status: .readyForDemo,
+        commitCount: 0,
+        executionResultJSON: resultJSON
+      )
+    }
+    _ = try await store.createCandidateRevision(candidate)
+    _ = try await store.appendComment(
+      workItemID: workItem.id,
+      authorKind: .agent,
+      authorName: implementer.name,
+      body: result.workLogComment
+    )
+
+    let client = CodexAppServerClient(
+      transport: ScriptedCodexTransport(responses: [])
+    )
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [implementationRun]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    return AcceptanceHarness(
+      root: root,
+      store: store,
+      product: product,
+      workItem: workItem,
+      candidate: candidate,
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      coordinator: coordinator
+    )
+  }
+
+  @MainActor
+  private struct AcceptanceHarness {
+    let root: URL
+    let store: SQLiteStore
+    let product: Product
+    let workItem: WorkItem
+    let candidate: CandidateRevision
+    let delegate: CandidateReviewDelegate
+    let gitWorkspaceManager: GitWorkspaceManager
+    let coordinator: TicketDeliveryWorkflowCoordinator
   }
 }
 
@@ -237,7 +615,6 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   var knowledgeContext: [AgentRunKnowledgePage] = []
   var knowledgeDestinations: [AgentRunKnowledgeDestination] = []
   var presentedRuns: [AgentRun] = []
-  var finalizedCandidateID: UUID?
 
   init(
     store: SQLiteStore,
@@ -310,6 +687,80 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     )
   }
 
+  var deliveryRequiresKnowledgeApproval: Bool { false }
+  var deliveryDemoSessions: [DemoSession] { [] }
+
+  func deliveryRemoteRepositoryState(productID: UUID) async -> GitHubRemoteRepositoryState? {
+    nil
+  }
+
+  func deliverySyncTicketPullRequestForDelivery(
+    productID: UUID,
+    publicationID: UUID
+  ) async throws -> GitHubTicketPullRequestSync {
+    throw GitHubRemoteRepositoryServiceError.notConfigured
+  }
+
+  func deliveryHandleGitHubPullRequestSync(
+    _ sync: GitHubTicketPullRequestSync,
+    productID: UUID
+  ) async {}
+
+  func deliveryCheckRemoteRepositoryForDelivery(
+    productID: UUID
+  ) async throws -> GitHubRemoteRepositoryState? {
+    nil
+  }
+
+  func deliveryAcceptSafeRemoteSync(syncID: UUID, productID: UUID) async throws {
+    throw GitHubRemoteRepositoryServiceError.notConfigured
+  }
+
+  func deliveryMergeTicketPullRequest(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws -> GitHubTicketPullRequestMergeResult? {
+    nil
+  }
+
+  func deliveryReturnTicketPullRequestToDraft(
+    publicationID: UUID,
+    productID: UUID
+  ) async throws {
+    throw GitHubRemoteRepositoryServiceError.notConfigured
+  }
+
+  func deliveryPrepareTicketPullRequestIfConnected(
+    productID: UUID,
+    workItemID: UUID,
+    candidateRevisionID: UUID
+  ) async throws -> RemotePublication? {
+    nil
+  }
+
+  func deliveryMarkTicketPullRequestReadyIfNeeded(
+    _ publication: RemotePublication?
+  ) async throws {}
+
+  func deliveryPrepareDemoForAcceptance(
+    candidate: CandidateRevision,
+    integratedSHA: String,
+    specification: DemoLaunchSpecification
+  ) async throws {}
+
+
+  func deliveryDemoPreparationShouldCorrectCandidate(_ error: Error) -> Bool {
+    error is DemoLaunchValidationError
+  }
+  func deliveryStopManagedSession(
+    productID: UUID,
+    sourceKind: DemoSessionSourceKind,
+    launchID: UUID,
+    removesPreview: Bool
+  ) async {}
+
+  func deliveryScheduleRetrospectiveSyntheses() {}
+
   func deliveryInheritedAgentInstructions(
     for product: Product,
     includesMandatoryKnowledge: Bool
@@ -348,29 +799,4 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     removesPreview: Bool
   ) async {}
 
-  func deliveryFinalizeReviewedIntegration(
-    candidateID: UUID,
-    implementation: TicketExecutionResult,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws {
-    finalizedCandidateID = candidateID
-  }
-
-  func deliveryFinalizeReviewedLocalOutcome(
-    candidate: CandidateRevision,
-    implementationRun: AgentRun,
-    workItem: WorkItem,
-    reviewerName: String
-  ) async throws {
-    finalizedCandidateID = candidate.id
-  }
-
-  func deliveryAdoptIntegratedBaselineForRevision(
-    candidate: CandidateRevision,
-    integratedSHA: String
-  ) async throws -> TicketRevisionBaseline {
-    TicketRevisionBaseline(candidateHeadSHA: candidate.headSHA, integratedSHA: integratedSHA)
-  }
 }
