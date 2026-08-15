@@ -344,24 +344,27 @@ Create a truthful known-good boundary before changing architecture. Do not refac
 - [x] Relaunch the app with `./scripts/relaunch.sh` and leave it running.
 - [x] Give the product owner the inspection checklist below.
 - [x] Fix only defects that prevent establishing the baseline; do not begin coordinator extraction in the same work packet.
-- [ ] Obtain explicit product-owner confirmation before committing all accumulated current changes.
-- [ ] Establish the known-good baseline commit without rewriting prior history.
+- [x] Obtain explicit product-owner confirmation before committing all accumulated current changes.
+- [x] Establish the known-good baseline commit without rewriting prior history.
 
 ### Owner inspection checklist
 
-- [ ] Create and open a blank product.
-- [ ] Import a public repository link.
-- [ ] Authorize GitHub from product creation and import an accessible private repository.
-- [ ] Cancel GitHub authorization and retry it.
-- [ ] Switch products while repository knowledge analysis is active.
-- [ ] Quit and relaunch while repository knowledge analysis is in a durable non-terminal phase.
-- [ ] Connect an imported product to its preserved GitHub repository.
-- [ ] Connect a local product to an eligible empty GitHub repository.
-- [ ] Review and either accept or reject incoming safe changes.
-- [ ] Publish a reviewed ticket as a draft pull request.
-- [ ] Observe GitHub review feedback in the ticket work log.
-- [ ] Approve the exact pull-request-backed ticket revision and verify local completion.
-- [ ] Confirm that error, retry, cancel, and dismissal actions are understandable without Git terminology beyond the product contract.
+- [x] Create and open a blank product.
+- [x] Import a public repository link.
+- [x] Authorize GitHub from product creation and import an accessible private repository.
+- [x] Cancel GitHub authorization and retry it.
+- [x] Switch products while repository knowledge analysis is active.
+- [x] Quit and relaunch while repository knowledge analysis is in a durable non-terminal phase.
+- [x] Connect an imported product to its preserved GitHub repository.
+- [x] Connect a local product to an eligible empty GitHub repository.
+- [x] Review and either accept or reject incoming safe changes.
+- [x] Publish a reviewed ticket as a draft pull request.
+- [x] Observe GitHub review feedback in the ticket work log.
+- [x] Approve the exact pull-request-backed ticket revision and verify local completion.
+- [x] Confirm that error, retry, cancel, and dismissal actions are understandable without Git terminology beyond the product contract.
+
+The product owner confirmed the completed inspection and accepted `f3e1fc3` as
+the known-good boundary on 15 August 2026.
 
 ### Acceptance
 
@@ -948,7 +951,7 @@ Use this template when starting every extraction or later feature:
 The stabilization program is done only when:
 
 - [x] The current product specification, technical design, and README agree.
-- [ ] The initial accumulated work has a product-owner-approved known-good commit.
+- [x] The initial accumulated work has a product-owner-approved known-good commit.
 - [x] Generated development output no longer pollutes repository status.
 - [x] Repository import has one coordinator and deterministic journey coverage.
 - [x] Repository knowledge analysis has one coordinator and fresh-instance recovery coverage.
@@ -1206,7 +1209,7 @@ These findings amend the first work packet in section 13:
 2. [x] Stop archived-product remote recovery and unbounded completed-analysis retry as a second focused defect packet.
 3. [x] Make team-settings save atomic and completion-aware.
 4. [x] Add failure-injection coverage for partial delivery recovery; perform the durable transition cutover in the owning Phase 6 packet rather than adding more AppModel repair branches.
-5. [ ] Complete the original Phase 0 specification reconciliation, full verification, relaunch, owner inspection, and known-good checkpoint.
+5. [x] Complete the original Phase 0 specification reconciliation, full verification, relaunch, owner inspection, and known-good checkpoint.
 6. [x] Execute Phase 1 and Phase 2 as previously ordered.
 7. [x] Address read amplification and Git serialization inside the relevant extraction phase, using measurements rather than speculative caching.
 8. [x] Delete legacy publication and protocol fallback paths during Phase 4 after durable-record migration is proven.
