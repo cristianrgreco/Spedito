@@ -18,6 +18,14 @@ func makeAppOwnerNotificationAdapters() -> (
 }
 
 @MainActor
+func interruptPendingPermissionRequestsForStartup(in store: SQLiteStore) async throws {
+  #if DEBUG
+    guard !UIFixtureRuntime.preservesPendingPermissionRequest else { return }
+  #endif
+  try await store.interruptPendingAgentPermissionRequests()
+}
+
+@MainActor
 func makeAppRemoteRepositoryService(
   registry: ProductStoreRegistry,
   gitWorkspaceManager: GitWorkspaceManager,

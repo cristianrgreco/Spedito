@@ -123,7 +123,7 @@ struct TicketRefinementApplicationTests {
       productID: product.id,
       goal: "Deliver the refined outcome",
       tokenBudgetLimit: nil,
-      items: [SprintDraftItemInput(workItemID: item.id)]
+      items: [SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)]
     )
     let model = AppModel(store: store, selectedProductID: product.id)
     await model.reloadSelectedProduct()

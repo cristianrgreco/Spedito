@@ -771,7 +771,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   )
   let codexConnectionRuntime = CodexConnectionRuntime()
   private let transientOwnerCommandRuntime = TransientOwnerCommandRuntime()
-  private let demoSessionFeature = DemoSessionFeatureModel()
+  let demoSessionFeature = DemoSessionFeatureModel()
   private var demoLauncher: MacOSDemoLauncher { demoSessionFeature.launcher }
   private var productsLaunchingManagedPresentation: Set<UUID> {
     get { demoSessionFeature.productsLaunchingPresentation }
@@ -1939,7 +1939,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let stores = storeRegistry?.allStores ?? injectedStore.map { [$0] } ?? []
       try repositoryKnowledgeCoordinator.cleanupAbandonedSnapshots()
       for productStore in stores {
-        try await productStore.interruptPendingAgentPermissionRequests()
+        try await interruptPendingPermissionRequestsForStartup(in: productStore)
         try await productStore.interruptWorkingConversationThreads()
         try await productStore.requeueGeneratingRetrospectiveSyntheses()
       }

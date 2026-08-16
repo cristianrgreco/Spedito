@@ -180,10 +180,7 @@ struct SQLiteStoreTests {
       goal: "Load only the active delivery aggregate",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: delivery.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: delivery.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -257,10 +254,7 @@ struct SQLiteStoreTests {
       goal: "Recover atomically",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -590,7 +584,7 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Next valuable increment",
       tokenBudgetLimit: nil,
-      items: [SprintDraftItemInput(workItemID: item.id)]
+      items: [SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)]
     )
     await currentStore.close()
 
@@ -1123,7 +1117,8 @@ struct SQLiteStoreTests {
         SprintDraftItemInput(
           workItemID: item.id,
           implementerProfileID: implementer.id,
-          reviewerProfileID: nil
+          reviewerProfileID: nil,
+          estimatedTokens: 1
         )
       ]
     )
@@ -1316,20 +1311,12 @@ struct SQLiteStoreTests {
       goal: "Prove parallel delivery",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: first.id,
-          implementerProfileID: implementer.id,
-          reviewerProfileID: reviewer.id
-        ),
-        SprintDraftItemInput(
-          workItemID: second.id,
-          implementerProfileID: implementer.id,
-          reviewerProfileID: reviewer.id
-        ),
+        SprintDraftItemInput(workItemID: first.id, implementerProfileID: implementer.id, reviewerProfileID: reviewer.id, estimatedTokens: 1),
+        SprintDraftItemInput(workItemID: second.id, implementerProfileID: implementer.id, reviewerProfileID: reviewer.id, estimatedTokens: 1),
       ]
     )
     #expect(draft.sprint.state == .draft)
-    #expect(draft.estimatedTokens == 0)
+    #expect(draft.estimatedTokens == 2)
     #expect(try await store.sprintReadinessIssues(sprintID: draft.sprint.id).isEmpty)
 
     let started = try await store.startSprint(id: draft.sprint.id)
@@ -1449,10 +1436,7 @@ struct SQLiteStoreTests {
       goal: "Pause without losing work",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: first.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: first.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: firstDraft.sprint.id)
@@ -1473,10 +1457,7 @@ struct SQLiteStoreTests {
       goal: "Start only after the pause is resolved",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: second.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: second.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     await #expect(throws: SprintPlanningError.activeSprintExists) {
@@ -1523,14 +1504,8 @@ struct SQLiteStoreTests {
       goal: "Stop safely when priorities change",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: doneItem.id,
-          implementerProfileID: implementer.id
-        ),
-        SprintDraftItemInput(
-          workItemID: unfinishedItem.id,
-          implementerProfileID: implementer.id
-        ),
+        SprintDraftItemInput(workItemID: doneItem.id, implementerProfileID: implementer.id, estimatedTokens: 1),
+        SprintDraftItemInput(workItemID: unfinishedItem.id, implementerProfileID: implementer.id, estimatedTokens: 1),
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -1611,10 +1586,7 @@ struct SQLiteStoreTests {
       goal: "Replan the unfinished outcome",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: unfinishedItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: unfinishedItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let replacement = try await store.startSprint(id: replacementDraft.sprint.id)
@@ -1645,10 +1617,7 @@ struct SQLiteStoreTests {
       goal: "Allow an elastic execution wave",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
 
@@ -1687,10 +1656,7 @@ struct SQLiteStoreTests {
       goal: "Respect readiness",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: ready.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: ready.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let issues = try await store.sprintReadinessIssues(sprintID: draft.sprint.id)
@@ -1711,6 +1677,75 @@ struct SQLiteStoreTests {
     #expect(storedItem.state == .ready)
     #expect(storedPlan.sprint.state == .draft)
     #expect(try await store.fetchAgentRuns(productID: product.id).isEmpty)
+    await store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `SprintStartAvailabilityTests.activeSprintBlocksDraftStart`
+  /// - `SprintStartAvailabilityTests.pausedSprintBlocksDraftStart`
+  /// - `SQLiteStoreTests.sprintReadinessBlocksStart`
+  /// This test covers only P05's combined missing-estimate and invalid-dependency blockers.
+  @Test("P05 missing estimates and invalid dependencies block sprint start")
+  func p05MissingEstimateAndInvalidDependencyBlockStart() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Blocked sprint")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let prerequisite = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Complete the prerequisite"
+    )
+    let createdDependent = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver the dependent",
+      acceptanceCriteria: ["The dependent outcome is visible"],
+      dependsOnWorkItemIDs: [prerequisite.id]
+    )
+    _ = try await store.transitionWorkItem(
+      id: createdDependent.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refine"
+    )
+    let dependent = try await store.transitionWorkItem(
+      id: createdDependent.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready for delivery"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Respect every start blocker",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: dependent.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 0
+        )
+      ]
+    )
+
+    let issues = try await store.sprintReadinessIssues(sprintID: draft.sprint.id)
+
+    #expect(
+      issues.map(\.message).contains(
+        "\(dependent.key) needs an estimate before the sprint can start."
+      )
+    )
+    #expect(
+      issues.map(\.message).contains(
+        "\(dependent.key) is blocked by \(prerequisite.key), which is not in this sprint, the active sprint, or done."
+      )
+    )
+    await #expect(throws: SprintPlanningError.self) {
+      _ = try await store.startSprint(id: draft.sprint.id)
+    }
+    #expect(try await store.fetchAgentRuns(productID: product.id).isEmpty)
+    #expect(try await store.fetchCurrentSprint(productID: product.id)?.sprint.state == .draft)
     await store.close()
   }
 
@@ -1751,10 +1786,7 @@ struct SQLiteStoreTests {
       goal: "Current increment",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: currentItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: currentItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: firstDraft.sprint.id)
@@ -1763,10 +1795,7 @@ struct SQLiteStoreTests {
       goal: "Following increment",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: nextItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: nextItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
 
@@ -2724,10 +2753,7 @@ struct SQLiteStoreTests {
       goal: "Use the specialist selected for the ticket artifact",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: audit.id,
-          implementerProfileID: security.id
-        )
+        SprintDraftItemInput(workItemID: audit.id, implementerProfileID: security.id, estimatedTokens: 1)
       ]
     )
     let ownedAudit = try #require(
@@ -2883,7 +2909,7 @@ struct SQLiteStoreTests {
       goal: "Deliver the next valuable increment",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(workItemID: item.id)
+        SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)
       ]
     )
     #expect(unassignedDraft.items.first?.implementerProfileID == nil)
@@ -2903,10 +2929,7 @@ struct SQLiteStoreTests {
       goal: unassignedDraft.sprint.goal,
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     #expect(try await store.sprintReadinessIssues(sprintID: draft.sprint.id).isEmpty)
@@ -2960,10 +2983,7 @@ struct SQLiteStoreTests {
       goal: "Do not omit unfinished prerequisites",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: dependent.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: dependent.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let issues = try await store.sprintReadinessIssues(sprintID: draft.sprint.id)
@@ -3119,7 +3139,7 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Ship and document",
       tokenBudgetLimit: nil,
-      items: [SprintDraftItemInput(workItemID: item.id)]
+      items: [SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)]
     ).sprint
     let delivery = try await store.upsertDeliveryNote(
       productID: product.id,
@@ -3195,7 +3215,7 @@ struct SQLiteStoreTests {
       productID: product.id,
       goal: "Keep the handoff accurate",
       tokenBudgetLimit: nil,
-      items: [SprintDraftItemInput(workItemID: item.id)]
+      items: [SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)]
     ).sprint
     let delivery = try await store.upsertDeliveryNote(
       productID: product.id,
@@ -3271,10 +3291,7 @@ struct SQLiteStoreTests {
       goal: "Capture feedback during delivery",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3380,10 +3397,7 @@ struct SQLiteStoreTests {
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3448,10 +3462,7 @@ struct SQLiteStoreTests {
       goal: "Learn from delivery",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3538,10 +3549,7 @@ struct SQLiteStoreTests {
       goal: "Learn from one delivery",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3690,10 +3698,7 @@ struct SQLiteStoreTests {
       goal: "Learn from repeated validation friction",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3804,10 +3809,7 @@ struct SQLiteStoreTests {
       goal: "Recover retrospective preparation",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -3902,10 +3904,7 @@ struct SQLiteStoreTests {
       goal: "Review the real result",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -4252,10 +4251,7 @@ struct SQLiteStoreTests {
       goal: "Ship a traceable candidate",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: item.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)
@@ -4558,10 +4554,7 @@ struct SQLiteStoreTests {
       goal: "Preserve durable Product history",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: deliveredItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: deliveredItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let active = try await store.startSprint(id: draft.sprint.id)

@@ -293,6 +293,191 @@ struct MacOSDemoLauncherTests {
     )
   }
 
+  /// Existing partial coverage:
+  /// - `DemoLaunchTests.acceptedMacApplicationHistory`
+  /// - `MacOSDemoLauncherTests.macApplicationPresentation`
+  /// This test covers only V06's historical-version selection through the managed launch command.
+  @Test("V06 selecting an accepted historical App version launches that exact revision")
+  func v06HistoricalAcceptedVersionLaunchesExactRevision() async throws {
+    let databaseRoot = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-v06-\(UUID())",
+      isDirectory: true
+    )
+    let store = try SQLiteStore(url: databaseRoot.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Version history")
+    let supportRoot = try appApplicationSupportURL()
+    let workspace = supportRoot
+      .appendingPathComponent("Product Workspaces", isDirectory: true)
+      .appendingPathComponent(product.id.uuidString, isDirectory: true)
+    let cachesRoot = try #require(
+      FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    )
+    let previewsRoot = cachesRoot
+      .appendingPathComponent("Spedito", isDirectory: true)
+      .appendingPathComponent("PreviewWorktrees", isDirectory: true)
+      .appendingPathComponent(product.id.uuidString, isDirectory: true)
+    defer {
+      try? FileManager.default.removeItem(at: databaseRoot)
+      try? FileManager.default.removeItem(at: workspace)
+      try? FileManager.default.removeItem(at: previewsRoot)
+    }
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    var item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Ship the native preview",
+      acceptanceCriteria: ["The accepted app opens"]
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refine"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready for delivery"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Ship two accepted versions",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let run = try #require(try await store.fetchAgentRuns(productID: product.id).first)
+    let git = GitWorkspaceManager()
+    let baseSHA = try await git.ensureRepository(at: workspace)
+    let applicationURL = try makeApplication(at: workspace)
+    let executableURL = applicationURL
+      .appendingPathComponent("Contents", isDirectory: true)
+      .appendingPathComponent("MacOS", isDirectory: true)
+      .appendingPathComponent("Demo")
+    try Data("#!/bin/sh\n# historical accepted build\n".utf8).write(to: executableURL)
+    let historicalSHA = try await git.checkpointTrunk(
+      at: workspace,
+      message: "Accept historical version"
+    )
+    try Data("#!/bin/sh\n# newer accepted build\n".utf8).write(to: executableURL)
+    let newerSHA = try await git.checkpointTrunk(
+      at: workspace,
+      message: "Accept newer version"
+    )
+    let specification = DemoLaunchSpecification(
+      title: "Native preview",
+      presentation: DemoPresentation(kind: .macApplication, path: "Demo.app")
+    )
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "Accepted app version.",
+      question: nil,
+      options: [],
+      summary: "The native preview is ready.",
+      changedFiles: ["Demo.app"],
+      tests: ["Managed App version journey"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Open the accepted native preview."],
+      demo: specification,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let resultData = try JSONEncoder().encode(result)
+    let resultJSON = try #require(String(data: resultData, encoding: .utf8))
+    let historicalID = UUID()
+    let newerID = UUID()
+    let historical = CandidateRevision(
+      id: historicalID,
+      productID: product.id,
+      sprintID: plan.sprint.id,
+      sprintItemID: sprintItem.id,
+      workItemID: item.id,
+      implementationRunID: run.id,
+      version: 1,
+      branchName: "ticket/\(item.key)",
+      baseSHA: baseSHA,
+      headSHA: historicalSHA,
+      integratedSHA: historicalSHA,
+      worktreePath: workspace.path,
+      integrationWorktreePath: workspace.path,
+      status: .accepted,
+      commitCount: 1,
+      executionResultJSON: resultJSON,
+      createdAt: Date(timeIntervalSince1970: 1),
+      updatedAt: Date(timeIntervalSince1970: 1)
+    )
+    let newer = CandidateRevision(
+      id: newerID,
+      productID: product.id,
+      sprintID: plan.sprint.id,
+      sprintItemID: sprintItem.id,
+      workItemID: item.id,
+      implementationRunID: run.id,
+      version: 2,
+      branchName: "ticket/\(item.key)",
+      baseSHA: historicalSHA,
+      headSHA: newerSHA,
+      integratedSHA: newerSHA,
+      worktreePath: workspace.path,
+      integrationWorktreePath: workspace.path,
+      status: .accepted,
+      commitCount: 1,
+      executionResultJSON: resultJSON,
+      createdAt: Date(timeIntervalSince1970: 2),
+      updatedAt: Date(timeIntervalSince1970: 2)
+    )
+    #expect(
+      AcceptedAppLaunchPolicy.all(in: [historical, newer]).map(\.candidate.id)
+        == [newerID, historicalID]
+    )
+    _ = try await store.createCandidateRevision(historical)
+    _ = try await store.createCandidateRevision(newer)
+    #expect(try await store.fetchCandidateRevisions(productID: product.id).count == 2)
+    let application = DemoRunningApplicationStub()
+    let opener = DemoApplicationOpenerStub(application: application)
+    let launcher = MacOSDemoLauncher(
+      executor: DemoCommandExecutorStub(),
+      applicationOpener: opener
+    )
+    let model = AppModel(store: store, selectedProductID: product.id)
+    model.demoSessionFeature.launcher = launcher
+    await model.reload()
+    #expect(model.selectedProductID == product.id)
+    #expect(model.errorMessage == nil)
+    #expect(model.candidateRevisions.map(\.id) == [historicalID, newerID])
+    #expect(model.candidateRevisions.map(\.status) == [.accepted, .accepted])
+
+    #expect(model.appVersions.map(\.id) == [newerID, historicalID])
+    #expect(await model.openAppVersion(id: historicalID))
+    let session = try #require(model.currentAppVersionSession(id: historicalID))
+    let previewExecutable = URL(
+      fileURLWithPath: try #require(session.previewWorktreePath),
+      isDirectory: true
+    )
+    .appendingPathComponent("Demo.app/Contents/MacOS/Demo")
+    .path
+    #expect(session.status == .ready)
+    #expect(model.currentAppVersionSession(id: newerID) == nil)
+    #expect(
+      try String(contentsOfFile: previewExecutable, encoding: .utf8)
+        == "#!/bin/sh\n# historical accepted build\n"
+    )
+    #expect(opener.openedApplicationURLs.count == 1)
+
+    await model.stopAppVersion(id: historicalID)
+    await model.shutdown()
+    await store.close()
+  }
+
   private func makeWorkspace() throws -> URL {
     let workspace = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-demo-launch-\(UUID())", isDirectory: true)

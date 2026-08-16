@@ -524,10 +524,7 @@ struct ProductScopedPersistenceTests {
       goal: "Recover without duplication",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: readyItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: readyItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     _ = try await store.startSprint(id: draft.sprint.id)
@@ -649,6 +646,118 @@ struct ProductScopedPersistenceTests {
     await model.shutdown()
     for store in registry.allStores {
       await store.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `ProductStoreRegistryTests.productCreationOnlyNeedsAName`
+  /// - `ProductStoreRegistryTests.finalSchemaAndAgentViews`
+  /// This test covers only A02's combined blank-Product activation: workspace, Git, database,
+  /// starter team, and selected Product become authoritative in one command.
+  @Test("A02 blank Product creation activates its complete local workspace")
+  func a02BlankProductCreationActivatesLocalWorkspace() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let model = AppModel(storeRegistry: registry)
+
+    #expect(await model.createProductAndSelect(.blank(name: "Owner product")))
+    let product = try #require(model.selectedProduct)
+    let workspace = fixture.workspacesURL.appendingPathComponent(
+      product.id.uuidString,
+      isDirectory: true
+    )
+    #expect(FileManager.default.fileExists(atPath: workspace.path))
+    #expect(
+      FileManager.default.fileExists(
+        atPath: workspace.appendingPathComponent(".git", isDirectory: true).path
+      )
+    )
+    #expect(FileManager.default.fileExists(atPath: registry.databaseURL(for: product.id).path))
+    let store = try #require(registry.store(for: product.id))
+    let roles = Set(try await store.fetchAgentProfiles(productID: product.id).map(\.role))
+    #expect(roles.contains(.businessAnalyst))
+    #expect(roles.contains(.implementer))
+    #expect(roles.contains(.lead))
+    #expect(model.products == [product])
+    let repositorySHA = try await GitWorkspaceManager().currentSHA(at: workspace)
+    #expect(repositorySHA.count == 40)
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `AppModelStartupTests.legacyDefaultsMigration`
+  /// - `SprintBoardSelectionTests.newlyPlannedSprintBecomesSelected`
+  /// This test covers only A05's relaunched Product, destination, and Product-scoped sprint
+  /// tuple using the same persisted keys read by the application shell.
+  @Test("A05 relaunch restores the Product destination and sprint tuple")
+  func a05RelaunchRestoresWorkspaceTuple() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let product = try await registry.createProduct(name: "Relaunch product")
+    let store = try #require(registry.store(for: product.id))
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Restore the selected sprint"
+    )
+    let plan = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Restore one workspace tuple",
+      tokenBudgetLimit: nil,
+      items: [SprintDraftItemInput(workItemID: item.id, estimatedTokens: 1)]
+    )
+    let destinationKey = "workspaceDestination.\(product.id.uuidString)"
+    UserDefaults.standard.set(WorkspaceDestination.sprint.rawValue, forKey: destinationKey)
+    SprintBoardSelectionDefaults.select(plan.sprint.id, for: product.id)
+    defer {
+      UserDefaults.standard.removeObject(forKey: destinationKey)
+      SprintBoardSelectionDefaults.select(nil, for: product.id)
+    }
+
+    let relaunched = try await fixture.relaunch(
+      closing: registry,
+      selectedProductID: product.id
+    )
+    #expect(relaunched.model.selectedProductID == product.id)
+    #expect(
+      UserDefaults.standard.string(forKey: destinationKey)
+        .flatMap(WorkspaceDestination.init(rawValue:)) == .sprint
+    )
+    #expect(SprintBoardSelectionDefaults.selectedSprintID(for: product.id) == plan.sprint.id)
+    #expect(relaunched.model.sprintPlan?.sprint.id == plan.sprint.id)
+    await relaunched.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `ProductExecutionLifecycleTests.productArchivalHasProductScope`
+  /// - `SQLiteStoreTests.productArchiveAndRestorePreserveHistory`
+  /// This test covers only A06's post-archive application navigation to the remaining Product
+  /// while the archived Product remains durable and absent from active navigation.
+  @Test("A06 archiving the selected Product routes to the remaining active Product")
+  func a06ArchiveSelectedProductRoutesToRemainingProduct() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let archivedProduct = try await registry.createProduct(name: "Archive me")
+    let remainingProduct = try await registry.createProduct(name: "Keep me")
+    let model = AppModel(storeRegistry: registry, selectedProductID: archivedProduct.id)
+    await model.reload()
+
+    #expect(await model.archiveSelectedProduct())
+    #expect(model.selectedProductID == remainingProduct.id)
+    #expect(model.products.map(\.id) == [remainingProduct.id])
+    #expect(
+      try await registry.fetchProducts(status: .archived).map(\.id) == [archivedProduct.id]
+    )
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
     }
   }
 

@@ -1336,6 +1336,7 @@ struct CandidateSprintPanel: View {
         }
         .buttonStyle(.borderedProminent)
         .disabled(items.isEmpty)
+        .accessibilityIdentifier("sprint.plan.open")
       }
       .padding(.horizontal, 2)
 
@@ -2576,6 +2577,7 @@ struct PlanningTicketRow: View {
         : (dropEvaluation?.isValid == false ? 0.45 : 1)
     )
     .contentShape(Rectangle())
+    .accessibilityIdentifier("ticket.row.\(item.id.uuidString)")
     .onTapGesture(perform: onOpen)
     .onHover { hovering in
       withAnimation(.easeOut(duration: 0.12)) {

@@ -7,19 +7,21 @@ final class EpicOwnerNotificationUITests: XCTestCase {
   }
 
   func testE02NeedsInputOpensTheExactEpicAcrossProducts() throws {
-    let repositoryRoot = URL(fileURLWithPath: #filePath)
+    let applicationURL = Bundle(for: type(of: self)).bundleURL
       .deletingLastPathComponent()
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-    let applicationURL =
-      repositoryRoot
-      .appendingPathComponent(".build/app/debug/Spedito.app", isDirectory: true)
+      .deletingLastPathComponent()
+      .appendingPathComponent("Spedito.app", isDirectory: true)
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: applicationURL.path),
       "Build the debug app bundle before running UI tests."
     )
 
-    let fixtureRoot = FileManager.default.temporaryDirectory
+    let cachesURL = try XCTUnwrap(
+      FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    )
+    let fixtureRoot = cachesURL
       .appendingPathComponent("spedito-ui-e02-\(UUID().uuidString)", isDirectory: true)
     let releaseSignalURL = fixtureRoot.appendingPathComponent("release-epic-turn")
     let turnStartedSignalURL = fixtureRoot.appendingPathComponent("epic-turn-started")
@@ -36,6 +38,7 @@ final class EpicOwnerNotificationUITests: XCTestCase {
     app.launchEnvironment["SPEDITO_UI_FIXTURE_ROOT"] = fixtureRoot.path
     app.launchEnvironment["SPEDITO_UI_FIXTURE_SIGNAL"] = releaseSignalURL.path
     app.launch()
+    app.activate()
     addTeardownBlock {
       if app.state != .notRunning {
         app.terminate()

@@ -223,6 +223,7 @@ struct SprintPlanningView: View {
             RoundedRectangle(cornerRadius: 12)
               .stroke(.orange.opacity(0.22), lineWidth: 1)
           }
+          .accessibilityIdentifier("sprint.plan.risks")
         }
 
         VStack(alignment: .leading, spacing: 0) {
@@ -301,10 +302,12 @@ struct SprintPlanningView: View {
         }
         .buttonStyle(.borderedProminent)
         .disabled(!canSave || isSaving)
+        .accessibilityIdentifier("sprint.plan.save")
       }
     }
     .padding(26)
     .frame(minWidth: 1_000, idealWidth: 1_160, minHeight: 680, idealHeight: 780)
+    .accessibilityIdentifier("sprint.plan")
     .onAppear {
       prepare()
     }

@@ -94,6 +94,7 @@ struct ProductLibraryView: View {
           Button(showingArchived ? "Hide archived" : "Show archived") {
             showingArchived.toggle()
           }
+          .accessibilityIdentifier("products.archived.toggle")
         }
         Button {
           showingNewProduct = true
@@ -218,6 +219,7 @@ struct ProductLibraryView: View {
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.defaultAction)
         .disabled(selectedProduct == nil || isOpening || restoringProductID != nil)
+        .accessibilityIdentifier("products.open")
       }
       .padding(.horizontal, 20)
       .frame(height: 58)
@@ -414,5 +416,7 @@ private struct ArchivedProductLibraryRow: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
     .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("product.archived.row.\(product.id.uuidString)")
   }
 }

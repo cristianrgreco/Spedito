@@ -304,6 +304,7 @@ struct TeamSidebar: View {
                 .font(.caption)
               }
               .buttonStyle(.plain)
+              .accessibilityIdentifier("nav.product-settings")
               .foregroundStyle(.secondary)
               if productSetupNeedsAttention || productSetupCompletedWithoutKnowledge {
                 Button {
@@ -366,8 +367,10 @@ struct TeamSidebar: View {
             }
           }
           .tag(WorkspaceDestination.sprint)
+          .accessibilityIdentifier("nav.sprint")
           Label("App versions", systemImage: "macwindow")
             .tag(WorkspaceDestination.app)
+            .accessibilityIdentifier("nav.app")
         }
 
         Section("Improve") {
@@ -421,6 +424,7 @@ struct TeamSidebar: View {
             }
           }
           .tag(WorkspaceDestination.conversation)
+          .accessibilityIdentifier("nav.conversation")
 
           HStack(spacing: 6) {
             Button {

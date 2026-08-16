@@ -999,6 +999,119 @@ struct SprintTicketWorkLogHistoryTests {
     )
   }
 
+  /// Existing partial coverage:
+  /// - `SprintTicketWorkLogHistoryTests.readyForDemoCommentRouting`
+  /// - `SprintTicketWorkLogHistoryTests.demoFeedbackCommentReplacesTransitionEvent`
+  /// - `GitWorkspaceManagerTests.reviewedIntegrationBecomesRevisionBaseline`
+  /// This test covers only D15's composition from the Ready-for-demo comment command to the
+  /// unchanged durable candidate.
+  @Test("D15 a Ready-for-demo comment leaves the current candidate valid")
+  @MainActor
+  func d15ReadyForDemoCommentPreservesCandidate() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-d15-comment-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Ready demo comment")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    var item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Keep the reviewed demo",
+      acceptanceCriteria: ["Comments preserve the reviewed candidate."]
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refine"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Review one demo",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: reviewer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let run = try #require(try await store.fetchAgentRuns(productID: product.id).first)
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implement"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .integrating,
+      actor: implementer.name,
+      reason: "Integrate"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .verifying,
+      actor: reviewer.name,
+      reason: "Review"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .acceptance,
+      actor: reviewer.name,
+      reason: "Ready for demo"
+    )
+    let candidate = CandidateRevision(
+      productID: product.id,
+      sprintID: plan.sprint.id,
+      sprintItemID: sprintItem.id,
+      workItemID: item.id,
+      implementationRunID: run.id,
+      version: 1,
+      deliveryKind: .localOutcome,
+      branchName: "ticket/\(item.key)",
+      baseSHA: "local-outcome",
+      headSHA: "local-outcome",
+      worktreePath: root.appendingPathComponent("ticket", isDirectory: true).path,
+      status: .readyForDemo,
+      commitCount: 0,
+      executionResultJSON: "{}"
+    )
+    _ = try await store.createCandidateRevision(candidate)
+    let before = try await store.fetchCandidateRevision(id: candidate.id)
+    let model = AppModel(store: store, selectedProductID: product.id)
+    await model.reload()
+
+    let comment = await model.appendSprintWorkLogComment(
+      workItemID: item.id,
+      productID: product.id,
+      body: "Can we confirm the empty state during the demo?"
+    )
+
+    let after = try await store.fetchCandidateRevision(id: candidate.id)
+    #expect(comment?.body == "Can we confirm the empty state during the demo?")
+    #expect(after == before)
+    #expect(after.status == .readyForDemo)
+
+    await model.shutdown()
+    await store.close()
+  }
+
   private func candidate(
     version: Int,
     createdAt: Date,

@@ -50,11 +50,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       goal: "Review one immutable candidate",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: workItem.id,
-          implementerProfileID: implementer.id,
-          reviewerProfileID: techLead.id
-        )
+        SprintDraftItemInput(workItemID: workItem.id, implementerProfileID: implementer.id, reviewerProfileID: techLead.id, estimatedTokens: 1)
       ]
     )
     let plan = try await store.startSprint(id: draft.sprint.id)
@@ -497,7 +493,8 @@ struct TicketDeliveryWorkflowCoordinatorTests {
 
   @MainActor
   private func makeAcceptanceHarness(
-    deliveryKind: CandidateDeliveryKind
+    deliveryKind: CandidateDeliveryKind,
+    demo: DemoLaunchSpecification? = nil
   ) async throws -> AcceptanceHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-acceptance-coordinator-\(UUID())",
@@ -537,11 +534,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       goal: "Complete one reviewed result",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: workItem.id,
-          implementerProfileID: implementer.id,
-          reviewerProfileID: techLead.id
-        )
+        SprintDraftItemInput(workItemID: workItem.id, implementerProfileID: implementer.id, reviewerProfileID: techLead.id, estimatedTokens: 1)
       ]
     )
     let plan = try await store.startSprint(id: draft.sprint.id)
@@ -584,6 +577,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       tests: ["Acceptance journey fixture"],
       knowledgeNotes: [],
       reviewInstructions: ["Approve the exact reviewed result."],
+      demo: demo,
       retrospectiveWentWell: [],
       retrospectiveCouldImprove: [],
       retrospectiveActions: []
@@ -702,6 +696,263 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     )
   }
 
+  /// Existing partial coverage:
+  /// - `SQLiteStoreTests.agentPermissionRequests`
+  /// - `AgentPermissionResolutionTests.persistenceFailureFailsClosed`
+  /// - `AgentPermissionGrantPolicyTests.structuredCoverage`
+  /// This test covers only D08's three owner review actions through the permission workflow.
+  @Test("D08 permission review supports Deny Allow once and Always allow")
+  @MainActor
+  func d08PermissionReviewActionsPersistDistinctDecisions() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-d08-permissions-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Permission review")
+    let profile = try #require(
+      try await store.seedDefaultProfiles(productID: product.id)
+        .first { $0.role == .implementer }
+    )
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Review three capabilities"
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        workItemID: item.id,
+        profileID: profile.id,
+        status: .awaitingOwner
+      )
+    )
+    let decisions: [(String, Bool, Bool)] = [
+      ("deny", false, false),
+      ("once", true, false),
+      ("always", true, true),
+    ]
+    var requests: [AgentPermissionRequest] = []
+    for (label, _, _) in decisions {
+      let request = AgentPermissionRequest(
+        productID: product.id,
+        workItemID: item.id,
+        agentRunID: run.id,
+        threadID: "thread-d08",
+        turnID: "turn-\(label)",
+        serverRequestID: "request-\(label)",
+        method: "item/commandExecution/requestApproval",
+        kind: .command,
+        title: "Allow this command?",
+        detail: "command-\(label)",
+        signature: "command|\(label)",
+        productGrantSignature: "product-command|\(label)",
+        status: .interrupted
+      )
+      requests.append(try await store.saveAgentPermissionRequest(request))
+    }
+    let client = CodexAppServerClient(transport: ScriptedCodexTransport(responses: []))
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
+    )
+    let coordinator = TicketDeliveryPermissionWorkflowCoordinator(
+      delegate: delegate,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      )
+    )
+
+    for (index, decision) in decisions.enumerated() {
+      await coordinator.decidePermissionRequest(
+        requests[index],
+        allow: decision.1,
+        rememberForProduct: decision.2
+      )
+    }
+
+    let stored = try await store.fetchAgentPermissionRequests(productID: product.id)
+    let statuses = Dictionary(uniqueKeysWithValues: stored.map { ($0.serverRequestID, $0.status) })
+    #expect(statuses["request-deny"] == .denyPendingDelivery)
+    #expect(statuses["request-once"] == .allowOncePendingDelivery)
+    #expect(statuses["request-always"] == .allowProductPendingDelivery)
+    let grants = try await store.fetchAgentPermissionGrants(productID: product.id)
+    #expect(grants.count == 1)
+    #expect(grants.first?.signature == "product-command|always")
+    #expect(delegate.presentedPermissionRequests.count == 3)
+    #expect(delegate.presentedPermissionGrants == grants)
+    await store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `SprintTicketWorkLogHistoryTests.selectedAnswerRemainsOnQuestionAndInWorkLog`
+  /// - `SprintTicketWorkLogHistoryTests.customAnswerRemainsOnQuestionAndInWorkLog`
+  /// - `SprintTicketWorkLogHistoryTests.activeTicketQuestionRouting`
+  /// This test covers only D09's Submit-answers boundary from durable answer to exact-run resume.
+  @Test("D09 submitting answers resumes the exact paused run")
+  @MainActor
+  func d09SubmittedAnswersResumeExactRun() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let awaitingRun = try await harness.store.updateAgentRun(
+      id: harness.run.id,
+      status: .awaitingOwner,
+      eventActor: "Implementer",
+      eventDetail: "Waiting for one product decision"
+    )
+    harness.delegate.runs = [awaitingRun]
+    let question = TicketRefinementQuestion(
+      prompt: "Which runtime should be used?",
+      options: ["Bundled", "System"]
+    )
+    let answer = TicketAnsweredQuestion(
+      question: question,
+      selectedOption: "Bundled",
+      answer: "Bundled"
+    )
+    _ = try await harness.store.appendComment(
+      workItemID: harness.workItem.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: "Use the bundled runtime.",
+      answeredQuestions: [answer]
+    )
+
+    await harness.coordinator.handleSprintOwnerComment(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id,
+      body: "Use the bundled runtime."
+    )
+
+    let resumed = try await harness.store.fetchAgentRun(id: awaitingRun.id)
+    #expect(resumed.id == awaitingRun.id)
+    #expect(resumed.status == .queued)
+    #expect(harness.delegate.scheduledProductIDs == [harness.product.id])
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    #expect(comments.last?.answeredQuestions == [answer])
+    await harness.store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `SprintWorkRecoveryTests.failedPostReviewDemoIsRecoverable`
+  /// - `MacOSDemoLauncherTests.hostFailureDisposition`
+  /// This test covers only D14's command composition that retries demo preparation on the
+  /// immutable reviewed candidate without repeating implementation or tech lead review.
+  @Test("D14 demo preparation retry reuses the reviewed candidate")
+  @MainActor
+  func d14DemoRetryReusesReviewedCandidate() async throws {
+    let demo = DemoLaunchSpecification(
+      title: "Reviewed preview",
+      presentation: DemoPresentation(kind: .macApplication, path: "Preview.app")
+    )
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: demo
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let profiles = try await harness.store.fetchAgentProfiles(productID: harness.product.id)
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    let implementationRun = try #require(
+      try await harness.store.fetchAgentRuns(productID: harness.product.id)
+        .first { $0.id == harness.candidate.implementationRunID }
+    )
+    let awaitingRun = try await harness.store.updateAgentRun(
+      id: implementationRun.id,
+      status: .awaitingOwner,
+      eventActor: "Spedito",
+      eventDetail: "Demo preparation failed after review"
+    )
+    let reviewRun = try await harness.store.createAgentRun(
+      AgentRun(
+        productID: harness.product.id,
+        sprintID: harness.candidate.sprintID,
+        sprintItemID: harness.candidate.sprintItemID,
+        workItemID: harness.workItem.id,
+        profileID: techLead.id,
+        status: .running,
+        worktreePath: harness.candidate.integrationWorktreePath
+      )
+    )
+    let completedReview = try await harness.store.updateAgentRun(
+      id: reviewRun.id,
+      status: .completed,
+      eventActor: techLead.name,
+      eventDetail: "Reviewed exact integrated revision"
+    )
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .failed
+    )
+    _ = try await harness.store.transitionWorkItem(
+      id: harness.workItem.id,
+      to: .running,
+      actor: "Spedito",
+      reason: "Preserving reviewed candidate after demo failure"
+    )
+    harness.delegate.runs = [awaitingRun, completedReview]
+
+    let context = try #require(
+      await harness.coordinator.context(productID: harness.product.id)
+    )
+    #expect(context.workItems.first { $0.id == harness.workItem.id }?.state == .running)
+    #expect(context.candidates.first { $0.id == harness.candidate.id }?.status == .failed)
+    #expect(context.runs.first { $0.id == awaitingRun.id }?.status == .awaitingOwner)
+    #expect(context.runs.first { $0.id == completedReview.id }?.status == .completed)
+    let failedCandidate = try #require(
+      context.candidates.first { $0.id == harness.candidate.id }
+    )
+    #expect(failedCandidate.integratedSHA != nil)
+    #expect(failedCandidate.integrationWorktreePath != nil)
+    #expect(
+      context.runs.first { $0.id == awaitingRun.id }?.id
+        == failedCandidate.implementationRunID
+    )
+    #expect(
+      context.runs.first { $0.id == completedReview.id }?.worktreePath
+        == failedCandidate.integrationWorktreePath
+    )
+    #expect(
+      try CodexTicketExecutor.decode(failedCandidate.executionResultJSON).demo == demo
+    )
+    #expect(
+      SprintWorkRecoveryPolicy().failedPostReviewDemoCandidate(
+        workItemID: harness.workItem.id,
+        workItems: context.workItems,
+        candidates: context.candidates,
+        runs: context.runs,
+        profiles: context.profiles
+      )?.id == harness.candidate.id
+    )
+
+    let retried = await harness.coordinator.retryFailedPostReviewDemo(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id
+    )
+
+    #expect(retried)
+    #expect(harness.delegate.preparedDemoCandidateIDs == [harness.candidate.id])
+    #expect(
+      try await harness.store.fetchCandidateRevision(id: harness.candidate.id).status
+        == .readyForDemo
+    )
+    #expect(
+      try await harness.store.fetchAgentRun(id: implementationRun.id).status == .completed
+    )
+    #expect(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }?.state == .acceptance
+    )
+    #expect(try await harness.store.fetchAgentRuns(productID: harness.product.id).count == 2)
+    await harness.store.close()
+  }
+
   @MainActor
   private func makeRecoveryHarness(workspaceExists: Bool) async throws -> RecoveryHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -736,10 +987,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       goal: "Recover without replacement work",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(
-          workItemID: workItem.id,
-          implementerProfileID: implementer.id
-        )
+        SprintDraftItemInput(workItemID: workItem.id, implementerProfileID: implementer.id, estimatedTokens: 1)
       ]
     )
     let plan = try await store.startSprint(id: draft.sprint.id)
@@ -844,6 +1092,10 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   var knowledgeContext: [AgentRunKnowledgePage] = []
   var knowledgeDestinations: [AgentRunKnowledgeDestination] = []
   var presentedRuns: [AgentRun] = []
+  var presentedPermissionRequests: [AgentPermissionRequest] = []
+  var presentedPermissionGrants: [AgentPermissionGrant] = []
+  var scheduledProductIDs: [UUID] = []
+  var preparedDemoCandidateIDs: [UUID] = []
 
   init(
     store: SQLiteStore,
@@ -975,7 +1227,9 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     candidate: CandidateRevision,
     integratedSHA: String,
     specification: DemoLaunchSpecification
-  ) async throws {}
+  ) async throws {
+    preparedDemoCandidateIDs.append(candidate.id)
+  }
 
 
   func deliveryDemoPreparationShouldCorrectCandidate(_ error: Error) -> Bool {
@@ -1006,9 +1260,15 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   }
 
   func deliveryReloadSelectedProductIfCurrent(productID: UUID) async {}
-  func deliveryReplacePermissionRequest(_ request: AgentPermissionRequest) {}
-  func deliveryReplacePermissionGrant(_ grant: AgentPermissionGrant) {}
-  func deliveryScheduleSprintExecution(productID: UUID) {}
+  func deliveryReplacePermissionRequest(_ request: AgentPermissionRequest) {
+    presentedPermissionRequests.append(request)
+  }
+  func deliveryReplacePermissionGrant(_ grant: AgentPermissionGrant) {
+    presentedPermissionGrants.append(grant)
+  }
+  func deliveryScheduleSprintExecution(productID: UUID) {
+    scheduledProductIDs.append(productID)
+  }
 
   func deliveryMonitorLiveActivity(
     runID: UUID,

@@ -30,6 +30,7 @@ struct SprintBoardView: View {
           HStack(spacing: 9) {
             Text("Sprint board")
               .font(.largeTitle.bold())
+              .accessibilityIdentifier("sprint.board")
             if let plan = selectedPlan {
               Text(sprintPhaseTitle(for: plan))
                 .font(.caption2.weight(.bold))
@@ -158,6 +159,10 @@ struct SprintBoardView: View {
                   .buttonStyle(.borderedProminent)
                   .tint(.orange)
                   .help(model.sprintReadinessIssues.map(\.message).joined(separator: "\n"))
+                  .accessibilityLabel(
+                    model.sprintReadinessIssues.map(\.message).joined(separator: "\n")
+                  )
+                  .accessibilityIdentifier("sprint.readiness.issues")
                 }
                 Button("Start sprint") {
                   Task {
@@ -165,6 +170,7 @@ struct SprintBoardView: View {
                   }
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("sprint.start")
                 .disabled(
                   !draftPlan.items.allSatisfy { $0.estimatedTokens > 0 }
                     || !model.sprintReadinessIssues.isEmpty
@@ -1799,6 +1805,31 @@ private struct WorkItemCard: View {
   }
 
   var body: some View {
+    Group {
+      if let onOpen, !showsWorkflowActions {
+        Button {
+          #if DEBUG
+            UIFixtureRuntime.recordInteraction("sprint-ticket-opened-\(item.id.uuidString)")
+          #endif
+          onOpen(item)
+        } label: {
+          cardContent
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("sprint.ticket.\(item.id.uuidString)")
+      } else {
+        cardContent
+      }
+    }
+    .onHover { hovering in
+      guard onOpen != nil else { return }
+      withAnimation(.easeOut(duration: 0.12)) {
+        isHovering = hovering
+      }
+    }
+  }
+
+  private var cardContent: some View {
     let cardShape = RoundedRectangle(cornerRadius: 11, style: .continuous)
 
     return VStack(alignment: .leading, spacing: 7) {
@@ -1885,15 +1916,6 @@ private struct WorkItemCard: View {
       y: showsWorkflowActions ? cardShadowOffset : 0
     )
     .contentShape(cardShape)
-    .onTapGesture {
-      onOpen?(item)
-    }
-    .onHover { hovering in
-      guard onOpen != nil else { return }
-      withAnimation(.easeOut(duration: 0.12)) {
-        isHovering = hovering
-      }
-    }
   }
 
   private var ticketIdentity: some View {
@@ -3092,12 +3114,14 @@ struct SprintTicketDetailView: View {
               }
               .buttonStyle(.bordered)
               .disabled(decidingPermissionRequestID != nil)
+              .accessibilityIdentifier("permission.deny.\(request.id.uuidString)")
 
               Button("Allow once") {
                 decidePermissionRequest(request, allow: true)
               }
               .buttonStyle(.bordered)
               .disabled(decidingPermissionRequestID != nil)
+              .accessibilityIdentifier("permission.allow-once.\(request.id.uuidString)")
 
               if request.productGrantSignature != nil {
                 Button("Always allow") {
@@ -3109,6 +3133,7 @@ struct SprintTicketDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(decidingPermissionRequestID != nil)
+                .accessibilityIdentifier("permission.always.\(request.id.uuidString)")
               }
             }
           }
@@ -3663,6 +3688,7 @@ struct SprintTicketDetailView: View {
           .foregroundStyle(.secondary)
         Text("Ticket details")
           .font(.title2.bold())
+          .accessibilityIdentifier("ticket.detail.\(item.id.uuidString)")
         Spacer()
         if hasPendingWorkLogAction {
           latestActivityButton(hasEntries: !workLogRows.isEmpty)
@@ -4290,6 +4316,7 @@ private struct SprintTicketCommentComposer: View {
             .font(.body)
             .focused($isFocused)
             .padding(8)
+            .accessibilityIdentifier("sprint.ticket.comment.editor")
             .onKeyPress(phases: .down) { keyPress in
               handleKeyPress(keyPress)
             }
@@ -4435,6 +4462,7 @@ private struct SprintTicketCommentComposer: View {
         submitDraft(using: onAskCommentRecipient)
       }
       .buttonStyle(.bordered)
+      .accessibilityIdentifier("sprint.ticket.comment.send")
       .disabled(!canAskCommentRecipient)
 
       Divider()
@@ -4445,12 +4473,14 @@ private struct SprintTicketCommentComposer: View {
         submitResumeWork()
       }
       .buttonStyle(.bordered)
+      .accessibilityIdentifier("sprint.ticket.request-changes")
       .disabled(!canResumeWork)
 
       Button(isAcceptingTicket ? "Completing…" : "Approve and complete") {
         onAcceptTicket()
       }
       .buttonStyle(.borderedProminent)
+      .accessibilityIdentifier("sprint.ticket.approve")
       .disabled(isAcceptingTicket || knowledgeProposalsBlockCompletion)
       .help(
         knowledgeProposalsBlockCompletion

@@ -234,6 +234,15 @@ extension SQLiteStore {
           )
         )
       }
+      if item.estimatedTokens <= 0 {
+        issues.append(
+          SprintReadinessIssue(
+            id: "\(workItem.id).estimate",
+            workItemID: workItem.id,
+            message: "\(workItem.key) needs an estimate before the sprint can start."
+          )
+        )
+      }
       let dependencyEdges = try fetchWorkItemDependencies(productID: sprint.productID)
         .filter { $0.workItemID == workItem.id }
       for edge in dependencyEdges where !sprintWorkItemIDs.contains(edge.dependsOnWorkItemID) {

@@ -162,7 +162,8 @@ struct RemoteRepositoryServiceTests {
       items: [
         SprintDraftItemInput(
           workItemID: ticket.id,
-          implementerProfileID: implementer.id
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
         )
       ]
     )

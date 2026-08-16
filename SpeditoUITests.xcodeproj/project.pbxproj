@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		02D258787B031734A525ED09 /* EpicOwnerNotificationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */; };
+		2229AA4D8C56AFE985235BC0 /* PriorityZeroShellJourneyUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FF902339E56F000E1E0ACAD /* PriorityZeroShellJourneyUITests.swift */; };
 		B5A314E996CAB33D1B8AD7F0 /* LaunchSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		2EE3FEED16C2DFC3D3F905F6 /* SpeditoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SpeditoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		2FF902339E56F000E1E0ACAD /* PriorityZeroShellJourneyUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PriorityZeroShellJourneyUITests.swift; sourceTree = "<group>"; };
 		8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpicOwnerNotificationUITests.swift; sourceTree = "<group>"; };
 		FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSmokeTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -39,6 +41,7 @@
 			children = (
 				8BDFEA72820799D79375527D /* EpicOwnerNotificationUITests.swift */,
 				FB1720F31B78CB58E9F68CE8 /* LaunchSmokeTests.swift */,
+				2FF902339E56F000E1E0ACAD /* PriorityZeroShellJourneyUITests.swift */,
 			);
 			name = SpeditoUITests;
 			path = Tests/SpeditoUITests;
@@ -104,6 +107,7 @@
 			files = (
 				02D258787B031734A525ED09 /* EpicOwnerNotificationUITests.swift in Sources */,
 				B5A314E996CAB33D1B8AD7F0 /* LaunchSmokeTests.swift in Sources */,
+				2229AA4D8C56AFE985235BC0 /* PriorityZeroShellJourneyUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

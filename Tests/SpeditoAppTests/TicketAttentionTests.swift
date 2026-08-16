@@ -443,6 +443,147 @@ struct TicketAttentionTests {
   }
 
   /// Existing partial coverage:
+  /// - `reloadAggregatesBackgroundProductAttention`
+  /// - `openingAttentionTargetsTicket`
+  /// - `ProductScopedPersistenceTests.productSelectionPreservesOwnerAgentTurns`
+  /// This test covers only B02's close-switch-return composition for one incomplete Ticket.
+  @Test("B02 closing an incomplete Ticket can return from another Product to that Ticket")
+  func b02IncompleteTicketAttentionReturnsToExactTicket() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let sourceProduct = try await registry.createProduct(name: "Incomplete ticket")
+    let otherProduct = try await registry.createProduct(name: "Other product")
+    let sourceStore = try #require(registry.store(for: sourceProduct.id))
+    let profile = try #require(
+      try await sourceStore.seedDefaultProfiles(productID: sourceProduct.id).first
+    )
+    let item = try await sourceStore.createWorkItem(
+      productID: sourceProduct.id,
+      title: "Finish refinement"
+    )
+    _ = try await sourceStore.transitionWorkItem(
+      id: item.id,
+      to: .refining,
+      actor: "Test",
+      reason: "Keep the Ticket incomplete"
+    )
+    _ = try await sourceStore.createAgentRun(
+      AgentRun(
+        productID: sourceProduct.id,
+        workItemID: item.id,
+        profileID: profile.id,
+        status: .awaitingOwner
+      )
+    )
+    let model = AppModel(storeRegistry: registry, selectedProductID: sourceProduct.id)
+    await model.reload()
+
+    await model.openTicketAttentions(for: sourceProduct)
+    let firstOpen = try #require(model.ticketAttentionNavigationRequest)
+    #expect(firstOpen.openWorkItemID == item.id)
+    model.consumeTicketAttentionNavigationRequest(id: firstOpen.id)
+    #expect(model.ticketAttentionNavigationRequest == nil)
+
+    await model.selectProduct(otherProduct)
+    #expect(model.selectedProductID == otherProduct.id)
+    await model.openTicketAttentions(for: sourceProduct)
+    let returned = try #require(model.ticketAttentionNavigationRequest)
+    #expect(model.selectedProductID == sourceProduct.id)
+    #expect(returned.productID == sourceProduct.id)
+    #expect(returned.workItemIDs == [item.id])
+    #expect(returned.openWorkItemID == item.id)
+    #expect(
+      try await sourceStore.fetchWorkItems(productID: sourceProduct.id)
+        .first { $0.id == item.id }?.state == .refining
+    )
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `productAttentionRoutesSingleBackgroundResult`
+  /// - `notificationRouteRoundTrips`
+  /// This test covers only C07's cross-Product Chat focus and target-scoped unread clearing.
+  @Test("C07 background Chat opens its exact thread and clears only that unread target")
+  func c07BackgroundChatRoutesAndClearsOnlyTarget() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let sourceProduct = try await registry.createProduct(name: "Chat source")
+    let selectedProduct = try await registry.createProduct(name: "Current product")
+    let sourceStore = try #require(registry.store(for: sourceProduct.id))
+    let recipient = try #require(
+      try await sourceStore.seedDefaultProfiles(productID: sourceProduct.id).first
+    )
+    let firstThread = ProductConversationThread(
+      productID: sourceProduct.id,
+      recipientProfileID: recipient.id,
+      subject: "First reply"
+    )
+    let secondThread = ProductConversationThread(
+      productID: sourceProduct.id,
+      recipientProfileID: recipient.id,
+      subject: "Second reply"
+    )
+    for thread in [firstThread, secondThread] {
+      _ = try await sourceStore.createConversationThread(
+        thread,
+        initialMessage: ProductConversationMessage(
+          threadID: thread.id,
+          authorKind: .owner,
+          authorName: "Product owner",
+          body: thread.subject
+        )
+      )
+    }
+    let firstNotification = OwnerNotification(
+      productID: sourceProduct.id,
+      kind: .newReply,
+      target: OwnerNotificationTarget(kind: .conversationThread, id: firstThread.id),
+      title: "First Chat reply",
+      body: "Open the first thread"
+    )
+    let secondNotification = OwnerNotification(
+      productID: sourceProduct.id,
+      kind: .newReply,
+      target: OwnerNotificationTarget(kind: .conversationThread, id: secondThread.id),
+      title: "Second Chat reply",
+      body: "Keep the second thread unread"
+    )
+    #expect(try await sourceStore.createOwnerNotification(firstNotification))
+    #expect(try await sourceStore.createOwnerNotification(secondNotification))
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: selectedProduct.id,
+      ownerNotificationSoundPlayer: NotificationSoundSpy(),
+      ownerNotificationSystemNotifier: NotificationSystemSpy()
+    )
+    await model.reload()
+
+    await model.openOwnerNotification(
+      OwnerNotificationPresentation(
+        notification: firstNotification,
+        productName: sourceProduct.name
+      )
+    )
+    let request = try #require(model.ownerNotificationNavigationRequest)
+    #expect(model.selectedProductID == sourceProduct.id)
+    #expect(request.target == firstNotification.target)
+    let active = try await sourceStore.fetchActiveOwnerNotifications(productID: sourceProduct.id)
+    #expect(active.map(\.id) == [secondNotification.id])
+    #expect(model.ownerAttentionCount(excluding: nil) == 1)
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  /// Existing partial coverage:
   /// - `ProductExecutionLifecycleTests.productSelectionDoesNotSuspendDelivery`
   /// - `SprintTicketWorkLogHistoryTests.activeTicketQuestionRouting`
   /// This test covers only D03's active-run Product switch and exact Ticket route.

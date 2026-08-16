@@ -171,6 +171,7 @@ struct SprintBoardGitHubStatus: View {
             perform(action)
           }
           .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("github.review-incoming")
         }
       }
       .padding(.horizontal, 24)

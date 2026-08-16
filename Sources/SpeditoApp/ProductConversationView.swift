@@ -393,6 +393,7 @@ struct ProductConversationView: View {
       )
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("conversation.thread.\(thread.id.uuidString)")
     .contextMenu {
       if thread.isArchived {
         Button("Restore thread", systemImage: "arrow.uturn.backward") {
@@ -561,6 +562,8 @@ private struct ProductConversationMessageRow: View {
       createdAt: message.createdAt,
       authorProfile: model.profiles.first { $0.name == message.authorName }
     )
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("conversation.message.\(message.id.uuidString)")
   }
 }
 

@@ -74,8 +74,8 @@ struct SprintBoardSelectionTests {
       goal: "Deliver a partial plan",
       tokenBudgetLimit: nil,
       items: [
-        SprintDraftItemInput(workItemID: firstTicket.id),
-        SprintDraftItemInput(workItemID: secondTicket.id),
+        SprintDraftItemInput(workItemID: firstTicket.id, estimatedTokens: 1),
+        SprintDraftItemInput(workItemID: secondTicket.id, estimatedTokens: 1),
       ]
     )
 

@@ -71,6 +71,7 @@ struct AppVersionsView: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("App versions")
             .font(.largeTitle.bold())
+            .accessibilityIdentifier("app.versions")
           Text("Open the imported source or any accepted app version.")
             .foregroundStyle(.secondary)
         }
@@ -95,6 +96,7 @@ struct AppVersionsView: View {
               .accessibilityLabel(openActionTitle(for: selectedVersion))
               .help(openActionHelp(for: selectedVersion))
 
+              .accessibilityIdentifier("app.version.open")
               if let activeVersion {
                 Button(role: .destructive, action: stopActiveVersion) {
                   Image(systemName: "stop.fill")
@@ -167,6 +169,7 @@ struct AppVersionsView: View {
                 )
               }
               .buttonStyle(.plain)
+              .accessibilityIdentifier("app.version.\(version.id.uuidString)")
             }
           }
           .padding(20)

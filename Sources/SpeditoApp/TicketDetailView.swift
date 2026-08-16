@@ -347,6 +347,7 @@ struct TicketDetailView: View {
       .frame(height: 62)
     }
     .frame(width: detailSize.width, height: detailSize.height)
+    .accessibilityIdentifier("ticket.detail.\(item?.id.uuidString ?? "new")")
     .background(InitialFocusClearer())
     .task {
       await model.setOwnerNotificationTargetVisible(

@@ -40,6 +40,7 @@ struct IncomingRepositoryReviewSheet: View {
       .padding(18)
     }
     .frame(width: 680, height: 600)
+    .accessibilityIdentifier("github.incoming-review.\(sync.id.uuidString)")
   }
 }
 

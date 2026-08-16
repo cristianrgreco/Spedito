@@ -174,8 +174,13 @@ struct RemoteRepositoryAppModelTests {
     await store.close()
   }
 
-  @Test("An empty GitHub repository creates and connects a blank Product")
-  func emptyGitHubRepositoryCreation() async throws {
+  /// Existing partial coverage:
+  /// - `RepositoryImportCoordinatorTests.emptyAuthorizedRepository`
+  /// - `RemoteRepositoryServiceTests.localProductLifecycle`
+  /// - `ProductScopedPersistenceTests.a02BlankProductCreationActivatesLocalWorkspace`
+  /// This test covers only R05's composition from empty-import result through exact-target setup.
+  @Test("R05 an empty GitHub repository creates and connects a blank Product")
+  func r05EmptyGitHubRepositoryCreation() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "Spedito-AppModel-Empty-Remote-\(UUID().uuidString)",
       isDirectory: true
@@ -205,6 +210,11 @@ struct RemoteRepositoryAppModelTests {
     #expect(model.productCreationError == nil)
     #expect(await service.connectedLocalProductID == product.id)
     #expect(await service.connectedLocalRepositoryID == 99)
+    let remoteState = model.remoteRepositorySnapshot(for: product.id)
+    #expect(remoteState.repositoryState.connection?.productID == product.id)
+    #expect(remoteState.repositoryState.connection?.repositoryID == 99)
+    #expect(remoteState.repositoryState.connection?.defaultBranch == "main")
+    #expect(remoteState.repositoryState.connection?.status == .connected)
     let store = try #require(registry.store(for: product.id))
     #expect(try await store.fetchProductRepository(productID: product.id) == nil)
     #expect(
@@ -329,7 +339,8 @@ struct RemoteRepositoryAppModelTests {
         SprintDraftItemInput(
           workItemID: ready.id,
           implementerProfileID: implementer.id,
-          reviewerProfileID: nil
+          reviewerProfileID: nil,
+          estimatedTokens: 1
         )
       ]
     )
@@ -1045,6 +1056,100 @@ struct RemoteRepositoryAppModelTests {
     }
   }
 
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryServiceTests.localProductLifecycle`
+  /// - `RemoteProductArchivePolicy` status coverage
+  /// - `RemoteRepositoryFeatureModelTests.recovery`
+  /// This test covers only R13's AppModel review commands and relaunched recovery composition.
+  @Test("R13 incoming changes accept reject and recover after interruption")
+  func r13IncomingReviewAndInterruptedRecovery() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-r13-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Incoming review")
+    let acceptedSyncID = UUID()
+    let rejectedSyncID = UUID()
+    let interruptedSyncID = UUID()
+    func state(_ status: RemoteSafeSyncStatus, syncID: UUID) -> GitHubRemoteRepositoryState {
+      let sha = String(repeating: "a", count: 40)
+      return GitHubRemoteRepositoryState(
+        isConfigured: true,
+        safeSync: RemoteSafeSync(
+          id: syncID,
+          productID: product.id,
+          connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+          connectionVersion: 1,
+          kind: .fastForward,
+          status: status,
+          observationRef: "refs/spedito/observation",
+          localSHA: sha,
+          localTree: sha,
+          remoteSHA: sha,
+          remoteTree: sha,
+          mergeBaseSHA: sha,
+          candidateSHA: sha,
+          candidateTree: sha
+        )
+      )
+    }
+
+    let service = AppModelRemoteService()
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
+    await model.reload()
+    await service.setAcceptState(state(.accepted, syncID: acceptedSyncID))
+    await model.acceptIncomingRepositoryChange(
+      productID: product.id,
+      syncID: acceptedSyncID
+    )
+    #expect(await service.acceptedSafeSyncIDs == [acceptedSyncID])
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.safeSync?.status
+        == .accepted
+    )
+
+    await service.setRejectState(state(.rejected, syncID: rejectedSyncID))
+    await model.rejectIncomingRepositoryChange(
+      productID: product.id,
+      syncID: rejectedSyncID
+    )
+    #expect(await service.rejectedSafeSyncIDs == [rejectedSyncID])
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.safeSync?.status
+        == .rejected
+    )
+    await model.shutdown()
+
+    let relaunchedService = AppModelRemoteService()
+    await relaunchedService.setState(state(.accepting, syncID: interruptedSyncID))
+    await relaunchedService.setRecoveryState(state(.accepted, syncID: interruptedSyncID))
+    let relaunched = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: relaunchedService)
+    )
+    await relaunched.load()
+    await relaunchedService.waitForRecovery()
+
+    #expect(await relaunchedService.recoveryCount == 1)
+    #expect(
+      relaunched.remoteRepositorySnapshot(for: product.id).repositoryState.safeSync?.id
+        == interruptedSyncID
+    )
+    #expect(
+      relaunched.remoteRepositorySnapshot(for: product.id).repositoryState.safeSync?.status
+        == .accepted
+    )
+    await relaunched.shutdown()
+    await store.close()
+  }
+
   private func pollingWorkItem(
     productID: UUID,
     key: String,
@@ -1431,6 +1536,11 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var nextImportError: ProductRepositoryImportError?
   private(set) var connectedLocalProductID: UUID?
   private(set) var connectedLocalRepositoryID: Int64?
+  private(set) var acceptedSafeSyncIDs: [UUID] = []
+  private(set) var rejectedSafeSyncIDs: [UUID] = []
+  private var acceptState: GitHubRemoteRepositoryState?
+  private var rejectState: GitHubRemoteRepositoryState?
+  private var recoveryState: GitHubRemoteRepositoryState?
 
   func state(productID: UUID) async -> GitHubRemoteRepositoryState {
     _ = productID
@@ -1440,6 +1550,18 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   func setState(_ state: GitHubRemoteRepositoryState) {
     currentState = state
   }
+  func setAcceptState(_ state: GitHubRemoteRepositoryState) {
+    acceptState = state
+  }
+
+  func setRejectState(_ state: GitHubRemoteRepositoryState) {
+    rejectState = state
+  }
+
+  func setRecoveryState(_ state: GitHubRemoteRepositoryState) {
+    recoveryState = state
+  }
+
 
   func waitForRecovery() async {
     if recoveryCount > 0 { return }
@@ -1539,7 +1661,11 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     connectedLocalRepositoryID = repositoryID
     currentState = GitHubRemoteRepositoryState(
       isConfigured: true,
-      connection: connection(productID: productID, status: .connected)
+      connection: connection(
+        productID: productID,
+        status: .connected,
+        repositoryID: repositoryID
+      )
     )
     return currentState
   }
@@ -1787,12 +1913,20 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   }
 
   func acceptSafeSync(syncID: UUID) async throws -> GitHubRemoteRepositoryState {
-    _ = syncID
+    acceptedSafeSyncIDs.append(syncID)
+    if let acceptState {
+      currentState = acceptState
+      self.acceptState = nil
+    }
     return currentState
   }
 
   func rejectSafeSync(syncID: UUID) async throws -> GitHubRemoteRepositoryState {
-    _ = syncID
+    rejectedSafeSyncIDs.append(syncID)
+    if let rejectState {
+      currentState = rejectState
+      self.rejectState = nil
+    }
     return currentState
   }
 
@@ -1851,6 +1985,10 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   func recover(productID: UUID) async {
     _ = productID
     recoveryCount += 1
+    if let recoveryState {
+      currentState = recoveryState
+      self.recoveryState = nil
+    }
     recoveryContinuation?.resume()
     recoveryContinuation = nil
   }
@@ -1863,6 +2001,7 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private func connection(
     productID: UUID,
     status: RemoteRepositoryConnectionStatus,
+    repositoryID: Int64 = 91,
     relationship: RemoteRepositoryRelationship? = nil
   ) -> RemoteRepositoryConnection {
     RemoteRepositoryConnection(
@@ -1870,7 +2009,7 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
       kind: .localEmptyRepository,
       accountID: UUID(uuidString: "11111111-1111-1111-1111-111111111111"),
       installationID: 1,
-      repositoryID: 91,
+      repositoryID: repositoryID,
       owner: "example",
       name: "product",
       fullName: "example/product",

@@ -675,8 +675,12 @@ final class ProductConversationRuntime {
 @MainActor
 final class DemoSessionFeatureModel: ObservableObject {
   @Published var sessions: [DemoSession] = []
-  let launcher = MacOSDemoLauncher()
+  var launcher: MacOSDemoLauncher
   var productsLaunchingPresentation: Set<UUID> = []
+
+  init(launcher: MacOSDemoLauncher = MacOSDemoLauncher()) {
+    self.launcher = launcher
+  }
 }
 
 @MainActor

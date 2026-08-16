@@ -21,6 +21,7 @@ build_number=${SPEDITO_BUILD_NUMBER:-1}
 signing_identity=${SPEDITO_SIGN_IDENTITY:--}
 github_client_id=${SPEDITO_GITHUB_CLIENT_ID:-}
 github_app_slug=${SPEDITO_GITHUB_APP_SLUG:-}
+app_output_directory=${SPEDITO_APP_OUTPUT_DIRECTORY:-"$project_root/.build/app/$configuration"}
 
 cd "$project_root"
 
@@ -36,16 +37,16 @@ binary_directory=$(
     swift build -c "$configuration" --show-bin-path
 )
 binary_path="$binary_directory/Spedito"
-app_path="$project_root/.build/app/$configuration/Spedito.app"
+app_path="$app_output_directory/Spedito.app"
 contents_path="$app_path/Contents"
 macos_path="$contents_path/MacOS"
 resources_path="$contents_path/Resources"
 
-case "$app_path" in
-  "$project_root"/.build/app/*/Spedito.app)
+case "$app_output_directory" in
+  /*)
     ;;
   *)
-    echo "Refusing to replace an unexpected app path: $app_path" >&2
+    echo "App output directory must be absolute: $app_output_directory" >&2
     exit 70
     ;;
 esac

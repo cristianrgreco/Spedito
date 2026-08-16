@@ -46,6 +46,7 @@ struct GitHubRepositorySettingsSection: View {
         VStack(alignment: .leading, spacing: 3) {
           Text("GitHub repository")
             .font(.headline)
+            .accessibilityIdentifier("github.settings.\(product.id.uuidString)")
           Text("Link this Product to one repository for pull requests and incoming changes.")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -412,6 +413,8 @@ struct GitHubRepositorySettingsSection: View {
             .foregroundStyle(.secondary)
         }
       }
+      .accessibilityElement(children: .combine)
+      .accessibilityIdentifier("github.repository.\(connection.productID.uuidString)")
     }
   }
 
