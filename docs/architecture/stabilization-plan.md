@@ -26,8 +26,8 @@ aggregate-organized persistence, deterministic operation ownership, the
 Priority 0 audit corrections, and the Core-owned delivery workflow are
 implemented and covered by focused tests.
 
-This plan is not fully closed. Two Phase 7 feature slices remain in `AppModel`:
-Epic planning and ticket suggestions, and sprint planning and goal generation.
+This plan is not fully closed. One Phase 7 feature slice remains in `AppModel`:
+sprint planning and goal generation.
 Section 14.9 still
 requires the four interactive body-recomputation traces during product-owner
 inspection. The Priority 0
@@ -836,7 +836,7 @@ Complete these in the order indicated by current defect frequency and feature wo
 
 - [x] Product conversations and title/activity lifecycle.
 - [x] Ticket and epic conversations/refinement.
-- [ ] Epic planning and ticket suggestions.
+- [x] Epic planning and ticket suggestions.
 - [ ] Sprint planning and goal generation.
 - [x] Demo/app-version launch and recovery.
 - [x] Retrospective synthesis.
@@ -946,6 +946,119 @@ reported no errors, and `./scripts/check_architecture_ratchets.sh` matched all
 six baselines after the three affected values were lowered.
 `./scripts/relaunch.sh` rebuilt the application and the development process
 reached its ready state; it remains running for product-owner inspection.
+
+#### Work packet: Core-owned epic planning and ticket suggestions
+
+##### Problem
+
+`EpicPlanningWorkflowCoordinator` now sequences epic clarification, epic-plan
+generation, general ticket suggestion generation, suggestion decisions,
+recovery, persistence, Codex turn interruption, and notification publication.
+`AppModel` composes its dependencies, projects its bounded snapshot, and
+forwards owner commands.
+
+##### Behavior to preserve
+
+Epic planning remains a read-only business analyst conversation until the owner
+answers every current question. A ready response produces versioned,
+reviewable epic metadata and ticket suggestions; it does not create tickets
+until the owner accepts suggestions. General suggestions use verified product
+knowledge and active backlog context, preserve rejected suggestions as negative
+context, repair one invalid structured response, and remain reviewable. Product
+switching preserves an active epic plan without projecting its result into the
+selected product, while general suggestion generation and decision commands
+settle before the switch. Explicit stop, product archive, and shutdown interrupt
+work.
+Relaunch resumes a durable generating epic session when possible and otherwise
+leaves an owner-visible retry path without duplicating accepted tickets.
+
+##### Non-goals
+
+This packet does not change prompts, proposal validation, owner-facing
+conversation or suggestion controls, sprint planning, ticket conversation,
+product Chat, delivery execution, or epic archive policy.
+
+##### Current authority
+
+- Durable state: `SQLiteStore` epic-planning conversation snapshots, epics,
+  suggestion sessions, ticket suggestions, accepted work items, dependencies,
+  owner assignments, and owner notifications.
+- Task owner: Core `EpicPlanningWorkflowCoordinator`, using
+  `FeatureOperationRegistry` for identity-safe planning, persistence,
+  interruption, suggestion-generation, and decision operations.
+- Presentation state: `EpicPlanningWorkflowSnapshot`, projected through
+  `EpicPlanningFeatureModel`.
+- Composition state: `AppModel` supplies product-scoped stores, Codex and
+  notification adapters, inherited context, and selected-product callbacks.
+
+##### Target authority
+
+- Coordinator: Core `EpicPlanningWorkflowCoordinator`.
+- Commands: restore, start, continue, retry, stop, and clear epic planning;
+  generate general suggestions; retry or dismiss failed generation; accept or
+  reject one or a dependency-closed group of suggestions; recover durable
+  generating sessions; cancel product-scoped work; and shut down.
+- Snapshot: one bounded product-scoped projection of the active epic
+  conversation, latest suggestion batch, decision state, and failure message.
+- Persistence operations: existing `SQLiteStore` epic, epic-planning
+  conversation, ticket-suggestion, work-item, dependency, profile, knowledge,
+  and owner-notification operations.
+- View boundary: `BacklogView` and `EpicDetailView` continue to call `AppModel`
+  forwarders and read its projected coordinator snapshot.
+
+##### State table
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Idle | Initial load or a settled command | Existing epic conversation, latest suggestion batch, active backlog, profiles, and verified knowledge | Current epic and any durable suggestion history | Start epic planning or general suggestion generation when global planning gates allow | Fresh instances reconstruct the bounded snapshot from SQLite; no process is inferred from a transient flag |
+| Clarifying epic | Start planning or continue with complete answers | Conversation snapshot records that planning started, prior messages, owner answers, and current thread identifier | Business analyst responding state with prior conversation visible | Stop | Product switching preserves the product-keyed planning operation; archive or shutdown interrupts it |
+| Awaiting owner answers | Clarification returns questions | Business analyst message and complete ordered question set in the conversation snapshot; `needsInput` notification after persistence | Every question with listed and custom answer controls | Submit one complete ordered answer set or clear planning | Relaunch restores the exact questions and unread attention without replaying the prior turn |
+| Generating epic plan | Clarification reports ready, retry starts, or relaunch resumes a generating session | Conversation marks plan generation; suggestion session is `generating` with Codex thread and turn identifiers when available | Plan generation state and durable conversation | Stop | Relaunch consumes one recovery marker, resumes a completed or active turn when possible, and otherwise records a retryable failed session |
+| Epic plan ready | Valid epic metadata and suggestions persist | Updated epic, `ready` suggestion session, proposed suggestions and dependencies, completed conversation, and `refinementComplete` notification | Versioned epic details and reviewable proposed tickets; no tickets created yet | Accept or reject suggestions individually or in a dependency-safe group | Relaunch restores the same batch and completed conversation from SQLite |
+| General suggestions generating | Request suggestions outside an epic | `generating` suggestion session with attached Codex thread and turn identifiers | Suggestion generation state | Wait for settlement; archive or shutdown stops it | Product switch waits for cancellation; interruption fails the session durably; relaunch exposes retry or dismissal rather than inferring a live process |
+| General suggestions ready | Valid suggestions persist | `ready` suggestion session and ordered proposed suggestions | Reviewable proposed tickets | Accept, reject, regenerate, or dismiss a failed replacement | Relaunch restores the latest durable batch |
+| Applying suggestion decisions | Accept or reject one or a dependency-closed group | Each decision and accepted work item is committed by existing SQLite transactions; accepted items receive routed owners when available | Decision progress followed by the updated backlog and remaining proposals | Wait for settlement | Fresh instances read committed decisions only; retries cannot recreate already accepted tickets |
+| Failed or interrupted | Codex, validation, persistence, explicit stop, archive, shutdown, or unrecoverable relaunch failure | A started session becomes `failed` with its recoverable explanation; conversation failure state is persisted when applicable | Owner-facing retry or dismissal path without a fabricated plan | Retry the applicable stage, dismiss a failed session, or restart clarification | Thread reuse is cleared when invalid; durable answers, rejected suggestions, and completed decisions remain authoritative |
+
+##### Call sites to migrate
+
+- [x] `BacklogView` and `EpicDetailView` planning, suggestion, decision, retry,
+  and dismissal calls remain stable through `AppModel` forwarders.
+- [x] Product archive, application shutdown, selected-product reload, and
+  generating-session recovery now delegate to the coordinator.
+- [x] Planning availability projections and global operation-state checks now
+  read the coordinator snapshot and operation registry.
+
+##### Obsolete state to remove
+
+- [x] `EpicPlanningRuntime`, `TicketSuggestionRuntime`, and their observation
+  wiring.
+- [x] `AppModel` Codex sequencing, persistence queue, recovery, suggestion
+  decision, and notification implementation.
+
+##### Verification
+
+- [x] Existing focused persistence, prompt/decoding, and presentation tests.
+- [x] New deterministic observable-contract journey tests.
+- [x] Interruption and fresh-instance durable recovery.
+- [x] Full test suite.
+- [x] `git diff --check`.
+- [x] Architecture ratchets.
+- [x] Relaunch.
+- [ ] Product-owner inspection.
+
+##### Completion evidence
+
+`EpicPlanningWorkflowCoordinator` is the single Core authority for clarification,
+epic-plan and general suggestion generation, durable recovery, review decisions,
+and interruption. `AppModel` contains only dependency composition, snapshot
+projection, and owner-command forwarding for this slice. E05 now proves that a
+plan completing behind another product is fully projected when the exact Epic is
+opened and remains complete after a fresh-instance reload. The product-switch
+journey proves that active Epic planning survives while a concurrent sprint turn
+also remains intact. The warnings-as-errors suite passed 512 tests in 60 suites;
+`git diff --check` and all six architecture ratchets passed; the development app
+was relaunched and left running. Product-owner inspection remains pending.
 
 For each slice:
 

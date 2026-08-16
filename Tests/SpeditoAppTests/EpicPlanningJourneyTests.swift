@@ -54,7 +54,7 @@ struct EpicPlanningJourneyTests {
         text: #"{"message":"I need one product decision.","questions":[{"prompt":"Where should drafts be retained?","options":["On this Mac","In the repository"]}],"readyToPlan":false}"#
       )
     )
-    await model.epicPlanningRuntime.settle()
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
 
     let storedConversation = try #require(
       try await firstStore.fetchEpicPlanningConversation(epicID: epic.id)
@@ -180,7 +180,7 @@ struct EpicPlanningJourneyTests {
         text: Self.epicPlanResponse
       )
     )
-    await model.epicPlanningRuntime.settle()
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
 
     let updatedEpic = try #require(
       try await firstStore.fetchEpics(productID: firstProduct.id)
@@ -221,8 +221,29 @@ struct EpicPlanningJourneyTests {
     #expect(model.ownerNotificationNavigationRequest?.target.id == epic.id)
     #expect(model.epics.first(where: { $0.id == epic.id })?.title == "Durable draft notes")
     #expect(model.suggestionBatch?.session.id == batch.session.id)
+    #expect(model.epicPlanningConversation?.isComplete == true)
+    #expect(model.epicPlanningConversation?.isGeneratingPlan == false)
     #expect(model.workItems.isEmpty)
     await model.shutdown()
+
+    let recoveredModel = AppModel(
+      storeRegistry: registry,
+      selectedProductID: firstProduct.id,
+      ownerNotificationSoundPlayer: EpicJourneyNotificationSound(),
+      ownerNotificationSystemNotifier: EpicJourneySystemNotifier()
+    )
+    await recoveredModel.reload()
+    let recoveredEpic = try #require(
+      recoveredModel.epics.first(where: { $0.id == epic.id })
+    )
+    await recoveredModel.restoreEpicPlanningConversation(for: recoveredEpic)
+
+    #expect(recoveredEpic.title == "Durable draft notes")
+    #expect(recoveredModel.suggestionBatch?.session.id == batch.session.id)
+    #expect(recoveredModel.epicPlanningConversation?.isComplete == true)
+    #expect(recoveredModel.epicPlanningConversation?.questions.isEmpty == true)
+    #expect(recoveredModel.workItems.isEmpty)
+    await recoveredModel.shutdown()
     for store in registry.allStores {
       await store.close()
     }
@@ -316,7 +337,7 @@ struct EpicPlanningJourneyTests {
         text: #"{"message":"One final decision is needed.","questions":[{"prompt":"When should a draft be removed?","options":["Only when the owner deletes it","After it is published"]}],"readyToPlan":false}"#
       )
     )
-    await recoveredModel.epicPlanningRuntime.settle()
+    await recoveredModel.epicPlanningWorkflowCoordinator.settlePlanning()
 
     let recoveredSnapshot = try #require(
       try await store.fetchEpicPlanningConversation(epicID: epic.id)

@@ -211,9 +211,8 @@ or inactive conversation history. Focused observable application models hold
 bounded product-library, conversation, planning, suggestion, retrospective,
 demo, Codex, and delivery presentation snapshots. `AppModel` composes those
 dependencies and retains application lifecycle, selected-Product, and
-navigation authority. It still executes Epic planning and ticket suggestions,
-plus sprint planning and goal generation, so it is not yet a pure composition
-boundary.
+navigation authority. It still executes sprint planning and goal generation, so
+it is not yet a pure composition boundary.
 
 `PlanningConversationWorkflowCoordinator` owns ticket refinement and ordinary
 ticket and Epic conversation commands, Codex turn identity and interruption,
@@ -222,6 +221,15 @@ recording, and post-persistence owner notifications. Its bounded snapshot
 contains only active source and recipient identifiers, ticket activity, and
 ticket result projections. `AppModel` supplies product-scoped stores, the Codex
 client, inherited instructions, notification presentation, and selected-product
+projection callbacks, then forwards owner commands.
+
+`EpicPlanningWorkflowCoordinator` owns epic clarification, plan and general
+ticket-suggestion generation, invalid-result repair, durable session recovery,
+suggestion decisions and owner routing, Codex turn interruption, and
+post-persistence notifications. Its bounded snapshot contains the active epic
+conversation, latest suggestion batch, and decision state. `AppModel` supplies
+product-scoped stores, the selected product and Codex client, inherited
+instructions, workspace and notification adapters, and selected-product
 projection callbacks, then forwards owner commands.
 
 Ticket delivery uses Core-owned workflow boundaries rather than AppModel-owned

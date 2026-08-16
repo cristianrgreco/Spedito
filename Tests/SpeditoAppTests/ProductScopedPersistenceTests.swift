@@ -1,5 +1,6 @@
 import Foundation
 import SpeditoCore
+import SpeditoTestSupport
 import Testing
 
 @testable import SpeditoApp
@@ -134,16 +135,54 @@ struct ProductScopedPersistenceTests {
     )
     let first = try await registry.createProduct(name: "Planning product")
     let second = try await registry.createProduct(name: "Other product")
+    let firstStore = try #require(registry.store(for: first.id))
+    let epic = try await firstStore.createEpic(
+      productID: first.id,
+      outcome: "Preserve planning during a product switch"
+    )
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/product-switch-test"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        ),
+        .init(method: "model/list", result: .object(["data": .array([])])),
+        .init(
+          method: "account/rateLimits/read",
+          result: .object(["rateLimits": .object([:])])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("epic-thread")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("epic-turn")])])
+        ),
+      ]
+    )
     let model = AppModel(
       storeRegistry: registry,
-      selectedProductID: first.id
+      selectedProductID: first.id,
+      codexTransportFactory: { _ in
+        CodexTransportFactoryOutput(
+          descriptor: CodexRuntimeDescriptor(
+            executableURL: URL(fileURLWithPath: "/private/tmp/codex-test"),
+            version: "test",
+            source: .custom
+          ),
+          transport: transport
+        )
+      }
     )
-    await model.reload()
-
-    let epicGate = ProductSwitchOperationGate()
-    model.epicPlanningRuntime.start(productID: first.id) {
-      await epicGate.wait()
-    }
+    await model.load()
+    model.planEpic(epic)
+    await transport.waitForRequest("turn/start")
     let sprintPlanningTurn = CodexTurnIdentity(
       threadID: "sprint-planning-thread",
       turnID: "sprint-planning-turn"
@@ -158,15 +197,17 @@ struct ProductScopedPersistenceTests {
     await model.selectProduct(second)
 
     #expect(model.selectedProduct?.id == second.id)
-    #expect(model.epicPlanningRuntime.isBusy)
+    #expect(model.epicPlanningWorkflowCoordinator.isPlanning)
     #expect(
       model.planningConversationRuntime.activeTurn(.sprintPlanning)
         == sprintPlanningTurn
     )
 
-    epicGate.open()
     model.planningConversationRuntime.finishTurn(sprintPlanningToken)
-    await model.epicPlanningRuntime.cancel(productID: first.id) { _ in }
+    await model.epicPlanningWorkflowCoordinator.cancel(
+      productID: first.id,
+      preservingEpicPlanning: false
+    )
     await model.shutdown()
     for store in registry.allStores {
       await store.close()
@@ -821,28 +862,5 @@ private struct ProductScopedAppInstance {
     for store in registry.allStores {
       await store.close()
     }
-  }
-}
-
-@MainActor
-private final class ProductSwitchOperationGate {
-  private let stream: AsyncStream<Void>
-  private let continuation: AsyncStream<Void>.Continuation
-
-  init() {
-    let pair = AsyncStream<Void>.makeStream()
-    stream = pair.stream
-    continuation = pair.continuation
-  }
-
-  func wait() async {
-    for await _ in stream {
-      return
-    }
-  }
-
-  func open() {
-    continuation.yield()
-    continuation.finish()
   }
 }
