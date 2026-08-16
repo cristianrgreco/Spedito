@@ -28,10 +28,9 @@ implemented and covered by focused tests.
 
 This plan is not fully closed. Three Phase 7 feature slices remain in
 `AppModel`: ticket and Epic conversations/refinement, Epic planning and ticket
-suggestions, and sprint planning and goal generation. Phase 6 still lacks
-complete journey evidence for changed-result conflict re-review and
-post-remote-merge interruption. Section 14.9 still requires the four interactive
-body-recomputation traces during product-owner inspection. The Priority 0
+suggestions, and sprint planning and goal generation. Section 14.9 still
+requires the four interactive body-recomputation traces during product-owner
+inspection. The Priority 0
 journey ledger in `owner-journey-test-plan.md` records additional product or
 composition gaps rather than manufacturing passing wrappers around partial
 behavior.
@@ -807,10 +806,10 @@ durable decisions, automatic replay, and saved-grant delivery.
 - [x] Permission request, approval, denial, and relaunch retain least privilege (`AgentPermissionResolutionTests`, `SprintWorkRecoveryTests.interruptedPermissionDecisionIsRecoverable`, and `AgentPermissionGrantPolicyTests`).
 - [x] Review is bound to an immutable candidate and cannot attest its own work (`TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound` and `SprintWorkRecoveryTests` / D11).
 - [x] Clean integration preserves the exact candidate into review (`GitWorkspaceManagerTests.candidateLifecycle`, `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview`, and `SprintWorkRecoveryTests.queuedIntegratedReviewIsRecoverable` / D12).
-- [ ] Conflict resolution that changes the result requires focused re-review.
+- [x] Conflict resolution that changes the result requires focused re-review (`TicketDeliveryWorkflowCoordinatorTests.changedConflictResolutionRequiresFocusedRereview`).
 - [x] Parallel candidates serialize promotion against current local `trunk` (`GitWorkspaceManagerTests.sameProductCommandsSerialize` and `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`).
 - [x] Acceptance rejects stale candidates, moved pull-request heads, and incomplete previews (`TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`, `RemoteRepositoryServiceTests.localProductLifecycle`, and `MacOSDemoLauncherTests.candidateFailureDisposition` / D17).
-- [ ] Remote merge followed by interruption completes local reconciliation exactly once.
+- [x] Remote merge followed by interruption completes local reconciliation exactly once (`RemoteRepositoryServiceTests.localProductLifecycle`).
 - [x] Completed repository-free tickets preserve the implementation handoff and publish reviewed knowledge without creating repository state (`TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` / D19).
 
 ### Acceptance
@@ -982,7 +981,7 @@ The stabilization program is done only when:
 - [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
 - [x] Persistence code is organized by aggregate without changing database authority.
 - [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.
-- [ ] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage; post-remote-merge reconciliation remains open in Phase 6.
+- [x] Every durable intermediate phase in the extracted workflows has interruption and relaunch coverage.
 - [x] Important owner-facing states are available in a preview or development scenario catalog.
 - [x] The full suite passes with warnings treated as errors.
 - [x] `git diff --check` passes.

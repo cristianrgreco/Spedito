@@ -226,6 +226,292 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await store.close()
   }
 
+  @Test("Conflict resolution that changes the result requires focused re-review")
+  func changedConflictResolutionRequiresFocusedRereview() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-conflict-rereview-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("shared.txt")
+    )
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Conflict re-review")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Resolve overlapping delivery changes",
+      type: .story,
+      body: "Keep the resolved result behind focused review.",
+      acceptanceCriteria: ["The changed integrated result receives fresh tech lead approval."],
+      priority: .normal
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refinement started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready for delivery"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Resolve and review one conflict",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    var implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: workItem.key,
+      runID: implementationRun.id,
+      authorName: implementer.name
+    )
+    implementationRun = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .running,
+      worktreePath: workspace.url.path,
+      eventActor: implementer.name,
+      eventDetail: "Implementation started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .integrating,
+      actor: implementer.name,
+      reason: "Candidate prepared"
+    )
+    try Data("ticket behavior\n".utf8).write(
+      to: workspace.url.appendingPathComponent("shared.txt")
+    )
+    let snapshot = try await gitWorkspaceManager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: workItem.key,
+      version: 1,
+      authorName: implementer.name,
+      summary: "Deliver ticket behavior"
+    )
+    try Data("accepted trunk behavior\n".utf8).write(
+      to: repository.appendingPathComponent("shared.txt")
+    )
+    _ = try await gitWorkspaceManager.checkpointTrunk(
+      at: repository,
+      message: "Advance accepted trunk"
+    )
+
+    let candidateID = UUID()
+    let conflictWorkspace: URL
+    do {
+      _ = try await gitWorkspaceManager.integrateCandidate(
+        repositoryURL: repository,
+        integrationsRootURL: integrations,
+        candidateID: candidateID,
+        headSHA: snapshot.headSHA
+      )
+      Issue.record("Expected the candidate and accepted trunk to conflict")
+      await store.close()
+      return
+    } catch GitWorkspaceError.mergeConflict(let worktreePath, let files, _) {
+      conflictWorkspace = URL(fileURLWithPath: worktreePath, isDirectory: true)
+      #expect(files == ["shared.txt"])
+    }
+    try Data("accepted trunk behavior\nticket behavior\n".utf8).write(
+      to: conflictWorkspace.appendingPathComponent("shared.txt")
+    )
+    _ = try runGit(["add", "-A"], at: conflictWorkspace)
+
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the candidate.",
+      question: nil,
+      options: [],
+      summary: "The resolved result is complete.",
+      changedFiles: ["shared.txt"],
+      tests: ["Focused conflict checks passed"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the resolved integrated result."],
+      demo: DemoLaunchSpecification(
+        title: "Resolved candidate evidence",
+        presentation: DemoPresentation(kind: .artifact, path: "shared.txt")
+      ),
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let executionResultJSON = String(
+      decoding: try JSONEncoder().encode(implementation),
+      as: UTF8.self
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        id: candidateID,
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        worktreePath: workspace.url.path,
+        integrationWorktreePath: conflictWorkspace.path,
+        status: .resolvingConflict,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: executionResultJSON
+      )
+    )
+    let resolutionRun = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        profileID: techLead.id,
+        status: .running,
+        worktreePath: conflictWorkspace.path
+      )
+    )
+
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/conflict-rereview"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("thread-rereview")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-rereview")])])
+        ),
+      ],
+      inboundMessages: [
+        .notification(
+          CodexNotification(
+            method: "turn/completed",
+            params: .object([
+              "threadId": .string("thread-rereview"),
+              "turn": .object([
+                "id": .string("turn-rereview"),
+                "status": .string("completed"),
+                "items": .array([
+                  .object([
+                    "id": .string("message-rereview"),
+                    "type": .string("agentMessage"),
+                    "text": .string(
+                      #"{"decision":"approved","comment":"Approved the conflict-resolved result.","findings":[],"retrospectiveWentWell":[],"retrospectiveCouldImprove":[],"retrospectiveActions":[]}"#
+                    ),
+                  ])
+                ]),
+              ]),
+            ])
+          )
+        )
+      ]
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: try await store.fetchAgentRuns(productID: product.id)
+    )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let context = try #require(await coordinator.context(productID: product.id))
+
+    #expect(await coordinator.processIntegrationCandidates(context: context))
+    await delegate.waitForReadyCandidate(id: candidate.id)
+
+    let persistedCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+    let persistedItem = try #require(
+      try await store.fetchWorkItems(productID: product.id)
+        .first(where: { $0.id == workItem.id })
+    )
+    let persistedRuns = try await store.fetchAgentRuns(productID: product.id)
+    let focusedReview = try #require(
+      persistedRuns.first {
+        $0.profileID == techLead.id && $0.id != resolutionRun.id
+          && $0.worktreePath == conflictWorkspace.path
+      }
+    )
+    let comments = try await store.fetchComments(workItemID: workItem.id)
+
+    #expect(delegate.errorMessage == nil)
+    #expect(persistedCandidate.status == .readyForDemo)
+    #expect(persistedCandidate.integratedSHA != candidate.headSHA)
+    #expect(persistedCandidate.integrationWorktreePath == conflictWorkspace.path)
+    #expect(persistedItem.state == .acceptance)
+    #expect(
+      try String(
+        contentsOf: conflictWorkspace.appendingPathComponent("shared.txt"),
+        encoding: .utf8
+      ) == "accepted trunk behavior\nticket behavior\n"
+    )
+    #expect(focusedReview.status == .completed)
+    #expect(
+      comments.contains {
+        $0.authorName == techLead.name
+          && $0.body == "Approved the conflict-resolved result."
+      }
+    )
+    #expect(await transport.remainingResponseCount() == 0)
+
+    await client.disconnect()
+    await store.close()
+  }
+
   @Test("[D17] Repository approval promotes the exact reviewed revision before Done")
   @MainActor
   func repositoryAcceptancePromotesExactRevision() async throws {
@@ -1078,6 +1364,24 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let gitWorkspaceManager: GitWorkspaceManager
     let coordinator: TicketDeliveryWorkflowCoordinator
   }
+  private func runGit(_ arguments: [String], at directory: URL) throws -> String {
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = arguments
+    process.currentDirectoryURL = directory
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let output = String(data: data, encoding: .utf8) ?? ""
+    guard process.terminationStatus == 0 else {
+      throw GitWorkspaceError.commandFailed(arguments: arguments, output: output)
+    }
+    return output.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
 }
 
 @MainActor
@@ -1096,6 +1400,8 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   var presentedPermissionGrants: [AgentPermissionGrant] = []
   var scheduledProductIDs: [UUID] = []
   var preparedDemoCandidateIDs: [UUID] = []
+  private let readyCandidateIDs: AsyncStream<UUID>
+  private let readyCandidateContinuation: AsyncStream<UUID>.Continuation
 
   init(
     store: SQLiteStore,
@@ -1105,12 +1411,23 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     rootURL: URL,
     runs: [AgentRun]
   ) {
+    let readyCandidatePair = AsyncStream<UUID>.makeStream()
+    readyCandidateIDs = readyCandidatePair.stream
+    readyCandidateContinuation = readyCandidatePair.continuation
     self.store = store
     self.client = client
     self.productID = productID
     self.databaseURL = databaseURL
     self.rootURL = rootURL
     self.runs = runs
+  }
+
+
+  func waitForReadyCandidate(id: UUID) async {
+    for await candidateID in readyCandidateIDs where candidateID == id {
+      return
+    }
+    preconditionFailure("The candidate update stream ended before ready for demo")
   }
 
   func deliveryStore(for productID: UUID) -> SQLiteStore? {
@@ -1259,7 +1576,16 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     presentedRuns.append(updated)
   }
 
-  func deliveryReloadSelectedProductIfCurrent(productID: UUID) async {}
+  func deliveryReloadSelectedProductIfCurrent(productID: UUID) async {
+    guard
+      let candidate = try? await store.fetchCandidateRevisions(productID: productID)
+        .first(where: { $0.status == .readyForDemo }),
+      let workItem = try? await store.fetchWorkItems(productID: productID)
+        .first(where: { $0.id == candidate.workItemID }),
+      workItem.state == .acceptance
+    else { return }
+    readyCandidateContinuation.yield(candidate.id)
+  }
   func deliveryReplacePermissionRequest(_ request: AgentPermissionRequest) {
     presentedPermissionRequests.append(request)
   }

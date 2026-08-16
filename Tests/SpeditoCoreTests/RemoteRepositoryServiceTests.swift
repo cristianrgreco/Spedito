@@ -5,7 +5,7 @@ import Testing
 
 @Suite("GitHub remote repository service", .serialized)
 struct RemoteRepositoryServiceTests {
-  @Test("Local Product setup publishes one immutable PR and accepts merged history")
+  @Test("Remote merge followed by interruption completes local reconciliation exactly once")
   func localProductLifecycle() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "Spedito-Service-\(UUID().uuidString)",
@@ -52,10 +52,11 @@ struct RemoteRepositoryServiceTests {
       transport: transport,
       sleep: { _ in }
     )
+    let credentialStore = ServiceMemoryCredentialStore()
     let service = GitHubRemoteRepositoryService(
       configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
       api: api,
-      credentialStore: ServiceMemoryCredentialStore(),
+      credentialStore: credentialStore,
       credentialSession: GitCredentialSession(),
       git: git,
       storeProvider: { requestedID in requestedID == product.id ? store : nil },
@@ -410,6 +411,22 @@ struct RemoteRepositoryServiceTests {
     )
     #expect(pendingCleanup.status == .merged)
     #expect(pendingCleanup.remoteBranchDeletedAt == nil)
+    await service.shutdown()
+    let relaunchedService = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: api,
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(),
+      git: git,
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { requestedID in
+        guard requestedID == product.id else {
+          throw GitHubRemoteRepositoryServiceError.stale
+        }
+        return repository
+      }
+    )
     try runProcess(
       executable: URL(fileURLWithPath: "/usr/bin/git"),
       arguments: [
@@ -418,7 +435,7 @@ struct RemoteRepositoryServiceTests {
       ],
       at: root
     )
-    await service.recover(productID: product.id)
+    await relaunchedService.recover(productID: product.id)
     let afterLaunchRecovery = try #require(
       try await store.fetchRemotePublication(id: publication.id)
     )
@@ -431,7 +448,9 @@ struct RemoteRepositoryServiceTests {
       ) == localSHA
     )
     await transport.delayMergedHeadVisibility(requestCount: 4)
-    let merge = try await service.mergeTicketPullRequest(publicationID: publication.id)
+    let merge = try await relaunchedService.mergeTicketPullRequest(
+      publicationID: publication.id
+    )
     #expect(merge.state.publication?.status == .merged)
     #expect(merge.publication.remoteBranchDeletedAt != nil)
     #expect(merge.mergedSHA == localSHA)
@@ -453,14 +472,17 @@ struct RemoteRepositoryServiceTests {
         at: root
       ) == localSHA
     )
-    state = try await service.refreshPullRequest(publicationID: publication.id)
+    state = try await relaunchedService.refreshPullRequest(publicationID: publication.id)
     #expect(state.publication?.status == .merged)
     #expect(try await git.currentSHA(at: repository) == localSHA)
 
-    state = try await service.check(productID: product.id)
+    state = try await relaunchedService.check(productID: product.id)
     #expect(state.observation?.relationship == .aligned)
     #expect(await transport.pullRequestPostCount == 1)
-    await service.shutdown()
+    let reconciliations = try await store.fetchRemoteSafeSyncs(productID: product.id)
+    #expect(reconciliations.count == 1)
+    #expect(reconciliations.first?.status == .accepted)
+    await relaunchedService.shutdown()
     await store.close()
   }
 
