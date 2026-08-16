@@ -26,9 +26,9 @@ aggregate-organized persistence, deterministic operation ownership, the
 Priority 0 audit corrections, and the Core-owned delivery workflow are
 implemented and covered by focused tests.
 
-This plan is not fully closed. Three Phase 7 feature slices remain in
-`AppModel`: ticket and Epic conversations/refinement, Epic planning and ticket
-suggestions, and sprint planning and goal generation. Section 14.9 still
+This plan is not fully closed. Two Phase 7 feature slices remain in `AppModel`:
+Epic planning and ticket suggestions, and sprint planning and goal generation.
+Section 14.9 still
 requires the four interactive body-recomputation traces during product-owner
 inspection. The Priority 0
 journey ledger in `owner-journey-test-plan.md` records additional product or
@@ -37,8 +37,8 @@ behavior.
 
 ### Current implementation evidence — 15 August 2026
 
-- `AppModel.swift` is 7,586 lines with 315 function declarations, 34 `@Published`
-  properties, 50 `try?` sites, and no task-launch sites.
+- `AppModel.swift` is 7,017 lines with 309 function declarations, 33 `@Published`
+  properties, 43 `try?` sites, and no task-launch sites.
 - `ContentView.swift` is 556 lines with two task-launch sites.
 - `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery scheduler
   and child-task lifecycle. `TicketDeliveryWorkflowCoordinator` is 5,243 lines
@@ -835,13 +835,117 @@ Finish turning `AppModel` into a composition and navigation boundary and `Conten
 Complete these in the order indicated by current defect frequency and feature work, not by arbitrary file position:
 
 - [x] Product conversations and title/activity lifecycle.
-- [ ] Ticket and epic conversations/refinement.
+- [x] Ticket and epic conversations/refinement.
 - [ ] Epic planning and ticket suggestions.
 - [ ] Sprint planning and goal generation.
 - [x] Demo/app-version launch and recovery.
 - [x] Retrospective synthesis.
 - [x] Codex connection and usage monitoring.
 - [x] Product library, selection, archive, and restoration.
+
+#### Work packet: Core-owned ticket and epic conversations and refinement
+
+##### Problem
+
+`AppModel` currently owns the complete Codex turn, transient operation, durable
+result, notification, and failure sequences for ticket refinement and ordinary
+ticket and epic conversations. That makes product-scoped continuation and
+interruption policy depend on the application composition object.
+
+##### Behavior to preserve
+
+Ticket refinement remains a read-only business analyst turn until a complete,
+version-checked proposal can update the ticket. Questions, replies, failures,
+and completed refinement remain durable in the ticket work log. Ordinary ticket
+and epic conversation turns remain single-recipient and read-only, reuse a
+same-recipient thread only after successful turns, and publish owner
+notifications only after the authoritative reply is durable. Product switching
+does not interrupt a turn; product archival, explicit stop, and shutdown do.
+
+##### Non-goals
+
+This packet does not change owner-facing conversation controls, prompts,
+proposal validation, epic planning or suggestion generation, sprint planning,
+product Chat, or delivery execution.
+
+##### Current authority
+
+- Durable state: `SQLiteStore` ticket comments, work-item versions and
+  dependencies, draft-sprint assignments, epic-planning conversation
+  snapshots, and owner notifications.
+- Task owner: `AppModel` methods plus the ticket and epic cases in
+  `PlanningConversationRuntime`.
+- Presentation state: `PlanningConversationRuntime` ticket/epic running
+  identifiers, activity, and ticket result dictionaries, plus
+  `EpicPlanningRuntime.conversation` and `AppModel.refiningWorkItemID`.
+- Known duplicate state: `AppModel` forwards the runtime fields while also
+  sequencing their transitions and holding refinement state directly.
+
+##### Target authority
+
+- Coordinator: Core `PlanningConversationWorkflowCoordinator`.
+- Commands: refine a ticket, apply a completed refinement, send or stop a ticket
+  conversation message, send or stop an epic conversation message, dismiss a
+  ticket assistant result, cancel product-scoped work, and shut down.
+- Snapshot: one bounded product/source-scoped projection of the active
+  refinement or conversation, ticket activity, and ticket result dictionaries.
+- Persistence operations: existing `SQLiteStore` work-item, dependency, sprint,
+  comment, epic-planning conversation, activity, and owner-notification
+  operations.
+- View boundary: `TicketDetailView`, the sprint-board ticket detail, and
+  `EpicDetailView` continue to call `AppModel` forwarders and read its projected
+  snapshot.
+
+##### State table
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Idle | Initial load or a settled command | Existing ticket work log, ticket version, epic conversation snapshot, and notifications | Durable conversation and refinement history | Start refinement or send a message when global planning gates allow | Fresh instances reconstruct history from SQLite; no process is inferred from transient state |
+| Refining ticket | Start refinement | Existing ticket and dependency snapshot; no agent result is claimed yet | Business analyst responding state | Stop | Product switching preserves the product-keyed turn; stop, archive, or shutdown interrupts it |
+| Refinement needs input | Structured reply contains questions | Agent work-log comment containing the questions and a `needsInput` notification | Question cards in the ticket conversation | Submit answers or start another agreed refinement turn | Relaunch rebuilds question cards and unread attention from SQLite |
+| Refinement complete | Structured reply has no questions and the version check succeeds | Updated ticket, merged active dependencies, preserved or assigned draft-sprint owner, agent work-log comment, and `refinementComplete` notification | Updated ticket and completion reply | Review or continue the conversation | Relaunch reads the updated ticket and work log; stale versions fail without partial replacement |
+| Ticket message running | Send to one current product team member | Owner work-log comment already saved by the presenting flow | Recipient responding state and bounded live activity | Stop | Product switching preserves the product-keyed turn; interruption records failure and the next attempt starts a new thread |
+| Ticket reply complete | Valid structured reply is appended | Agent work-log comment and `newReply` notification | Reply and any reviewable versioned proposal | Apply or reject the proposal, or send a follow-up | Same-recipient follow-ups reuse the successful in-memory thread; relaunch preserves the durable transcript and starts a fresh thread |
+| Epic message running | Send to one current product team member on an open epic | Owner chat message in the epic-planning snapshot | Recipient responding state | Stop | Product switching preserves the product-keyed turn; interruption records failure and the next attempt starts a new thread |
+| Epic reply complete | Valid structured reply is appended | Agent chat message in the epic-planning snapshot and `newReply` notification | Reply inline in the epic conversation | Send a follow-up or continue planning | Relaunch restores the durable epic conversation; same-recipient follow-ups reuse only a successful in-memory thread |
+| Failed or interrupted | Codex, validation, persistence, explicit stop, archive, or shutdown failure | Ticket flows append a system work-log comment; epic flows append a system chat message | Recoverable owner-facing failure without a fabricated result | Retry when the governing planning gates allow | Thread reuse is cleared; durable messages survive and a retry starts a new read-only thread |
+
+##### Call sites to migrate
+
+- [x] `TicketDetailView` and sprint-board ticket conversation/refinement calls.
+- [x] `EpicDetailView` epic conversation calls.
+- [x] Product archive, application shutdown, and selected-product reload
+  settlement.
+- [x] Planning availability projections and operation-state checks.
+
+##### Obsolete state to remove
+
+- [x] Ticket/epic/refinement turn and task cases, thread dictionaries, and
+  presentation fields in `PlanningConversationRuntime`.
+- [x] `AppModel` Codex sequencing, activity monitor, result mutation, and
+  refinement application implementation.
+
+##### Verification
+
+- [x] Existing focused persistence, prompt/decoding, and presentation tests.
+- [x] New deterministic observable-contract journey tests.
+- [x] Product-switch interruption and fresh-instance durable recovery.
+- [x] Full test suite.
+- [x] `git diff --check`.
+- [x] Architecture ratchets.
+- [x] Relaunch.
+- [ ] Product-owner inspection.
+
+##### Completion evidence
+
+`swift test -Xswiftc -warnings-as-errors --filter CodexTransportApplicationTests`
+passed four deterministic application journeys, including product switching,
+relaunch, same-recipient continuation, and explicit interruption. The full
+warnings-as-errors suite passed 512 tests in 60 suites. `git diff --check`
+reported no errors, and `./scripts/check_architecture_ratchets.sh` matched all
+six baselines after the three affected values were lowered.
+`./scripts/relaunch.sh` rebuilt the application and the development process
+reached its ready state; it remains running for product-owner inspection.
 
 For each slice:
 

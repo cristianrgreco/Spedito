@@ -125,8 +125,8 @@ struct ProductScopedPersistenceTests {
     }
   }
 
-  @Test("Product switches preserve in-flight refinement and epic planning turns")
-  func productSelectionPreservesOwnerAgentTurns() async throws {
+  @Test("Product switches preserve in-flight sprint and epic planning turns")
+  func productSelectionPreservesPlanningTurns() async throws {
     let fixture = try ProductScopedPersistenceFixture()
     defer { fixture.remove() }
     let registry = try ProductStoreRegistry(
@@ -144,15 +144,15 @@ struct ProductScopedPersistenceTests {
     model.epicPlanningRuntime.start(productID: first.id) {
       await epicGate.wait()
     }
-    let refinementTurn = CodexTurnIdentity(
-      threadID: "refinement-thread",
-      turnID: "refinement-turn"
+    let sprintPlanningTurn = CodexTurnIdentity(
+      threadID: "sprint-planning-thread",
+      turnID: "sprint-planning-turn"
     )
-    let refinementToken = model.planningConversationRuntime.beginTurn(
-      .ticketRefinement,
+    let sprintPlanningToken = model.planningConversationRuntime.beginTurn(
+      .sprintPlanning,
       productID: first.id,
-      threadID: refinementTurn.threadID,
-      turnID: refinementTurn.turnID
+      threadID: sprintPlanningTurn.threadID,
+      turnID: sprintPlanningTurn.turnID
     )
 
     await model.selectProduct(second)
@@ -160,12 +160,12 @@ struct ProductScopedPersistenceTests {
     #expect(model.selectedProduct?.id == second.id)
     #expect(model.epicPlanningRuntime.isBusy)
     #expect(
-      model.planningConversationRuntime.activeTurn(.ticketRefinement)
-        == refinementTurn
+      model.planningConversationRuntime.activeTurn(.sprintPlanning)
+        == sprintPlanningTurn
     )
 
     epicGate.open()
-    model.planningConversationRuntime.finishTurn(refinementToken)
+    model.planningConversationRuntime.finishTurn(sprintPlanningToken)
     await model.epicPlanningRuntime.cancel(productID: first.id) { _ in }
     await model.shutdown()
     for store in registry.allStores {

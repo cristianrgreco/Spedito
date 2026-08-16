@@ -273,34 +273,24 @@ private struct PlanningConversationKey: Hashable {
 }
 
 @MainActor
+final class PlanningConversationFeatureModel: ObservableObject {
+  @Published var snapshot = PlanningConversationWorkflowSnapshot()
+}
+
+@MainActor
 final class PlanningConversationRuntime: ObservableObject {
-  @Published var isTicketMessageRunning = false
-  @Published var ticketWorkItemID: UUID?
-  @Published var ticketRecipientID: UUID?
-  @Published var ticketActivity: CodexLiveActivity?
-  @Published var isEpicMessageRunning = false
-  @Published var epicID: UUID?
-  @Published var epicRecipientID: UUID?
-  @Published var refinementResults: [UUID: TicketRefinementSessionResult] = [:]
-  @Published var ticketResults: [UUID: TicketConversationSessionResult] = [:]
   enum TurnKind: Hashable {
     case sprintPlanning
     case sprintGoal
-    case ticketConversation
-    case epicConversation
-    case ticketRefinement
   }
 
   enum TaskKind: Hashable {
-    case ticketActivity
     case turnInterruption(TurnKind)
   }
 
   private let turns = FeatureOperationRegistry<TurnKind>()
   private let tasks = FeatureOperationRegistry<TaskKind>()
   private var planningThreadIDs: [PlanningConversationKey: String] = [:]
-  private var ticketThreadIDs: [PlanningConversationKey: String] = [:]
-  private var epicThreadIDs: [PlanningConversationKey: String] = [:]
 
   var isBusy: Bool { turns.isBusy || tasks.isBusy }
 
@@ -316,35 +306,6 @@ final class PlanningConversationRuntime: ObservableObject {
   func removePlanningThreadID(workItemID: UUID, profileID: UUID) {
     planningThreadIDs.removeValue(
       forKey: PlanningConversationKey(workItemID: workItemID, profileID: profileID)
-    )
-  }
-
-  func ticketThreadID(workItemID: UUID, profileID: UUID) -> String? {
-    ticketThreadIDs[PlanningConversationKey(workItemID: workItemID, profileID: profileID)]
-  }
-
-  func setTicketThreadID(_ threadID: String, workItemID: UUID, profileID: UUID) {
-    ticketThreadIDs[PlanningConversationKey(workItemID: workItemID, profileID: profileID)] =
-      threadID
-  }
-
-  func removeTicketThreadID(workItemID: UUID, profileID: UUID) {
-    ticketThreadIDs.removeValue(
-      forKey: PlanningConversationKey(workItemID: workItemID, profileID: profileID)
-    )
-  }
-
-  func epicThreadID(epicID: UUID, profileID: UUID) -> String? {
-    epicThreadIDs[PlanningConversationKey(workItemID: epicID, profileID: profileID)]
-  }
-
-  func setEpicThreadID(_ threadID: String, epicID: UUID, profileID: UUID) {
-    epicThreadIDs[PlanningConversationKey(workItemID: epicID, profileID: profileID)] = threadID
-  }
-
-  func removeEpicThreadID(epicID: UUID, profileID: UUID) {
-    epicThreadIDs.removeValue(
-      forKey: PlanningConversationKey(workItemID: epicID, profileID: profileID)
     )
   }
 
@@ -378,28 +339,8 @@ final class PlanningConversationRuntime: ObservableObject {
     }
   }
 
-  func startTicketActivity(
-    productID: UUID,
-    operation: @escaping @MainActor (FeatureOperationToken<TaskKind>) async -> Void
-  ) {
-    tasks.start(.ticketActivity, productID: productID, replacing: true, operation: operation)
-  }
-
-  func isCurrentTicketActivity(_ token: FeatureOperationToken<TaskKind>) -> Bool {
-    tasks.isCurrent(token)
-  }
-
-  func stopTicketActivity() {
-    guard tasks.isActive(.ticketActivity) else { return }
-    tasks.cancelTask(.ticketActivity)
-    guard let token = tasks.token(for: .ticketActivity) else { return }
-    tasks.finish(token)
-  }
-
   func resetThreads() {
     planningThreadIDs.removeAll()
-    ticketThreadIDs.removeAll()
-    epicThreadIDs.removeAll()
   }
 
   func cancel(

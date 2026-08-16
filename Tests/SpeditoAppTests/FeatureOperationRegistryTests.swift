@@ -3,6 +3,7 @@ import Foundation
 import Testing
 
 @testable import SpeditoApp
+@testable import SpeditoCore
 
 @MainActor
 private final class OperationGate {
@@ -83,7 +84,9 @@ struct FeatureOperationRegistryTests {
       changeCount += 1
     }
 
-    model.planningConversationRuntime.isTicketMessageRunning = true
+    model.planningConversationFeature.snapshot = PlanningConversationWorkflowSnapshot(
+      ticketConversationWorkItemID: UUID()
+    )
     model.sprintPlanningFeature.isGeneratingGoal = true
     model.retrospectiveSynthesisRuntime.notes = []
     model.codexConnectionRuntime.models = []

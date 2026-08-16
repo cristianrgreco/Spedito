@@ -35,29 +35,6 @@ enum CodexInstallationSelectionError: Error, LocalizedError {
   }
 }
 
-struct TicketRefinementSessionResult: Equatable {
-  let base: SprintPlanningTicketSnapshot
-  let reply: TicketRefinementReply?
-  let errorMessage: String?
-}
-
-struct TicketConversationSessionResult: Equatable {
-  let base: SprintPlanningTicketSnapshot
-  let recipientID: UUID
-  let reply: TicketConversationReply
-}
-
-struct EpicPlanningConversationState: Equatable {
-  let productID: UUID
-  let epicID: UUID
-  var messages: [EpicPlanningConversationMessage]
-  var questions: [TicketRefinementQuestion]
-  var hasStartedPlanning: Bool
-  var isRunning: Bool
-  var isGeneratingPlan: Bool
-  var isComplete: Bool
-  var errorMessage: String?
-}
 
 enum EpicPlanningRetryAction: Equatable {
   case retryFailedPlan
@@ -539,48 +516,41 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     get { sprintPlanningFeature.isGeneratingGoal }
     set { sprintPlanningFeature.isGeneratingGoal = newValue }
   }
-  private(set) var isTicketConversationMessageRunning: Bool {
-    get { planningConversationRuntime.isTicketMessageRunning }
-    set { planningConversationRuntime.isTicketMessageRunning = newValue }
+  var isTicketConversationMessageRunning: Bool {
+    planningConversationFeature.snapshot.isTicketConversationMessageRunning
   }
-  private(set) var ticketConversationWorkItemID: UUID? {
-    get { planningConversationRuntime.ticketWorkItemID }
-    set { planningConversationRuntime.ticketWorkItemID = newValue }
+  var ticketConversationWorkItemID: UUID? {
+    planningConversationFeature.snapshot.ticketConversationWorkItemID
   }
-  private(set) var ticketConversationRecipientID: UUID? {
-    get { planningConversationRuntime.ticketRecipientID }
-    set { planningConversationRuntime.ticketRecipientID = newValue }
+  var ticketConversationRecipientID: UUID? {
+    planningConversationFeature.snapshot.ticketConversationRecipientID
   }
-  private(set) var ticketConversationActivity: CodexLiveActivity? {
-    get { planningConversationRuntime.ticketActivity }
-    set { planningConversationRuntime.ticketActivity = newValue }
+  var ticketConversationActivity: CodexLiveActivity? {
+    planningConversationFeature.snapshot.ticketConversationActivity
   }
-  private(set) var isEpicConversationMessageRunning: Bool {
-    get { planningConversationRuntime.isEpicMessageRunning }
-    set { planningConversationRuntime.isEpicMessageRunning = newValue }
+  var isEpicConversationMessageRunning: Bool {
+    planningConversationFeature.snapshot.isEpicConversationMessageRunning
   }
-  private(set) var epicConversationEpicID: UUID? {
-    get { planningConversationRuntime.epicID }
-    set { planningConversationRuntime.epicID = newValue }
+  var epicConversationEpicID: UUID? {
+    planningConversationFeature.snapshot.epicConversationEpicID
   }
-  private(set) var epicConversationRecipientID: UUID? {
-    get { planningConversationRuntime.epicRecipientID }
-    set { planningConversationRuntime.epicRecipientID = newValue }
+  var epicConversationRecipientID: UUID? {
+    planningConversationFeature.snapshot.epicConversationRecipientID
   }
-  private(set) var ticketRefinementResults: [UUID: TicketRefinementSessionResult] {
-    get { planningConversationRuntime.refinementResults }
-    set { planningConversationRuntime.refinementResults = newValue }
+  var ticketRefinementResults: [UUID: TicketRefinementSessionResult] {
+    planningConversationFeature.snapshot.ticketRefinementResults
   }
-  private(set) var ticketConversationResults: [UUID: TicketConversationSessionResult] {
-    get { planningConversationRuntime.ticketResults }
-    set { planningConversationRuntime.ticketResults = newValue }
+  var ticketConversationResults: [UUID: TicketConversationSessionResult] {
+    planningConversationFeature.snapshot.ticketConversationResults
   }
   private(set) var epicPlanningConversation: EpicPlanningConversationState? {
     get { epicPlanningRuntime.conversation }
     set { epicPlanningRuntime.conversation = newValue }
   }
   @Published private(set) var isAskingKnowledge = false
-  @Published private(set) var refiningWorkItemID: UUID?
+  var refiningWorkItemID: UUID? {
+    planningConversationFeature.snapshot.refiningWorkItemID
+  }
   @Published private(set) var codebaseFocusWorkItemID: UUID?
   @Published private(set) var knowledgeFocusPageID: UUID?
   @Published var backlogFocusEpicID: UUID?
@@ -737,9 +707,85 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   let productLibraryFeature = ProductLibraryFeatureModel()
   let ticketSuggestionRuntime = TicketSuggestionRuntime()
   let planningConversationRuntime = PlanningConversationRuntime()
+  let planningConversationFeature = PlanningConversationFeatureModel()
   let epicPlanningRuntime = EpicPlanningRuntime()
   let sprintPlanningFeature = SprintPlanningFeatureModel()
   let retrospectiveSynthesisRuntime = RetrospectiveSynthesisRuntime()
+  private lazy var planningConversationWorkflowCoordinator =
+    PlanningConversationWorkflowCoordinator(
+      storeProvider: { [weak self] productID in
+        self?.store(for: productID)
+      },
+      clientProvider: { [weak self] in
+        self?.codexClient
+      },
+      selectedProductID: { [weak self] in
+        self?.selectedProductID
+      },
+      contextProvider: { [weak self] productID in
+        guard
+          let self,
+          selectedProductID == productID,
+          let product = selectedProduct,
+          product.id == productID
+        else { return nil }
+        return PlanningConversationWorkflowContext(
+          product: product,
+          profiles: profiles,
+          workItems: workItems,
+          epics: epics,
+          suggestionBatch: suggestionBatch
+        )
+      },
+      availabilityProvider: { [weak self] in
+        guard let self else {
+          return PlanningConversationWorkflowAvailability(
+            isCodexConnected: false,
+            isSprintPlanningMessageRunning: false,
+            isGeneratingSprintGoal: false,
+            isSuggestionGenerationRunning: false,
+            isEpicPlanningRunning: false,
+            isEpicPlanGenerationRunning: false
+          )
+        }
+        let isCodexConnected =
+          if case .connected = codexConnectionState { true } else { false }
+        return PlanningConversationWorkflowAvailability(
+          isCodexConnected: isCodexConnected,
+          isSprintPlanningMessageRunning: isPlanningMessageRunning,
+          isGeneratingSprintGoal: isGeneratingSprintGoal,
+          isSuggestionGenerationRunning: suggestionBatch?.session.status == .generating,
+          isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
+          isEpicPlanGenerationRunning: epicPlanningConversation?.isGeneratingPlan == true
+        )
+      },
+      workspaceProvider: { productID in
+        try Self.productWorkspaceURL(productID: productID)
+      },
+      inheritedInstructions: { [weak self] product in
+        self?.inheritedAgentInstructions(for: product) ?? ""
+      },
+      awaitEpicPersistence: { [weak self] in
+        await self?.epicPlanningRuntime.awaitPersistence()
+      },
+      onSnapshotChange: { [weak self] snapshot in
+        self?.planningConversationFeature.snapshot = snapshot
+      },
+      onEpicConversationChange: { [weak self] conversation, threadID in
+        self?.epicPlanningRuntime.setThreadID(threadID)
+        self?.epicPlanningConversation = conversation
+      },
+      onOwnerNotification: { [weak self] notification in
+        await self?.publishOwnerNotification(notification)
+      },
+      onSelectedActivityChange: { [weak self] productID, activity in
+        guard self?.selectedProductID == productID else { return }
+        self?.activity = activity
+      },
+      onReloadSelectedProduct: { [weak self] productID in
+        await self?.reloadSelectedProductIfCurrent(productID: productID)
+      }
+    )
   private lazy var ownerNotificationCoordinator = OwnerNotificationCoordinator(
     storeProvider: { [weak self] productID in
       self?.store(for: productID)
@@ -914,6 +960,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       remoteRepositoryFeature.objectWillChange.eraseToAnyPublisher(),
       ticketSuggestionRuntime.objectWillChange.eraseToAnyPublisher(),
       planningConversationRuntime.objectWillChange.eraseToAnyPublisher(),
+      planningConversationFeature.objectWillChange.eraseToAnyPublisher(),
       epicPlanningRuntime.objectWillChange.eraseToAnyPublisher(),
       sprintPlanningFeature.objectWillChange.eraseToAnyPublisher(),
       retrospectiveSynthesisRuntime.objectWillChange.eraseToAnyPublisher(),
@@ -1464,6 +1511,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       && !ticketDeliveryRuntimeCoordinator.isBusy
       && !productConversationFeature.isBusy
       && !planningConversationRuntime.isBusy
+      && !planningConversationWorkflowCoordinator.isBusy
       && !demoSessions.contains {
         $0.status == .preparing || $0.status == .starting || $0.status == .ready
       }
@@ -2351,148 +2399,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   func refineTicket(_ item: WorkItem) async throws -> TicketRefinementReply {
-    guard
-      canRefineTicket,
-      let store,
-      let client = codexClient,
-      let product = selectedProduct,
-      product.id == item.productID,
-      let analyst = profiles.first(where: { $0.role == .businessAnalyst })
-    else {
-      if refiningWorkItemID != nil || isPlanningMessageRunning
-        || isTicketConversationMessageRunning
-        || isEpicConversationMessageRunning
-        || suggestionBatch?.session.status == .generating
-      {
-        throw TicketRefinementGenerationError.anotherCodexTaskIsRunning
-      }
-      throw CodexClientError.notConnected
-    }
-
-    let refinementBase = SprintPlanningTicketSnapshot(item: item)
-    ticketRefinementResults.removeValue(forKey: item.id)
-    ticketConversationResults.removeValue(forKey: item.id)
-    refiningWorkItemID = item.id
-    var turnToken: FeatureOperationToken<PlanningConversationRuntime.TurnKind>?
-    defer {
-      refiningWorkItemID = nil
-      if let turnToken {
-        planningConversationRuntime.finishTurn(turnToken)
-      }
-    }
-
-    do {
-      let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
-      let conversation = try await store.fetchComments(workItemID: item.id)
-      let activeItems = try await store.fetchWorkItems(productID: product.id)
-        .filter { $0.state != .cancelled }
-      let activeItemIDs = Set(activeItems.map(\.id))
-      let activeDependencies = try await store.fetchWorkItemDependencies(
-        productID: product.id
-      ).filter {
-        activeItemIDs.contains($0.workItemID)
-          && activeItemIDs.contains($0.dependsOnWorkItemID)
-      }
-      let productEpics = try await store.fetchEpics(productID: product.id)
-      let threadID = try await client.startReadOnlyThread(
-        workingDirectory: workingDirectory,
-        developerInstructions: CodexTicketRefinementGenerator.developerInstructions(
-          productInstructions: inheritedAgentInstructions(for: product),
-          customInstructions: analyst.customInstructionText
-        ),
-        model: analyst.model
-      )
-      let turnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexTicketRefinementGenerator.prompt(
-          product: product,
-          item: item,
-          epic: item.epicID.flatMap { epicID in
-            productEpics.first { $0.id == epicID }
-          },
-          existingItems: activeItems,
-          dependencies: activeDependencies,
-          conversation: conversation
-        ),
-        effort: analyst.reasoningEffort,
-        outputSchema: CodexTicketRefinementGenerator.outputSchema
-      )
-      turnToken = planningConversationRuntime.beginTurn(
-        .ticketRefinement,
-        productID: product.id,
-        threadID: threadID,
-        turnID: turnID
-      )
-      let response = try await client.waitForFinalAgentMessage(
-        threadID: threadID,
-        turnID: turnID
-      )
-      let reply = try CodexTicketRefinementGenerator.decode(
-        response,
-        currentItem: item,
-        validRelatedItems: activeItems
-      )
-      let sourceComment: TicketComment?
-      if reply.proposal.missingQuestions.isEmpty {
-        _ = try await applyCompletedTicketRefinement(reply.proposal, to: item)
-        sourceComment = try? await store.appendComment(
-          workItemID: item.id,
-          authorKind: .agent,
-          authorName: analyst.name,
-          body: reply.ticketCommentBody
-        )
-      } else {
-        sourceComment = try await store.appendComment(
-          workItemID: item.id,
-          authorKind: .agent,
-          authorName: analyst.name,
-          body: reply.ticketCommentBody
-        )
-      }
-      if let sourceComment {
-        let firstQuestion = reply.proposal.missingQuestions.first
-        await publishOwnerNotification(
-          OwnerNotification(
-            id: sourceComment.id,
-            productID: product.id,
-            kind: firstQuestion == nil ? .refinementComplete : .needsInput,
-            target: OwnerNotificationTarget(kind: .ticket, id: item.id),
-            title:
-              firstQuestion == nil
-              ? "\(item.key) refinement complete"
-              : "\(item.key) needs your input",
-            body:
-              firstQuestion?.prompt
-              ?? "The business analyst updated \(reply.proposal.title).",
-            createdAt: sourceComment.createdAt
-          )
-        )
-      }
-      if selectedProductID == product.id,
-        let latestActivity = try? await store.fetchActivity(productID: product.id)
-      {
-        activity = latestActivity
-      }
-      ticketRefinementResults[item.id] = TicketRefinementSessionResult(
-        base: refinementBase,
-        reply: reply,
-        errorMessage: nil
-      )
-      return reply
-    } catch {
-      _ = try? await store.appendComment(
-        workItemID: item.id,
-        authorKind: .system,
-        authorName: "Spedito",
-        body: "The business analyst couldn't refine this ticket: \(error.localizedDescription)"
-      )
-      ticketRefinementResults[item.id] = TicketRefinementSessionResult(
-        base: refinementBase,
-        reply: nil,
-        errorMessage: error.localizedDescription
-      )
-      throw error
-    }
+    try await planningConversationWorkflowCoordinator.refineTicket(item)
   }
 
   @discardableResult
@@ -2500,101 +2407,14 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     _ proposal: TicketRefinementProposal,
     to item: WorkItem
   ) async throws -> WorkItem {
-    guard proposal.missingQuestions.isEmpty else {
-      throw TicketRefinementGenerationError.invalidResponse(
-        "The ticket cannot be updated while product owner questions remain."
-      )
-    }
-    guard let store = store(for: item.productID) else {
-      throw PersistenceError.recordNotFound("Spedito database")
-    }
-
-    let activeItems = try await store.fetchWorkItems(productID: item.productID)
-      .filter { $0.state != .cancelled }
-    let productDependencies = try await store.fetchWorkItemDependencies(
-      productID: item.productID
+    try await planningConversationWorkflowCoordinator.applyCompletedTicketRefinement(
+      proposal,
+      to: item
     )
-    let productProfiles = try await store.fetchAgentProfiles(productID: item.productID)
-    let activeItemIDs = Set(activeItems.map(\.id))
-    let activeItemsByKey = Dictionary(uniqueKeysWithValues: activeItems.map { ($0.key, $0) })
-    let suggestedDependencyIDs = try Set(
-      proposal.dependencies.map { dependency in
-        guard
-          let relatedItem = activeItemsByKey[dependency.ticketKey],
-          relatedItem.id != item.id
-        else {
-          throw TicketRefinementGenerationError.invalidResponse(
-            "The suggested dependency \(dependency.ticketKey) is not active."
-          )
-        }
-        return relatedItem.id
-      }
-    )
-    let existingDependencyIDs = Set(
-      productDependencies
-        .filter {
-          $0.workItemID == item.id
-            && activeItemIDs.contains($0.dependsOnWorkItemID)
-        }
-        .map(\.dependsOnWorkItemID)
-    )
-
-    var updated = try await store.updateWorkItem(
-      id: item.id,
-      title: proposal.title,
-      type: proposal.type,
-      body: proposal.body,
-      acceptanceCriteria: proposal.acceptanceCriteria,
-      priority: proposal.priority,
-      customFields: item.customFields,
-      dependsOnWorkItemIDs: existingDependencyIDs.union(suggestedDependencyIDs),
-      expectedVersion: proposal.baseVersion
-    )
-    let currentPlan = try await store.fetchCurrentSprint(productID: item.productID)
-    let draftPlan = currentPlan?.sprint.state == .draft ? currentPlan : nil
-    let draftItem = draftPlan?.items.first { $0.workItemID == item.id }
-    if updated.ownerProfileID == nil,
-      draftItem?.implementerProfileID == nil,
-      let owner = TicketOwnerRouter.owner(
-        for: updated,
-        profiles: productProfiles,
-        suggestedRole: proposal.suggestedRole
-      )
-    {
-      updated = try await store.assignWorkItemOwner(
-        id: updated.id,
-        profileID: owner.id
-      )
-      if let draftPlan, draftItem != nil {
-        _ = try await store.saveDraftSprint(
-          productID: updated.productID,
-          goal: draftPlan.sprint.goal,
-          tokenBudgetLimit: draftPlan.sprint.tokenBudgetLimit,
-          items: draftPlan.items.map { sprintItem in
-            SprintDraftItemInput(
-              workItemID: sprintItem.workItemID,
-              implementerProfileID: sprintItem.workItemID == updated.id
-                ? owner.id
-                : sprintItem.implementerProfileID,
-              reviewerProfileID: sprintItem.reviewerProfileID,
-              estimatedTokens: sprintItem.estimatedTokens
-            )
-          }
-        )
-      }
-    }
-    await reloadSelectedProductIfCurrent(productID: item.productID)
-    return updated
   }
 
   func cancelTicketRefinement() {
-    guard let client = codexClient else { return }
-    planningConversationRuntime.requestInterrupt(.ticketRefinement) { turn in
-      try? await client.interruptTurn(
-        threadID: turn.threadID,
-        turnID: turn.turnID
-      )
-    }
+    planningConversationWorkflowCoordinator.cancelTicketRefinement()
   }
 
   func sendTicketConversationMessage(
@@ -2603,181 +2423,16 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     ownerMessage: String,
     allowsProposal: Bool = true
   ) async throws -> TicketConversationReply {
-    guard
-      !isTicketConversationMessageRunning,
-      !isEpicConversationMessageRunning,
-      !isPlanningMessageRunning,
-      refiningWorkItemID == nil,
-      suggestionBatch?.session.status != .generating
-    else {
-      throw TicketConversationGenerationError.anotherCodexTaskIsRunning
-    }
-    guard
-      let store,
-      let client = codexClient,
-      let product = selectedProduct,
-      product.id == item.productID,
-      recipient.productID == product.id,
-      profiles.contains(where: { $0.id == recipient.id })
-    else {
-      throw CodexClientError.notConnected
-    }
-    let trimmedMessage = ownerMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedMessage.isEmpty else {
-      throw TicketConversationGenerationError.invalidResponse("Enter a message first.")
-    }
-
-    let conversationBase = SprintPlanningTicketSnapshot(item: item)
-    ticketConversationResults.removeValue(forKey: item.id)
-    isTicketConversationMessageRunning = true
-    ticketConversationWorkItemID = item.id
-    ticketConversationRecipientID = recipient.id
-    var turnToken: FeatureOperationToken<PlanningConversationRuntime.TurnKind>?
-    defer {
-      stopTicketConversationActivityMonitoring()
-      isTicketConversationMessageRunning = false
-      ticketConversationWorkItemID = nil
-      ticketConversationRecipientID = nil
-      if let turnToken {
-        planningConversationRuntime.finishTurn(turnToken)
-      }
-    }
-
-    let comments = try await store.fetchComments(workItemID: item.id)
-    let currentMessageBody = "@\(recipient.name) \(trimmedMessage)"
-    let priorComments =
-      comments.last?.authorKind == .owner
-        && comments.last?.body == currentMessageBody
-      ? Array(comments.dropLast())
-      : comments
-    let productItems = try await store.fetchWorkItems(productID: product.id)
-    let activeItemIDs = Set(productItems.filter { $0.state != .cancelled }.map(\.id))
-    let productDependencies = try await store.fetchWorkItemDependencies(
-      productID: product.id
+    try await planningConversationWorkflowCoordinator.sendTicketConversationMessage(
+      for: item,
+      to: recipient,
+      ownerMessage: ownerMessage,
+      allowsProposal: allowsProposal
     )
-    let prerequisiteIDs = Set(
-      productDependencies
-        .filter {
-          $0.workItemID == item.id
-            && activeItemIDs.contains($0.dependsOnWorkItemID)
-        }
-        .map(\.dependsOnWorkItemID)
-    )
-    let prerequisites = productItems.filter { prerequisiteIDs.contains($0.id) }
-
-    do {
-      let threadID: String
-      if let existingThreadID = planningConversationRuntime.ticketThreadID(
-        workItemID: item.id,
-        profileID: recipient.id
-      ) {
-        threadID = existingThreadID
-      } else {
-        let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
-        threadID = try await client.startReadOnlyThread(
-          workingDirectory: workingDirectory,
-          developerInstructions: CodexTicketConversation.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
-            customInstructions: recipient.customInstructionText,
-            recipient: recipient
-          ),
-          model: recipient.model
-        )
-        planningConversationRuntime.setTicketThreadID(
-          threadID,
-          workItemID: item.id,
-          profileID: recipient.id
-        )
-      }
-      let turnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexTicketConversation.prompt(
-          product: product,
-          item: item,
-          prerequisites: prerequisites,
-          previousComments: priorComments,
-          ownerMessage: trimmedMessage,
-          allowsProposal: allowsProposal
-        ),
-        effort: recipient.reasoningEffort,
-        outputSchema: CodexTicketConversation.outputSchema
-      )
-      turnToken = planningConversationRuntime.beginTurn(
-        .ticketConversation,
-        productID: product.id,
-        threadID: threadID,
-        turnID: turnID
-      )
-      monitorTicketConversationActivity(
-        client: client,
-        productID: product.id,
-        threadID: threadID
-      )
-      let response = try await client.waitForFinalAgentMessage(
-        threadID: threadID,
-        turnID: turnID
-      )
-      let generatedReply = try CodexTicketConversation.decode(
-        response,
-        currentItem: item
-      )
-      let reply =
-        allowsProposal
-        ? generatedReply
-        : TicketConversationReply(message: generatedReply.message)
-      let replyComment = try await store.appendComment(
-        workItemID: item.id,
-        authorKind: .agent,
-        authorName: recipient.name,
-        body: reply.ticketCommentBody
-      )
-      await publishOwnerNotification(
-        OwnerNotification(
-          id: replyComment.id,
-          productID: product.id,
-          kind: .newReply,
-          target: OwnerNotificationTarget(kind: .ticket, id: item.id),
-          title: "\(recipient.name) replied on \(item.key)",
-          body: reply.message,
-          createdAt: replyComment.createdAt
-        )
-      )
-      if selectedProductID == product.id {
-        activity = try await store.fetchActivity(productID: product.id)
-      }
-      ticketConversationResults[item.id] = TicketConversationSessionResult(
-        base: conversationBase,
-        recipientID: recipient.id,
-        reply: reply
-      )
-      return reply
-    } catch {
-      planningConversationRuntime.removeTicketThreadID(
-        workItemID: item.id,
-        profileID: recipient.id
-      )
-      _ = try? await store.appendComment(
-        workItemID: item.id,
-        authorKind: .system,
-        authorName: "Spedito",
-        body: "\(recipient.name) couldn't reply: \(error.localizedDescription)"
-      )
-      throw error
-    }
   }
 
   func cancelTicketConversationMessage() {
-    guard let client = codexClient else { return }
-    ticketConversationActivity = CodexLiveActivity(
-      text: "Stopping this response…",
-      kind: .thinking
-    )
-    planningConversationRuntime.requestInterrupt(.ticketConversation) { turn in
-      try? await client.interruptTurn(
-        threadID: turn.threadID,
-        turnID: turn.turnID
-      )
-    }
+    planningConversationWorkflowCoordinator.cancelTicketConversationMessage()
   }
 
   func sendEpicConversationMessage(
@@ -2785,199 +2440,23 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     to recipient: AgentProfile,
     ownerMessage: String
   ) async throws -> EpicConversationReply {
-    guard
-      !isEpicConversationMessageRunning,
-      !isTicketConversationMessageRunning,
-      !isPlanningMessageRunning,
-      refiningWorkItemID == nil,
-      suggestionBatch?.session.status != .generating,
-      epicPlanningConversation?.isRunning != true,
-      epicPlanningConversation?.isGeneratingPlan != true
-    else {
-      throw EpicConversationGenerationError.anotherCodexTaskIsRunning
-    }
-    guard
-      let client = codexClient,
-      let product = selectedProduct,
-      product.id == epic.productID,
-      epic.status == .open,
-      recipient.productID == product.id,
-      profiles.contains(where: { $0.id == recipient.id })
-    else {
-      throw CodexClientError.notConnected
-    }
-    let trimmedMessage = ownerMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedMessage.isEmpty else {
-      throw EpicConversationGenerationError.invalidResponse("Enter a message first.")
-    }
-
-    await restoreEpicPlanningConversation(for: epic)
-    guard !Task.isCancelled, selectedProductID == epic.productID else {
-      throw CodexClientError.notConnected
-    }
-    let previousMessages =
-      epicPlanningConversation?.epicID == epic.id
-      ? epicPlanningConversation?.messages ?? []
-      : []
-    ensureEpicConversationState(for: epic)
-    updateEpicPlanningConversation(for: epic.id) {
-      $0.messages.append(
-        EpicPlanningConversationMessage(
-          author: .owner,
-          body: "@\(recipient.name) \(trimmedMessage)",
-          kind: .chat,
-          participantID: recipient.id,
-          participantName: recipient.name
-        )
-      )
-    }
-
-    isEpicConversationMessageRunning = true
-    epicConversationEpicID = epic.id
-    epicConversationRecipientID = recipient.id
-    var turnToken: FeatureOperationToken<PlanningConversationRuntime.TurnKind>?
-    defer {
-      isEpicConversationMessageRunning = false
-      epicConversationEpicID = nil
-      epicConversationRecipientID = nil
-      if let turnToken {
-        planningConversationRuntime.finishTurn(turnToken)
-      }
-    }
-
-    let currentEpic = epics.first(where: { $0.id == epic.id }) ?? epic
-    let relatedItems = workItems.filter {
-      $0.epicID == epic.id && $0.state != .cancelled
-    }
-    let proposedItems =
-      suggestionBatch?.session.epicID == epic.id
-      ? suggestionBatch?.suggestions.filter { $0.status == .proposed } ?? []
-      : []
-
-    do {
-      let threadID: String
-      if let existingThreadID = planningConversationRuntime.epicThreadID(
-        epicID: epic.id,
-        profileID: recipient.id
-      ) {
-        threadID = existingThreadID
-      } else {
-        let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
-        threadID = try await client.startReadOnlyThread(
-          workingDirectory: workingDirectory,
-          developerInstructions: CodexEpicConversation.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
-            customInstructions: recipient.customInstructionText,
-            recipient: recipient
-          ),
-          model: recipient.model
-        )
-        planningConversationRuntime.setEpicThreadID(
-          threadID,
-          epicID: epic.id,
-          profileID: recipient.id
-        )
-      }
-      let turnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexEpicConversation.prompt(
-          product: product,
-          epic: currentEpic,
-          relatedItems: relatedItems,
-          proposedItems: proposedItems,
-          previousMessages: previousMessages,
-          ownerMessage: trimmedMessage
-        ),
-        effort: recipient.reasoningEffort,
-        outputSchema: CodexEpicConversation.outputSchema
-      )
-      turnToken = planningConversationRuntime.beginTurn(
-        .epicConversation,
-        productID: product.id,
-        threadID: threadID,
-        turnID: turnID
-      )
-      let response = try await client.waitForFinalAgentMessage(
-        threadID: threadID,
-        turnID: turnID
-      )
-      let reply = try CodexEpicConversation.decode(response)
-      let agentMessage = EpicPlanningConversationMessage(
-        author: .agent,
-        body: reply.message,
-        kind: .chat,
-        participantID: recipient.id,
-        participantName: recipient.name
-      )
-      updateEpicPlanningConversation(for: epic.id) {
-        $0.messages.append(agentMessage)
-      }
-      await epicPlanningRuntime.awaitPersistence()
-      await publishOwnerNotification(
-        OwnerNotification(
-          id: agentMessage.id,
-          productID: product.id,
-          kind: .newReply,
-          target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-          title: "\(recipient.name) replied on \(epic.title)",
-          body: reply.message,
-          createdAt: agentMessage.createdAt
-        )
-      )
-      return reply
-    } catch {
-      planningConversationRuntime.removeEpicThreadID(
-        epicID: epic.id,
-        profileID: recipient.id
-      )
-      updateEpicPlanningConversation(for: epic.id) {
-        $0.messages.append(
-          EpicPlanningConversationMessage(
-            author: .system,
-            body: "\(recipient.name) couldn't reply: \(error.localizedDescription)",
-            kind: .chat
-          )
-        )
-      }
-      throw error
-    }
+    try await planningConversationWorkflowCoordinator.sendEpicConversationMessage(
+      for: epic,
+      to: recipient,
+      ownerMessage: ownerMessage
+    )
   }
 
   func cancelEpicConversationMessage() {
-    guard let client = codexClient else { return }
-    planningConversationRuntime.requestInterrupt(.epicConversation) { turn in
-      try? await client.interruptTurn(
-        threadID: turn.threadID,
-        turnID: turn.turnID
-      )
-    }
+    planningConversationWorkflowCoordinator.cancelEpicConversationMessage()
   }
 
   func dismissTicketAssistantResult(workItemID: UUID) {
-    ticketRefinementResults.removeValue(forKey: workItemID)
-    ticketConversationResults.removeValue(forKey: workItemID)
+    planningConversationWorkflowCoordinator.dismissTicketAssistantResult(
+      workItemID: workItemID
+    )
   }
 
-  private func ensureEpicConversationState(for epic: Epic) {
-    guard epicPlanningConversation?.epicID != epic.id else { return }
-    guard
-      epicPlanningConversation?.isRunning != true,
-      epicPlanningConversation?.isGeneratingPlan != true
-    else { return }
-    epicPlanningRuntime.setThreadID(nil)
-    epicPlanningConversation = EpicPlanningConversationState(
-      productID: epic.productID,
-      epicID: epic.id,
-      messages: [],
-      questions: [],
-      hasStartedPlanning: false,
-      isRunning: false,
-      isGeneratingPlan: false,
-      isComplete: false,
-      errorMessage: nil
-    )
-    persistEpicPlanningConversation()
-  }
 
   func transition(_ workItem: WorkItem, to state: WorkItemState) {
     guard let store = store(for: workItem.productID) else { return }
@@ -3270,52 +2749,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await productConversationFeature.restore(threadID: threadID)
   }
 
-  private func monitorTicketConversationActivity(
-    client: CodexAppServerClient,
-    productID: UUID,
-    threadID: String
-  ) {
-    stopTicketConversationActivityMonitoring()
-    ticketConversationActivity = CodexLiveActivity(
-      text: "Thinking through your question…",
-      kind: .thinking
-    )
-
-    planningConversationRuntime.startTicketActivity(productID: productID) {
-      [weak self] token in
-      guard let self else { return }
-      var accumulator = CodexLiveActivityAccumulator()
-      let messages = await client.inboundMessages(replayRecent: false)
-      for await message in messages {
-        guard !Task.isCancelled else { break }
-        guard case .notification(let notification) = message else { continue }
-        guard
-          notification.params["threadId"]?.stringValue == threadID,
-          self.planningConversationRuntime.isCurrentTicketActivity(token)
-        else { continue }
-
-        switch accumulator.consume(notification) {
-        case .activity(let activity):
-          self.ticketConversationActivity = activity
-        case .turnFinished:
-          self.ticketConversationActivity = nil
-          return
-        case nil:
-          continue
-        }
-      }
-
-      guard self.planningConversationRuntime.isCurrentTicketActivity(token) else {
-        return
-      }
-      self.ticketConversationActivity = nil
-    }
-  }
-
-  private func stopTicketConversationActivityMonitoring() {
-    planningConversationRuntime.stopTicketActivity()
-    ticketConversationActivity = nil
-  }
 
   func loadProductConversationMessages(threadID: UUID) async {
     await productConversationFeature.loadMessages(threadID: threadID)
@@ -6310,6 +5743,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await transientOwnerCommandRuntime.cancel(productID: productID)
     await ticketSuggestionRuntime.cancel(productID: productID)
     if !preservingOwnerAgentTurns {
+      await planningConversationWorkflowCoordinator.cancel(productID: productID)
       await planningConversationRuntime.cancel(productID: productID) {
         [weak self] turn in
         await self?.interruptFeatureTurn(turn)
@@ -6322,14 +5756,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       [weak self] turn in
       await self?.interruptFeatureTurn(turn)
     }
-    if selectedProductID == productID {
-      ticketConversationActivity = nil
-    }
   }
 
   private func shutdownFeatureRuntimes() async {
     await transientOwnerCommandRuntime.shutdown()
     await ticketSuggestionRuntime.shutdown()
+    await planningConversationWorkflowCoordinator.shutdown()
     await planningConversationRuntime.shutdown { [weak self] turn in
       await self?.interruptFeatureTurn(turn)
     }
@@ -6340,7 +5772,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await self?.interruptFeatureTurn(turn)
     }
     await productConversationFeature.shutdown()
-    ticketConversationActivity = nil
   }
 
   func shutdown() async {
