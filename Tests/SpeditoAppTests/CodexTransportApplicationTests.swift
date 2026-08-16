@@ -416,6 +416,150 @@ struct CodexTransportApplicationTests {
     }
   }
 
+  /// Existing partial coverage:
+  /// - `ProductConversationTests.durableThreads`
+  /// - `CodexTransportApplicationTests.scriptedProductConversation`
+  /// This test covers only C02's concurrent same-agent reply, completed-thread archival, and
+  /// still-running sibling composition through AppModel, presentation state, and SQLite.
+  @Test("C02 concurrent same-agent conversations remain independently durable")
+  func c02ConcurrentConversationsRemainIndependent() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-c02-conversations-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Concurrent conversations")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let recipient = try #require(profiles.first)
+    let firstThread = ProductConversationThread(
+      productID: product.id,
+      recipientProfileID: recipient.id,
+      subject: "First conversation",
+      status: .complete,
+      codexThreadID: "thread-c02-first"
+    )
+    let secondThread = ProductConversationThread(
+      productID: product.id,
+      recipientProfileID: recipient.id,
+      subject: "Second conversation",
+      status: .complete,
+      codexThreadID: "thread-c02-second"
+    )
+    _ = try await store.createConversationThread(
+      firstThread,
+      initialMessage: ProductConversationMessage(
+        threadID: firstThread.id,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "First context"
+      )
+    )
+    _ = try await store.createConversationThread(
+      secondThread,
+      initialMessage: ProductConversationMessage(
+        threadID: secondThread.id,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "Second context"
+      )
+    )
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/resume",
+            result: .object(["thread": .object(["id": .string("thread-c02-first")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-c02-first")])])
+          ),
+          .init(
+            method: "thread/resume",
+            result: .object(["thread": .object(["id": .string("thread-c02-second")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-c02-second")])])
+          ),
+        ]
+    )
+    let conversationModel = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      codexTransportFactory: { _ in
+        CodexTransportFactoryOutput(
+          descriptor: CodexRuntimeDescriptor(
+            executableURL: URL(fileURLWithPath: "/private/tmp/codex-test"),
+            version: "test",
+            source: .custom
+          ),
+          transport: transport
+        )
+      },
+      ownerNotificationSoundPlayer: CodexTransportNotificationSound(),
+      ownerNotificationSystemNotifier: CodexTransportSystemNotifier()
+    )
+    await conversationModel.load()
+
+    let firstReply = Task { @MainActor in
+      await conversationModel.sendProductConversationMessage(
+        threadID: firstThread.id,
+        recipientID: recipient.id,
+        body: "First question"
+      )
+    }
+    await transport.waitForRequest("turn/start")
+    let secondReply = Task { @MainActor in
+      await conversationModel.sendProductConversationMessage(
+        threadID: secondThread.id,
+        recipientID: recipient.id,
+        body: "Second question"
+      )
+    }
+    await transport.waitForRequest("turn/start", count: 2)
+    #expect(conversationModel.respondingConversationThreadIDs == [firstThread.id, secondThread.id])
+
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-c02-first",
+        turnID: "turn-c02-first",
+        text: "First reply"
+      )
+    )
+    #expect(await firstReply.value == firstThread.id)
+    #expect(conversationModel.respondingConversationThreadIDs == [secondThread.id])
+    #expect(await conversationModel.archiveProductConversation(threadID: firstThread.id))
+    #expect(conversationModel.respondingConversationThreadIDs == [secondThread.id])
+
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-c02-second",
+        turnID: "turn-c02-second",
+        text: "Second reply"
+      )
+    )
+    #expect(await secondReply.value == secondThread.id)
+    #expect(conversationModel.respondingConversationThreadIDs.isEmpty)
+
+    let storedFirst = try #require(try await store.fetchConversationThread(id: firstThread.id))
+    let storedSecond = try #require(try await store.fetchConversationThread(id: secondThread.id))
+    #expect(storedFirst.status == .archived)
+    #expect(storedSecond.status == .complete)
+    #expect(try await store.fetchConversationMessages(threadID: firstThread.id).map(\.body) == [
+      "First context", "First question", "First reply",
+    ])
+    #expect(try await store.fetchConversationMessages(threadID: secondThread.id).map(\.body) == [
+      "Second context", "Second question", "Second reply",
+    ])
+
+    await conversationModel.shutdown()
+    await store.close()
+  }
+
   @Test("Stopped ticket conversation records a durable failure and settles after relaunch")
   func stoppedTicketConversationSettlesDurably() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(

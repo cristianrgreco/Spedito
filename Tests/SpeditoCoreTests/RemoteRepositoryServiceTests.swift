@@ -268,9 +268,12 @@ struct RemoteRepositoryServiceTests {
     #expect(publication.pullRequest?.headSHA == localSHA)
     #expect(publication.pullRequest?.isDraft == false)
     await transport.setPullRequestHead(localSHA)
+    let reviewPublicationBranch = publication.publicationBranch
     await transport.setChangesRequested(true)
     let reviewSync = try await service.syncTicketPullRequest(publicationID: publication.id)
     #expect(reviewSync.changesRequested)
+    #expect(reviewSync.state.publication?.id == publication.id)
+    #expect(reviewSync.state.publication?.publicationBranch == reviewPublicationBranch)
     let reviewComments = try await store.fetchComments(workItemID: ticket.id)
     #expect(reviewComments.map(\.authorName) == ["reviewer", "reviewer"])
     #expect(

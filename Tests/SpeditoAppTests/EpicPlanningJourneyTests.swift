@@ -8,6 +8,78 @@ import Testing
 @Suite("Epic planning journeys", .serialized)
 @MainActor
 struct EpicPlanningJourneyTests {
+  /// Existing partial coverage:
+  /// - `SQLiteStoreTests.newEpicsPersistOnlyOwnerOutcomeUntilAnalysis`
+  /// - `EpicPlanningJourneyTests.e02ClarificationNeedsInputAcrossProducts`
+  /// This test covers only E01's owner create-and-clarify composition before analysis completes.
+  @Test("E01 creating an Epic persists only owner scope while clarification begins")
+  func e01CreateEpicStartsClarificationWithoutInventedMetadata() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Initial Epic scope")
+    let store = try #require(registry.store(for: product.id))
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-e01")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e01")])])
+          ),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+    let ownerOutcome = "Let product owners recover unsent release notes"
+
+    let created = try #require(await model.createEpicAndPlan(outcome: ownerOutcome))
+    await transport.waitForRequest("turn/start")
+
+    let persisted = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == created.id }
+    )
+    #expect(persisted.title.isEmpty)
+    #expect(persisted.goal == ownerOutcome)
+    #expect(persisted.successCriteria.isEmpty)
+    #expect(persisted.constraints.isEmpty)
+    #expect(persisted.status == .open)
+    #expect(model.epicPlanningWorkflowCoordinator.isPlanning)
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    #expect(try await store.fetchLatestTicketSuggestionBatch(productID: product.id) == nil)
+
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e01",
+        turnID: "turn-e01",
+        text: #"{"message":"I need one decision.","questions":[{"prompt":"Where should drafts live?","options":["On this Mac","In the repository"]}],"readyToPlan":false}"#
+      )
+    )
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
+    let clarified = try #require(
+      try await store.fetchEpicPlanningConversation(epicID: created.id)
+    )
+    #expect(clarified.questions.map(\.prompt) == ["Where should drafts live?"])
+    let unchanged = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == created.id }
+    )
+    #expect(unchanged == persisted)
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   @Test("E02 clarification needs input returns to the exact Epic across Products")
   func e02ClarificationNeedsInputAcrossProducts() async throws {
     let fixture = try EpicPlanningJourneyFixture()

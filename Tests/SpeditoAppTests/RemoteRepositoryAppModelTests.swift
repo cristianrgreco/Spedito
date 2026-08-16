@@ -1150,6 +1150,131 @@ struct RemoteRepositoryAppModelTests {
     await store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryServiceTests.localProductLifecycle`
+  /// This test covers only D13's remote-sync callback into the durable delivery transition.
+  @Test("D13 requested GitHub changes resume the same published ticket branch")
+  func d13RequestedChangesResumePublishedTicket() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-d13-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspaces = root.appendingPathComponent("workspaces", isDirectory: true)
+    try FileManager.default.createDirectory(at: workspaces, withIntermediateDirectories: true)
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: workspaces)
+    let product = try await registry.createProduct(name: "Remote review changes")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let reviewer = try #require(profiles.first { $0.role == .lead })
+    var item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Address bounded GitHub feedback",
+      acceptanceCriteria: ["Requested changes resume the same publication branch."]
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .refining,
+      actor: "Business analyst",
+      reason: "Refine"
+    )
+    item = try await store.transitionWorkItem(
+      id: item.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Address review feedback",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: reviewer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    _ = try await store.startSprint(id: draft.sprint.id)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    _ = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .completed,
+      codexThreadID: "thread-d13-implementation",
+      eventActor: implementer.name,
+      eventDetail: "Candidate reviewed"
+    )
+    for state in [WorkItemState.running, .integrating, .verifying, .acceptance] {
+      item = try await store.transitionWorkItem(
+        id: item.id,
+        to: state,
+        actor: state == .acceptance ? reviewer.name : implementer.name,
+        reason: "Prepare remote review"
+      )
+    }
+
+    let publication = pollingPublication(
+      productID: product.id,
+      connectionID: UUID(),
+      accountID: UUID(),
+      workItemID: item.id,
+      number: 13,
+      status: .open,
+      updatedAt: Date(timeIntervalSince1970: 13)
+    )
+    let remoteState = GitHubRemoteRepositoryState(
+      isConfigured: true,
+      publications: [publication]
+    )
+    let service = AppModelRemoteService()
+    await service.setState(remoteState)
+    await service.setPullRequestSync(
+      GitHubTicketPullRequestSync(
+        state: remoteState,
+        workItemID: item.id,
+        changesRequested: true,
+        closedWithoutMerge: false
+      )
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
+    await model.load()
+
+    await model.pollGitHubPullRequestsOnce(productID: product.id)
+
+    let resumedItem = try #require(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }
+    )
+    let resumedRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id)
+        .first { $0.id == implementationRun.id }
+    )
+    let resumedPublication = try #require(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.publication
+    )
+    let syncedPublicationIDs = await service.syncedPublicationIDs
+    #expect(!syncedPublicationIDs.isEmpty)
+    #expect(Set(syncedPublicationIDs) == [publication.id])
+    #expect(resumedItem.state == .running)
+    #expect(resumedRun.status == .queued)
+    #expect(resumedRun.codexThreadID == "thread-d13-implementation")
+    #expect(resumedPublication.id == publication.id)
+    #expect(resumedPublication.publicationBranch == publication.publicationBranch)
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   private func pollingWorkItem(
     productID: UUID,
     key: String,
@@ -1541,6 +1666,8 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var acceptState: GitHubRemoteRepositoryState?
   private var rejectState: GitHubRemoteRepositoryState?
   private var recoveryState: GitHubRemoteRepositoryState?
+  private var pullRequestSync: GitHubTicketPullRequestSync?
+  private(set) var syncedPublicationIDs: [UUID] = []
 
   func state(productID: UUID) async -> GitHubRemoteRepositoryState {
     _ = productID
@@ -1560,6 +1687,9 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
 
   func setRecoveryState(_ state: GitHubRemoteRepositoryState) {
     recoveryState = state
+  }
+  func setPullRequestSync(_ sync: GitHubTicketPullRequestSync) {
+    pullRequestSync = sync
   }
 
 
@@ -1962,10 +2092,14 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   func syncTicketPullRequest(
     publicationID: UUID
   ) async throws -> GitHubTicketPullRequestSync {
-    _ = publicationID
-    throw GitHubRemoteRepositoryServiceError.unavailable(
-      "Ticket pull requests are unavailable in this test."
-    )
+    guard let pullRequestSync else {
+      throw GitHubRemoteRepositoryServiceError.unavailable(
+        "Ticket pull requests are unavailable in this test."
+      )
+    }
+    syncedPublicationIDs.append(publicationID)
+    currentState = pullRequestSync.state
+    return pullRequestSync
   }
 
   func mergeTicketPullRequest(
