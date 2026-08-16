@@ -210,9 +210,9 @@ loaded only for the selected thread, so query count does not grow with archived
 or inactive conversation history. Focused observable application models hold
 bounded product-library, conversation, planning, suggestion, retrospective,
 demo, Codex, and delivery presentation snapshots. `AppModel` composes those
-dependencies and retains application lifecycle, selected-Product, and
-navigation authority. It still executes sprint planning and goal generation, so
-it is not yet a pure composition boundary.
+dependencies and retains application lifecycle, selected-Product, navigation,
+and presentation authority; feature orchestration remains in Core-owned
+coordinators.
 
 `PlanningConversationWorkflowCoordinator` owns ticket refinement and ordinary
 ticket and Epic conversation commands, Codex turn identity and interruption,
@@ -231,6 +231,15 @@ conversation, latest suggestion batch, and decision state. `AppModel` supplies
 product-scoped stores, the selected product and Codex client, inherited
 instructions, workspace and notification adapters, and selected-product
 projection callbacks, then forwards owner commands.
+
+`SprintPlanningWorkflowCoordinator` owns candidate sprint scope and ranking,
+ticket-planning conversations and interruption, exact-version goal generation,
+draft persistence and reassignment, readiness evaluation, sprint start, and
+product-scoped cancellation and settlement. Its bounded snapshot contains only
+message and goal activity plus current readiness issues. `AppModel` supplies
+product-scoped stores, selected-product planning context, the Codex client,
+workspace and instruction adapters, and presentation callbacks, then forwards
+owner commands.
 
 Ticket delivery uses Core-owned workflow boundaries rather than AppModel-owned
 transitions or task dictionaries. `TicketDeliveryRuntimeCoordinator` owns

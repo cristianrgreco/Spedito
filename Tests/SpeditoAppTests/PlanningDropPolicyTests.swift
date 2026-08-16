@@ -256,6 +256,8 @@ struct PlanningDropPolicyTests {
     )
 
     await model.settleOwnerCommands()
+    let persistedPlan = try await store.fetchCurrentSprint(productID: product.id)
+    #expect(persistedPlan?.items.map(\.workItemID) == [prerequisite.id])
 
     #expect(model.candidateSprintPlan?.items.map(\.workItemID) == [prerequisite.id])
     #expect(

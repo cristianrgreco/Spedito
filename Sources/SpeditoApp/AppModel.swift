@@ -64,198 +64,6 @@ struct ProductExecutionLifecyclePolicy {
   }
 }
 
-enum PlanningDropConstraint: Equatable {
-  case sprintScope
-  case rank
-  case unavailable
-}
-
-enum PlanningDropRankAction: Equatable {
-  case preserve
-  case move(before: UUID?)
-}
-
-struct PlanningDropEvaluation: Equatable {
-  let rankAction: PlanningDropRankAction?
-  let blockingConstraint: PlanningDropConstraint?
-  let message: String?
-
-  var isValid: Bool {
-    blockingConstraint == nil
-  }
-
-  static func valid(_ rankAction: PlanningDropRankAction) -> Self {
-    PlanningDropEvaluation(
-      rankAction: rankAction,
-      blockingConstraint: nil,
-      message: nil
-    )
-  }
-
-  static func invalid(
-    _ constraint: PlanningDropConstraint,
-    message: String
-  ) -> Self {
-    PlanningDropEvaluation(
-      rankAction: nil,
-      blockingConstraint: constraint,
-      message: message
-    )
-  }
-}
-
-struct PlanningDropPolicy {
-  private static let planningStates: Set<WorkItemState> = [
-    .backlog,
-    .refining,
-    .ready,
-  ]
-
-  static func evaluate(
-    workItems: [WorkItem],
-    dependencies: [WorkItemDependency],
-    candidateIDs: Set<UUID>,
-    externalCandidatePrerequisiteIDs: Set<UUID>,
-    movingIDs requestedMovingIDs: Set<UUID>,
-    intoCandidateSprint: Bool,
-    before requestedTargetID: UUID?
-  ) -> PlanningDropEvaluation {
-    let planningItems = workItems.filter { planningStates.contains($0.state) }
-    let planningIDs = Set(planningItems.map(\.id))
-    let movingIDs = requestedMovingIDs.intersection(planningIDs)
-    guard !movingIDs.isEmpty, movingIDs == requestedMovingIDs else {
-      return .invalid(
-        .unavailable,
-        message: "These tickets are no longer available for planning"
-      )
-    }
-
-    let desiredCandidateIDs =
-      intoCandidateSprint
-      ? candidateIDs.union(movingIDs)
-      : candidateIDs.subtracting(movingIDs)
-    let availableCandidateIDs =
-      desiredCandidateIDs.union(externalCandidatePrerequisiteIDs)
-    let itemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
-    let sortedDependencies = dependencies.sorted { lhs, rhs in
-      let lhsDependent = itemsByID[lhs.workItemID]
-      let rhsDependent = itemsByID[rhs.workItemID]
-      if lhsDependent?.rank != rhsDependent?.rank {
-        return (lhsDependent?.rank ?? .max) < (rhsDependent?.rank ?? .max)
-      }
-      if lhsDependent?.key != rhsDependent?.key {
-        return (lhsDependent?.key ?? "") < (rhsDependent?.key ?? "")
-      }
-      return (itemsByID[lhs.dependsOnWorkItemID]?.key ?? "")
-        < (itemsByID[rhs.dependsOnWorkItemID]?.key ?? "")
-    }
-
-    if let edge = sortedDependencies.first(where: {
-      desiredCandidateIDs.contains($0.workItemID)
-        && !availableCandidateIDs.contains($0.dependsOnWorkItemID)
-    }) {
-      let dependentKey = itemsByID[edge.workItemID]?.key ?? "The dependant ticket"
-      let prerequisiteKey =
-        itemsByID[edge.dependsOnWorkItemID]?.key ?? "its prerequisite"
-      let message =
-        intoCandidateSprint
-        ? "Move \(prerequisiteKey) too; \(dependentKey) depends on it"
-        : "Move \(dependentKey) too; it depends on \(prerequisiteKey)"
-      return .invalid(.sprintScope, message: message)
-    }
-
-    let nonMovingDestinationItems = planningItems.filter { item in
-      !movingIDs.contains(item.id)
-        && desiredCandidateIDs.contains(item.id) == intoCandidateSprint
-    }
-    if let requestedTargetID,
-      !nonMovingDestinationItems.contains(where: { $0.id == requestedTargetID })
-    {
-      return .invalid(
-        .unavailable,
-        message: "That drop position is no longer available"
-      )
-    }
-
-    let movingItems = planningItems.filter { movingIDs.contains($0.id) }
-    var desiredDestinationIDs = nonMovingDestinationItems.map(\.id)
-    let destinationInsertionIndex =
-      requestedTargetID.flatMap { targetID in
-        desiredDestinationIDs.firstIndex(of: targetID)
-      } ?? desiredDestinationIDs.endIndex
-    desiredDestinationIDs.insert(
-      contentsOf: movingItems.map(\.id),
-      at: destinationInsertionIndex
-    )
-
-    let currentDestinationIDs = planningItems.compactMap { item -> UUID? in
-      guard desiredCandidateIDs.contains(item.id) == intoCandidateSprint else {
-        return nil
-      }
-      return item.id
-    }
-
-    let rankAction: PlanningDropRankAction
-    if currentDestinationIDs == desiredDestinationIDs {
-      rankAction = .preserve
-    } else if let requestedTargetID {
-      rankAction = .move(before: requestedTargetID)
-    } else if let lastDestinationID = nonMovingDestinationItems.last?.id {
-      let remainingItems = planningItems.filter { !movingIDs.contains($0.id) }
-      let lastDestinationIndex = remainingItems.firstIndex {
-        $0.id == lastDestinationID
-      }
-      let anchorID = lastDestinationIndex.flatMap { index in
-        remainingItems.dropFirst(index + 1).first?.id
-      }
-      rankAction = .move(before: anchorID)
-    } else {
-      // An empty destination section does not express a new global rank.
-      rankAction = .preserve
-    }
-
-    let reorderedItems: [WorkItem]
-    switch rankAction {
-    case .preserve:
-      reorderedItems = planningItems
-    case .move(let targetID):
-      var remainingItems = planningItems.filter { !movingIDs.contains($0.id) }
-      let insertionIndex =
-        targetID.flatMap { targetID in
-          remainingItems.firstIndex { $0.id == targetID }
-        } ?? remainingItems.endIndex
-      remainingItems.insert(contentsOf: movingItems, at: insertionIndex)
-      reorderedItems = remainingItems
-    }
-
-    let indexByID = Dictionary(
-      uniqueKeysWithValues: reorderedItems.enumerated().map {
-        ($0.element.id, $0.offset)
-      }
-    )
-    if let edge = sortedDependencies.first(where: { edge in
-      guard
-        let dependentIndex = indexByID[edge.workItemID],
-        let prerequisiteIndex = indexByID[edge.dependsOnWorkItemID]
-      else {
-        return false
-      }
-      return dependentIndex < prerequisiteIndex
-    }) {
-      let dependentKey = itemsByID[edge.workItemID]?.key ?? "The dependant ticket"
-      let prerequisiteKey =
-        itemsByID[edge.dependsOnWorkItemID]?.key ?? "its prerequisite"
-      let message =
-        movingIDs.contains(edge.dependsOnWorkItemID)
-          && !movingIDs.contains(edge.workItemID)
-        ? "Place \(prerequisiteKey) above \(dependentKey)"
-        : "Place \(dependentKey) below \(prerequisiteKey)"
-      return .invalid(.rank, message: message)
-    }
-
-    return .valid(rankAction)
-  }
-}
 
 struct KnowledgePageReadState: Equatable {
   private(set) var productID: UUID?
@@ -385,7 +193,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   @Published private(set) var sprintPlan: SprintPlan?
   @Published private(set) var sprintHistory: [SprintPlan] = []
   @Published private(set) var runs: [AgentRun] = []
-  @Published private(set) var sprintReadinessIssues: [SprintReadinessIssue] = []
+  var sprintReadinessIssues: [SprintReadinessIssue] {
+    sprintPlanningFeature.snapshot.readinessIssues
+  }
   @Published private(set) var activity: [ActivityEvent] = []
   private(set) var retrospectiveNotes: [RetrospectiveNote] {
     get { retrospectiveSynthesisRuntime.notes }
@@ -484,13 +294,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   var isDecidingSuggestions: Bool {
     epicPlanningFeature.snapshot.isDecidingSuggestions
   }
-  private(set) var isPlanningMessageRunning: Bool {
-    get { sprintPlanningFeature.isSendingMessage }
-    set { sprintPlanningFeature.isSendingMessage = newValue }
+  var isPlanningMessageRunning: Bool {
+    sprintPlanningFeature.snapshot.isSendingMessage
   }
-  private(set) var isGeneratingSprintGoal: Bool {
-    get { sprintPlanningFeature.isGeneratingGoal }
-    set { sprintPlanningFeature.isGeneratingGoal = newValue }
+  var isGeneratingSprintGoal: Bool {
+    sprintPlanningFeature.snapshot.isGeneratingGoal
   }
   var isTicketConversationMessageRunning: Bool {
     planningConversationFeature.snapshot.isTicketConversationMessageRunning
@@ -547,10 +355,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   var candidateSprintPlan: SprintPlan? {
-    if let sprintPlan, sprintPlan.sprint.state == .draft {
-      return sprintPlan
-    }
-    return sprintHistory.first { $0.sprint.state == .draft }
+    sprintPlanningWorkflowCoordinator.candidateSprintPlan()
   }
 
   func remoteRepositorySnapshot(
@@ -680,7 +485,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       runtimeCoordinator: ticketDeliveryRuntimeCoordinator
     )
   let productLibraryFeature = ProductLibraryFeatureModel()
-  let planningConversationRuntime = PlanningConversationRuntime()
   let planningConversationFeature = PlanningConversationFeatureModel()
   let epicPlanningFeature = EpicPlanningFeatureModel()
   let sprintPlanningFeature = SprintPlanningFeatureModel()
@@ -740,6 +544,81 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     },
     onError: { [weak self] error, productID in
       self?.presentExecutionError(error, productID: productID)
+    }
+  )
+  lazy var sprintPlanningWorkflowCoordinator = SprintPlanningWorkflowCoordinator(
+    storeProvider: { [weak self] productID in
+      self?.store(for: productID)
+    },
+    clientProvider: { [weak self] in
+      self?.codexClient
+    },
+    selectedProductID: { [weak self] in
+      self?.selectedProductID
+    },
+    contextProvider: { [weak self] productID in
+      guard
+        let self,
+        selectedProductID == productID
+      else { return nil }
+      return SprintPlanningWorkflowContext(
+        product: selectedProduct,
+        workItems: workItems,
+        dependencies: dependencies,
+        profiles: profiles,
+        sprintPlan: sprintPlan,
+        sprintHistory: sprintHistory,
+        modelOptions: codexModels
+      )
+    },
+    availabilityProvider: { [weak self] in
+      guard let self else {
+        return SprintPlanningWorkflowAvailability(
+          isSuggestionGenerationRunning: false,
+          isTicketConversationRunning: false,
+          isEpicConversationRunning: false,
+          refiningWorkItemID: nil,
+          isEpicPlanningRunning: false,
+          isEpicPlanGenerating: false
+        )
+      }
+      return SprintPlanningWorkflowAvailability(
+        isSuggestionGenerationRunning: suggestionBatch?.session.status == .generating,
+        isTicketConversationRunning: isTicketConversationMessageRunning,
+        isEpicConversationRunning: isEpicConversationMessageRunning,
+        refiningWorkItemID: refiningWorkItemID,
+        isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
+        isEpicPlanGenerating: epicPlanningConversation?.isGeneratingPlan == true
+      )
+    },
+    workspaceURLProvider: { productID in
+      try Self.productWorkspaceURL(productID: productID)
+    },
+    inheritedInstructions: { [weak self] product in
+      self?.inheritedAgentInstructions(
+        for: product,
+        includesMandatoryKnowledge: true,
+        allowsRepositoryInspection: true
+      ) ?? ""
+    },
+    onReloadActivity: { [weak self] productID in
+      try await self?.reloadSprintPlanningActivity(productID: productID)
+    },
+    onReloadSelectedProduct: { [weak self] productID in
+      await self?.reloadSelectedProductIfCurrent(productID: productID)
+    },
+    onScheduleSprintExecution: { [weak self] productID in
+      self?.scheduleSprintExecution(productID: productID)
+    },
+    onError: { [weak self] error, productID in
+      self?.presentExecutionError(error, productID: productID)
+    },
+    onErrorMessage: { [weak self] message, productID in
+      guard self?.selectedProductID == productID else { return }
+      self?.errorMessage = message
+    },
+    onSnapshotChange: { [weak self] snapshot in
+      self?.sprintPlanningFeature.snapshot = snapshot
     }
   )
   private lazy var planningConversationWorkflowCoordinator =
@@ -991,7 +870,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   private func observeFeatureModels() {
     [
       remoteRepositoryFeature.objectWillChange.eraseToAnyPublisher(),
-      planningConversationRuntime.objectWillChange.eraseToAnyPublisher(),
       planningConversationFeature.objectWillChange.eraseToAnyPublisher(),
       epicPlanningFeature.objectWillChange.eraseToAnyPublisher(),
       sprintPlanningFeature.objectWillChange.eraseToAnyPublisher(),
@@ -1541,7 +1419,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       && !retrospectiveSynthesisRuntime.isBusy
       && !ticketDeliveryRuntimeCoordinator.isBusy
       && !productConversationFeature.isBusy
-      && !planningConversationRuntime.isBusy
+      && !sprintPlanningWorkflowCoordinator.isBusy
       && !planningConversationWorkflowCoordinator.isBusy
       && !demoSessions.contains {
         $0.status == .preparing || $0.status == .starting || $0.status == .ready
@@ -1576,20 +1454,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   var canGenerateSprintGoal: Bool {
-    guard case .connected = codexConnectionState else { return false }
-    guard
-      let plan = candidateSprintPlan ?? sprintPlan,
-      [.draft, .active, .paused].contains(plan.sprint.state),
-      !plan.items.isEmpty
-    else { return false }
-    guard suggestionBatch?.session.status != .generating else { return false }
-    guard !isPlanningMessageRunning else { return false }
-    guard !isGeneratingSprintGoal else { return false }
-    guard !isTicketConversationMessageRunning else { return false }
-    guard !isEpicConversationMessageRunning else { return false }
-    guard refiningWorkItemID == nil else { return false }
-    guard epicPlanningConversation?.isRunning != true else { return false }
-    return epicPlanningConversation?.isGeneratingPlan != true
+    let isCodexConnected =
+      if case .connected = codexConnectionState { true } else { false }
+    return sprintPlanningWorkflowCoordinator.canGenerateSprintGoal(
+      isCodexConnected: isCodexConnected
+    )
   }
 
   var pendingSuggestionCount: Int {
@@ -3510,406 +3379,40 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     ticketSnapshot: SprintPlanningTicketSnapshot,
     proposedAssignee: AgentProfile?
   ) async throws -> SprintPlanningConversationReply {
-    guard
-      !isPlanningMessageRunning,
-      suggestionBatch?.session.status != .generating,
-      refiningWorkItemID == nil,
-      !isTicketConversationMessageRunning,
-      !isEpicConversationMessageRunning
-    else {
-      throw SprintPlanningConversationError.anotherCodexTaskIsRunning
-    }
-    guard
-      let store,
-      let client = codexClient,
-      let product = selectedProduct,
-      product.id == item.productID
-    else {
-      throw CodexClientError.notConnected
-    }
-    guard recipient.productID == product.id, profiles.contains(where: { $0.id == recipient.id })
-    else {
-      throw CodexClientError.notConnected
-    }
-    let trimmedMessage = ownerMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedMessage.isEmpty else {
-      throw SprintPlanningConversationError.invalidResponse("Enter a message first.")
-    }
-
-    isPlanningMessageRunning = true
-    var turnToken: FeatureOperationToken<PlanningConversationRuntime.TurnKind>?
-    defer {
-      isPlanningMessageRunning = false
-      if let turnToken {
-        planningConversationRuntime.finishTurn(turnToken)
-      }
-    }
-
-    let comments = try await store.fetchComments(workItemID: item.id)
-    let currentMessageBody = "@\(recipient.name) \(trimmedMessage)"
-    let priorComments =
-      comments.last?.authorKind == .owner
-        && comments.last?.body == currentMessageBody
-      ? Array(comments.dropLast())
-      : comments
-    let prerequisiteIDs = Set(
-      dependencies
-        .filter { $0.workItemID == item.id }
-        .map(\.dependsOnWorkItemID)
+    try await sprintPlanningWorkflowCoordinator.sendSprintPlanningMessage(
+      for: item,
+      to: recipient,
+      ownerMessage: ownerMessage,
+      ticketSnapshot: ticketSnapshot,
+      proposedAssignee: proposedAssignee
     )
-    let prerequisites = workItems.filter { prerequisiteIDs.contains($0.id) }
-    let sprintItemIDs = Set(candidateSprintPlan?.items.map(\.workItemID) ?? [])
-    let scopedItems = workItems.filter { sprintItemIDs.contains($0.id) }
-    do {
-      let threadID: String
-      if let existingThreadID = planningConversationRuntime.planningThreadID(
-        workItemID: item.id,
-        profileID: recipient.id
-      ) {
-        threadID = existingThreadID
-      } else {
-        let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
-        threadID = try await client.startReadOnlyThread(
-          workingDirectory: workingDirectory,
-          developerInstructions: CodexSprintPlanningConversation.developerInstructions(
-            productInstructions: inheritedAgentInstructions(for: product),
-            customInstructions: recipient.customInstructionText,
-            recipient: recipient
-          ),
-          model: recipient.model
-        )
-        planningConversationRuntime.setPlanningThreadID(
-          threadID,
-          workItemID: item.id,
-          profileID: recipient.id
-        )
-      }
-      let turnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexSprintPlanningConversation.prompt(
-          product: product,
-          itemKey: item.key,
-          snapshot: ticketSnapshot,
-          prerequisites: prerequisites,
-          sprintItems: scopedItems,
-          proposedAssignee: proposedAssignee,
-          previousComments: priorComments,
-          ownerMessage: trimmedMessage
-        ),
-        effort: recipient.reasoningEffort,
-        outputSchema: CodexSprintPlanningConversation.outputSchema
-      )
-      turnToken = planningConversationRuntime.beginTurn(
-        .sprintPlanning,
-        productID: product.id,
-        threadID: threadID,
-        turnID: turnID
-      )
-      let response = try await client.waitForFinalAgentMessage(
-        threadID: threadID,
-        turnID: turnID
-      )
-      let reply = try CodexSprintPlanningConversation.decode(response)
-      _ = try await store.appendComment(
-        workItemID: item.id,
-        authorKind: .agent,
-        authorName: recipient.name,
-        body: reply.ticketCommentBody
-      )
-      if selectedProductID == product.id {
-        activity = try await store.fetchActivity(productID: product.id)
-      }
-      return reply
-    } catch {
-      planningConversationRuntime.removePlanningThreadID(
-        workItemID: item.id,
-        profileID: recipient.id
-      )
-      _ = try? await store.appendComment(
-        workItemID: item.id,
-        authorKind: .system,
-        authorName: "Spedito",
-        body: "\(recipient.name) couldn't reply: \(error.localizedDescription)"
-      )
-      throw error
-    }
   }
 
   func cancelSprintPlanningMessage() {
-    guard let client = codexClient else { return }
-    planningConversationRuntime.requestInterrupt(.sprintPlanning) { turn in
-      try? await client.interruptTurn(
-        threadID: turn.threadID,
-        turnID: turn.turnID
-      )
-    }
+    sprintPlanningWorkflowCoordinator.cancelSprintPlanningMessage()
   }
 
   func generateAndSaveSprintGoal(for sprintID: UUID, planVersion: Int) async throws -> String {
-    guard
-      !isGeneratingSprintGoal,
-      suggestionBatch?.session.status != .generating,
-      !isPlanningMessageRunning,
-      !isTicketConversationMessageRunning,
-      !isEpicConversationMessageRunning,
-      refiningWorkItemID == nil,
-      epicPlanningConversation?.isRunning != true,
-      epicPlanningConversation?.isGeneratingPlan != true
-    else {
-      throw SprintGoalGenerationError.anotherCodexTaskIsRunning
-    }
-    guard
-      let client = codexClient,
-      let product = selectedProduct,
-      let analyst = profiles.first(where: { $0.role == .businessAnalyst })
-    else {
-      throw CodexClientError.notConnected
-    }
-    guard
-      let plan = sprintPlanForGoalGeneration(id: sprintID),
-      plan.sprint.planVersion == planVersion
-    else {
-      throw SprintPlanningError.planChanged
-    }
-    let scopedIDs = Set(plan.items.map(\.workItemID))
-    let titles =
-      workItems
-      .filter { scopedIDs.contains($0.id) }
-      .sorted {
-        if $0.rank == $1.rank { return $0.key < $1.key }
-        return $0.rank < $1.rank
-      }
-      .map(\.title)
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-    guard !titles.isEmpty else {
-      throw SprintGoalGenerationError.noTickets
-    }
-    let supportedEfforts =
-      modelOption(for: analyst)?
-      .supportedReasoningEfforts
-      .map(\.id) ?? []
-    let reasoningEffort = CodexSprintGoalGenerator.lightestReasoningEffort(
-      supportedEfforts: supportedEfforts,
-      fallback: analyst.reasoningEffort
+    try await sprintPlanningWorkflowCoordinator.generateAndSaveSprintGoal(
+      for: sprintID,
+      planVersion: planVersion
     )
-    let deadline = ContinuousClock.now + CodexSprintGoalGenerator.totalTimeout
-
-    isGeneratingSprintGoal = true
-    var turnToken: FeatureOperationToken<PlanningConversationRuntime.TurnKind>?
-    defer {
-      isGeneratingSprintGoal = false
-      if let turnToken {
-        planningConversationRuntime.finishTurn(turnToken)
-      }
-    }
-
-    do {
-      let workingDirectory = try Self.productWorkspaceURL(productID: product.id)
-      let threadID = try await client.startReadOnlyThread(
-        workingDirectory: workingDirectory,
-        developerInstructions: CodexSprintGoalGenerator.developerInstructions,
-        model: analyst.model,
-        responseTimeout: try remainingSprintGoalGenerationTime(until: deadline)
-      )
-      let turnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexSprintGoalGenerator.prompt(
-          productName: product.name,
-          sprintNumber: plan.sprint.number,
-          ticketTitles: titles
-        ),
-        effort: reasoningEffort,
-        outputSchema: CodexSprintGoalGenerator.outputSchema,
-        responseTimeout: try remainingSprintGoalGenerationTime(until: deadline)
-      )
-      turnToken = planningConversationRuntime.beginTurn(
-        .sprintGoal,
-        productID: product.id,
-        threadID: threadID,
-        turnID: turnID
-      )
-      let response = try await client.waitForFinalAgentMessage(
-        threadID: threadID,
-        turnID: turnID,
-        timeout: .seconds(180),
-        totalTimeout: try remainingSprintGoalGenerationTime(until: deadline)
-      )
-      let suggestion = try CodexSprintGoalGenerator.decode(response)
-      guard
-        let currentPlan = sprintPlanForGoalGeneration(id: sprintID),
-        currentPlan.sprint.planVersion == planVersion,
-        let store = store(for: currentPlan.sprint.productID)
-      else {
-        throw SprintPlanningError.planChanged
-      }
-      let savedPlan = try await store.saveGeneratedSprintGoal(
-        id: sprintID,
-        goal: suggestion,
-        expectedPlanVersion: planVersion
-      )
-      await reloadSelectedProductIfCurrent(productID: currentPlan.sprint.productID)
-      return savedPlan.sprint.goal
-    } catch let error as SprintGoalGenerationError {
-      if error == .timedOut,
-        let turn = planningConversationRuntime.activeTurn(.sprintGoal)
-      {
-        try? await client.interruptTurn(
-          threadID: turn.threadID,
-          turnID: turn.turnID
-        )
-      }
-      throw error
-    } catch let error as CodexClientError {
-      guard case .turnTimedOut = error else { throw error }
-      throw SprintGoalGenerationError.timedOut
-    } catch let error as CodexTransportError {
-      guard case .requestTimedOut = error else { throw error }
-      throw SprintGoalGenerationError.timedOut
-    }
-  }
-
-  private func sprintPlanForGoalGeneration(id: UUID) -> SprintPlan? {
-    if let candidateSprintPlan, candidateSprintPlan.sprint.id == id {
-      return candidateSprintPlan
-    }
-    if let sprintPlan, sprintPlan.sprint.id == id {
-      return sprintPlan
-    }
-    return sprintHistory.first {
-      $0.sprint.id == id && [.draft, .active, .paused].contains($0.sprint.state)
-    }
-  }
-
-  private func remainingSprintGoalGenerationTime(
-    until deadline: ContinuousClock.Instant
-  ) throws -> Duration {
-    let remaining = ContinuousClock.now.duration(to: deadline)
-    guard remaining > .zero else {
-      throw SprintGoalGenerationError.timedOut
-    }
-    return remaining
   }
 
   func addToCandidateSprint(_ workItem: WorkItem) {
-    addToCandidateSprint([workItem])
+    sprintPlanningWorkflowCoordinator.addToCandidateSprint([workItem])
   }
 
   func addToCandidateSprint(_ selectedItems: [WorkItem]) {
-    guard
-      let store,
-      let productID = selectedProductID,
-      canEditCandidateSprint,
-      !selectedItems.isEmpty,
-      selectedItems.allSatisfy({ $0.productID == productID })
-    else { return }
-
-    let candidatePlan = candidateSprintPlan
-    let existingIDs = Set(candidatePlan?.items.map(\.workItemID) ?? [])
-    let selectedIDs = Set(selectedItems.map(\.id)).subtracting(existingIDs)
-    guard !selectedIDs.isEmpty else { return }
-    let availableIDs =
-      existingIDs
-      .union(selectedIDs)
-      .union(externalCandidatePrerequisiteIDs)
-    if let missingEdge = dependencies.first(where: {
-      selectedIDs.contains($0.workItemID) && !availableIDs.contains($0.dependsOnWorkItemID)
-    }),
-      let dependent = workItems.first(where: { $0.id == missingEdge.workItemID }),
-      let prerequisite = workItems.first(where: { $0.id == missingEdge.dependsOnWorkItemID })
-    {
-      errorMessage = "Also select \(prerequisite.key); \(dependent.key) depends on it."
-      return
-    }
-
-    let currentInputs: [SprintDraftItemInput] =
-      candidatePlan?.items.map { sprintItem in
-        let workItem = workItems.first { $0.id == sprintItem.workItemID }
-        return SprintDraftItemInput(
-          workItemID: sprintItem.workItemID,
-          implementerProfileID: sprintItem.implementerProfileID
-            ?? workItem?.ownerProfileID,
-          reviewerProfileID: sprintItem.reviewerProfileID,
-          estimatedTokens: sprintItem.estimatedTokens
-        )
-      } ?? []
-    let newInputs: [SprintDraftItemInput] =
-      workItems
-      .filter { selectedIDs.contains($0.id) }
-      .map { item in
-        return SprintDraftItemInput(
-          workItemID: item.id,
-          implementerProfileID: item.ownerProfileID,
-          estimatedTokens: 0
-        )
-      }
-    let inputs = currentInputs + newInputs
-
-    transientOwnerCommandRuntime.start(productID: productID) { [self] in
-      do {
-        _ = try await store.saveDraftSprint(
-          productID: productID,
-          goal: candidatePlan?.sprint.goal ?? "",
-          tokenBudgetLimit: nil,
-          items: inputs
-        )
-        await reloadSelectedProductIfCurrent(productID: productID)
-      } catch {
-        presentExecutionError(error, productID: productID)
-      }
-    }
+    sprintPlanningWorkflowCoordinator.addToCandidateSprint(selectedItems)
   }
 
   func removeFromCandidateSprint(_ workItem: WorkItem) {
-    removeFromCandidateSprint([workItem])
+    sprintPlanningWorkflowCoordinator.removeFromCandidateSprint([workItem])
   }
 
   func removeFromCandidateSprint(_ selectedItems: [WorkItem]) {
-    guard
-      let store,
-      let productID = selectedProductID,
-      let plan = candidateSprintPlan,
-      !selectedItems.isEmpty,
-      selectedItems.allSatisfy({ $0.productID == productID })
-    else { return }
-
-    let candidateIDs = Set(plan.items.map(\.workItemID))
-    let selectedIDs = Set(selectedItems.map(\.id)).intersection(candidateIDs)
-    guard !selectedIDs.isEmpty else { return }
-    let remainingIDs = candidateIDs.subtracting(selectedIDs)
-    if let dependentEdge = dependencies.first(where: {
-      selectedIDs.contains($0.dependsOnWorkItemID) && remainingIDs.contains($0.workItemID)
-    }),
-      let dependent = workItems.first(where: { $0.id == dependentEdge.workItemID }),
-      let prerequisite = workItems.first(where: { $0.id == dependentEdge.dependsOnWorkItemID })
-    {
-      errorMessage = "Also select \(dependent.key); it depends on \(prerequisite.key)."
-      return
-    }
-
-    let inputs = plan.items.compactMap { item -> SprintDraftItemInput? in
-      guard !selectedIDs.contains(item.workItemID) else { return nil }
-      return SprintDraftItemInput(
-        workItemID: item.workItemID,
-        implementerProfileID: item.implementerProfileID
-          ?? workItems.first(where: { $0.id == item.workItemID })?.ownerProfileID,
-        reviewerProfileID: item.reviewerProfileID,
-        estimatedTokens: item.estimatedTokens
-      )
-    }
-    transientOwnerCommandRuntime.start(productID: productID) { [self] in
-      do {
-        _ = try await store.saveDraftSprint(
-          productID: productID,
-          goal: plan.sprint.goal,
-          tokenBudgetLimit: nil,
-          items: inputs
-        )
-        await reloadSelectedProductIfCurrent(productID: productID)
-      } catch {
-        presentExecutionError(error, productID: productID)
-      }
-    }
+    sprintPlanningWorkflowCoordinator.removeFromCandidateSprint(selectedItems)
   }
 
   func dropPlanningItems(
@@ -3917,73 +3420,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     intoCandidateSprint: Bool,
     before targetID: UUID?
   ) {
-    guard
-      let store,
-      let productID = selectedProductID,
-      canEditCandidateSprint,
-      !selectedItems.isEmpty,
-      selectedItems.allSatisfy({ $0.productID == productID })
-    else { return }
-
-    let movingIDs = Set(selectedItems.map(\.id))
-    let candidatePlan = candidateSprintPlan
-    let existingCandidateIDs = Set(candidatePlan?.items.map(\.workItemID) ?? [])
-    let evaluation = planningDropEvaluation(
-      ids: movingIDs,
+    sprintPlanningWorkflowCoordinator.dropPlanningItems(
+      selectedItems,
       intoCandidateSprint: intoCandidateSprint,
       before: targetID
     )
-    guard evaluation.isValid, let rankAction = evaluation.rankAction else {
-      return
-    }
-    let desiredCandidateIDs =
-      intoCandidateSprint
-      ? existingCandidateIDs.union(movingIDs)
-      : existingCandidateIDs.subtracting(movingIDs)
-
-    let existingItemsByID = Dictionary(
-      uniqueKeysWithValues: (candidatePlan?.items ?? []).map { ($0.workItemID, $0) }
-    )
-    let shouldSaveSprint = desiredCandidateIDs != existingCandidateIDs
-    let capturedWorkItems = workItems
-
-    transientOwnerCommandRuntime.start(productID: productID) { [self] in
-      do {
-        let reorderedItems: [WorkItem]
-        switch rankAction {
-        case .preserve:
-          reorderedItems = capturedWorkItems
-        case .move(let resolvedTargetID):
-          reorderedItems = try await store.moveWorkItems(
-            ids: selectedItems.map(\.id),
-            before: resolvedTargetID
-          )
-        }
-        if shouldSaveSprint {
-          let inputs = reorderedItems.compactMap { item -> SprintDraftItemInput? in
-            guard desiredCandidateIDs.contains(item.id) else { return nil }
-            let existing = existingItemsByID[item.id]
-            return SprintDraftItemInput(
-              workItemID: item.id,
-              implementerProfileID: existing?.implementerProfileID
-                ?? item.ownerProfileID,
-              reviewerProfileID: existing?.reviewerProfileID,
-              estimatedTokens: existing?.estimatedTokens ?? 0
-            )
-          }
-          _ = try await store.saveDraftSprint(
-            productID: productID,
-            goal: candidatePlan?.sprint.goal ?? "",
-            tokenBudgetLimit: nil,
-            items: inputs
-          )
-        }
-        await reloadSelectedProductIfCurrent(productID: productID)
-      } catch {
-        presentExecutionError(error, productID: productID)
-        await reloadSelectedProductIfCurrent(productID: productID)
-      }
-    }
   }
 
   func planningDropEvaluation(
@@ -3991,31 +3432,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     intoCandidateSprint: Bool,
     before targetID: UUID?
   ) -> PlanningDropEvaluation {
-    PlanningDropPolicy.evaluate(
-      workItems: workItems,
-      dependencies: dependencies,
-      candidateIDs: Set(candidateSprintPlan?.items.map(\.workItemID) ?? []),
-      externalCandidatePrerequisiteIDs: externalCandidatePrerequisiteIDs,
-      movingIDs: ids,
+    sprintPlanningWorkflowCoordinator.planningDropEvaluation(
+      ids: ids,
       intoCandidateSprint: intoCandidateSprint,
       before: targetID
     )
   }
 
   var canEditCandidateSprint: Bool {
-    selectedProductID != nil
-  }
-
-  private var externalCandidatePrerequisiteIDs: Set<UUID> {
-    var ids = Set(
-      workItems
-        .filter { $0.state == .released }
-        .map(\.id)
-    )
-    if let activePlan = sprintPlan, activePlan.sprint.state.isInProgress {
-      ids.formUnion(activePlan.items.map(\.workItemID))
-    }
-    return ids
+    sprintPlanningWorkflowCoordinator.canEditCandidateSprint
   }
 
   func restoreEpicPlanningConversation(for epic: Epic) async {
@@ -4038,12 +3463,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     )
   }
 
-
   func retryEpicPlanning(_ epic: Epic) {
     epicPlanningWorkflowCoordinator.retryEpicPlanning(epic)
   }
-
-
 
   func cancelEpicPlanning() {
     epicPlanningWorkflowCoordinator.cancelEpicPlanning()
@@ -4052,13 +3474,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   func clearEpicPlanningConversation(for epicID: UUID) {
     epicPlanningWorkflowCoordinator.clearEpicPlanningConversation(for: epicID)
   }
-
-
-
-
-
-
-
 
   func saveEpicPlanningConversation(
     _ conversation: EpicPlanningConversationState,
@@ -4069,7 +3484,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       threadID: threadID
     )
   }
-
 
   func retryCurrentEpicPlan() {
     epicPlanningWorkflowCoordinator.retryCurrentEpicPlan()
@@ -4276,39 +3690,10 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     goal: String,
     items: [SprintDraftItemInput]
   ) async -> Bool {
-    guard let store, let productID = selectedProductID else { return false }
-    do {
-      for input in items {
-        let savedOwnerID =
-          workItems
-          .first(where: { $0.id == input.workItemID })?
-          .ownerProfileID
-        guard savedOwnerID != input.implementerProfileID else { continue }
-        _ = try await store.assignWorkItemOwner(
-          id: input.workItemID,
-          profileID: input.implementerProfileID
-        )
-      }
-      let savedPlan = try await store.saveDraftSprint(
-        productID: productID,
-        goal: goal,
-        tokenBudgetLimit: nil,
-        items: items
-      )
-      if selectedProductID == productID {
-        if sprintPlan?.sprint.state.isInProgress != true {
-          sprintPlan = savedPlan
-        }
-        sprintReadinessIssues = try await store.sprintReadinessIssues(
-          sprintID: savedPlan.sprint.id
-        )
-      }
-      await reloadSelectedProductIfCurrent(productID: productID)
-      return true
-    } catch {
-      errorMessage = error.localizedDescription
-      return false
-    }
+    await sprintPlanningWorkflowCoordinator.saveSprintPlan(
+      goal: goal,
+      items: items
+    )
   }
 
   func reassignDraftTicket(
@@ -4316,44 +3701,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     workItemID: UUID,
     to profileID: UUID?
   ) async -> Bool {
-    guard let store = store(for: productID) else { return false }
-    guard
-      let plan = try? await store.fetchCurrentSprint(productID: productID),
-      plan.sprint.state == .draft,
-      plan.items.contains(where: { $0.workItemID == workItemID })
-    else { return false }
-    if let profileID {
-      let productProfiles = (try? await store.fetchAgentProfiles(productID: productID)) ?? []
-      guard
-        productProfiles.contains(where: {
-          $0.id == profileID && $0.role.canOwnDelivery
-        })
-      else { return false }
-    }
-    let inputs = plan.items.map { sprintItem in
-      SprintDraftItemInput(
-        workItemID: sprintItem.workItemID,
-        implementerProfileID: sprintItem.workItemID == workItemID
-          ? profileID
-          : sprintItem.implementerProfileID,
-        reviewerProfileID: sprintItem.reviewerProfileID,
-        estimatedTokens: sprintItem.estimatedTokens
-      )
-    }
-    do {
-      _ = try await store.assignWorkItemOwner(id: workItemID, profileID: profileID)
-      _ = try await store.saveDraftSprint(
-        productID: productID,
-        goal: plan.sprint.goal,
-        tokenBudgetLimit: nil,
-        items: inputs
-      )
-      await reloadSelectedProductIfCurrent(productID: productID)
-      return true
-    } catch {
-      errorMessage = error.localizedDescription
-      return false
-    }
+    await sprintPlanningWorkflowCoordinator.reassignDraftTicket(
+      productID: productID,
+      workItemID: workItemID,
+      to: profileID
+    )
   }
 
   func assignTicketOwner(
@@ -4391,31 +3743,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   func startSprint() async -> Bool {
-    guard
-      let store,
-      let plan = candidateSprintPlan,
-      plan.sprint.state == .draft
-    else { return false }
-    let productID = plan.sprint.productID
-    let sprintID = plan.sprint.id
-    do {
-      let issues = try await store.sprintReadinessIssues(sprintID: sprintID)
-      if selectedProductID == productID {
-        sprintReadinessIssues = issues
-      }
-      guard issues.isEmpty else { return false }
-
-      let startedPlan = try await store.startSprint(id: sprintID)
-      if selectedProductID == productID {
-        sprintPlan = startedPlan
-      }
-      await reloadSelectedProductIfCurrent(productID: productID)
-      scheduleSprintExecution(productID: productID)
-      return true
-    } catch {
-      errorMessage = error.localizedDescription
-      return false
-    }
+    await sprintPlanningWorkflowCoordinator.startSprint()
   }
 
   func pauseSprint(_ sprint: Sprint) async -> Bool {
@@ -4496,8 +3824,17 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await reloadSelectedProduct()
   }
 
+  private func reloadSprintPlanningActivity(productID: UUID) async throws {
+    guard
+      selectedProductID == productID,
+      let store = store(for: productID)
+    else { return }
+    activity = try await store.fetchActivity(productID: productID, limit: 100)
+  }
+
   func settleOwnerCommands() async {
     await transientOwnerCommandRuntime.settle()
+    await sprintPlanningWorkflowCoordinator.settleMutations()
   }
 
   private func presentExecutionError(_ error: Error, productID: UUID) {
@@ -4738,10 +4075,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     )
     if !preservingOwnerAgentTurns {
       await planningConversationWorkflowCoordinator.cancel(productID: productID)
-      await planningConversationRuntime.cancel(productID: productID) {
-        [weak self] turn in
-        await self?.interruptFeatureTurn(turn)
-      }
+      await sprintPlanningWorkflowCoordinator.cancel(productID: productID)
     }
     await retrospectiveSynthesisRuntime.cancel(productID: productID) {
       [weak self] turn in
@@ -4753,9 +4087,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await transientOwnerCommandRuntime.shutdown()
     await epicPlanningWorkflowCoordinator.shutdown()
     await planningConversationWorkflowCoordinator.shutdown()
-    await planningConversationRuntime.shutdown { [weak self] turn in
-      await self?.interruptFeatureTurn(turn)
-    }
+    await sprintPlanningWorkflowCoordinator.shutdown()
     await retrospectiveSynthesisRuntime.shutdown { [weak self] turn in
       await self?.interruptFeatureTurn(turn)
     }
@@ -5200,7 +4532,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       sprintPlan = nil
       sprintHistory = []
       runs = []
-      sprintReadinessIssues = []
+      sprintPlanningWorkflowCoordinator.clearSelectedProductProjection()
       activity = []
       epicPlanningWorkflowCoordinator.clearSelectedProductProjection()
       importedAppLaunch = nil
@@ -5248,7 +4580,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       sprintPlan = workspace.sprintPlan
       sprintHistory = workspace.sprintHistory
       runs = workspace.runs
-      sprintReadinessIssues = workspace.sprintReadinessIssues
+      sprintPlanningWorkflowCoordinator.loadReadinessProjection(workspace.sprintReadinessIssues)
       activity = workspace.activity
       retrospectiveNotes = workspace.retrospectiveNotes
       retrospectiveSyntheses = workspace.retrospectiveSyntheses

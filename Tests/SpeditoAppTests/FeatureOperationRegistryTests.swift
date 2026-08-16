@@ -87,7 +87,7 @@ struct FeatureOperationRegistryTests {
     model.planningConversationFeature.snapshot = PlanningConversationWorkflowSnapshot(
       ticketConversationWorkItemID: UUID()
     )
-    model.sprintPlanningFeature.isGeneratingGoal = true
+    model.sprintPlanningFeature.snapshot.isGeneratingGoal = true
     model.retrospectiveSynthesisRuntime.notes = []
     model.codexConnectionRuntime.models = []
     model.selectedProductID = UUID()

@@ -26,38 +26,30 @@ aggregate-organized persistence, deterministic operation ownership, the
 Priority 0 audit corrections, and the Core-owned delivery workflow are
 implemented and covered by focused tests.
 
-This plan is not fully closed. One Phase 7 feature slice remains in `AppModel`:
-sprint planning and goal generation.
-Section 14.9 still
+The implementation slices in this plan are complete. Section 14.9 still
 requires the four interactive body-recomputation traces during product-owner
-inspection. The Priority 0
-journey ledger in `owner-journey-test-plan.md` records additional product or
-composition gaps rather than manufacturing passing wrappers around partial
-behavior.
+inspection. Priority 1 and Priority 2 owner journeys remain recorded in
+`owner-journey-test-plan.md` outside this stabilization program.
 
 ### Current implementation evidence — 15 August 2026
 
-- `AppModel.swift` is 7,017 lines with 309 function declarations, 33 `@Published`
-  properties, 43 `try?` sites, and no task-launch sites.
+- `AppModel.swift` is 5,295 lines with 32 `@Published` properties, 27 `try?`
+  sites, and no task-launch sites.
 - `ContentView.swift` is 556 lines with two task-launch sites.
-- `TicketDeliveryRuntimeCoordinator` is 556 lines and owns delivery scheduler
-  and child-task lifecycle. `TicketDeliveryWorkflowCoordinator` is 5,243 lines
-  and owns implementation, candidate review, integration, acceptance, sprint
-  pause/stop, and interruption recovery transitions.
-  `TicketDeliveryPermissionWorkflowCoordinator` is 476 lines and owns durable,
+- `PlanningConversationWorkflowCoordinator` is 1,051 lines,
+  `EpicPlanningWorkflowCoordinator` is 1,424 lines, and
+  `SprintPlanningWorkflowCoordinator` is 1,054 lines. Together they own ticket
+  and Epic conversations and refinement, Epic planning and ticket suggestions,
+  and sprint planning and goal generation.
+- `TicketDeliveryRuntimeCoordinator` owns delivery scheduler and child-task
+  lifecycle. `TicketDeliveryWorkflowCoordinator` owns implementation, candidate
+  review, integration, acceptance, sprint pause/stop, and interruption recovery
+  transitions. `TicketDeliveryPermissionWorkflowCoordinator` owns durable,
   least-privilege request resolution and replay.
-- `AppModel` retains adapter composition and command forwarding for delivery;
-  none of `recoverOrphanedExecutionRuns`, `executeImplementationRun`,
-  `resumeTechLeadReview`, `reviewCompletedImplementation`,
-  `applyTechLeadReviewResult`, `runIntegrationConflictResolution`, or
-  `completeSprintTicketAcceptance` remains there. Its server-request handler is
-  a four-line forwarder to the permission coordinator.
-- The remaining Phase 7 ownership is concrete: `refineTicket` and
-  `sendTicketConversationMessage`, `retryEpicPlanning`,
-  `runEpicClarificationTurn`, `generateEpicPlan`,
-  `generateAndSaveSprintGoal`, and `saveSprintPlan` still execute from
-  `AppModel`.
-- Final verification passed 483 warning-strict tests in 60 suites, all six
+- `AppModel` retains adapter composition, selected-product projection,
+  navigation, presentation, and command forwarding; feature workflow
+  transitions execute in the Core coordinators.
+- Final verification passed 514 warning-strict tests in 61 suites, all six
   architecture ratchets, and `git diff --check`; the development app was
   relaunched and left running.
 
@@ -837,7 +829,7 @@ Complete these in the order indicated by current defect frequency and feature wo
 - [x] Product conversations and title/activity lifecycle.
 - [x] Ticket and epic conversations/refinement.
 - [x] Epic planning and ticket suggestions.
-- [ ] Sprint planning and goal generation.
+- [x] Sprint planning and goal generation.
 - [x] Demo/app-version launch and recovery.
 - [x] Retrospective synthesis.
 - [x] Codex connection and usage monitoring.
@@ -1060,6 +1052,114 @@ also remains intact. The warnings-as-errors suite passed 512 tests in 60 suites;
 `git diff --check` and all six architecture ratchets passed; the development app
 was relaunched and left running. Product-owner inspection remains pending.
 
+#### Work packet: Core-owned sprint planning and goal generation
+
+##### Problem
+
+`AppModel` still owns candidate-sprint mutations, guided sprint-ticket
+conversation turns, plan persistence and reassignment, readiness projection,
+sprint start, and bounded goal generation. `PlanningConversationRuntime`,
+`SprintPlanningFeatureModel`, and `TransientOwnerCommandRuntime` divide the
+transient task lifecycle without providing one sprint-planning authority.
+
+##### Behavior to preserve
+
+The product owner moves a dependency-valid scope into the next sprint, reviews
+every selected ticket, explicitly assigns delivery members, and may save a
+partial draft without starting delivery. Unsaved assignment changes remain local
+to the planning sheet. Named, single-recipient planning replies and failures are
+recorded in the ticket work log. Saving opens the durable draft board
+immediately. Goal generation uses only the exact saved plan version and ordered
+ticket titles, never delays sprint start, never replaces a non-empty goal, never
+writes across a changed plan version, and stops after one shared 15-second
+budget. Start sprint reports every durable readiness issue before freezing the
+plan and waking delivery.
+
+##### Non-goals
+
+This packet does not change sprint-planning screens, prompts, forecast or
+readiness policy, dependency rules, assignment controls, sprint delivery
+scheduling, pause/stop behavior, retrospective selection, or owner-facing
+language.
+
+##### Current authority
+
+- Durable state: `SQLiteStore` work items and dependencies, ticket work-log
+  comments, draft and active sprint plans, plan versions, assignments, generated
+  goals, readiness issues, and frozen delivery runs.
+- Task owner: `AppModel` methods plus `PlanningConversationRuntime`,
+  `SprintPlanningFeatureModel`, and candidate mutations retained by
+  `TransientOwnerCommandRuntime`.
+- Presentation state: selected-workspace sprint plan and history in `AppModel`,
+  `SprintPlanningFeatureModel` operation flags, sheet-local unsaved assignments,
+  and `AppModel.sprintReadinessIssues`.
+- Known duplicate state: `AppModel` owns every transition while operation
+  identity, Codex turn identity, and busy flags live in separate runtimes.
+
+##### Target authority
+
+- Coordinator: Core `SprintPlanningWorkflowCoordinator`.
+- Commands: add, remove, and reorder candidate scope; evaluate a drop; send or
+  stop a ticket-planning message; save or reassign a draft; generate and save an
+  exact-version goal; start the sprint; cancel product-scoped work; settle; and
+  shut down.
+- Snapshot: bounded sending-message, generating-goal, and readiness-issue
+  presentation state.
+- Persistence operations: existing `SQLiteStore` work-item move, owner
+  assignment, comment, draft-sprint, generated-goal, readiness, and sprint-start
+  transactions.
+- View boundary: `BacklogView`, `SprintPlanningView`, and `SprintBoardView`
+  continue to call `AppModel` forwarders and read its selected-workspace
+  projection.
+
+##### State table
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Idle or saved draft | Selected-product load or settled mutation | Current draft sprint, plan version, ordered sprint items, saved assignees, dependencies, and readiness issues in SQLite | Backlog and next-sprint scope; saved planning choices only | Add, remove, reorder, start guided planning, save, or start when ready | Fresh instances reconstruct the draft and readiness projection from SQLite; sheet-local changes are intentionally absent |
+| Mutating candidate scope | Add, remove, or dependency-valid drop | One `saveDraftSprint` transaction records the complete resulting scope; a drop may first durably reorder backlog items | Stable prior projection until the selected workspace reloads | Wait for settlement | Product archive and shutdown cancel and await product-scoped mutations before stores close |
+| Planning conversation running | Owner sends one named team member a message for one ticket snapshot | The owner message is already in the ticket work log; the exact owner-visible snapshot is carried by the turn but is not a second durable model | One responding state for the selected recipient | Stop the turn | Product switching preserves the turn without cross-product projection; stop, archive, or shutdown interrupts it |
+| Planning reply or failure recorded | The structured turn completes, fails, or is interrupted | Named agent reply or a labelled Spedito failure comment in the ticket work log | Concise reply and reviewable versioned proposal, or recoverable failure history | Review/apply separately, edit, retry, or continue planning | Relaunch reads the durable work log; transient thread reuse is not inferred after failure |
+| Plan saving | Owner saves partial or complete planning choices | Work-item owner changes and the complete draft sprint are committed through existing store operations | Save progress, then the draft board with persisted assignments | Wait for settlement | Fresh instances read only committed assignments and draft scope; unsaved sheet choices never leak into the backlog |
+| Goal generating | A saved plan with an empty goal requests lazy generation | Exact sprint identifier and plan version already exist; ordered titles are captured from that version; no transient generating flag is treated as durable | Quiet temporary absence of a goal; Start sprint remains available | Start sprint or wait | Product switching preserves the bounded turn; archive or shutdown interrupts it; relaunch may request generation again only while the exact plan still has no goal |
+| Goal saved | A valid concise result finishes within the shared budget and the exact plan version still matches | `saveGeneratedSprintGoal` fills the still-empty goal for that sprint version | Read-only goal on the exact draft or active board | Continue planning or delivery | Relaunch reads the saved goal; a non-empty goal is never replaced |
+| Goal unavailable | The turn times out, fails, the plan changes, or a non-empty goal wins the race | Changed plan version or existing goal remains authoritative; no stale result is written | No goal and no delivery blocker | Continue planning or start sprint | No transient failure is reconstructed; a later exact-version request may run only while policy still allows it |
+| Readiness blocked | Start sprint evaluates a draft with missing assignment, estimate, acceptance intent, or valid dependency scope | Current `sprintReadinessIssues` query result derived from the durable draft | Every blocking issue; draft remains editable | Return to planning and save corrections | Relaunch recomputes issues from SQLite and never infers readiness from old UI state |
+| Sprint started | Start passes readiness and freezes the plan | Active sprint, frozen contracts and assignments, and initial delivery runs are committed atomically | Active sprint board; goal may still fill only for its matching version | Normal delivery controls | Relaunch restores the active sprint and scheduler recovery wakes delivery exactly once |
+| Failed mutation | Persistence or validation rejects a command | Durable authority remains at its last committed state; work-log failures remain labelled | Owner-facing explanation without optimistic scope or assignment drift | Retry from the durable state | Selected workspace reload repairs the projection; archive and shutdown settle all owned work |
+
+##### Call sites to migrate
+
+- [x] `BacklogView` candidate-scope and drop commands.
+- [x] `SprintPlanningView` conversation, save, reassignment, and goal commands.
+- [x] `SprintBoardView` goal generation and sprint-start commands.
+- [x] Product archive, application shutdown, selected-product projection, global
+  planning availability, and scheduler wake-up.
+
+##### Obsolete state to remove
+
+- [x] `PlanningConversationRuntime`, `SprintPlanningFeatureModel` flag ownership,
+  and their observation wiring.
+- [x] `AppModel` candidate mutation, conversation, plan save, goal generation,
+  readiness, and sprint-start implementation.
+
+##### Verification
+
+- [x] Existing focused persistence, prompt/decoding, policy, and presentation
+  tests.
+- [x] New deterministic observable-contract journey tests.
+- [x] Interruption, exact-version stale-result rejection, and fresh-instance
+  recovery.
+- [x] Full test suite.
+- [x] `git diff --check`.
+- [x] Architecture ratchets.
+- [x] Relaunch.
+- [ ] Product-owner inspection.
+
+##### Completion evidence
+
+`SprintPlanningWorkflowCoordinator` is the single Core authority for candidate scope, ticket-planning conversations, exact-version goal generation, draft persistence, readiness, and sprint start. `AppModel` contains only dependency composition, selected-workspace projection, and owner-command forwarding for this slice. The generated-goal journey proves product-switch isolation and fresh-instance recovery; the interruption journey proves a stop requested before turn identity arrives still interrupts the exact turn and leaves a durable labelled failure. The warnings-as-errors suite passed 514 tests in 61 suites; `git diff --check` and all six architecture ratchets passed; the development app was relaunched and left running. Product-owner inspection remains pending.
+
 For each slice:
 
 1. identify durable state, transient operation state, presentation state, and owner commands;
@@ -1194,7 +1294,7 @@ The stabilization program is done only when:
 - [x] Remote account, connection, synchronization, and publication responsibilities are separated.
 - [x] Remote application state is no longer distributed across AppModel dictionaries and view state.
 - [x] Delivery execution, review, integration, and acceptance are Core-owned workflows.
-- [ ] `AppModel` is an application composition/navigation boundary; the three Phase 7 slices named in the implementation status remain.
+- [x] `AppModel` is an application composition/navigation boundary; every Phase 7 slice is Core-owned.
 - [x] `ContentView` is an application shell rather than the main implementation file for most workspaces.
 - [x] Persistence code is organized by aggregate without changing database authority.
 - [x] No affected asynchronous test relies on arbitrary sleeps to observe workflow progress.

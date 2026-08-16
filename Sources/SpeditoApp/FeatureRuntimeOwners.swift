@@ -16,102 +16,20 @@ final class EpicPlanningFeatureModel: ObservableObject {
   @Published var snapshot = EpicPlanningWorkflowSnapshot()
 }
 
-private struct PlanningConversationKey: Hashable {
-  let workItemID: UUID
-  let profileID: UUID
-}
 
 @MainActor
 final class PlanningConversationFeatureModel: ObservableObject {
   @Published var snapshot = PlanningConversationWorkflowSnapshot()
 }
 
-@MainActor
-final class PlanningConversationRuntime: ObservableObject {
-  enum TurnKind: Hashable {
-    case sprintPlanning
-    case sprintGoal
-  }
-
-  enum TaskKind: Hashable {
-    case turnInterruption(TurnKind)
-  }
-
-  private let turns = FeatureOperationRegistry<TurnKind>()
-  private let tasks = FeatureOperationRegistry<TaskKind>()
-  private var planningThreadIDs: [PlanningConversationKey: String] = [:]
-
-  var isBusy: Bool { turns.isBusy || tasks.isBusy }
-
-  func planningThreadID(workItemID: UUID, profileID: UUID) -> String? {
-    planningThreadIDs[PlanningConversationKey(workItemID: workItemID, profileID: profileID)]
-  }
-
-  func setPlanningThreadID(_ threadID: String, workItemID: UUID, profileID: UUID) {
-    planningThreadIDs[PlanningConversationKey(workItemID: workItemID, profileID: profileID)] =
-      threadID
-  }
-
-  func removePlanningThreadID(workItemID: UUID, profileID: UUID) {
-    planningThreadIDs.removeValue(
-      forKey: PlanningConversationKey(workItemID: workItemID, profileID: profileID)
-    )
-  }
-
-  @discardableResult
-  func beginTurn(
-    _ kind: TurnKind,
-    productID: UUID,
-    threadID: String,
-    turnID: String
-  ) -> FeatureOperationToken<TurnKind> {
-    let token = turns.claim(kind, productID: productID, replacing: true)!
-    turns.recordTurn(CodexTurnIdentity(threadID: threadID, turnID: turnID), for: token)
-    return token
-  }
-
-  func activeTurn(_ kind: TurnKind) -> CodexTurnIdentity? {
-    turns.turn(for: kind)
-  }
-
-  func finishTurn(_ token: FeatureOperationToken<TurnKind>) {
-    turns.finish(token)
-  }
-
-  func requestInterrupt(
-    _ kind: TurnKind,
-    interrupt: @escaping @MainActor (CodexTurnIdentity) async -> Void
-  ) {
-    guard let turn = turns.turn(for: kind) else { return }
-    tasks.start(.turnInterruption(kind), productID: nil, replacing: true) { _ in
-      await interrupt(turn)
-    }
-  }
-
-  func resetThreads() {
-    planningThreadIDs.removeAll()
-  }
-
-  func cancel(
-    productID: UUID,
-    interrupt: (CodexTurnIdentity) async -> Void
-  ) async {
-    await tasks.cancel(productID: productID)
-    await turns.cancel(productID: productID, interrupt: interrupt)
-    resetThreads()
-  }
-
-  func shutdown(interrupt: (CodexTurnIdentity) async -> Void) async {
-    await tasks.shutdown()
-    await turns.shutdown(interrupt: interrupt)
-    resetThreads()
-  }
-}
 
 @MainActor
 final class SprintPlanningFeatureModel: ObservableObject {
-  @Published var isSendingMessage = false
-  @Published var isGeneratingGoal = false
+  @Published var snapshot = SprintPlanningWorkflowSnapshot(
+    isSendingMessage: false,
+    isGeneratingGoal: false,
+    readinessIssues: []
+  )
 }
 
 

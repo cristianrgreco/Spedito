@@ -126,8 +126,8 @@ struct ProductScopedPersistenceTests {
     }
   }
 
-  @Test("Product switches preserve in-flight sprint and epic planning turns")
-  func productSelectionPreservesPlanningTurns() async throws {
+  @Test("Product switches preserve an in-flight epic planning turn")
+  func productSelectionPreservesEpicPlanningTurn() async throws {
     let fixture = try ProductScopedPersistenceFixture()
     defer { fixture.remove() }
     let registry = try ProductStoreRegistry(
@@ -183,27 +183,12 @@ struct ProductScopedPersistenceTests {
     await model.load()
     model.planEpic(epic)
     await transport.waitForRequest("turn/start")
-    let sprintPlanningTurn = CodexTurnIdentity(
-      threadID: "sprint-planning-thread",
-      turnID: "sprint-planning-turn"
-    )
-    let sprintPlanningToken = model.planningConversationRuntime.beginTurn(
-      .sprintPlanning,
-      productID: first.id,
-      threadID: sprintPlanningTurn.threadID,
-      turnID: sprintPlanningTurn.turnID
-    )
 
     await model.selectProduct(second)
 
     #expect(model.selectedProduct?.id == second.id)
     #expect(model.epicPlanningWorkflowCoordinator.isPlanning)
-    #expect(
-      model.planningConversationRuntime.activeTurn(.sprintPlanning)
-        == sprintPlanningTurn
-    )
 
-    model.planningConversationRuntime.finishTurn(sprintPlanningToken)
     await model.epicPlanningWorkflowCoordinator.cancel(
       productID: first.id,
       preservingEpicPlanning: false
