@@ -934,6 +934,67 @@ struct GitWorkspaceManagerTests {
     #expect(try await operation.value == expectedSHA)
   }
 
+  @Test("[V01] Refresh reads current accepted trunk and branch history without local scratch work")
+  func v01RefreshReadsCurrentRepositoryState() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-codebase-refresh-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("Initial product\n".utf8).write(
+      to: repository.appendingPathComponent("README.md")
+    )
+    let manager = GitWorkspaceManager()
+    let initialSHA = try await manager.ensureRepository(at: repository)
+    let initialSnapshot = try await manager.repositorySnapshot(at: repository)
+
+    _ = try runGit(["checkout", "-b", "ticket/T7"], at: repository)
+    try Data("Ticket change\n".utf8).write(
+      to: repository.appendingPathComponent("ticket.txt")
+    )
+    _ = try runGit(["add", "ticket.txt"], at: repository)
+    _ = try runGit(
+      [
+        "-c", "user.name=Fixture implementer",
+        "-c", "user.email=fixture@example.com",
+        "commit", "-m", "T7: prepare accepted change",
+      ],
+      at: repository
+    )
+    let ticketSHA = try runGit(["rev-parse", "HEAD"], at: repository)
+    _ = try runGit(["checkout", "trunk"], at: repository)
+    try Data("Accepted change\n".utf8).write(
+      to: repository.appendingPathComponent("accepted.txt")
+    )
+    _ = try runGit(["add", "accepted.txt"], at: repository)
+    _ = try runGit(
+      [
+        "-c", "user.name=Product owner",
+        "-c", "user.email=owner@example.com",
+        "commit", "-m", "Accept T7",
+      ],
+      at: repository
+    )
+    let acceptedSHA = try runGit(["rev-parse", "HEAD"], at: repository)
+    try Data("Unpublished notes\n".utf8).write(
+      to: repository.appendingPathComponent("scratch.txt")
+    )
+
+    let refreshed = try await manager.repositorySnapshot(at: repository)
+
+    #expect(initialSnapshot.trunkSHA == initialSHA)
+    #expect(refreshed.trunkSHA == acceptedSHA)
+    #expect(refreshed.commits.first { $0.sha == acceptedSHA }?.isOnTrunk == true)
+    #expect(refreshed.commits.first { $0.sha == ticketSHA }?.isOnTrunk == false)
+    #expect(refreshed.branches.map(\.name) == ["ticket/T7"])
+    #expect(refreshed.branches[0].headSHA == ticketSHA)
+    #expect(refreshed.branches[0].aheadOfTrunk == 1)
+    #expect(refreshed.branches[0].behindTrunk == 1)
+    #expect(!refreshed.commits.contains { $0.subject.contains("Unpublished") })
+  }
+
   private func readPipeByte(_ descriptor: Int32) async throws -> UInt8 {
     try await Task.detached {
       var byte: UInt8 = 0

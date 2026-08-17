@@ -336,7 +336,6 @@ struct TicketDetailView: View {
     item.map(TicketEditorPresentationState.needsInitialRefinement(for:)) ?? false
   }
 
-
   var body: some View {
     VStack(spacing: 0) {
       HStack(spacing: 12) {
@@ -349,6 +348,7 @@ struct TicketDetailView: View {
         }
         Text("Ticket details")
           .font(.title2.bold())
+          .accessibilityIdentifier("ticket.detail.mode.editable")
         Spacer()
         Button("Close") { dismiss() }
       }
@@ -1799,7 +1799,7 @@ struct TicketConversationView<ReviewContent: View>: View {
   private var defaultRecipient: AgentProfile? {
     let assignedImplementerID =
       (model.candidateSprintPlan?.items.first(where: { $0.workItemID == workItemID })
-        ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID }))?
+      ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID }))?
       .implementerProfileID
     return ConversationRecipientPolicy.defaultRecipient(
       profiles: model.profiles,

@@ -372,6 +372,30 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   }
 
   /// Existing deterministic coverage:
+  /// - `CodebaseCommitOriginTests.v04CommitOriginAndDetailMode`
+  /// This launched-process test covers V04's exact commit-to-Ticket routing through Codebase.
+  func testV04CommitOpensItsExactTicketInEditableMode() throws {
+    let session = try launchFixture("v04")
+    let workItemID = try XCTUnwrap(session.manifest.workItemID)
+
+    element(session.app, "nav.codebase").click()
+    let open = element(
+      session.app,
+      "codebase.commit.open-ticket.\(workItemID.uuidString)"
+    )
+    XCTAssertTrue(open.waitForExistence(timeout: 10))
+    open.click()
+    XCTAssertTrue(
+      element(session.app, "ticket.detail.\(workItemID.uuidString)")
+        .waitForExistence(timeout: 5)
+    )
+    XCTAssertTrue(
+      element(session.app, "ticket.detail.mode.editable")
+        .waitForExistence(timeout: 5)
+    )
+  }
+
+  /// Existing deterministic coverage:
   /// - `MacOSDemoLauncherTests.v06HistoricalAcceptedVersionLaunchesExactRevision`
   /// - `DemoLaunchTests.acceptedMacApplicationHistory`
   /// This launched-process test covers only V06's historical accepted-version selection contract.

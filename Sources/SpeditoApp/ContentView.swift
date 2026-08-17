@@ -327,10 +327,9 @@ struct ProductWorkspaceView: View {
         case .codebase:
           CodebaseView(
             onOpenTicket: { item in
-              ticketDetailPresentation = TicketDetailPresentation(
-                item: item,
-                startRefinementOnAppear: false,
-                mode: .delivery
+              ticketDetailPresentation = .existing(
+                item,
+                activeSprint: model.sprintPlan
               )
             }
           )

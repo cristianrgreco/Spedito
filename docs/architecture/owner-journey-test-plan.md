@@ -345,6 +345,36 @@ closes the sheet and selects the cited page.
 | Grounded or Unknown answer | The bounded Codex turn settles | No workflow mutation; citations are validated against the supplied verified page IDs | Answer text and only exact verified source links, or a plain Unknown result | Open a source or close | A new question starts a new bounded transient answer |
 | Accepted Ticket knowledge | Open a published work-log proposal | Proposal decision, source Ticket provenance, and canonical verified page in SQLite | Exact canonical Knowledge destination | Open the page | Rejected, historical, missing, or unverified targets fail closed |
 
+### 3.9 Priority 1 work packet 4 — Codebase and App versions
+
+This slice closes V01, V04, V05, and V07 without introducing a second Git
+history, Ticket, or runnable-version authority. `GitWorkspaceManager` remains
+the live repository observer, accepted Candidate revisions remain the durable
+Ticket/version evidence in SQLite, and imported launch recipes remain owned by
+`RepositoryKnowledgeCoordinator`. V01, V05, and V07 remain `Shell = —` because
+their repository, filtering, retry, review, and publication contracts are
+deterministic. V04 remains `Shell = Y`: the Codebase callback had incorrectly
+forced every originating Ticket into delivery detail, so its launched-process
+contract is required to prove that the exact commit action crosses the
+application sheet boundary and uses the shared current-sprint mode policy.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| V01 | `GitWorkspaceManagerTests.v01RefreshReadsCurrentRepositoryState` | **Named:** a second repository snapshot reads newly accepted trunk and Ticket-branch commits from local Git, preserves their accepted/unaccepted distinction, and omits ordinary untracked scratch work from history. |
+| V04 | `CodebaseCommitOriginTests.v04CommitOriginAndDetailMode`, `PriorityZeroShellJourneyUITests.testV04CommitOpensItsExactTicketInEditableMode` | **Named:** the deterministic policy resolves the exact Candidate/Ticket and chooses delivery only while that Ticket belongs to an active sprint; the launched-process contract opens the released originating Ticket from its exact commit in editable detail. |
+| V05 | `DemoLaunchTests.acceptedAppVersionHistory`, `.unifiedAppVersionHistory`, `.invalidAcceptedCandidates` | **Composed:** existing independent tests order verified imported and accepted runnable versions newest first and exclude incomplete, artifact, and command-output Candidate results; a new wrapper would duplicate those policy assertions. |
+| V07 | `RepositoryKnowledgeCoordinatorTests.v07CheckImportedSourceRecordsRetryableAttempt`, `.publicationRecoveryOrdersDurabilityBeforeCompletion`, `RepositoryImportKnowledgeTests.importedAppLaunchReviewContract`, `.schemaMigrationAndPublication` | **Named:** the owner command first presents a connection-specific retry, then records one exact failed launch-check attempt with a bounded retry; composed decoder, independent-review, publication-recovery, and fresh-store evidence proves invalid recipes are withheld and only the approved verified version becomes available. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Codebase loaded | Open Codebase or choose **Refresh** | Accepted Candidate revisions in SQLite; current trunk, branch, and commit graph observed from local Git | Accepted trunk history and semantic Ticket activity without a warning for ordinary local scratch work | Refresh, select history scope, or inspect a commit | Every refresh rebuilds the projection from current SQLite and Git evidence |
+| Originating Ticket open | Choose **Open T…** on an associated commit | Candidate-to-Ticket identity and current sprint membership | The exact Ticket in delivery detail only for an active sprint, otherwise editable detail | Review or edit according to the resolved mode | Reopening recomputes mode from the current durable sprint |
+| Runnable versions available | Import an independently approved recipe or accept a runnable Candidate | Verified imported launch or accepted Candidate result and revision | One newest-first list containing only browser and macOS app versions | Select, open, stop, or retry a version | Fresh load rebuilds the same filtered order |
+| Imported source check unavailable | Choose **Check imported source** without a Codex team connection | Existing repository and prior attempts remain unchanged | Concise connection failure and retry action | Reconnect and check again | Retry starts only after the runtime becomes available |
+| Imported source check failed | Analyzer or reviewer operation fails | One failed `importedAppLaunch` run bound to the imported revision | Retryable failure; no unverified App version | Retry | A fresh coordinator reloads the failed attempt and creates at most one next attempt |
+| Imported source recipe publishing | Independent review approves the exact proposal | Reviewed proposal, evidence, and publishing run in SQLite | Verification/publishing progress | Wait or interrupt | Recovery resumes the durable publishing phase before exposing the version |
+| Imported source recipe available | Publication commits the reviewed launch | Completed run and verified `ImportedAppLaunch` in SQLite | Imported version in the same newest-first history | Open the version or check the source again later | Fresh store reconstructs the exact approved revision and recipe |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

@@ -27,6 +27,7 @@
       case p05 = "p05"
       case r05 = "r05"
       case r13 = "r13"
+      case v04 = "v04"
       case v06 = "v06"
     }
 
@@ -272,6 +273,44 @@
         )
         UserDefaults.standard.set(
           WorkspaceDestination.app.rawValue,
+          forKey: "workspaceDestination.\(product.id.uuidString)"
+        )
+        manifest = UIFixtureManifest(
+          selectedProductID: product.id,
+          firstProductID: product.id,
+          workItemID: seeded.workItemID,
+          candidateRevisionIDs: seeded.candidateRevisionIDs
+        )
+      case .v04:
+        let product = try await registry.createProduct(name: "V04 originating ticket")
+        let store = try requireStore(registry, productID: product.id)
+        let repositorySHA = try await ensureProductRepository(
+          registry: registry,
+          productID: product.id
+        )
+        let seeded = try await seedAcceptedAppVersions(
+          store: store,
+          product: product,
+          repositorySHA: repositorySHA
+        )
+        for state in [
+          WorkItemState.running,
+          .integrating,
+          .verifying,
+          .acceptance,
+          .readyToRelease,
+          .released,
+        ] {
+          _ = try await store.transitionWorkItem(
+            id: seeded.workItemID,
+            to: state,
+            actor: "Fixture team member",
+            reason: "Complete the V04 source delivery"
+          )
+        }
+        _ = try await store.completeSprintIfFinished(id: seeded.sprintID)
+        UserDefaults.standard.set(
+          WorkspaceDestination.codebase.rawValue,
           forKey: "workspaceDestination.\(product.id.uuidString)"
         )
         manifest = UIFixtureManifest(
@@ -728,7 +767,7 @@
       store: SQLiteStore,
       product: Product,
       repositorySHA: String
-    ) async throws -> (workItemID: UUID, candidateRevisionIDs: [UUID]) {
+    ) async throws -> (workItemID: UUID, sprintID: UUID, candidateRevisionIDs: [UUID]) {
       let seeded = try await seedSprint(
         store: store,
         product: product,
@@ -783,7 +822,7 @@
         _ = try await store.createCandidateRevision(candidate)
         candidateIDs.append(candidate.id)
       }
-      return (seeded.workItemID, candidateIDs)
+      return (seeded.workItemID, seeded.sprintID, candidateIDs)
     }
 
     fileprivate static let remoteSafeSyncID = UUID(

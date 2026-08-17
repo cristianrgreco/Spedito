@@ -215,6 +215,59 @@ struct RepositoryKnowledgeCoordinatorTests {
   }
 
   /// Existing partial coverage:
+  /// - `RepositoryImportKnowledgeTests.importedAppLaunchReviewContract`
+  /// - `RepositoryImportKnowledgeTests.schemaMigrationAndPublication`
+  /// This test covers V07's owner command, durable failed attempt, and bounded retry action.
+  @Test("V07 Check imported source records one durable retryable attempt")
+  func v07CheckImportedSourceRecordsRetryableAttempt() async throws {
+    let fixture = try await RepositoryKnowledgeProductFixture.make(
+      name: "Imported source without a launch recipe",
+      importedSHA: String(repeating: "7", count: 40),
+      initializesWorkspaceRepository: true
+    )
+    defer { fixture.remove() }
+    let recorder = RepositoryKnowledgeObservationRecorder()
+    let transport = V07FailingCodexTransport()
+    let coordinator = makeCoordinator(
+      fixtures: [fixture],
+      recorder: recorder,
+      clientFactory: { _, _ in CodexAppServerClient(transport: transport) }
+    )
+
+    let unavailable = try #require(
+      await coordinator.send(.checkImportedAppLaunch(productID: fixture.product.id))
+    )
+    #expect(unavailable.failure?.kind == .unavailable)
+    #expect(unavailable.failure?.retryAction == .checkImportedAppLaunch)
+    #expect(
+      try await fixture.store.fetchRepositoryKnowledgeRuns(productID: fixture.product.id)
+        .isEmpty
+    )
+
+    await coordinator.send(
+      .runtimeChanged(executableURL: URL(fileURLWithPath: "/private/tmp/codex-fixture"))
+    )
+    let failed = try #require(
+      await coordinator.send(.checkImportedAppLaunch(productID: fixture.product.id))
+    )
+    let runs = try await fixture.store.fetchRepositoryKnowledgeRuns(
+      productID: fixture.product.id
+    )
+    let run = try #require(runs.first)
+
+    #expect(runs.count == 1)
+    #expect(run.purpose == .importedAppLaunch)
+    #expect(run.analyzedSHA == fixture.repository.importedSHA)
+    #expect(run.status == .failed)
+    #expect(failed.run?.id == run.id)
+    #expect(failed.failure?.retryAction == .retry)
+    #expect(recorder.events.map(\.event) == [.failed(productID: fixture.product.id, runID: run.id)])
+
+    await coordinator.shutdown()
+    await fixture.store.close()
+  }
+
+  /// Existing partial coverage:
   /// - `publicationRecoveryOrdersDurabilityBeforeCompletion`
   /// - `refreshUsesExactDurableState`
   /// This test covers only K04's edit lock and recoverable-failure composition.
@@ -325,7 +378,8 @@ struct RepositoryKnowledgeCoordinatorTests {
 
   private func makeCoordinator(
     fixtures: [RepositoryKnowledgeProductFixture],
-    recorder: RepositoryKnowledgeObservationRecorder
+    recorder: RepositoryKnowledgeObservationRecorder,
+    clientFactory: RepositoryKnowledgeCoordinator.ClientFactory? = nil
   ) -> RepositoryKnowledgeCoordinator {
     let stores = Dictionary(uniqueKeysWithValues: fixtures.map { ($0.product.id, $0.store) })
     let workspaces = Dictionary(
@@ -345,6 +399,7 @@ struct RepositoryKnowledgeCoordinatorTests {
       },
       analysisRootURLProvider: { analysisRootURL },
       gitWorkspaceManager: GitWorkspaceManager(),
+      clientFactory: clientFactory,
       onSnapshot: { snapshot, _ in recorder.record(snapshot) },
       onEvent: recorder.record
     )
@@ -418,6 +473,33 @@ struct RepositoryKnowledgeCoordinatorTests {
   }
 }
 
+private actor V07FailingCodexTransport: CodexRPCTransport {
+  private let stream = AsyncStream<CodexInboundMessage> { _ in }
+
+  func start() {}
+
+  func request(method: String, params: JSONValue) throws -> JSONValue {
+    _ = params
+    guard method == "initialize" else {
+      throw CodexRPCError(code: -32_601, message: "Fixture analysis failed")
+    }
+    return .object([
+      "userAgent": .string("codex-cli/test"),
+      "codexHome": .string("/private/tmp/codex"),
+      "platformFamily": .string("unix"),
+      "platformOs": .string("macos"),
+    ])
+  }
+
+  func notify(method: String, params: JSONValue) {
+    _ = method
+    _ = params
+  }
+
+  func inboundMessages() -> AsyncStream<CodexInboundMessage> { stream }
+  func stop() {}
+}
+
 private struct RepositoryKnowledgeProductFixture {
   let rootURL: URL
   let databaseURL: URL
@@ -428,14 +510,28 @@ private struct RepositoryKnowledgeProductFixture {
   let analyzerID: UUID
   let reviewerID: UUID
 
-  static func make(name: String, importedSHA: String) async throws -> Self {
+  static func make(
+    name: String,
+    importedSHA: String,
+    initializesWorkspaceRepository: Bool = false
+  ) async throws -> Self {
     let rootURL = FileManager.default.temporaryDirectory
-      .appendingPathComponent("spedito-knowledge-coordinator-\(UUID().uuidString)", isDirectory: true)
+      .appendingPathComponent(
+        "spedito-knowledge-coordinator-\(UUID().uuidString)", isDirectory: true)
     let workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
     try FileManager.default.createDirectory(
       at: workspaceURL,
       withIntermediateDirectories: true
     )
+    let durableImportedSHA: String
+    if initializesWorkspaceRepository {
+      try Data("Imported product\n".utf8).write(
+        to: workspaceURL.appendingPathComponent("README.md")
+      )
+      durableImportedSHA = try await GitWorkspaceManager().ensureRepository(at: workspaceURL)
+    } else {
+      durableImportedSHA = importedSHA
+    }
     let databaseURL = rootURL.appendingPathComponent("product.sqlite")
     let store = try SQLiteStore(url: databaseURL)
     let product = try await store.createProduct(name: name)
@@ -452,7 +548,7 @@ private struct RepositoryKnowledgeProductFixture {
       productID: product.id,
       originURL: originURL,
       sourceDefaultBranch: "main",
-      importedSHA: importedSHA
+      importedSHA: durableImportedSHA
     )
     try await store.createProductRepository(repository)
     let durableRepository = try #require(
@@ -602,8 +698,8 @@ private enum RepositoryKnowledgeCoordinatorFixtureError: Error {
   case missingWorkspace
 }
 
-private extension RepositoryKnowledgeEvent {
-  var productID: UUID {
+extension RepositoryKnowledgeEvent {
+  fileprivate var productID: UUID {
     switch self {
     case .completed(let productID, _), .interrupted(let productID, _),
       .failed(let productID, _):
@@ -611,7 +707,7 @@ private extension RepositoryKnowledgeEvent {
     }
   }
 
-  var runID: UUID {
+  fileprivate var runID: UUID {
     switch self {
     case .completed(_, let runID), .interrupted(_, let runID), .failed(_, let runID):
       return runID

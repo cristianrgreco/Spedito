@@ -229,6 +229,74 @@ struct CodebaseCommitOriginTests {
     #expect(presentation.state == .accepted)
   }
 
+  @Test("[V04] Commit origins retain the exact Ticket and resolve its current detail mode")
+  func v04CommitOriginAndDetailMode() throws {
+    let productID = UUID()
+    let workItem = WorkItem(
+      productID: productID,
+      key: "T7",
+      title: "Explain the accepted change",
+      state: .released,
+      rank: 1
+    )
+    let root = commit("root", parents: [], isOnTrunk: true)
+    let candidateCommit = commit("candidate", parents: [root.sha], isOnTrunk: true)
+    let snapshot = GitRepositorySnapshot(
+      trunkSHA: candidateCommit.sha,
+      branches: [],
+      commits: [candidateCommit, root]
+    )
+    let candidateRevision = revision(
+      workItemID: workItem.id,
+      baseSHA: root.sha,
+      headSHA: candidateCommit.sha,
+      integratedSHA: candidateCommit.sha,
+      status: .accepted
+    )
+    let associatedRevision = try #require(
+      CodebaseHistoryFilter.associatedRevision(
+        with: candidateCommit,
+        in: snapshot,
+        revisions: [candidateRevision]
+      )
+    )
+    let activeSprint = Sprint(
+      productID: productID,
+      number: 1,
+      goal: "Deliver the accepted change",
+      state: .active
+    )
+    let sprintItem = SprintItem(
+      sprintID: activeSprint.id,
+      workItemID: workItem.id,
+      implementerProfileID: UUID(),
+      estimatedTokens: 100
+    )
+
+    #expect(associatedRevision.workItemID == workItem.id)
+    #expect(
+      TicketDetailPresentation.existing(
+        workItem,
+        activeSprint: SprintPlan(sprint: activeSprint, items: [sprintItem])
+      ).mode == .delivery
+    )
+    #expect(
+      TicketDetailPresentation.existing(
+        workItem,
+        activeSprint: SprintPlan(
+          sprint: Sprint(
+            id: activeSprint.id,
+            productID: productID,
+            number: 1,
+            goal: activeSprint.goal,
+            state: .completed
+          ),
+          items: [sprintItem]
+        )
+      ).mode == .editable
+    )
+  }
+
   private func presentation(
     for commit: GitCommitSummary,
     in snapshot: GitRepositorySnapshot,
