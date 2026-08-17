@@ -247,6 +247,61 @@ struct ProductConversationFailurePresentation {
   }
 }
 
+struct KnowledgePageDraft: Equatable {
+  var title: String
+  var bodyMarkdown: String
+
+  init(title: String = "", bodyMarkdown: String = "") {
+    self.title = title
+    self.bodyMarkdown = KnowledgeMarkdown.normalizedBody(bodyMarkdown)
+  }
+  init(page: KnowledgePage) {
+    title = page.title
+    bodyMarkdown = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown)
+  }
+
+  mutating func cancel(to page: KnowledgePage) {
+    self = KnowledgePageDraft(page: page)
+  }
+}
+
+struct KnowledgeAnswerPresentation {
+  static func citedVerifiedPages(
+    answer: KnowledgeAnswer,
+    pages: [KnowledgePage]
+  ) -> [KnowledgePage] {
+    let pagesByID = Dictionary(uniqueKeysWithValues: pages.map { ($0.id, $0) })
+    var includedIDs: Set<UUID> = []
+    return answer.citationPageIDs.compactMap { pageID in
+      guard
+        includedIDs.insert(pageID).inserted,
+        let page = pagesByID[pageID],
+        page.verificationStatus == .verified
+      else { return nil }
+      return page
+    }
+  }
+}
+
+struct TicketKnowledgeNavigationPolicy {
+  static func publishedPage(
+    for proposal: KnowledgePageProposal,
+    pages: [KnowledgePage]
+  ) -> KnowledgePage? {
+    guard proposal.status == .accepted else { return nil }
+    if let targetPageID = proposal.targetPageID {
+      return pages.first {
+        $0.id == targetPageID && $0.verificationStatus == .verified
+      }
+    }
+    return pages.last {
+      $0.sourceWorkItemID == proposal.workItemID
+        && $0.title == proposal.title
+        && $0.verificationStatus == .verified
+    }
+  }
+}
+
 extension WorkItemPriority {
   var tint: Color {
     switch self {

@@ -29,29 +29,265 @@ struct KnowledgePageReadStateTests {
     #expect(relaunchedState.unreadPageIDs(in: [existingPage, newPage]) == [newPage.id])
   }
 
-  @Test("Reading an updated page clears and persists its unread state")
-  func readingUpdatedPagePersists() {
-    let productID = UUID()
-    let defaultsSuite = isolatedDefaults()
-    let defaults = defaultsSuite.defaults
-    defer { defaults.removePersistentDomain(forName: defaultsSuite.suiteName) }
+  @Test("K01 changed pages become unread independently and opened pages stay read after relaunch")
+  func k01ChangedPagesBecomeUnreadIndependently() {
+    let firstProductID = UUID()
+    let secondProductID = UUID()
+    let (defaults, suiteName) = isolatedDefaults()
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let initialUpdate = Date(timeIntervalSince1970: 1_000)
+    var firstPage = page(productID: firstProductID, updatedAt: initialUpdate)
+    var siblingPage = page(productID: firstProductID, updatedAt: initialUpdate)
+    var otherProductPage = page(productID: secondProductID, updatedAt: initialUpdate)
+    var firstProductState = KnowledgePageReadState()
+    var secondProductState = KnowledgePageReadState()
 
-    var updatedPage = page(
-      productID: productID,
-      updatedAt: Date(timeIntervalSince1970: 100)
+    firstProductState.load(
+      productID: firstProductID,
+      pages: [firstPage, siblingPage],
+      defaults: defaults
     )
-    var initialState = KnowledgePageReadState()
-    initialState.load(productID: productID, pages: [updatedPage], defaults: defaults)
+    secondProductState.load(
+      productID: secondProductID,
+      pages: [otherProductPage],
+      defaults: defaults
+    )
 
-    updatedPage.updatedAt = Date(timeIntervalSince1970: 200)
-    #expect(initialState.unreadPageIDs(in: [updatedPage]) == [updatedPage.id])
+    firstPage.updatedAt = Date(timeIntervalSince1970: 2_000)
+    siblingPage.updatedAt = Date(timeIntervalSince1970: 3_000)
+    otherProductPage.updatedAt = Date(timeIntervalSince1970: 4_000)
+    #expect(
+      firstProductState.unreadPageIDs(in: [firstPage, siblingPage])
+        == Set([firstPage.id, siblingPage.id])
+    )
+    #expect(
+      secondProductState.unreadPageIDs(in: [otherProductPage])
+        == Set([otherProductPage.id])
+    )
 
-    initialState.markRead(updatedPage, defaults: defaults)
-    #expect(initialState.unreadPageIDs(in: [updatedPage]).isEmpty)
+    firstProductState.markRead(firstPage, defaults: defaults)
+    #expect(
+      firstProductState.unreadPageIDs(in: [firstPage, siblingPage])
+        == Set([siblingPage.id])
+    )
+    #expect(
+      secondProductState.unreadPageIDs(in: [otherProductPage])
+        == Set([otherProductPage.id])
+    )
 
     var relaunchedState = KnowledgePageReadState()
-    relaunchedState.load(productID: productID, pages: [updatedPage], defaults: defaults)
-    #expect(relaunchedState.unreadPageIDs(in: [updatedPage]).isEmpty)
+    relaunchedState.load(
+      productID: firstProductID,
+      pages: [firstPage, siblingPage],
+      defaults: defaults
+    )
+    #expect(
+      relaunchedState.unreadPageIDs(in: [firstPage, siblingPage])
+        == Set([siblingPage.id])
+    )
+  }
+
+  @Test("K03 Cancel discards a Knowledge edit while Save versions and relaunches it")
+  @MainActor
+  func k03KnowledgeEditCancelSaveAndRelaunch() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-k03-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let databaseURL = directory.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Knowledge editing")
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let technical = try #require(pages.first { $0.slug == "technical" })
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      codexTransportFactory: { _ in
+        throw CodexClientError.notConnected
+      }
+    )
+    await model.load()
+    let page = try #require(
+      await model.createKnowledgePage(
+        productID: product.id,
+        parentID: technical.id,
+        title: "Delivery contract"
+      )
+    )
+    #expect(page.parentID == technical.id)
+    #expect(model.knowledgePages.contains { $0.id == page.id })
+
+    var draft = KnowledgePageDraft(page: page)
+    draft.title = "Discarded title"
+    draft.bodyMarkdown = "Discarded body"
+    draft.cancel(to: page)
+    #expect(draft == KnowledgePageDraft(page: page))
+    #expect(try await store.fetchKnowledgePageRevisions(pageID: page.id).count == 1)
+
+    draft.title = "Release contract"
+    draft.bodyMarkdown = "Saved once."
+    #expect(
+      await model.saveKnowledgePage(
+        productID: product.id,
+        id: page.id,
+        title: draft.title,
+        bodyMarkdown: draft.bodyMarkdown,
+        changeSummary: "Recorded release contract"
+      )
+    )
+    #expect(try await store.fetchKnowledgePageRevisions(pageID: page.id).count == 2)
+
+    await model.shutdown()
+    await store.close()
+    let reopened = try SQLiteStore(url: databaseURL)
+    let persistedPage = try #require(
+      await reopened.fetchKnowledgePages(productID: product.id).first { $0.id == page.id }
+    )
+    #expect(persistedPage.title == "Release contract")
+    #expect(persistedPage.bodyMarkdown == "Saved once.")
+    #expect(try await reopened.fetchKnowledgePageRevisions(pageID: page.id).count == 2)
+    await reopened.close()
+  }
+
+  @Test("K05 Knowledge answers and Unknown results cite only verified pages")
+  func k05KnowledgeAnswersLinkOnlyCitedVerifiedPages() throws {
+    let productID = UUID()
+    let cited = KnowledgePage(
+      productID: productID,
+      title: "Release contract",
+      slug: "release-contract"
+    )
+    let uncited = KnowledgePage(
+      productID: productID,
+      title: "Unrelated decision",
+      slug: "unrelated-decision"
+    )
+    let proposed = KnowledgePage(
+      productID: productID,
+      title: "Draft evidence",
+      slug: "draft-evidence",
+      verificationStatus: .proposed
+    )
+    let answer = KnowledgeAnswer(
+      answer: "Use the verified release contract.",
+      citationPageIDs: [cited.id, proposed.id, UUID(), cited.id]
+    )
+
+    #expect(
+      KnowledgeAnswerPresentation.citedVerifiedPages(
+        answer: answer,
+        pages: [uncited, proposed, cited]
+      ).map(\.id) == [cited.id]
+    )
+    let unknown = try CodexKnowledgeAssistant.decode(
+      #"{"answer":"The verified knowledge does not answer this question.","citationPageIDs":[]}"#,
+      allowedPageIDs: Set([cited.id])
+    )
+    #expect(unknown.answer == "The verified knowledge does not answer this question.")
+    #expect(
+      KnowledgeAnswerPresentation.citedVerifiedPages(
+        answer: unknown,
+        pages: [cited]
+      ).isEmpty
+    )
+  }
+
+  @Test("K06 accepted Ticket knowledge resolves only to its verified canonical page")
+  func k06AcceptedTicketKnowledgeResolvesCanonicalPage() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let canonical = KnowledgePage(
+      productID: productID,
+      title: "Release contract",
+      slug: "release-contract",
+      sourceWorkItemID: workItemID
+    )
+    let unverified = KnowledgePage(
+      productID: productID,
+      title: "Draft contract",
+      slug: "draft-contract",
+      verificationStatus: .proposed,
+      sourceWorkItemID: workItemID
+    )
+    let acceptedCreation = knowledgeProposal(
+      productID: productID,
+      workItemID: workItemID,
+      operation: .create,
+      title: canonical.title,
+      status: .accepted
+    )
+    let rejectedCreation = knowledgeProposal(
+      productID: productID,
+      workItemID: workItemID,
+      operation: .create,
+      title: canonical.title,
+      status: .rejected
+    )
+    let acceptedUpdate = knowledgeProposal(
+      productID: productID,
+      workItemID: workItemID,
+      operation: .update,
+      targetPageID: canonical.id,
+      title: canonical.title,
+      status: .accepted
+    )
+    let unverifiedUpdate = knowledgeProposal(
+      productID: productID,
+      workItemID: workItemID,
+      operation: .update,
+      targetPageID: unverified.id,
+      title: unverified.title,
+      status: .accepted
+    )
+
+    #expect(
+      TicketKnowledgeNavigationPolicy.publishedPage(
+        for: acceptedCreation,
+        pages: [unverified, canonical]
+      )?.id == canonical.id
+    )
+    #expect(
+      TicketKnowledgeNavigationPolicy.publishedPage(
+        for: acceptedUpdate,
+        pages: [unverified, canonical]
+      )?.id == canonical.id
+    )
+    #expect(
+      TicketKnowledgeNavigationPolicy.publishedPage(
+        for: rejectedCreation,
+        pages: [canonical]
+      ) == nil
+    )
+    #expect(
+      TicketKnowledgeNavigationPolicy.publishedPage(
+        for: unverifiedUpdate,
+        pages: [unverified]
+      ) == nil
+    )
+  }
+
+  private func knowledgeProposal(
+    productID: UUID,
+    workItemID: UUID,
+    operation: KnowledgePageProposalOperation,
+    targetPageID: UUID? = nil,
+    title: String,
+    status: KnowledgePageProposalStatus
+  ) -> KnowledgePageProposal {
+    KnowledgePageProposal(
+      productID: productID,
+      sprintID: UUID(),
+      workItemID: workItemID,
+      candidateRevisionID: UUID(),
+      operation: operation,
+      targetPageID: targetPageID,
+      title: title,
+      proposedBodyMarkdown: "Proposed canonical body",
+      rationale: "Preserve reusable truth",
+      status: status
+    )
   }
 
   private func page(productID: UUID, updatedAt: Date) -> KnowledgePage {

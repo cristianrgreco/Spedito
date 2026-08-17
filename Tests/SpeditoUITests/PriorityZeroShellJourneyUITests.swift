@@ -15,6 +15,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let remoteSafeSyncID: UUID?
     let retrospectiveNoteID: UUID?
     let sourceWorkItemID: UUID?
+    let knowledgePageID: UUID?
   }
 
   private struct FixtureSession {
@@ -42,7 +43,8 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let workItemID = try XCTUnwrap(session.manifest.workItemID)
 
     XCTAssertTrue(element(session.app, "sprint.board").waitForExistence(timeout: 10))
-    XCTAssertTrue(element(session.app, "sprint.ticket.\(workItemID.uuidString)").waitForExistence(timeout: 10))
+    XCTAssertTrue(
+      element(session.app, "sprint.ticket.\(workItemID.uuidString)").waitForExistence(timeout: 10))
     XCTAssertEqual(session.manifest.selectedProductID, session.manifest.firstProductID)
     XCTAssertNotNil(session.manifest.sprintID)
   }
@@ -55,7 +57,8 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let remainingID = try XCTUnwrap(session.manifest.secondProductID)
 
     element(session.app, "nav.products").click()
-    XCTAssertTrue(element(session.app, "product.row.\(remainingID.uuidString)").waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      element(session.app, "product.row.\(remainingID.uuidString)").waitForExistence(timeout: 5))
     let archivedToggle = element(session.app, "products.archived.toggle")
     XCTAssertTrue(archivedToggle.waitForExistence(timeout: 5))
     archivedToggle.click()
@@ -130,7 +133,8 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     try openPermissionTicket(session)
     let requestID = try XCTUnwrap(session.manifest.permissionRequestID)
 
-    XCTAssertTrue(element(session.app, "permission.deny.\(requestID.uuidString)").waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      element(session.app, "permission.deny.\(requestID.uuidString)").waitForExistence(timeout: 5))
     XCTAssertTrue(element(session.app, "permission.allow-once.\(requestID.uuidString)").exists)
     XCTAssertTrue(element(session.app, "permission.always.\(requestID.uuidString)").exists)
   }
@@ -378,13 +382,52 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let latestID = session.manifest.candidateRevisionIDs[1]
 
     element(session.app, "nav.app").click()
-    XCTAssertTrue(element(session.app, "app.version.\(latestID.uuidString)").waitForExistence(timeout: 10))
+    XCTAssertTrue(
+      element(session.app, "app.version.\(latestID.uuidString)").waitForExistence(timeout: 10))
     let historical = element(session.app, "app.version.\(historicalID.uuidString)")
     XCTAssertTrue(historical.waitForExistence(timeout: 5))
     historical.click()
     let open = element(session.app, "app.version.open")
     XCTAssertTrue(open.waitForExistence(timeout: 5))
     XCTAssertTrue(open.isEnabled)
+  }
+
+  /// Existing deterministic coverage:
+  /// - `KnowledgePageReadStateTests.k05KnowledgeAnswersLinkOnlyCitedVerifiedPages`
+  /// This launched-process test covers only K05's Knowledge sheet and exact-citation routing.
+  func testK05GroundedAnswerOpensItsExactCitedKnowledgePage() throws {
+    let session = try launchFixture("k05")
+    let pageID = try XCTUnwrap(session.manifest.knowledgePageID)
+
+    element(session.app, "nav.knowledge").click()
+    let ask = element(session.app, "knowledge.ask")
+    XCTAssertTrue(ask.waitForExistence(timeout: 10))
+    wait(
+      until: NSPredicate(format: "enabled == true"),
+      evaluates: ask,
+      timeout: 10,
+      message: "The fixture Codex connection did not become ready for a Knowledge question."
+    )
+    ask.click()
+    ask.typeText("What must happen before a production release?")
+    ask.typeKey(.return, modifierFlags: [])
+
+    XCTAssertTrue(element(session.app, "knowledge.answer-sheet").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(session.app, "knowledge.answer.text").exists)
+    XCTAssertTrue(
+      session.app.staticTexts[
+        "Production releases require product owner acceptance."
+      ].exists
+    )
+    let citation = element(
+      session.app,
+      "knowledge.answer.citation.\(pageID.uuidString)"
+    )
+    XCTAssertTrue(citation.waitForExistence(timeout: 5))
+    citation.click()
+    XCTAssertTrue(
+      element(session.app, "knowledge.page.\(pageID.uuidString)").waitForExistence(timeout: 5)
+    )
   }
 
   private func openPermissionTicket(_ session: FixtureSession) throws {
@@ -454,7 +497,8 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let cachesURL = try XCTUnwrap(
       FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
     )
-    let fixtureRoot = cachesURL
+    let fixtureRoot =
+      cachesURL
       .appendingPathComponent("spedito-ui-\(scenario)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
     let app = XCUIApplication(url: applicationURL)

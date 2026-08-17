@@ -23,6 +23,7 @@
       case d15 = "d15"
       case d17 = "d17"
       case i07 = "i07"
+      case k05 = "k05"
       case p05 = "p05"
       case r05 = "r05"
       case r13 = "r13"
@@ -67,15 +68,24 @@
 
     static func transportFactoryOutput() -> CodexTransportFactoryOutput? {
       guard let scenario,
-        scenario == .epicNeedsInput || scenario == .i07,
+        scenario == .epicNeedsInput || scenario == .i07 || scenario == .k05,
         let rootURL = applicationSupportURL
       else { return nil }
       let configuredSignalPath = ProcessInfo.processInfo.environment[signalEnvironmentKey]
       let releaseSignalURL =
         configuredSignalPath.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
         ?? rootURL.appendingPathComponent("i07-refinement-release")
-      let turnStartedSignalName =
-        scenario == .epicNeedsInput ? "epic-turn-started" : "i07-refinement-started"
+      let turnStartedSignalName: String
+      switch scenario {
+      case .epicNeedsInput:
+        turnStartedSignalName = "epic-turn-started"
+      case .i07:
+        turnStartedSignalName = "i07-refinement-started"
+      default:
+        turnStartedSignalName = "knowledge-turn-started"
+      }
+      let citationPageID =
+        scenario == .k05 ? (try? loadManifest(rootURL: rootURL).knowledgePageID) : nil
       return CodexTransportFactoryOutput(
         descriptor: CodexRuntimeDescriptor(
           executableURL: URL(fileURLWithPath: "/private/tmp/spedito-ui-fixture-codex"),
@@ -84,7 +94,8 @@
         ),
         transport: UIFixtureCodexTransport(
           releaseSignalURL: releaseSignalURL,
-          turnStartedSignalURL: rootURL.appendingPathComponent(turnStartedSignalName)
+          turnStartedSignalURL: rootURL.appendingPathComponent(turnStartedSignalName),
+          knowledgeCitationPageID: citationPageID
         )
       )
     }
@@ -316,6 +327,34 @@
           retrospectiveNoteID: seeded.noteID,
           sourceWorkItemID: seeded.sourceWorkItemID
         )
+      case .k05:
+        let product = try await registry.createProduct(name: "K05 grounded knowledge")
+        let store = try requireStore(registry, productID: product.id)
+        let pages = try await store.seedKnowledgeBase(productID: product.id)
+        guard let technical = pages.first(where: { $0.slug == "technical" }) else {
+          throw UIFixtureError.missingFixtureState("Technical knowledge section")
+        }
+        let page = try await store.createKnowledgePage(
+          productID: product.id,
+          parentID: technical.id,
+          title: "Release contract"
+        )
+        _ = try await store.updateKnowledgePage(
+          id: page.id,
+          title: page.title,
+          bodyMarkdown: "Production releases require product owner acceptance.",
+          authorName: "Product owner",
+          changeSummary: "Recorded the release contract"
+        )
+        UserDefaults.standard.set(
+          WorkspaceDestination.knowledge.rawValue,
+          forKey: "workspaceDestination.\(product.id.uuidString)"
+        )
+        manifest = UIFixtureManifest(
+          selectedProductID: product.id,
+          firstProductID: product.id,
+          knowledgePageID: page.id
+        )
       case .p05:
         let product = try await registry.createProduct(name: "P05 blocked sprint")
         let store = try requireStore(registry, productID: product.id)
@@ -456,7 +495,6 @@
         eventDetail: "Fixture delivery completed"
       )
     }
-
 
     private static func seedPermissionRequest(
       store: SQLiteStore,
@@ -813,6 +851,7 @@
     var remoteSafeSyncID: UUID?
     var retrospectiveNoteID: UUID?
     var sourceWorkItemID: UUID?
+    var knowledgePageID: UUID?
   }
 
   private enum UIFixtureError: Error {
@@ -833,14 +872,20 @@
   private actor UIFixtureCodexTransport: CodexRPCTransport {
     private let releaseSignalURL: URL
     private let turnStartedSignalURL: URL
+    private let knowledgeCitationPageID: UUID?
     private let inboundStream: AsyncStream<CodexInboundMessage>
     private let inboundContinuation: AsyncStream<CodexInboundMessage>.Continuation
     private var releaseTask: Task<Void, Never>?
     private var didStartTurn = false
 
-    init(releaseSignalURL: URL, turnStartedSignalURL: URL) {
+    init(
+      releaseSignalURL: URL,
+      turnStartedSignalURL: URL,
+      knowledgeCitationPageID: UUID? = nil
+    ) {
       self.releaseSignalURL = releaseSignalURL
       self.turnStartedSignalURL = turnStartedSignalURL
+      self.knowledgeCitationPageID = knowledgeCitationPageID
       let pair = AsyncStream<CodexInboundMessage>.makeStream()
       inboundStream = pair.stream
       inboundContinuation = pair.continuation
@@ -862,8 +907,20 @@
       case "account/rateLimits/read":
         return .object(["rateLimits": .object([:])])
       case "thread/start":
-        return .object(["thread": .object(["id": .string("thread-ui-e02")])])
+        let threadID = knowledgeCitationPageID == nil ? "thread-ui-e02" : "thread-ui-k05"
+        return .object(["thread": .object(["id": .string(threadID)])])
       case "turn/start":
+        if let knowledgeCitationPageID {
+          guard !didStartTurn else {
+            throw CodexRPCError(
+              code: -32_601, message: "The UI fixture supports one Knowledge turn")
+          }
+          didStartTurn = true
+          inboundContinuation.yield(
+            Self.completedKnowledgeTurn(citationPageID: knowledgeCitationPageID)
+          )
+          return .object(["turn": .object(["id": .string("turn-ui-k05")])])
+        }
         guard !didStartTurn else {
           throw CodexRPCError(code: -32_601, message: "The UI fixture supports one Epic turn")
         }
@@ -918,6 +975,30 @@
         ])
       )
     )
+
+    private static func completedKnowledgeTurn(citationPageID: UUID) -> CodexInboundMessage {
+      CodexInboundMessage.notification(
+        CodexNotification(
+          method: "turn/completed",
+          params: .object([
+            "threadId": .string("thread-ui-k05"),
+            "turn": .object([
+              "id": .string("turn-ui-k05"),
+              "status": .string("completed"),
+              "items": .array([
+                .object([
+                  "id": .string("message-turn-ui-k05"),
+                  "type": .string("agentMessage"),
+                  "text": .string(
+                    #"{"answer":"Production releases require product owner acceptance.","citationPageIDs":["\#(citationPageID.uuidString)"]}"#
+                  ),
+                ])
+              ]),
+            ]),
+          ])
+        )
+      )
+    }
   }
 
   final class UIFixtureGitHubRemoteRepositoryService:

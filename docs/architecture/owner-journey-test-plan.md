@@ -316,6 +316,35 @@ Controlled external smoke, outside the deterministic suite:
 | Foreground notification | Publish while Spedito is active | Owner notification and exact target in SQLite | In-app banner/indicator; questions use the bundled sound | Open or dismiss | Fresh coordinator reloads unread attention |
 | Background notification | Publish while Spedito is inactive | Same durable notification and route metadata | Notification Center when authorized; no in-app banner until active | Open from macOS or return to Spedito | Denial affects only system delivery; durable in-app attention remains |
 
+### 3.8 Priority 1 work packet 4 — Product knowledge
+
+This slice closes K01, K03, K05, and K06 without introducing a second
+Knowledge representation or moving canonical-page authority out of SQLite.
+Repository publication remains owned by `RepositoryKnowledgeCoordinator`;
+ordinary page commands remain application composition over
+`SQLiteStore+KnowledgePages`; read markers remain a Product-scoped presentation
+preference that can be rebuilt from page timestamps. K01, K03, and K06 remain
+`Shell = —` because their state and routing policies are deterministic. K05
+remains `Shell = Y`: only a launched process can prove that submitting the real
+Knowledge field presents the answer sheet and that its exact citation control
+closes the sheet and selects the cited page.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| K01 | `KnowledgePageReadStateTests.k01ChangedPagesBecomeUnreadIndependently` | **Named:** independent Product/page timestamps become unread, selecting one changed page clears only that marker, and a fresh read-state instance preserves the selection without clearing its sibling or another Product. |
+| K03 | `KnowledgePageReadStateTests.k03KnowledgeEditCancelSaveAndRelaunch` | **Named:** the application command creates beneath the selected section, Cancel restores the canonical draft without a revision, Save appends exactly one revision, and a fresh SQLite store recovers the edited title and body. |
+| K05 | `KnowledgePageReadStateTests.k05KnowledgeAnswersLinkOnlyCitedVerifiedPages`, `PriorityZeroShellJourneyUITests.testK05GroundedAnswerOpensItsExactCitedKnowledgePage` | **Named:** grounded and Unknown decoder results project only unique cited verified pages; the launched-process contract submits the actual Knowledge field, renders its answer sheet, and opens the exact cited page. |
+| K06 | `KnowledgePageReadStateTests.k06AcceptedTicketKnowledgeResolvesCanonicalPage`, `SQLiteStoreTests.d16CandidateKnowledgeDecisionsPublishOnlyAcceptedContent` | **Named:** the work-log action resolves accepted create/update proposals only to their verified canonical page; rejected proposals and unverified targets cannot navigate, while the durable publication proof keeps rejected and historical proposals non-authoritative. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Knowledge page changed | A canonical page receives a newer SQLite timestamp | Page and revisions in SQLite; last-seen Product/page timestamp in preferences | Unread count and changed-page marker | Select the page | Fresh load compares the same scoped timestamps |
+| Page editing | Choose **Edit** | Canonical page remains unchanged; draft text is presentation state | Editable title/body plus **Cancel** and **Save** | Cancel or save | Cancel restores canonical text; termination discards only the draft |
+| Page saved | Choose **Save** | Updated page and appended revision in one store authority | Canonical edited page and version history | Continue editing or inspect history | Fresh store reconstructs the latest page and every revision |
+| Knowledge answering | Submit a question | Verified pages are bounded input; the task and answer sheet are transient | Busy answer sheet | Close | Interruption leaves canonical Knowledge unchanged and allows a new question |
+| Grounded or Unknown answer | The bounded Codex turn settles | No workflow mutation; citations are validated against the supplied verified page IDs | Answer text and only exact verified source links, or a plain Unknown result | Open a source or close | A new question starts a new bounded transient answer |
+| Accepted Ticket knowledge | Open a published work-log proposal | Proposal decision, source Ticket provenance, and canonical verified page in SQLite | Exact canonical Knowledge destination | Open the page | Rejected, historical, missing, or unverified targets fail closed |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

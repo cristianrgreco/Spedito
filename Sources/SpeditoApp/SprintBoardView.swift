@@ -2804,7 +2804,6 @@ struct SprintTicketDetailView: View {
     }
   }
 
-
   private func contextSection(
     _ context: SprintTicketRunContextLogItem,
     showsBottomSeparator: Bool
@@ -2825,35 +2824,35 @@ struct SprintTicketDetailView: View {
       ) {
         VStack(alignment: .leading, spacing: 10) {
 
-            if !context.mandatoryPages.isEmpty {
-              VStack(alignment: .leading, spacing: 6) {
-                Text("Always included")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(.secondary)
-                IntrinsicWrappingLayout(spacing: 6) {
-                  ForEach(context.mandatoryPages) { page in
-                    contextPageRow(page)
-                  }
+          if !context.mandatoryPages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+              Text("Always included")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+              IntrinsicWrappingLayout(spacing: 6) {
+                ForEach(context.mandatoryPages) { page in
+                  contextPageRow(page)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
               }
+              .frame(maxWidth: .infinity, alignment: .leading)
             }
+          }
 
-            if !context.relevantPages.isEmpty {
-              VStack(alignment: .leading, spacing: 6) {
-                Text("Relevant to this ticket")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(.secondary)
-                IntrinsicWrappingLayout(spacing: 6) {
-                  ForEach(context.relevantPages) { page in
-                    contextPageRow(page)
-                  }
+          if !context.relevantPages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+              Text("Relevant to this ticket")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+              IntrinsicWrappingLayout(spacing: 6) {
+                ForEach(context.relevantPages) { page in
+                  contextPageRow(page)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
               }
+              .frame(maxWidth: .infinity, alignment: .leading)
             }
           }
         }
+      }
     }
   }
 
@@ -2924,98 +2923,98 @@ struct SprintTicketDetailView: View {
           : "shippingbox.fill",
         tint: .purple
       ) {
-          VStack(alignment: .leading, spacing: 10) {
-            LazyVGrid(
-              columns: Array(
-                repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
-                count: candidate.deliveryKind.changesRepository ? 5 : 3
-              ),
-              alignment: .leading,
-              spacing: 12
-            ) {
-              if candidate.deliveryKind == .localOutcome {
+        VStack(alignment: .leading, spacing: 10) {
+          LazyVGrid(
+            columns: Array(
+              repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading),
+              count: candidate.deliveryKind.changesRepository ? 5 : 3
+            ),
+            alignment: .leading,
+            spacing: 12
+          ) {
+            if candidate.deliveryKind == .localOutcome {
+              SprintTicketMetadata(
+                title: "Outcome",
+                value: "Version \(candidate.version)",
+                symbol: "doc.text.magnifyingglass",
+                tint: .purple
+              )
+              SprintTicketMetadata(
+                title: "Repository",
+                value: "No changes",
+                symbol: "arrow.triangle.branch",
+                tint: .secondary
+              )
+              SprintTicketMetadata(
+                title: "Review",
+                value: trunkPromotionValue(for: candidate),
+                symbol: trunkPromotionSymbol(for: candidate),
+                tint: trunkPromotionTint(for: candidate)
+              )
+            } else {
+              SprintTicketMetadata(
+                title: "Ticket branch",
+                value: candidate.branchName,
+                symbol: "arrow.triangle.branch",
+                tint: .indigo
+              )
+              SprintTicketMetadata(
+                title: "Candidate",
+                value:
+                  "\(candidate.shortHeadSHA) · \(candidate.commitCount) commit\(candidate.commitCount == 1 ? "" : "s")",
+                symbol: "shippingbox",
+                tint: .purple
+              )
+              if let integratedSHA = candidate.shortIntegratedSHA {
                 SprintTicketMetadata(
-                  title: "Outcome",
-                  value: "Version \(candidate.version)",
-                  symbol: "doc.text.magnifyingglass",
-                  tint: .purple
+                  title: "Integrated revision",
+                  value: integratedSHA,
+                  symbol: "point.3.connected.trianglepath.dotted",
+                  tint: .green
                 )
-                SprintTicketMetadata(
-                  title: "Repository",
-                  value: "No changes",
-                  symbol: "arrow.triangle.branch",
-                  tint: .secondary
-                )
-                SprintTicketMetadata(
-                  title: "Review",
-                  value: trunkPromotionValue(for: candidate),
-                  symbol: trunkPromotionSymbol(for: candidate),
-                  tint: trunkPromotionTint(for: candidate)
-                )
-              } else {
-                SprintTicketMetadata(
-                  title: "Ticket branch",
-                  value: candidate.branchName,
-                  symbol: "arrow.triangle.branch",
-                  tint: .indigo
-                )
-                SprintTicketMetadata(
-                  title: "Candidate",
-                  value:
-                    "\(candidate.shortHeadSHA) · \(candidate.commitCount) commit\(candidate.commitCount == 1 ? "" : "s")",
-                  symbol: "shippingbox",
-                  tint: .purple
-                )
-                if let integratedSHA = candidate.shortIntegratedSHA {
-                  SprintTicketMetadata(
-                    title: "Integrated revision",
-                    value: integratedSHA,
-                    symbol: "point.3.connected.trianglepath.dotted",
-                    tint: .green
-                  )
-                }
-                SprintTicketMetadata(
-                  title: "Local trunk",
-                  value: trunkPromotionValue(for: candidate),
-                  symbol: trunkPromotionSymbol(for: candidate),
-                  tint: trunkPromotionTint(for: candidate)
-                )
-                if candidate.id == currentCandidate?.id {
-                  Button {
-                    model.requestCodebaseFocus(workItemID: currentItem.id)
-                    dismiss()
-                  } label: {
-                    HStack(spacing: 8) {
-                      Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .foregroundStyle(.indigo)
-                      VStack(alignment: .leading, spacing: 1) {
-                        Text("Codebase")
-                          .font(.caption2)
-                          .foregroundStyle(.secondary)
-                        HStack(spacing: 4) {
-                          Text("View changes")
-                          Image(systemName: "arrow.right")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.indigo)
+              }
+              SprintTicketMetadata(
+                title: "Local trunk",
+                value: trunkPromotionValue(for: candidate),
+                symbol: trunkPromotionSymbol(for: candidate),
+                tint: trunkPromotionTint(for: candidate)
+              )
+              if candidate.id == currentCandidate?.id {
+                Button {
+                  model.requestCodebaseFocus(workItemID: currentItem.id)
+                  dismiss()
+                } label: {
+                  HStack(spacing: 8) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                      .foregroundStyle(.indigo)
+                    VStack(alignment: .leading, spacing: 1) {
+                      Text("Codebase")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                      HStack(spacing: 4) {
+                        Text("View changes")
+                        Image(systemName: "arrow.right")
                       }
+                      .font(.caption.weight(.semibold))
+                      .foregroundStyle(.indigo)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
                   }
-                  .buttonStyle(.plain)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
               }
             }
-            if candidate.status != .accepted {
-              Text(deliveryRevisionExplanation(candidate))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
           }
-          .textSelection(.enabled)
+          if candidate.status != .accepted {
+            Text(deliveryRevisionExplanation(candidate))
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
+        .textSelection(.enabled)
+      }
     }
   }
 
@@ -3139,74 +3138,74 @@ struct SprintTicketDetailView: View {
           content: {
             VStack(alignment: .leading, spacing: 13) {
 
-          VStack(alignment: .leading, spacing: 5) {
-            Text("Why this is needed")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-            TicketMarkdownDocument(source: presentation.purpose, baseFont: .body)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .textSelection(.enabled)
-
-          WorkLogDisclosure(
-            collapsedTitle: presentation.detailTitle,
-            tint: .orange,
-            labelFont: .caption.weight(.semibold)
-          ) {
-            Text(request.detail)
-              .font(
-                request.kind == .command
-                  ? .system(.callout, design: .monospaced)
-                  : .callout
-              )
+              VStack(alignment: .leading, spacing: 5) {
+                Text("Why this is needed")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                TicketMarkdownDocument(source: presentation.purpose, baseFont: .body)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
               .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .fixedSize(horizontal: false, vertical: true)
 
-          if isActionable {
-            HStack {
-              Spacer()
-              Button("Deny") {
-                decidePermissionRequest(request, allow: false)
-              }
-              .buttonStyle(.bordered)
-              .disabled(decidingPermissionRequestID != nil)
-              .accessibilityIdentifier("permission.deny.\(request.id.uuidString)")
-
-              Button("Allow once") {
-                decidePermissionRequest(request, allow: true)
-              }
-              .buttonStyle(.bordered)
-              .disabled(decidingPermissionRequestID != nil)
-              .accessibilityIdentifier("permission.allow-once.\(request.id.uuidString)")
-
-              if request.productGrantSignature != nil {
-                Button("Always allow") {
-                  decidePermissionRequest(
-                    request,
-                    allow: true,
-                    rememberForProduct: true
+              WorkLogDisclosure(
+                collapsedTitle: presentation.detailTitle,
+                tint: .orange,
+                labelFont: .caption.weight(.semibold)
+              ) {
+                Text(request.detail)
+                  .font(
+                    request.kind == .command
+                      ? .system(.callout, design: .monospaced)
+                      : .callout
                   )
+                  .textSelection(.enabled)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
+              .fixedSize(horizontal: false, vertical: true)
+
+              if isActionable {
+                HStack {
+                  Spacer()
+                  Button("Deny") {
+                    decidePermissionRequest(request, allow: false)
+                  }
+                  .buttonStyle(.bordered)
+                  .disabled(decidingPermissionRequestID != nil)
+                  .accessibilityIdentifier("permission.deny.\(request.id.uuidString)")
+
+                  Button("Allow once") {
+                    decidePermissionRequest(request, allow: true)
+                  }
+                  .buttonStyle(.bordered)
+                  .disabled(decidingPermissionRequestID != nil)
+                  .accessibilityIdentifier("permission.allow-once.\(request.id.uuidString)")
+
+                  if request.productGrantSignature != nil {
+                    Button("Always allow") {
+                      decidePermissionRequest(
+                        request,
+                        allow: true,
+                        rememberForProduct: true
+                      )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(decidingPermissionRequestID != nil)
+                    .accessibilityIdentifier("permission.always.\(request.id.uuidString)")
+                  }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(decidingPermissionRequestID != nil)
-                .accessibilityIdentifier("permission.always.\(request.id.uuidString)")
+              }
+
+              if let explanation = permissionExplanation(request) {
+                Text(explanation)
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
               }
             }
           }
-
-          if let explanation = permissionExplanation(request) {
-            Text(explanation)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-      }
         )
+      }
     }
-  }
   }
 
   private func permissionStatusTitle(
@@ -3336,86 +3335,86 @@ struct SprintTicketDetailView: View {
         content: {
           VStack(alignment: .leading, spacing: 14) {
 
-        Text(
-          localOutcomePresentation?.explanation
-            ?? demoExplanation(
-              candidate: candidate,
-              specification: specification,
-              session: session,
-              canOpenDemo: canOpenDemo
+            Text(
+              localOutcomePresentation?.explanation
+                ?? demoExplanation(
+                  candidate: candidate,
+                  specification: specification,
+                  session: session,
+                  canOpenDemo: canOpenDemo
+                )
             )
-        )
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
-        if let outcome = localOutcomePresentation?.outcome {
-          VStack(alignment: .leading, spacing: 7) {
-            Text("Outcome to review")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-            TicketMarkdownDocument(source: outcome, baseFont: .body)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-        }
-
-        if let handoff = localOutcomePresentation?.handoff {
-          WorkLogDisclosure(
-            collapsedTitle: "Read the full analysis and evidence",
-            expandedTitle: "Hide the full analysis and evidence",
-            tint: demoTint
-          ) {
-            TicketMarkdownDocument(source: handoff, baseFont: .callout)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(10)
-          }
-        }
-
-        if let instructions = result?.reviewInstructions,
-          !instructions.isEmpty
-        {
-          VStack(alignment: .leading, spacing: 7) {
-            Text(localOutcomePresentation == nil ? "Things to try" : "Decision and checks")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-            ForEach(instructions, id: \.self) { instruction in
-              HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "checkmark.circle")
-                  .font(.caption)
-                  .foregroundStyle(demoTint)
-                  .padding(.top, 1)
-                Text(instruction)
-                  .font(.callout)
+            if let outcome = localOutcomePresentation?.outcome {
+              VStack(alignment: .leading, spacing: 7) {
+                Text("Outcome to review")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                TicketMarkdownDocument(source: outcome, baseFont: .body)
+                  .textSelection(.enabled)
+                  .frame(maxWidth: .infinity, alignment: .leading)
               }
             }
-          }
-        }
 
-        if let output = session?.output, !output.isEmpty {
-          VStack(alignment: .leading, spacing: 7) {
-            Text("Demo result")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
-            ScrollView {
-              Text(output)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
+            if let handoff = localOutcomePresentation?.handoff {
+              WorkLogDisclosure(
+                collapsedTitle: "Read the full analysis and evidence",
+                expandedTitle: "Hide the full analysis and evidence",
+                tint: demoTint
+              ) {
+                TicketMarkdownDocument(source: handoff, baseFont: .callout)
+                  .textSelection(.enabled)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(10)
+              }
             }
-            .frame(maxHeight: 180)
-            .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-          }
-        }
 
-        if let error = session?.errorMessage, !error.isEmpty {
-          Label(error, systemImage: "exclamationmark.triangle.fill")
-            .font(.callout)
-            .foregroundStyle(.orange)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+            if let instructions = result?.reviewInstructions,
+              !instructions.isEmpty
+            {
+              VStack(alignment: .leading, spacing: 7) {
+                Text(localOutcomePresentation == nil ? "Things to try" : "Decision and checks")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                ForEach(instructions, id: \.self) { instruction in
+                  HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                      .font(.caption)
+                      .foregroundStyle(demoTint)
+                      .padding(.top, 1)
+                    Text(instruction)
+                      .font(.callout)
+                  }
+                }
+              }
+            }
+
+            if let output = session?.output, !output.isEmpty {
+              VStack(alignment: .leading, spacing: 7) {
+                Text("Demo result")
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                ScrollView {
+                  Text(output)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                }
+                .frame(maxHeight: 180)
+                .background(.black.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+              }
+            }
+
+            if let error = session?.errorMessage, !error.isEmpty {
+              Label(error, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
           }
         }
       )
@@ -3561,31 +3560,31 @@ struct SprintTicketDetailView: View {
               .font(.callout)
               .foregroundStyle(.secondary)
 
-          ForEach(result.followUpTicketProposals, id: \.reference) { proposal in
-            HStack(alignment: .top, spacing: 10) {
-              Text(proposal.reference)
-                .font(.caption.monospaced().weight(.semibold))
-                .foregroundStyle(.purple)
-                .frame(width: 28, alignment: .leading)
-              VStack(alignment: .leading, spacing: 4) {
-                Text(proposal.title)
-                  .font(.subheadline.weight(.semibold))
-                Text(proposal.rationale)
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                  .fixedSize(horizontal: false, vertical: true)
+            ForEach(result.followUpTicketProposals, id: \.reference) { proposal in
+              HStack(alignment: .top, spacing: 10) {
+                Text(proposal.reference)
+                  .font(.caption.monospaced().weight(.semibold))
+                  .foregroundStyle(.purple)
+                  .frame(width: 28, alignment: .leading)
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(proposal.title)
+                    .font(.subheadline.weight(.semibold))
+                  Text(proposal.rationale)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Label(
+                  proposal.suggestedRole.title,
+                  systemImage: proposal.suggestedRole.symbolName
+                )
+                .font(.caption.weight(.medium))
+                .foregroundStyle(proposal.suggestedRole.tint)
               }
-              Spacer()
-              Label(
-                proposal.suggestedRole.title,
-                systemImage: proposal.suggestedRole.symbolName
-              )
-              .font(.caption.weight(.medium))
-              .foregroundStyle(proposal.suggestedRole.tint)
+              .padding(11)
+              .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
             }
-            .padding(11)
-            .background(.background.opacity(0.72), in: RoundedRectangle(cornerRadius: 9))
-          }
           }
         }
       }
@@ -3640,35 +3639,35 @@ struct SprintTicketDetailView: View {
         content: {
           VStack(alignment: .leading, spacing: 12) {
 
-        Text(knowledgeProposalExplanation(knowledge.proposals))
-          .font(.callout)
-          .foregroundStyle(.secondary)
+            Text(knowledgeProposalExplanation(knowledge.proposals))
+              .font(.callout)
+              .foregroundStyle(.secondary)
 
-        ForEach(knowledge.proposals) { proposal in
-          let knowledgePage = publishedKnowledgePage(for: proposal)
-          CanonicalKnowledgeProposalCard(
-            proposal: proposal,
-            currentPage: knowledgePage,
-            requiresOwnerApproval: model.requiresKnowledgeApproval,
-            isDeciding: decidingKnowledgeProposalIDs.contains(proposal.id),
-            onOpenPage: knowledgePage.map { page in
-              {
-                model.requestKnowledgeFocus(pageID: page.id)
-                dismiss()
-              }
-            },
-            onDecision: { accept in
-              decidingKnowledgeProposalIDs.insert(proposal.id)
-              Task {
-                _ = await model.decideKnowledgePageProposal(
-                  proposal,
-                  accept: accept
-                )
-                decidingKnowledgeProposalIDs.remove(proposal.id)
-              }
+            ForEach(knowledge.proposals) { proposal in
+              let knowledgePage = publishedKnowledgePage(for: proposal)
+              CanonicalKnowledgeProposalCard(
+                proposal: proposal,
+                currentPage: knowledgePage,
+                requiresOwnerApproval: model.requiresKnowledgeApproval,
+                isDeciding: decidingKnowledgeProposalIDs.contains(proposal.id),
+                onOpenPage: knowledgePage.map { page in
+                  {
+                    model.requestKnowledgeFocus(pageID: page.id)
+                    dismiss()
+                  }
+                },
+                onDecision: { accept in
+                  decidingKnowledgeProposalIDs.insert(proposal.id)
+                  Task {
+                    _ = await model.decideKnowledgePageProposal(
+                      proposal,
+                      accept: accept
+                    )
+                    decidingKnowledgeProposalIDs.remove(proposal.id)
+                  }
+                }
+              )
             }
-          )
-        }
           }
         }
       )
@@ -3678,14 +3677,10 @@ struct SprintTicketDetailView: View {
   private func publishedKnowledgePage(
     for proposal: KnowledgePageProposal
   ) -> KnowledgePage? {
-    if let targetPageID = proposal.targetPageID {
-      return model.knowledgePages.first { $0.id == targetPageID }
-    }
-    guard proposal.status == .accepted else { return nil }
-    return model.knowledgePages.last {
-      $0.sourceWorkItemID == proposal.workItemID
-        && $0.title == proposal.title
-    }
+    TicketKnowledgeNavigationPolicy.publishedPage(
+      for: proposal,
+      pages: model.knowledgePages
+    )
   }
 
   private func knowledgeProposalStatusTitle(
@@ -5902,7 +5897,6 @@ private struct SprintTicketCommentRow: View {
     else { return nil }
     return comment.answeredQuestions.first?.answer
   }
-
 
   var body: some View {
     HStack(alignment: .top, spacing: 12) {

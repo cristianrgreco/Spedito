@@ -10,8 +10,7 @@ struct KnowledgeBaseView: View {
   @State private var answer: KnowledgeAnswer?
   @State private var showingKnowledgeAnswer = false
   @State private var isEditing = false
-  @State private var titleDraft = ""
-  @State private var bodyDraft = ""
+  @State private var pageDraft = KnowledgePageDraft()
   @State private var revisions: [KnowledgePageRevision] = []
   @State private var showingNewPage = false
   @State private var newPageTitle = ""
@@ -108,6 +107,7 @@ struct KnowledgeBaseView: View {
           .onSubmit { askKnowledge() }
           .disabled(model.isAskingKnowledge)
           .help("Press Return to ask")
+          .accessibilityIdentifier("knowledge.ask")
         if !question.isEmpty {
           Button {
             question = ""
@@ -243,7 +243,7 @@ struct KnowledgeBaseView: View {
       Spacer()
       if isEditing {
         Button("Cancel") {
-          loadSelectedPage()
+          pageDraft.cancel(to: page)
           isEditing = false
         }
         Button("Save") {
@@ -251,8 +251,8 @@ struct KnowledgeBaseView: View {
             if await model.saveKnowledgePage(
               productID: page.productID,
               id: page.id,
-              title: titleDraft,
-              bodyMarkdown: bodyDraft,
+              title: pageDraft.title,
+              bodyMarkdown: pageDraft.bodyMarkdown,
               changeSummary: "Edited page"
             ) {
               isEditing = false
@@ -279,10 +279,10 @@ struct KnowledgeBaseView: View {
 
   private func pageEditor(_ page: KnowledgePage) -> some View {
     VStack(alignment: .leading, spacing: 14) {
-      TextField("Page title", text: $titleDraft)
+      TextField("Page title", text: $pageDraft.title)
         .font(.title.bold())
         .textFieldStyle(.plain)
-      TextEditor(text: $bodyDraft)
+      TextEditor(text: $pageDraft.bodyMarkdown)
         .font(.body.monospaced())
         .scrollContentBackground(.hidden)
         .padding(8)
@@ -301,6 +301,7 @@ struct KnowledgeBaseView: View {
         Text(page.title)
           .font(.largeTitle.bold())
           .textSelection(.enabled)
+          .accessibilityIdentifier("knowledge.page.\(page.id.uuidString)")
 
         let body = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown)
         if body.isEmpty {
@@ -503,8 +504,7 @@ struct KnowledgeBaseView: View {
   private func loadSelectedPage() {
     guard let page = selectedPage else { return }
     model.markKnowledgePageRead(page)
-    titleDraft = page.title
-    bodyDraft = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown)
+    pageDraft = KnowledgePageDraft(page: page)
     isEditing = false
     Task {
       revisions = await model.knowledgeRevisions(
@@ -678,45 +678,51 @@ private struct KnowledgeAnswerSheet: View {
                 .foregroundStyle(.indigo)
               KnowledgeMarkdownDocument(source: answer.answer)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("knowledge.answer.text")
             }
 
-            if !answer.citationPageIDs.isEmpty {
+            let citedPages = KnowledgeAnswerPresentation.citedVerifiedPages(
+              answer: answer,
+              pages: model.knowledgePages
+            )
+            if !citedPages.isEmpty {
               Divider()
               VStack(alignment: .leading, spacing: 10) {
                 Text("Sources")
                   .font(.headline)
-                ForEach(answer.citationPageIDs, id: \.self) { id in
-                  if let page = model.knowledgePages.first(where: { $0.id == id }) {
-                    Button {
-                      selectedPageID = id
-                      isPresented = false
-                    } label: {
-                      HStack(spacing: 11) {
-                        Image(systemName: "doc.text")
-                          .foregroundStyle(.indigo)
-                          .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                          Text(page.title)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.primary)
-                          Text(page.verificationStatus.title)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "arrow.right")
-                          .font(.caption.weight(.semibold))
-                          .foregroundStyle(.tertiary)
+                ForEach(citedPages) { page in
+                  Button {
+                    selectedPageID = page.id
+                    isPresented = false
+                  } label: {
+                    HStack(spacing: 11) {
+                      Image(systemName: "doc.text")
+                        .foregroundStyle(.indigo)
+                        .frame(width: 20)
+                      VStack(alignment: .leading, spacing: 2) {
+                        Text(page.title)
+                          .font(.callout.weight(.semibold))
+                          .foregroundStyle(.primary)
+                        Text(page.verificationStatus.title)
+                          .font(.caption)
+                          .foregroundStyle(.secondary)
                       }
-                      .padding(12)
-                      .frame(maxWidth: .infinity, alignment: .leading)
-                      .background(
-                        .quaternary.opacity(0.28),
-                        in: RoundedRectangle(cornerRadius: 10)
-                      )
+                      Spacer()
+                      Image(systemName: "arrow.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                     }
-                    .buttonStyle(.plain)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                      .quaternary.opacity(0.28),
+                      in: RoundedRectangle(cornerRadius: 10)
+                    )
                   }
+                  .buttonStyle(.plain)
+                  .accessibilityIdentifier(
+                    "knowledge.answer.citation.\(page.id.uuidString)"
+                  )
                 }
               }
             }
@@ -744,6 +750,7 @@ private struct KnowledgeAnswerSheet: View {
       }
     }
     .frame(width: 720, height: 620)
+    .accessibilityIdentifier("knowledge.answer-sheet")
   }
 }
 
