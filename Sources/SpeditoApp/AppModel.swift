@@ -227,8 +227,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   @Published private(set) var agentRunKnowledgeContext: [AgentRunKnowledgePage] = []
   @Published private(set) var agentRunKnowledgeDestinations: [AgentRunKnowledgeDestination] = []
   @Published private(set) var liveRunActivities: [UUID: CodexLiveActivity] = [:]
-  var suggestionBatch: TicketSuggestionBatch? {
-    epicPlanningFeature.snapshot.suggestionBatch
+  var suggestionBatches: [TicketSuggestionBatch] {
+    epicPlanningFeature.snapshot.suggestionBatches
   }
   var conversationThreads: [ProductConversationThread] {
     productConversationFeature.threads
@@ -584,7 +584,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         )
       }
       return SprintPlanningWorkflowAvailability(
-        isSuggestionGenerationRunning: suggestionBatch?.session.status == .generating,
+        isSuggestionGenerationRunning: suggestionBatches.contains {
+          $0.session.status == .generating
+        },
         isTicketConversationRunning: isTicketConversationMessageRunning,
         isEpicConversationRunning: isEpicConversationMessageRunning,
         refiningWorkItemID: refiningWorkItemID,
@@ -645,7 +647,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           profiles: profiles,
           workItems: workItems,
           epics: epics,
-          suggestionBatch: suggestionBatch
+          suggestionBatches: suggestionBatches
         )
       },
       availabilityProvider: { [weak self] in
@@ -665,7 +667,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           isCodexConnected: isCodexConnected,
           isSprintPlanningMessageRunning: isPlanningMessageRunning,
           isGeneratingSprintGoal: isGeneratingSprintGoal,
-          isSuggestionGenerationRunning: suggestionBatch?.session.status == .generating,
+          isSuggestionGenerationRunning: suggestionBatches.contains {
+            $0.session.status == .generating
+          },
           isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
           isEpicPlanGenerationRunning: epicPlanningConversation?.isGeneratingPlan == true
         )
@@ -1429,13 +1433,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   var canAutosuggestTickets: Bool {
     guard case .connected = codexConnectionState else { return false }
-    guard suggestionBatch?.session.status != .generating else { return false }
+    guard !suggestionBatches.contains(where: { $0.session.status == .generating }) else {
+      return false
+    }
     guard !isPlanningMessageRunning else { return false }
     guard !isGeneratingSprintGoal else { return false }
     guard !isTicketConversationMessageRunning else { return false }
     guard !isEpicConversationMessageRunning else { return false }
     guard refiningWorkItemID == nil else { return false }
-    return pendingSuggestionCount == 0
+    return true
   }
 
   var canPlanEpic: Bool {
@@ -1446,7 +1452,9 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   var canRefineTicket: Bool {
     guard case .connected = codexConnectionState else { return false }
-    guard suggestionBatch?.session.status != .generating else { return false }
+    guard !suggestionBatches.contains(where: { $0.session.status == .generating }) else {
+      return false
+    }
     guard !isPlanningMessageRunning else { return false }
     guard !isGeneratingSprintGoal else { return false }
     guard !isTicketConversationMessageRunning else { return false }
@@ -1463,11 +1471,13 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   var pendingSuggestionCount: Int {
-    guard
-      suggestionBatch?.session.epicID != nil
-        || suggestionBatch?.session.sourceWorkItemID != nil
-    else { return 0 }
-    return suggestionBatch?.suggestions.filter { $0.status == .proposed }.count ?? 0
+    suggestionBatches
+      .filter {
+        $0.session.epicID != nil || $0.session.sourceWorkItemID != nil
+      }
+      .reduce(into: 0) { count, batch in
+        count += batch.suggestions.filter { $0.status == .proposed }.count
+      }
   }
 
   func connectGitHub(productID: UUID) async {
@@ -3443,92 +3453,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     sprintPlanningWorkflowCoordinator.canEditCandidateSprint
   }
 
-  func restoreEpicPlanningConversation(for epic: Epic) async {
-    await epicPlanningWorkflowCoordinator.restoreEpicPlanningConversation(for: epic)
-  }
-
-  func planEpic(_ epic: Epic) {
-    epicPlanningWorkflowCoordinator.planEpic(epic)
-  }
-
-  func continueEpicPlanning(
-    _ epic: Epic,
-    answers: [String],
-    answeredQuestions: [EpicPlanningAnsweredQuestion]
-  ) {
-    epicPlanningWorkflowCoordinator.continueEpicPlanning(
-      epic,
-      answers: answers,
-      answeredQuestions: answeredQuestions
-    )
-  }
-
-  func retryEpicPlanning(_ epic: Epic) {
-    epicPlanningWorkflowCoordinator.retryEpicPlanning(epic)
-  }
-
-  func cancelEpicPlanning() {
-    epicPlanningWorkflowCoordinator.cancelEpicPlanning()
-  }
-
-  func clearEpicPlanningConversation(for epicID: UUID) {
-    epicPlanningWorkflowCoordinator.clearEpicPlanningConversation(for: epicID)
-  }
-
-  func saveEpicPlanningConversation(
-    _ conversation: EpicPlanningConversationState,
-    threadID: String?
-  ) async throws {
-    try await epicPlanningWorkflowCoordinator.saveEpicPlanningConversation(
-      conversation,
-      threadID: threadID
-    )
-  }
-
-  func retryCurrentEpicPlan() {
-    epicPlanningWorkflowCoordinator.retryCurrentEpicPlan()
-  }
-
-  func autosuggestTickets() {
-    epicPlanningWorkflowCoordinator.autosuggestTickets()
-  }
-
-  func decideTicketSuggestion(
-    _ suggestion: TicketSuggestion,
-    accept: Bool,
-    completion: ((WorkItem?) -> Void)? = nil
-  ) {
-    epicPlanningWorkflowCoordinator.decideTicketSuggestion(
-      suggestion,
-      accept: accept,
-      completion: completion
-    )
-  }
-
-  func rejectTicketSuggestion(
-    _ suggestion: TicketSuggestion,
-    completion: (() -> Void)? = nil
-  ) {
-    epicPlanningWorkflowCoordinator.rejectTicketSuggestion(
-      suggestion,
-      completion: completion
-    )
-  }
-
-  func decideAllTicketSuggestions(accept: Bool) {
-    epicPlanningWorkflowCoordinator.decideAllTicketSuggestions(accept: accept)
-  }
-
-  func decideTicketSuggestionGroup(_ suggestions: [TicketSuggestion], accept: Bool) {
-    epicPlanningWorkflowCoordinator.decideTicketSuggestionGroup(
-      suggestions,
-      accept: accept
-    )
-  }
-
-  func dismissFailedTicketSuggestions() {
-    epicPlanningWorkflowCoordinator.dismissFailedTicketSuggestions()
-  }
 
   func updateProfile(
     _ profile: AgentProfile,
@@ -4585,7 +4509,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       retrospectiveNotes = workspace.retrospectiveNotes
       retrospectiveSyntheses = workspace.retrospectiveSyntheses
       retrospectiveActionSources = workspace.retrospectiveActionSources
-      epicPlanningWorkflowCoordinator.loadSuggestionBatch(workspace.suggestionBatch)
+      epicPlanningWorkflowCoordinator.loadSuggestionBatches(workspace.suggestionBatches)
       productConversationFeature.load(
         productID: productID,
         threads: workspace.conversationThreads

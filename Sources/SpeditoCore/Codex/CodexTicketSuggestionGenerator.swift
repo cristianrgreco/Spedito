@@ -151,6 +151,26 @@ public enum CodexTicketSuggestionGenerator {
       : rejectedSuggestions
         .map { "- \($0.reference): \($0.title)" }
         .joined(separator: "\n")
+    let reviewedMetadata =
+      if epic.hasAnalyzedMetadata {
+        """
+        Owner-reviewed Epic metadata:
+        Title: \(epic.title)
+        Goal: \(epic.goal)
+        Success criteria:
+        \(epic.successCriteria.map { "- \($0)" }.joined(separator: "\n"))
+        Constraints: \(epic.constraints.isEmpty ? "None recorded." : epic.constraints)
+
+        Preserve these owner-reviewed fields exactly unless a later product owner message in the
+        clarification conversation explicitly changes one of them. They are authoritative inputs, not
+        draft wording to improve.
+        """
+      } else {
+        """
+        No owner-reviewed Epic metadata exists yet. Improve the title and goal, add measurable success
+        criteria, and retain only material constraints supported by the supplied context.
+        """
+      }
 
     return """
       Turn the product owner's outcome into one durable epic and the smallest coherent set of delivery
@@ -161,16 +181,15 @@ public enum CodexTicketSuggestionGenerator {
       Outcome supplied by the product owner:
       \(epic.goal)
 
+      \(reviewedMetadata)
       Supplied planning evidence:
       \(evidence)
 
       Previously rejected proposals for this epic:
       \(rejectedScope)
 
-      Improve the epic title and goal so they are concise, outcome-oriented, and understandable to a
-      product owner. Add measurable success criteria and retain only material constraints supported by
-      the supplied context. Use the decisions resolved in the preceding clarification conversation. Do
-      not invent product decisions or disguise an unresolved product owner choice as a backlog ticket.
+      Use the decisions resolved in the preceding clarification conversation. Do not
+      invent product decisions or disguise an unresolved product owner choice as a backlog ticket.
       A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
       decision-enabling output. An instruction for the business analyst or team to identify, compare,

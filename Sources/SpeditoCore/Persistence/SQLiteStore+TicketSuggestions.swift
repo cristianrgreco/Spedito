@@ -415,6 +415,36 @@ extension SQLiteStore {
     return try fetchTicketSuggestionBatch(sessionID: session.id)
   }
 
+  public func fetchOutstandingTicketSuggestionBatches(
+    productID: UUID
+  ) throws -> [TicketSuggestionBatch] {
+    let sessions: [SuggestionSession] = try withStatement(
+      """
+      SELECT id, product_id, epic_id, source_work_item_id, status, codex_thread_id, codex_turn_id,
+             error_message, created_at, updated_at
+      FROM suggestion_sessions AS sessions
+      WHERE product_id = ?
+        AND (
+          status IN ('generating', 'failed')
+          OR EXISTS (
+            SELECT 1
+            FROM ticket_suggestions
+            WHERE session_id = sessions.id AND status = 'proposed'
+          )
+        )
+      ORDER BY created_at ASC, id ASC;
+      """
+    ) { statement in
+      try bind(productID.uuidString, to: 1, in: statement)
+      var sessions: [SuggestionSession] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        sessions.append(try decodeSuggestionSession(statement))
+      }
+      return sessions
+    }
+    return try sessions.map { try fetchTicketSuggestionBatch(sessionID: $0.id) }
+  }
+
   public func fetchLatestEpicPlanningSuggestionSession(
     epicID: UUID
   ) throws -> SuggestionSession? {
@@ -434,26 +464,113 @@ extension SQLiteStore {
     }
   }
 
+  public func updateTicketSuggestion(
+    id: UUID,
+    title: String,
+    type: WorkItemType,
+    body: String,
+    acceptanceCriteria: [String],
+    suggestedRole: AgentRole,
+    priority: WorkItemPriority,
+    rationale: String
+  ) throws -> TicketSuggestionBatch {
+    let suggestion = try fetchTicketSuggestion(id: id)
+    let session = try fetchSuggestionSession(id: suggestion.sessionID)
+    guard suggestion.status == .proposed else {
+      throw PersistenceError.corruptData("Only a proposed ticket can be edited")
+    }
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedTitle.isEmpty else {
+      throw PersistenceError.corruptData("Suggested ticket title cannot be empty")
+    }
+    let trimmedCriteria =
+      acceptanceCriteria
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    let now = Date()
+    try transaction {
+      try withStatement(
+        """
+        UPDATE ticket_suggestions
+        SET title = ?, ticket_type = ?, body = ?, acceptance_criteria_json = ?,
+            suggested_role = ?, priority = ?, rationale = ?, updated_at = ?
+        WHERE id = ? AND status = 'proposed';
+        """
+      ) { statement in
+        try bind(trimmedTitle, to: 1, in: statement)
+        try bind(type.rawValue, to: 2, in: statement)
+        try bind(body.trimmingCharacters(in: .whitespacesAndNewlines), to: 3, in: statement)
+        try bind(try encodeStringArray(trimmedCriteria), to: 4, in: statement)
+        try bind(suggestedRole.rawValue, to: 5, in: statement)
+        try bind(Int64(priority.rawValue), to: 6, in: statement)
+        try bind(rationale.trimmingCharacters(in: .whitespacesAndNewlines), to: 7, in: statement)
+        try bind(now.timeIntervalSince1970, to: 8, in: statement)
+        try bind(id.uuidString, to: 9, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: session.productID,
+        kind: "ticket_suggestion.edited",
+        actor: "owner",
+        detail: trimmedTitle
+      )
+    }
+    return try fetchTicketSuggestionBatch(sessionID: session.id)
+  }
+
   public func decideTicketSuggestion(
     id: UUID,
+    decision: TicketSuggestionStatus
+  ) throws -> TicketSuggestionBatch {
+    try decideTicketSuggestionGroup(ids: [id], decision: decision)
+  }
+
+  public func decideTicketSuggestionGroup(
+    ids: [UUID],
     decision: TicketSuggestionStatus
   ) throws -> TicketSuggestionBatch {
     guard decision == .accepted || decision == .rejected else {
       throw PersistenceError.corruptData("A proposal must be accepted or rejected")
     }
-    if decision == .rejected {
-      return try rejectTicketSuggestionCascade(id: id)
+    guard let firstID = ids.first else {
+      throw PersistenceError.corruptData("A proposal decision needs at least one ticket")
     }
-    let suggestion = try fetchTicketSuggestion(id: id)
-    let session = try fetchSuggestionSession(id: suggestion.sessionID)
-    guard suggestion.status == .proposed else {
-      return try fetchTicketSuggestionBatch(sessionID: session.id)
-    }
+    let firstSuggestion = try fetchTicketSuggestion(id: firstID)
+    let session = try fetchSuggestionSession(id: firstSuggestion.sessionID)
     let batch = try fetchTicketSuggestionBatch(sessionID: session.id)
-    let suggestionsToAccept = try suggestedPrerequisiteClosure(
-      including: suggestion,
-      in: batch
+    let requestedIDs = Set(ids)
+    guard requestedIDs.isSubset(of: Set(batch.suggestions.map(\.id))) else {
+      throw PersistenceError.corruptData("A proposal batch cannot cross sessions")
+    }
+    if decision == .rejected {
+      return try rejectTicketSuggestions(
+        rootIDs: requestedIDs,
+        batch: batch,
+        session: session
+      )
+    }
+    return try acceptTicketSuggestions(
+      rootIDs: requestedIDs,
+      batch: batch,
+      session: session
     )
+  }
+
+  private func acceptTicketSuggestions(
+    rootIDs: Set<UUID>,
+    batch: TicketSuggestionBatch,
+    session: SuggestionSession
+  ) throws -> TicketSuggestionBatch {
+    var acceptedSuggestionIDs: Set<UUID> = []
+    var suggestionsToAccept: [TicketSuggestion] = []
+    for suggestion in batch.suggestions
+    where rootIDs.contains(suggestion.id) && suggestion.status == .proposed {
+      for affected in try suggestedPrerequisiteClosure(including: suggestion, in: batch)
+      where acceptedSuggestionIDs.insert(affected.id).inserted {
+        suggestionsToAccept.append(affected)
+      }
+    }
+    guard !suggestionsToAccept.isEmpty else { return batch }
     let acceptedAt = Date()
 
     try transaction {
@@ -474,7 +591,6 @@ extension SQLiteStore {
           actor: "owner",
           detail: workItem.key
         )
-
         try withStatement(
           """
           UPDATE ticket_suggestions
@@ -554,14 +670,22 @@ extension SQLiteStore {
   }
 
   public func rejectTicketSuggestionCascade(id: UUID) throws -> TicketSuggestionBatch {
-    let suggestion = try fetchTicketSuggestion(id: id)
-    let session = try fetchSuggestionSession(id: suggestion.sessionID)
-    guard suggestion.status == .proposed else {
-      return try fetchTicketSuggestionBatch(sessionID: session.id)
-    }
+    try decideTicketSuggestionGroup(ids: [id], decision: .rejected)
+  }
 
-    let batch = try fetchTicketSuggestionBatch(sessionID: session.id)
-    var cascadeIDs: Set<UUID> = [suggestion.id]
+  private func rejectTicketSuggestions(
+    rootIDs: Set<UUID>,
+    batch: TicketSuggestionBatch,
+    session: SuggestionSession
+  ) throws -> TicketSuggestionBatch {
+    let proposedRootIDs = Set(
+      batch.suggestions
+        .filter { rootIDs.contains($0.id) && $0.status == .proposed }
+        .map(\.id)
+    )
+    guard !proposedRootIDs.isEmpty else { return batch }
+
+    var cascadeIDs = proposedRootIDs
     var foundDependent = true
     while foundDependent {
       foundDependent = false
@@ -611,7 +735,7 @@ extension SQLiteStore {
         _ = try insertEvent(
           productID: session.productID,
           kind:
-            affected.id == suggestion.id
+            proposedRootIDs.contains(affected.id)
             ? "ticket_suggestion.rejected"
             : "ticket_suggestion.rejected_cascade",
           actor: "owner",

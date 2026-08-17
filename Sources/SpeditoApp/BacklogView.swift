@@ -325,21 +325,20 @@ struct BacklogView: View {
     return (model.sprintHistory.map(\.sprint.number).max() ?? 0) + 1
   }
 
-  private var visibleSuggestionBatch: TicketSuggestionBatch? {
-    guard let batch = model.suggestionBatch else { return nil }
-    guard
-      batch.session.epicID != nil
-        || batch.session.sourceWorkItemID != nil
-    else { return nil }
-    if batch.session.status == .cancelled {
-      return nil
+  private var visibleSuggestionBatches: [TicketSuggestionBatch] {
+    model.suggestionBatches.filter { batch in
+      guard
+        batch.session.epicID != nil
+          || batch.session.sourceWorkItemID != nil
+      else { return false }
+      guard batch.session.status != .cancelled else { return false }
+      if batch.session.status == .ready,
+        batch.suggestions.allSatisfy({ $0.status != .proposed })
+      {
+        return false
+      }
+      return true
     }
-    if batch.session.status == .ready,
-      batch.suggestions.allSatisfy({ $0.status != .proposed })
-    {
-      return nil
-    }
-    return batch
   }
 
   private var planningIsComplete: Bool {
@@ -430,7 +429,7 @@ struct BacklogView: View {
                 onDragCompleted: finishDragging,
                 onOpen: { selectedTicket = $0 },
                 onAddTicket: { onNewTicket(nil) },
-                suggestionBatch: visibleSuggestionBatch
+                suggestionBatches: visibleSuggestionBatches
               )
               .padding(.leading, horizontalPadding)
               .padding(.trailing, columnGutter)
@@ -1887,7 +1886,7 @@ struct PlanningTicketList: View {
   let onDragCompleted: () -> Void
   let onOpen: (WorkItem) -> Void
   let onAddTicket: (() -> Void)?
-  let suggestionBatch: TicketSuggestionBatch?
+  let suggestionBatches: [TicketSuggestionBatch]
 
   private var section: PlanningDropSection {
     isCandidateSection ? .candidateSprint : .backlog
@@ -1923,8 +1922,12 @@ struct PlanningTicketList: View {
   }
 
   private var proposedSuggestionCount: Int {
-    guard !isCandidateSection, suggestionBatch?.session.status == .ready else { return 0 }
-    return suggestionBatch?.suggestions.filter { $0.status == .proposed }.count ?? 0
+    guard !isCandidateSection else { return 0 }
+    return suggestionBatches
+      .filter { $0.session.status == .ready }
+      .reduce(into: 0) { count, batch in
+        count += batch.suggestions.filter { $0.status == .proposed }.count
+      }
   }
 
   private var visibleItemCount: Int {
@@ -1999,7 +2002,7 @@ struct PlanningTicketList: View {
 
         Divider()
 
-        if items.isEmpty && suggestionBatch == nil {
+        if items.isEmpty && suggestionBatches.isEmpty {
           VStack(spacing: 7) {
             Image(
               systemName:
@@ -2045,7 +2048,7 @@ struct PlanningTicketList: View {
             isTargeted: { targeted in setDropTarget(targeted, index: 0) }
           )
         } else {
-          if let suggestionBatch {
+          ForEach(suggestionBatches, id: \.session.id) { suggestionBatch in
             InlineBacklogSuggestions(batch: suggestionBatch)
           }
 
@@ -2952,6 +2955,57 @@ struct SuggestionRejectionImpact {
   }
 }
 
+struct SuggestionBatchDecisionImpact {
+  let suggestions: [TicketSuggestion]
+
+  var proposedCount: Int {
+    suggestions.filter { $0.status == .proposed }.count
+  }
+
+  var acceptedCascadeTicketCount: Int {
+    let proposed = suggestions.filter { $0.status == .proposed }
+    let acceptedIDs = Set(
+      proposed.flatMap {
+        transitiveSuggestionDependents(of: $0, in: suggestions)
+      }
+      .filter { $0.status == .accepted }
+      .map(\.id)
+    )
+    return acceptedIDs.count
+  }
+
+  var acceptActionTitle: String {
+    "Accept \(proposedCount) \(proposedCount == 1 ? "suggestion" : "suggestions")"
+  }
+
+  var rejectActionTitle: String {
+    "Reject \(proposedCount) \(proposedCount == 1 ? "suggestion" : "suggestions")"
+  }
+
+  var acceptMessage: String {
+    "All \(proposedCount) remaining "
+      + (proposedCount == 1 ? "suggestion will" : "suggestions will")
+      + " be added to the backlog with their dependency relationships. "
+      + "This does not add them to a sprint."
+  }
+
+  var rejectMessage: String {
+    var result =
+      "All \(proposedCount) remaining "
+      + (proposedCount == 1 ? "suggestion will" : "suggestions will")
+      + " be rejected."
+    if acceptedCascadeTicketCount > 0 {
+      result +=
+        " This also archives \(acceptedCascadeTicketCount) dependent "
+        + (acceptedCascadeTicketCount == 1
+          ? "ticket already added to the backlog."
+          : "tickets already added to the backlog.")
+    }
+    return result
+      + " The decisions remain in history, and no ticket is added to a sprint."
+  }
+}
+
 struct InlineBacklogSuggestions: View {
   @EnvironmentObject private var model: AppModel
   let batch: TicketSuggestionBatch
@@ -3027,11 +3081,11 @@ struct InlineBacklogSuggestions: View {
       }
       Spacer()
       Button("Dismiss") {
-        model.dismissFailedTicketSuggestions()
+        model.dismissFailedTicketSuggestions(sessionID: batch.session.id)
       }
       .buttonStyle(.bordered)
       Button {
-        model.retryCurrentEpicPlan()
+        model.retryEpicPlan(sessionID: batch.session.id)
       } label: {
         Label("Try again", systemImage: "wand.and.stars")
       }
@@ -3391,6 +3445,7 @@ struct TicketSuggestionDetailView: View {
   let onClose: () -> Void
   @State private var confirmingCascadeAcceptance = false
   @State private var confirmingCascadeRejection = false
+  @State private var isEditingSuggestion = false
 
   init(
     suggestion: TicketSuggestion,
@@ -3522,6 +3577,11 @@ struct TicketSuggestionDetailView: View {
           .padding(.vertical, 4)
           .background(.purple.opacity(0.1), in: Capsule())
         Spacer()
+        Button("Edit") {
+          isEditingSuggestion = true
+        }
+        .buttonStyle(.bordered)
+        .disabled(model.isDecidingSuggestions)
         Button("Close", action: onClose)
       }
       .padding(.horizontal, 22)
@@ -3613,6 +3673,13 @@ struct TicketSuggestionDetailView: View {
       .frame(height: 64)
     }
     .frame(width: detailWidth, height: detailHeight)
+    .sheet(isPresented: $isEditingSuggestion) {
+      TicketSuggestionEditorView(suggestion: suggestion) {
+        isEditingSuggestion = false
+        onClose()
+      }
+      .environmentObject(model)
+    }
     .confirmationDialog(
       acceptanceImpact.dialogTitle,
       isPresented: $confirmingCascadeAcceptance,
@@ -3646,6 +3713,142 @@ struct TicketSuggestionDetailView: View {
 
   private func rejectSuggestion() {
     model.rejectTicketSuggestion(suggestion, completion: onClose)
+  }
+}
+
+struct TicketSuggestionEditorView: View {
+  @EnvironmentObject private var model: AppModel
+  @Environment(\.dismiss) private var dismiss
+  let suggestion: TicketSuggestion
+  let onSaved: () -> Void
+  @State private var title: String
+  @State private var type: WorkItemType
+  @State private var bodyText: String
+  @State private var acceptanceCriteriaText: String
+  @State private var suggestedRole: AgentRole
+  @State private var priority: WorkItemPriority
+  @State private var rationale: String
+  @State private var isSaving = false
+
+  init(suggestion: TicketSuggestion, onSaved: @escaping () -> Void) {
+    self.suggestion = suggestion
+    self.onSaved = onSaved
+    _title = State(initialValue: suggestion.title)
+    _type = State(initialValue: suggestion.type)
+    _bodyText = State(initialValue: suggestion.body)
+    _acceptanceCriteriaText = State(
+      initialValue: suggestion.acceptanceCriteria.joined(separator: "\n")
+    )
+    _suggestedRole = State(initialValue: suggestion.suggestedRole)
+    _priority = State(initialValue: suggestion.priority)
+    _rationale = State(initialValue: suggestion.rationale)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack {
+        Text("Edit suggested ticket")
+          .font(.title2.bold())
+        Spacer()
+        Button("Cancel") { dismiss() }
+          .disabled(isSaving)
+      }
+      .padding(20)
+
+      Divider()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          TextField("Title", text: $title)
+
+          HStack(spacing: 14) {
+            Picker("Type", selection: $type) {
+              ForEach(WorkItemType.allCases, id: \.self) { type in
+                Text(type.title).tag(type)
+              }
+            }
+            Picker("Suggested owner", selection: $suggestedRole) {
+              ForEach(AgentRole.allCases, id: \.self) { role in
+                Text(role.title).tag(role)
+              }
+            }
+            Picker("Priority", selection: $priority) {
+              ForEach(WorkItemPriority.allCases, id: \.self) { priority in
+                Text(priority.title).tag(priority)
+              }
+            }
+          }
+
+          editorField(title: "Description", text: $bodyText, minimumHeight: 110)
+          editorField(
+            title: "Acceptance criteria",
+            text: $acceptanceCriteriaText,
+            minimumHeight: 100
+          )
+          Text("Enter one acceptance criterion per line.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          editorField(title: "Why this work", text: $rationale, minimumHeight: 90)
+        }
+        .padding(20)
+      }
+
+      Divider()
+
+      HStack {
+        Text("Dependencies remain unchanged.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Spacer()
+        Button("Save changes", action: save)
+          .buttonStyle(.borderedProminent)
+          .disabled(
+            isSaving || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          )
+      }
+      .padding(20)
+    }
+    .frame(width: 680, height: 620)
+  }
+
+  private func editorField(
+    title: String,
+    text: Binding<String>,
+    minimumHeight: CGFloat
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+      TextEditor(text: text)
+        .font(.body)
+        .frame(minHeight: minimumHeight)
+        .padding(6)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+          RoundedRectangle(cornerRadius: 8)
+            .stroke(.separator, lineWidth: 1)
+        }
+    }
+  }
+
+  private func save() {
+    isSaving = true
+    model.updateTicketSuggestion(
+      suggestion,
+      title: title,
+      type: type,
+      body: bodyText,
+      acceptanceCriteria: acceptanceCriteriaText
+        .split(whereSeparator: \.isNewline)
+        .map(String.init),
+      suggestedRole: suggestedRole,
+      priority: priority,
+      rationale: rationale
+    ) { updated in
+      isSaving = false
+      guard updated != nil else { return }
+      onSaved()
+    }
   }
 }
 
@@ -3711,7 +3914,7 @@ struct BacklogSuggestionStack: View {
             .font(.caption)
             .foregroundStyle(.secondary)
           Button {
-            model.retryCurrentEpicPlan()
+            model.retryEpicPlan(sessionID: batch.session.id)
           } label: {
             Label("Try again", systemImage: "wand.and.stars")
           }
@@ -3768,36 +3971,35 @@ struct BacklogSuggestionStack: View {
       isPresented: $confirmingAcceptAll,
       titleVisibility: .visible
     ) {
-      Button(
-        "Accept \(proposedCount) \(proposedCount == 1 ? "suggestion" : "suggestions")"
-      ) {
-        model.decideAllTicketSuggestions(accept: true)
+      Button(batchDecisionImpact.acceptActionTitle) {
+        model.decideAllTicketSuggestions(
+          sessionID: batch.session.id,
+          accept: true
+        )
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text(
-        "They will be added to the backlog with their dependency relationships. This does not add them to a sprint."
-      )
+      Text(batchDecisionImpact.acceptMessage)
     }
     .confirmationDialog(
       "Reject all remaining suggestions?",
       isPresented: $confirmingRejectAll,
       titleVisibility: .visible
     ) {
-      Button(
-        "Reject \(proposedCount) \(proposedCount == 1 ? "suggestion" : "suggestions")",
-        role: .destructive
-      ) {
-        model.decideAllTicketSuggestions(accept: false)
+      Button(batchDecisionImpact.rejectActionTitle, role: .destructive) {
+        model.decideAllTicketSuggestions(
+          sessionID: batch.session.id,
+          accept: false
+        )
       }
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text(rejectAllMessage)
+      Text(batchDecisionImpact.rejectMessage)
     }
   }
 
   private var proposedCount: Int {
-    batch.suggestions.filter { $0.status == .proposed }.count
+    batchDecisionImpact.proposedCount
   }
 
   private var sourceTicket: WorkItem? {
@@ -3811,27 +4013,8 @@ struct BacklogSuggestionStack: View {
     return "Proposal reviewed · \(accepted) added · \(rejected) rejected"
   }
 
-  private var acceptedCascadeTicketCount: Int {
-    let acceptedIDs = batch.suggestions
-      .filter { $0.status == .proposed }
-      .flatMap {
-        transitiveSuggestionDependents(of: $0, in: batch.suggestions)
-      }
-      .filter { $0.status == .accepted }
-      .map(\.id)
-    return Set(acceptedIDs).count
-  }
-
-  private var rejectAllMessage: String {
-    if acceptedCascadeTicketCount > 0 {
-      return
-        "This also archives \(acceptedCascadeTicketCount) dependent "
-        + (acceptedCascadeTicketCount == 1
-          ? "ticket already added to the backlog. "
-          : "tickets already added to the backlog. ")
-        + "The decisions and archived tickets remain in history."
-    }
-    return "The decisions will be retained as feedback for future backlog analysis."
+  private var batchDecisionImpact: SuggestionBatchDecisionImpact {
+    SuggestionBatchDecisionImpact(suggestions: batch.suggestions)
   }
 
   private var orderedSuggestions: [TicketSuggestion] {

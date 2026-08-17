@@ -96,20 +96,20 @@ public struct PlanningConversationWorkflowContext: Sendable {
   public let profiles: [AgentProfile]
   public let workItems: [WorkItem]
   public let epics: [Epic]
-  public let suggestionBatch: TicketSuggestionBatch?
+  public let suggestionBatches: [TicketSuggestionBatch]
 
   public init(
     product: Product,
     profiles: [AgentProfile],
     workItems: [WorkItem],
     epics: [Epic],
-    suggestionBatch: TicketSuggestionBatch?
+    suggestionBatches: [TicketSuggestionBatch]
   ) {
     self.product = product
     self.profiles = profiles
     self.workItems = workItems
     self.epics = epics
-    self.suggestionBatch = suggestionBatch
+    self.suggestionBatches = suggestionBatches
   }
 }
 
@@ -682,9 +682,10 @@ public final class PlanningConversationWorkflowCoordinator {
     let relatedItems = context.workItems.filter {
       $0.epicID == epic.id && $0.state != .cancelled
     }
-    let proposedItems = context.suggestionBatch?.session.epicID == epic.id
-      ? context.suggestionBatch?.suggestions.filter { $0.status == .proposed } ?? []
-      : []
+    let proposedItems = context.suggestionBatches
+      .filter { $0.session.epicID == epic.id }
+      .flatMap(\.suggestions)
+      .filter { $0.status == .proposed }
     let key = SourceRecipientKey(
       productID: context.product.id,
       sourceID: epic.id,

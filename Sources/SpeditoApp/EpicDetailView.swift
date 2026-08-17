@@ -350,8 +350,7 @@ struct EpicDetailView: View {
   }
 
   private var epicSuggestionBatch: TicketSuggestionBatch? {
-    guard model.suggestionBatch?.session.epicID == epic.id else { return nil }
-    return model.suggestionBatch
+    model.suggestionBatches.first { $0.session.epicID == epic.id }
   }
 
   private var proposedEpicSuggestions: [TicketSuggestion] {

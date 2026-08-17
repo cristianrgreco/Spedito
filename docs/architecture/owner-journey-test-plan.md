@@ -235,6 +235,35 @@ Controlled external smoke, outside the deterministic suite:
 | Installation access required | The preserved imported source is absent or lacks permissions | `needsInstallation` and unchanged Product provenance in SQLite | Exact access guidance, never an unrelated target picker | Manage access, refresh, or cancel setup | A fresh service restores the access-required state and original provenance |
 | Access refresh | Return from GitHub or choose **Refresh list** | Any resulting connection transition is saved by the remote service | Updated accessible repository list or the same access guidance | Select, retry refresh, or manage access | Relaunch refreshes a durable pending selection before eligibility checking |
 
+### 3.6 Priority 1 work packet 4 — Epics and suggestions
+
+This slice closes E04, E07, E08, E09, E10, and E13 without changing Epic
+creation, clarification question semantics, dependency-cascade rules, or Sprint
+planning. `EpicPlanningWorkflowCoordinator` remains the single owner of
+clarification, plan generation, suggestion edits and decisions, interruption,
+and recovery. All six rows remain `Shell = —`: the public commands, bounded
+presentation policies, durable SQLite transitions, exact Codex request seam,
+Product isolation, and fresh-instance recovery are deterministic without a
+launched process.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| E04 | `CodexTransportApplicationTests.e04OrdinaryEpicChatPreservesPendingQuestions` | **Named:** an ordinary Epic message uses its selected team-member thread, appends the owner message and reply chronologically, and preserves the separate unanswered governed clarification question and thread across a fresh instance. |
+| E07 | `EpicPlanningJourneyTests.e07StoppedClarificationRecoversContextualRetry` | **Named:** Stop settles the active clarification into a durable owner-facing paused state; a fresh model offers one retry, starts a replacement thread with the durable transcript and answered context, and returns to the exact governed question state without duplicating answers. |
+| E08 | `EpicPlanningJourneyTests.e08OwnerEpicEditsSurvivePlanningRetry` | **Named:** malformed plan output receives one repair attempt and then fails reviewably without changing the Epic or Backlog; owner edits to title, goal, success criteria, and constraints become authoritative retry input, survive the successful retry unchanged, and still create only reviewable proposals. |
+| E09 | `EpicPlanningJourneyTests.e09EditedSuggestionAcceptsWithoutChangingUnrelatedProposals`, `EpicPlanningPresentationTests.e09SuggestionReviewDisclosesAcceptanceImpact` | **Named:** the review projection discloses rationale, prerequisite scope, Backlog impact, and the no-Sprint boundary; editing every mutable proposal field preserves dependency identity through a fresh registry, acceptance creates the exact edited Ticket plus prerequisite, and unrelated proposals and Products remain unchanged. |
+| E10 | `EpicPlanningJourneyTests.e10AllSuggestionDecisionsPersistWithoutStartingSprint`, `EpicPlanningPresentationTests.e10AllSuggestionConfirmationsStateScope` | **Named:** both confirmations name the exact remaining proposal count and no-Sprint effect; **Accept all** preserves dependency edges and **Reject all** creates no Tickets, with both decisions surviving a fresh registry while another Product remains unchanged. |
+| E13 | `EpicPlanningJourneyTests.e13InterruptedGenerationRetriesWithoutDuplicatesOrProductLeakage` | **Named:** generation interrupted at its durable session boundary recovers through the public coordinator, retains the earlier completed proposal batch, completes the interrupted batch once with unique identities, and does not expose or change another Product's proposal. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Ordinary Epic conversation | Send a message to one team member | Owner message and reply in the selected conversation thread | Chronological chat while any governed questions remain separately actionable | Continue chat or answer the governed question | Fresh-instance projection restores both threads without treating chat as an answer |
+| Clarification paused | Stop an active clarification turn | Persisted transcript, answered questions, thread identity, and paused explanation | The planning conversation with a safe retry | Retry or leave the Epic | Retry uses the durable context once and rejects stale output |
+| Plan failed | Structured output and one repair both fail | Failed suggestion session with technical evidence; unchanged Epic and Backlog | Reviewable failure and **Retry plan** | Edit the Epic, retry, or leave it failed | Fresh recovery retains owner edits and starts one bounded retry |
+| Proposal review | Open one proposed Ticket | Proposed fields, rationale, and dependency identities in SQLite | Full proposal details plus exact acceptance impact | Edit, discuss, accept, or reject | Edits and outstanding proposals rebuild from SQLite |
+| Batch decision | Confirm **Accept all** or **Reject all** | One durable decision per proposed suggestion and accepted Ticket links where applicable | Exact remaining scope and confirmation consequence | Confirm or cancel | Fresh registry recovers all decisions and Backlog Tickets; no Sprint is created |
+| Generation interrupted | Process ends during a generating session | Generating session, attached turn identity when available, and earlier completed batches | Recoverable planning state without duplicate proposals | Retry or leave the prior proposal available | Recovery resumes or replaces the turn idempotently and remains Product-scoped |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

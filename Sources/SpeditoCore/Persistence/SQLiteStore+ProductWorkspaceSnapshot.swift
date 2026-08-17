@@ -23,7 +23,7 @@ public struct ProductWorkspacePersistenceSnapshot: Sendable {
   public let retrospectiveNotes: [RetrospectiveNote]
   public let retrospectiveSyntheses: [RetrospectiveSynthesis]
   public let retrospectiveActionSources: [RetrospectiveActionSource]
-  public let suggestionBatch: TicketSuggestionBatch?
+  public let suggestionBatches: [TicketSuggestionBatch]
   public let conversationThreads: [ProductConversationThread]
 }
 
@@ -83,7 +83,7 @@ extension SQLiteStore {
         retrospectiveNotes: fetchRetrospectiveNotes(productID: productID),
         retrospectiveSyntheses: fetchRetrospectiveSyntheses(productID: productID),
         retrospectiveActionSources: fetchRetrospectiveActionSources(productID: productID),
-        suggestionBatch: fetchLatestTicketSuggestionBatch(productID: productID),
+        suggestionBatches: fetchOutstandingTicketSuggestionBatches(productID: productID),
         conversationThreads: fetchConversationThreads(productID: productID)
       )
     }

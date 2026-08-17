@@ -12,16 +12,16 @@ public struct EpicPlanningWorkflowAvailability: Equatable, Sendable {
 
 public struct EpicPlanningWorkflowSnapshot: Equatable, Sendable {
   public var conversation: EpicPlanningConversationState?
-  public var suggestionBatch: TicketSuggestionBatch?
+  public var suggestionBatches: [TicketSuggestionBatch]
   public var isDecidingSuggestions: Bool
 
   public init(
     conversation: EpicPlanningConversationState? = nil,
-    suggestionBatch: TicketSuggestionBatch? = nil,
+    suggestionBatches: [TicketSuggestionBatch] = [],
     isDecidingSuggestions: Bool = false
   ) {
     self.conversation = conversation
-    self.suggestionBatch = suggestionBatch
+    self.suggestionBatches = suggestionBatches
     self.isDecidingSuggestions = isDecidingSuggestions
   }
 
@@ -30,7 +30,7 @@ public struct EpicPlanningWorkflowSnapshot: Equatable, Sendable {
   }
 
   public var isSuggestionGenerationRunning: Bool {
-    suggestionBatch?.session.status == .generating
+    suggestionBatches.contains { $0.session.status == .generating }
   }
 }
 
@@ -109,8 +109,43 @@ public final class EpicPlanningWorkflowCoordinator {
     operations.turn(for: .planning)
   }
 
-  public func loadSuggestionBatch(_ batch: TicketSuggestionBatch?) {
-    updateSnapshot { $0.suggestionBatch = batch }
+  public func loadSuggestionBatches(_ batches: [TicketSuggestionBatch]) {
+    updateSnapshot { $0.suggestionBatches = batches }
+  }
+
+  private func suggestionBatch(sessionID: UUID) -> TicketSuggestionBatch? {
+    snapshot.suggestionBatches.first { $0.session.id == sessionID }
+  }
+
+
+  private func suggestionBatch(containing suggestionID: UUID) -> TicketSuggestionBatch? {
+    snapshot.suggestionBatches.first {
+      $0.suggestions.contains { $0.id == suggestionID }
+    }
+  }
+
+  private func replaceSuggestionBatch(_ batch: TicketSuggestionBatch) {
+    updateSnapshot {
+      if let index = $0.suggestionBatches.firstIndex(where: {
+        $0.session.id == batch.session.id
+      }) {
+        $0.suggestionBatches[index] = batch
+      } else {
+        $0.suggestionBatches.append(batch)
+        $0.suggestionBatches.sort {
+          if $0.session.createdAt == $1.session.createdAt {
+            return $0.session.id.uuidString < $1.session.id.uuidString
+          }
+          return $0.session.createdAt < $1.session.createdAt
+        }
+      }
+    }
+  }
+
+  private func removeSuggestionBatch(sessionID: UUID) {
+    updateSnapshot {
+      $0.suggestionBatches.removeAll { $0.session.id == sessionID }
+    }
   }
 
   public func loadConversationProjection(
@@ -123,11 +158,11 @@ public final class EpicPlanningWorkflowCoordinator {
 
   public func awaitPersistence() async {
     await operations.settle(.persistence)
+    await ownerCommands.settleAll()
   }
-
   public func clearSelectedProductProjection() {
     updateSnapshot {
-      $0.suggestionBatch = nil
+      $0.suggestionBatches = []
       $0.isDecidingSuggestions = false
     }
   }
@@ -273,7 +308,12 @@ public final class EpicPlanningWorkflowCoordinator {
         operations.clearTurn(for: token)
         updateConversation(for: epic.id) {
           $0.isRunning = false
-          $0.errorMessage = error.localizedDescription
+          $0.errorMessage =
+            if Task.isCancelled {
+              "Epic planning was interrupted. You can safely continue."
+            } else {
+              error.localizedDescription
+            }
         }
       }
     }
@@ -301,15 +341,17 @@ public final class EpicPlanningWorkflowCoordinator {
       !conversation.isGeneratingPlan
     else { return }
 
-    let hasFailedPlan =
-      snapshot.suggestionBatch?.session.epicID == epic.id
-      && snapshot.suggestionBatch?.session.status == .failed
+    let failedBatch = snapshot.suggestionBatches.first {
+      $0.session.epicID == epic.id && $0.session.status == .failed
+    }
     switch EpicPlanningPolicy.retryAction(
       for: conversation,
-      hasFailedPlan: hasFailedPlan
+      hasFailedPlan: failedBatch != nil
     ) {
     case .retryFailedPlan:
-      retryCurrentEpicPlan()
+      if let failedBatch {
+        retryEpicPlan(sessionID: failedBatch.session.id)
+      }
     case .retryClarification(let answeredQuestions):
       continueEpicPlanning(
         epic,
@@ -604,12 +646,12 @@ extension EpicPlanningWorkflowCoordinator {
         )
         session = startedSession
         if selectedProductID() == product.id {
-          updateSnapshot {
-            $0.suggestionBatch = TicketSuggestionBatch(
+          replaceSuggestionBatch(
+            TicketSuggestionBatch(
               session: startedSession,
               suggestions: []
             )
-          }
+          )
         }
 
         let response = try await runEpicPlanTurn(
@@ -658,19 +700,22 @@ extension EpicPlanningWorkflowCoordinator {
           )
         }
 
-        _ = try await store.updateEpic(
+        let ownerReviewedMetadata = epic.hasAnalyzedMetadata
+        let updatedEpic = try await store.updateEpic(
           id: epic.id,
-          title: plan.title,
-          goal: plan.goal,
-          successCriteria: plan.successCriteria,
-          constraints: plan.constraints
+          title: ownerReviewedMetadata ? epic.title : plan.title,
+          goal: ownerReviewedMetadata ? epic.goal : plan.goal,
+          successCriteria: ownerReviewedMetadata
+            ? epic.successCriteria
+            : plan.successCriteria,
+          constraints: ownerReviewedMetadata ? epic.constraints : plan.constraints
         )
         let completedBatch = try await store.completeTicketSuggestionSession(
           sessionID: startedSession.id,
           drafts: plan.ticketSuggestions
         )
         if selectedProductID() == product.id {
-          updateSnapshot { $0.suggestionBatch = completedBatch }
+          replaceSuggestionBatch(completedBatch)
         }
         operations.clearTurn(for: token)
         await onReloadSelectedProduct(product.id)
@@ -686,7 +731,7 @@ extension EpicPlanningWorkflowCoordinator {
             productID: product.id,
             kind: .refinementComplete,
             target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-            title: "\(plan.title) plan ready for review",
+            title: "\(updatedEpic.title) plan ready for review",
             body:
               "\(plan.ticketSuggestions.count) proposed "
               + (plan.ticketSuggestions.count == 1 ? "ticket is" : "tickets are")
@@ -714,11 +759,9 @@ extension EpicPlanningWorkflowCoordinator {
             sessionID: session.id,
             message: error.localizedDescription
           )
-          let failedBatch = try? await store.fetchLatestTicketSuggestionBatch(
-            productID: product.id
-          )
-          if selectedProductID() == product.id {
-            updateSnapshot { $0.suggestionBatch = failedBatch }
+          let failedBatch = try? await store.fetchTicketSuggestionBatch(sessionID: session.id)
+          if selectedProductID() == product.id, let failedBatch {
+            replaceSuggestionBatch(failedBatch)
           }
         }
         updateConversation(for: epic.id) {
@@ -949,10 +992,10 @@ extension EpicPlanningWorkflowCoordinator {
 }
 
 extension EpicPlanningWorkflowCoordinator {
-  public func retryCurrentEpicPlan() {
+  public func retryEpicPlan(sessionID: UUID) {
     guard
       availabilityProvider().canPlanEpic,
-      let failedSession = snapshot.suggestionBatch?.session,
+      let failedSession = suggestionBatch(sessionID: sessionID)?.session,
       let store = storeProvider(failedSession.productID),
       failedSession.status == .failed,
       let epicID = failedSession.epicID
@@ -976,12 +1019,12 @@ extension EpicPlanningWorkflowCoordinator {
         else {
           throw PersistenceError.recordNotFound("epic \(epicID)")
         }
-        updateSnapshot {
-          $0.suggestionBatch = TicketSuggestionBatch(
+        replaceSuggestionBatch(
+          TicketSuggestionBatch(
             session: restartedSession,
             suggestions: []
           )
-        }
+        )
         await restoreEpicPlanningConversation(for: epic)
         generateEpicPlan(epic)
       } catch {
@@ -999,8 +1042,9 @@ extension EpicPlanningWorkflowCoordinator {
       let product = productProvider(productID)
     else { return }
 
-    let previouslyRejectedSuggestions =
-      snapshot.suggestionBatch?.suggestions.filter { $0.status == .rejected } ?? []
+    let previouslyRejectedSuggestions = snapshot.suggestionBatches
+      .flatMap(\.suggestions)
+      .filter { $0.status == .rejected }
     operations.start(
       .suggestionGeneration,
       productID: product.id,
@@ -1021,12 +1065,12 @@ extension EpicPlanningWorkflowCoordinator {
         )
         session = startedSession
         if selectedProductID() == product.id {
-          updateSnapshot {
-            $0.suggestionBatch = TicketSuggestionBatch(
+          replaceSuggestionBatch(
+            TicketSuggestionBatch(
               session: startedSession,
               suggestions: []
             )
-          }
+          )
         }
 
         let threadID = try await client.startReadOnlyThread(
@@ -1104,7 +1148,7 @@ extension EpicPlanningWorkflowCoordinator {
         )
         operations.clearTurn(for: token)
         if selectedProductID() == product.id {
-          updateSnapshot { $0.suggestionBatch = completedBatch }
+          replaceSuggestionBatch(completedBatch)
         }
         await onReloadSelectedProduct(product.id)
       } catch is CancellationError {
@@ -1114,11 +1158,9 @@ extension EpicPlanningWorkflowCoordinator {
             sessionID: session.id,
             message: "Ticket suggestion was interrupted. You can safely try again."
           )
-          let failedBatch = try? await store.fetchLatestTicketSuggestionBatch(
-            productID: product.id
-          )
-          if selectedProductID() == product.id {
-            updateSnapshot { $0.suggestionBatch = failedBatch }
+          let failedBatch = try? await store.fetchTicketSuggestionBatch(sessionID: session.id)
+          if selectedProductID() == product.id, let failedBatch {
+            replaceSuggestionBatch(failedBatch)
           }
         }
       } catch {
@@ -1128,15 +1170,61 @@ extension EpicPlanningWorkflowCoordinator {
             sessionID: session.id,
             message: error.localizedDescription
           )
-          let failedBatch = try? await store.fetchLatestTicketSuggestionBatch(
-            productID: product.id
-          )
-          if selectedProductID() == product.id {
-            updateSnapshot { $0.suggestionBatch = failedBatch }
+          let failedBatch = try? await store.fetchTicketSuggestionBatch(sessionID: session.id)
+          if selectedProductID() == product.id, let failedBatch {
+            replaceSuggestionBatch(failedBatch)
           }
         } else if selectedProductID() == product.id {
           onError(error, product.id)
         }
+      }
+    }
+  }
+
+  public func updateTicketSuggestion(
+    _ suggestion: TicketSuggestion,
+    title: String,
+    type: WorkItemType,
+    body: String,
+    acceptanceCriteria: [String],
+    suggestedRole: AgentRole,
+    priority: WorkItemPriority,
+    rationale: String,
+    completion: ((TicketSuggestion?) -> Void)? = nil
+  ) {
+    guard
+      let batch = suggestionBatch(containing: suggestion.id),
+      let store = storeProvider(batch.session.productID),
+      suggestion.status == .proposed,
+      !snapshot.isDecidingSuggestions
+    else {
+      completion?(nil)
+      return
+    }
+    let productID = batch.session.productID
+    updateSnapshot { $0.isDecidingSuggestions = true }
+    ownerCommands.start(UUID(), productID: productID) { [weak self] _ in
+      guard let self else { return }
+      defer { updateSnapshot { $0.isDecidingSuggestions = false } }
+      do {
+        let updatedBatch = try await store.updateTicketSuggestion(
+          id: suggestion.id,
+          title: title,
+          type: type,
+          body: body,
+          acceptanceCriteria: acceptanceCriteria,
+          suggestedRole: suggestedRole,
+          priority: priority,
+          rationale: rationale
+        )
+        if selectedProductID() == productID {
+          replaceSuggestionBatch(updatedBatch)
+        }
+        await onReloadSelectedProduct(productID)
+        completion?(updatedBatch.suggestions.first { $0.id == suggestion.id })
+      } catch {
+        onError(error, productID)
+        completion?(nil)
       }
     }
   }
@@ -1147,16 +1235,15 @@ extension EpicPlanningWorkflowCoordinator {
     completion: ((WorkItem?) -> Void)? = nil
   ) {
     guard
-      let session = snapshot.suggestionBatch?.session,
-      snapshot.suggestionBatch?.suggestions.contains(where: { $0.id == suggestion.id }) == true,
-      let store = storeProvider(session.productID),
+      let batch = suggestionBatch(containing: suggestion.id),
+      let store = storeProvider(batch.session.productID),
       !snapshot.isDecidingSuggestions
     else { return }
-    let productID = session.productID
+    let productID = batch.session.productID
     let previouslyProposedIDs = Set(
-      snapshot.suggestionBatch?.suggestions
+      batch.suggestions
         .filter { $0.status == .proposed }
-        .map(\.id) ?? [suggestion.id]
+        .map(\.id)
     )
     updateSnapshot { $0.isDecidingSuggestions = true }
     ownerCommands.start(UUID(), productID: productID) { [weak self] _ in
@@ -1169,7 +1256,7 @@ extension EpicPlanningWorkflowCoordinator {
           decision: accept ? .accepted : .rejected
         )
         if selectedProductID() == productID {
-          updateSnapshot { $0.suggestionBatch = decidedBatch }
+          replaceSuggestionBatch(decidedBatch)
         }
         var acceptedItemsBySuggestionID: [UUID: WorkItem] = [:]
         if accept {
@@ -1210,12 +1297,11 @@ extension EpicPlanningWorkflowCoordinator {
     completion: (() -> Void)? = nil
   ) {
     guard
-      let session = snapshot.suggestionBatch?.session,
-      snapshot.suggestionBatch?.suggestions.contains(where: { $0.id == suggestion.id }) == true,
-      let store = storeProvider(session.productID),
+      let batch = suggestionBatch(containing: suggestion.id),
+      let store = storeProvider(batch.session.productID),
       !snapshot.isDecidingSuggestions
     else { return }
-    let productID = session.productID
+    let productID = batch.session.productID
     updateSnapshot { $0.isDecidingSuggestions = true }
     ownerCommands.start(UUID(), productID: productID) { [weak self] _ in
       guard let self else { return }
@@ -1223,7 +1309,7 @@ extension EpicPlanningWorkflowCoordinator {
       do {
         let decidedBatch = try await store.rejectTicketSuggestionCascade(id: suggestion.id)
         if selectedProductID() == productID {
-          updateSnapshot { $0.suggestionBatch = decidedBatch }
+          replaceSuggestionBatch(decidedBatch)
         }
         await onReloadSelectedProduct(productID)
         completion?()
@@ -1233,36 +1319,54 @@ extension EpicPlanningWorkflowCoordinator {
     }
   }
 
-  public func decideAllTicketSuggestions(accept: Bool) {
-    guard
-      let suggestions = snapshot.suggestionBatch?.suggestions
-        .filter({ $0.status == .proposed })
-        .sorted(by: { $0.position < $1.position })
-    else { return }
-    decideTicketSuggestionGroup(suggestions, accept: accept)
+  public func decideAllTicketSuggestions(
+    sessionID: UUID,
+    accept: Bool,
+    completion: ((Bool) -> Void)? = nil
+  ) {
+    guard let batch = suggestionBatch(sessionID: sessionID) else {
+      completion?(false)
+      return
+    }
+    let suggestions = batch.suggestions
+      .filter { $0.status == .proposed }
+      .sorted { $0.position < $1.position }
+    decideTicketSuggestionGroup(
+      suggestions,
+      accept: accept,
+      completion: completion
+    )
   }
 
   public func decideTicketSuggestionGroup(
     _ suggestions: [TicketSuggestion],
-    accept: Bool
+    accept: Bool,
+    completion: ((Bool) -> Void)? = nil
   ) {
     guard
-      let session = snapshot.suggestionBatch?.session,
-      let store = storeProvider(session.productID),
-      !snapshot.isDecidingSuggestions,
-      !suggestions.isEmpty
-    else { return }
-    let productID = session.productID
+      let firstSuggestion = suggestions.first,
+      let batch = suggestionBatch(containing: firstSuggestion.id),
+      suggestions.allSatisfy({ $0.sessionID == batch.session.id }),
+      let store = storeProvider(batch.session.productID),
+      !snapshot.isDecidingSuggestions
+    else {
+      completion?(false)
+      return
+    }
+    let productID = batch.session.productID
     let proposedIDs = Set(
-      snapshot.suggestionBatch?.suggestions
+      batch.suggestions
         .filter { $0.status == .proposed }
-        .map(\.id) ?? []
+        .map(\.id)
     )
     let decisions =
       suggestions
       .filter { proposedIDs.contains($0.id) }
       .sorted { $0.position < $1.position }
-    guard !decisions.isEmpty else { return }
+    guard !decisions.isEmpty else {
+      completion?(false)
+      return
+    }
 
     updateSnapshot { $0.isDecidingSuggestions = true }
     ownerCommands.start(UUID(), productID: productID) { [weak self] _ in
@@ -1270,17 +1374,14 @@ extension EpicPlanningWorkflowCoordinator {
       defer { updateSnapshot { $0.isDecidingSuggestions = false } }
       do {
         let productProfiles = try await store.fetchAgentProfiles(productID: productID)
-        for suggestion in decisions {
-          let decidedBatch = try await store.decideTicketSuggestion(
-            id: suggestion.id,
-            decision: accept ? .accepted : .rejected
-          )
-          if selectedProductID() == productID {
-            updateSnapshot { $0.suggestionBatch = decidedBatch }
-          }
+        let decidedBatch = try await store.decideTicketSuggestionGroup(
+          ids: decisions.map(\.id),
+          decision: accept ? .accepted : .rejected
+        )
+        if selectedProductID() == productID {
+          replaceSuggestionBatch(decidedBatch)
         }
-        let decidedBatch = try await store.fetchLatestTicketSuggestionBatch(productID: productID)
-        if accept, let decidedBatch {
+        if accept {
           let createdItems = try await store.fetchWorkItems(productID: productID)
           let createdItemsByID = Dictionary(uniqueKeysWithValues: createdItems.map { ($0.id, $0) })
           for acceptedSuggestion in decidedBatch.suggestions
@@ -1300,15 +1401,17 @@ extension EpicPlanningWorkflowCoordinator {
           }
         }
         await onReloadSelectedProduct(productID)
+        completion?(true)
       } catch {
         onError(error, productID)
+        completion?(false)
       }
     }
   }
 
-  public func dismissFailedTicketSuggestions() {
+  public func dismissFailedTicketSuggestions(sessionID: UUID) {
     guard
-      let session = snapshot.suggestionBatch?.session,
+      let session = suggestionBatch(sessionID: sessionID)?.session,
       let store = storeProvider(session.productID),
       session.status == .failed
     else { return }
@@ -1317,7 +1420,7 @@ extension EpicPlanningWorkflowCoordinator {
       do {
         try await store.dismissTicketSuggestionSession(sessionID: session.id)
         if selectedProductID() == session.productID {
-          updateSnapshot { $0.suggestionBatch = nil }
+          removeSuggestionBatch(sessionID: session.id)
         }
       } catch {
         onError(error, session.productID)
@@ -1329,14 +1432,18 @@ extension EpicPlanningWorkflowCoordinator {
 extension EpicPlanningWorkflowCoordinator {
   public func recoverTicketSuggestionSessionIfNeeded() async {
     guard
-      let batch = snapshot.suggestionBatch,
+      let batch = snapshot.suggestionBatches.first(where: {
+        !recoveredSessionIDs.contains($0.session.id)
+          && recoveryPolicy.action(for: $0.session) != .none
+          && $0.session.epicID != nil
+      }),
       let store = storeProvider(batch.session.productID),
       clientProvider() != nil,
-      recoveredSessionIDs.insert(batch.session.id).inserted,
       let epicID = batch.session.epicID,
       let epic = try? await store.fetchEpics(productID: batch.session.productID)
         .first(where: { $0.id == epicID })
     else { return }
+    recoveredSessionIDs.insert(batch.session.id)
     let session = batch.session
     let productID = session.productID
 
@@ -1357,12 +1464,12 @@ extension EpicPlanningWorkflowCoordinator {
           )
           return
         }
-        updateSnapshot {
-          $0.suggestionBatch = TicketSuggestionBatch(
+        replaceSuggestionBatch(
+          TicketSuggestionBatch(
             session: restartedSession,
             suggestions: []
           )
-        }
+        )
       } catch {
         onError(error, productID)
         return

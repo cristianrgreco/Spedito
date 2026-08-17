@@ -330,8 +330,8 @@ struct CodexTransportApplicationTests {
     }
   }
 
-  @Test("Epic conversation reply remains durable across Product switching and relaunch")
-  func epicConversationJourney() async throws {
+  @Test("E04 ordinary Epic chat preserves pending governed questions")
+  func e04OrdinaryEpicChatPreservesPendingQuestions() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-epic-conversation-journey-\(UUID())",
       isDirectory: true
@@ -348,6 +348,25 @@ struct CodexTransportApplicationTests {
     let epic = try await store.createEpic(
       productID: product.id,
       outcome: "Make a complex setup understandable"
+    )
+    let pendingQuestion = TicketRefinementQuestion(
+      prompt: "Which launch state is required?",
+      options: ["Empty", "Configured"]
+    )
+    try await store.saveEpicPlanningConversation(
+      EpicPlanningConversationSnapshot(
+        epicID: epic.id,
+        messages: [
+          EpicPlanningConversationMessage(
+            author: .businessAnalyst,
+            body: "Choose the launch state before planning."
+          )
+        ],
+        questions: [pendingQuestion],
+        isComplete: false,
+        threadID: "governed-clarification-thread",
+        hasStartedPlanning: true
+      )
     )
     let transport = ScriptedCodexTransport(
       responses: Self.connectionResponses()
@@ -392,11 +411,19 @@ struct CodexTransportApplicationTests {
     let storedConversation = try #require(
       try await store.fetchEpicPlanningConversation(epicID: epic.id)
     )
-    #expect(storedConversation.messages.map(\.author) == [.owner, .agent])
+    #expect(storedConversation.messages.map(\.author) == [.businessAnalyst, .owner, .agent])
     #expect(storedConversation.messages.map(\.body) == [
+      "Choose the launch state before planning.",
       "@\(designer.name) Which interaction needs the clearest hierarchy?",
       reply.message,
     ])
+    #expect(storedConversation.questions == [pendingQuestion])
+    #expect(storedConversation.messages.flatMap(\.answeredQuestions).isEmpty)
+    #expect(storedConversation.threadID == "governed-clarification-thread")
+    let ordinaryChatTurn = try #require(
+      await transport.recordedRequests().first { $0.method == "turn/start" }
+    )
+    #expect(ordinaryChatTurn.params["threadId"]?.stringValue == "thread-epic-chat")
     let notification = try #require(
       try await store.fetchActiveOwnerNotifications(productID: product.id)
         .first(where: { $0.kind == .newReply })
@@ -414,6 +441,7 @@ struct CodexTransportApplicationTests {
     await recoveredModel.restoreEpicPlanningConversation(for: epic)
 
     #expect(recoveredModel.epicPlanningConversation?.messages == storedConversation.messages)
+    #expect(recoveredModel.epicPlanningConversation?.questions == [pendingQuestion])
     #expect(!recoveredModel.isEpicConversationMessageRunning)
     #expect(recoveredModel.epicConversationEpicID == nil)
 

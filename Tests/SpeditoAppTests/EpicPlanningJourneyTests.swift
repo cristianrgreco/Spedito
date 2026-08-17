@@ -178,6 +178,105 @@ struct EpicPlanningJourneyTests {
     }
   }
 
+  @Test("E07 stopped Epic clarification recovers one contextual retry")
+  func e07StoppedClarificationRecoversContextualRetry() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Interrupted clarification")
+    let store = try #require(registry.store(for: product.id))
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep interrupted clarification owner-controlled"
+    )
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-e07-stop")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e07-stop")])])
+          ),
+          .init(method: "turn/interrupt", result: .object([:])),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+    model.planEpic(epic)
+    await transport.waitForRequest("turn/start")
+
+    model.cancelEpicPlanning()
+    await transport.waitForRequest("turn/interrupt")
+    await transport.emit(
+      .notification(
+        CodexNotification(
+          method: "turn/completed",
+          params: .object([
+            "threadId": .string("thread-e07-stop"),
+            "turn": .object([
+              "id": .string("turn-e07-stop"),
+              "status": .string("interrupted"),
+              "items": .array([]),
+            ]),
+          ])
+        )
+      )
+    )
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
+    await model.epicPlanningWorkflowCoordinator.awaitPersistence()
+
+    let stopped = try #require(model.epicPlanningConversation)
+    #expect(!stopped.isRunning)
+    #expect(stopped.errorMessage == "Epic planning was interrupted. You can safely continue.")
+    #expect(
+      EpicPlanningPolicy.retryAction(for: stopped, hasFailedPlan: false)
+        == .restartClarification
+    )
+    #expect(
+      await transport.recordedRequests().filter { $0.method == "turn/start" }.count == 1
+    )
+    let durable = try #require(
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
+    )
+    #expect(durable.hasStartedPlanning == true)
+    #expect(!durable.isComplete)
+    await model.shutdown()
+
+    let recoveredModel = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: EpicJourneyNotificationSound(),
+      ownerNotificationSystemNotifier: EpicJourneySystemNotifier()
+    )
+    await recoveredModel.reload()
+    await recoveredModel.restoreEpicPlanningConversation(for: epic)
+    let recovered = try #require(recoveredModel.epicPlanningConversation)
+    #expect(!recovered.isRunning)
+    #expect(
+      recovered.errorMessage
+        == "Epic planning was paused when the app closed. You can safely try again."
+    )
+    #expect(
+      EpicPlanningPolicy.retryAction(for: recovered, hasFailedPlan: false)
+        == .restartClarification
+    )
+
+    await recoveredModel.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+
   @Test("E05 a plan ready in the background returns to the exact Epic")
   func e05PlanReadyAcrossProducts() async throws {
     let fixture = try EpicPlanningJourneyFixture()
@@ -282,7 +381,7 @@ struct EpicPlanningJourneyTests {
       try await secondStore.fetchActiveOwnerNotifications(productID: secondProduct.id).isEmpty
     )
     #expect(model.selectedProductID == secondProduct.id)
-    #expect(model.suggestionBatch?.session.id == secondBatch.session.id)
+    #expect(model.suggestionBatches.map(\.session.id) == [secondBatch.session.id])
     #expect(model.epics.allSatisfy { $0.productID == secondProduct.id })
     #expect(model.workItems.allSatisfy { $0.productID == secondProduct.id })
 
@@ -292,7 +391,7 @@ struct EpicPlanningJourneyTests {
     #expect(model.selectedProductID == firstProduct.id)
     #expect(model.ownerNotificationNavigationRequest?.target.id == epic.id)
     #expect(model.epics.first(where: { $0.id == epic.id })?.title == "Durable draft notes")
-    #expect(model.suggestionBatch?.session.id == batch.session.id)
+    #expect(model.suggestionBatches.map(\.session.id) == [batch.session.id])
     #expect(model.epicPlanningConversation?.isComplete == true)
     #expect(model.epicPlanningConversation?.isGeneratingPlan == false)
     #expect(model.workItems.isEmpty)
@@ -311,7 +410,7 @@ struct EpicPlanningJourneyTests {
     await recoveredModel.restoreEpicPlanningConversation(for: recoveredEpic)
 
     #expect(recoveredEpic.title == "Durable draft notes")
-    #expect(recoveredModel.suggestionBatch?.session.id == batch.session.id)
+    #expect(recoveredModel.suggestionBatches.map(\.session.id) == [batch.session.id])
     #expect(recoveredModel.epicPlanningConversation?.isComplete == true)
     #expect(recoveredModel.epicPlanningConversation?.questions.isEmpty == true)
     #expect(recoveredModel.workItems.isEmpty)
@@ -433,6 +532,641 @@ struct EpicPlanningJourneyTests {
     }
   }
 
+
+  @Test("E08 owner Epic edits survive invalid planning and retry")
+  func e08OwnerEpicEditsSurvivePlanningRetry() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Invalid plan recovery")
+    let store = try #require(registry.store(for: product.id))
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep invalid plans out of the Backlog"
+    )
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-e08")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e08-clarification")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e08-plan")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e08-repair")])])
+          ),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+    model.planEpic(epic)
+    await transport.waitForRequest("turn/start")
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e08",
+        turnID: "turn-e08-clarification",
+        text: #"{"message":"The outcome is clear.","questions":[],"readyToPlan":true}"#
+      )
+    )
+    await transport.waitForRequest("turn/start", count: 2)
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e08",
+        turnID: "turn-e08-plan",
+        text: #"{"epic":{"title":42},"suggestions":"invalid"}"#
+      )
+    )
+    await transport.waitForRequest("turn/start", count: 3)
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e08",
+        turnID: "turn-e08-repair",
+        text: #"{"still":"not a valid epic plan"}"#
+      )
+    )
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
+    await model.epicPlanningWorkflowCoordinator.awaitPersistence()
+
+    let turnRequests = await transport.recordedRequests().filter { $0.method == "turn/start" }
+    #expect(turnRequests.count == 3)
+    let batches = try await store.fetchOutstandingTicketSuggestionBatches(
+      productID: product.id
+    )
+    let failed = try #require(batches.first)
+    #expect(batches.count == 1)
+    #expect(failed.session.status == .failed)
+    #expect(!(failed.session.errorMessage ?? "").isEmpty)
+    #expect(failed.suggestions.isEmpty)
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    let unchangedEpic = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }
+    )
+    #expect(unchangedEpic.title.isEmpty)
+    #expect(unchangedEpic.goal == epic.goal)
+    let terminal = try #require(model.epicPlanningConversation)
+    #expect(!terminal.isGeneratingPlan)
+    #expect(!(terminal.errorMessage ?? "").isEmpty)
+    #expect(
+      EpicPlanningPolicy.retryAction(for: terminal, hasFailedPlan: true)
+        == .retryFailedPlan
+    )
+    let ownerEdited = try await store.updateEpic(
+      id: epic.id,
+      title: "Owner-reviewed recovery plan",
+      goal: "Keep the owner's corrected goal through retry",
+      successCriteria: ["The corrected outcome reaches review"],
+      constraints: "Do not restore invalid generated metadata."
+    )
+    await model.shutdown()
+
+    let retryTransport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e08-retry")])])
+          ),
+        ]
+    )
+    let recoveredModel = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: retryTransport
+    )
+    await recoveredModel.load()
+    await recoveredModel.restoreEpicPlanningConversation(for: ownerEdited)
+    let recovered = try #require(recoveredModel.epicPlanningConversation)
+    #expect(recoveredModel.suggestionBatches.map(\.session.id) == [failed.session.id])
+    #expect(
+      EpicPlanningPolicy.retryAction(for: recovered, hasFailedPlan: true)
+        == .retryFailedPlan
+    )
+    recoveredModel.retryEpicPlan(sessionID: failed.session.id)
+    await retryTransport.waitForRequest("turn/start")
+    let retryTurn = try #require(
+      await retryTransport.recordedRequests().first { $0.method == "turn/start" }
+    )
+    let retryPrompt = retryTurn.params["input"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+    #expect(retryPrompt.contains(ownerEdited.title))
+    #expect(retryPrompt.contains(ownerEdited.goal))
+    #expect(retryPrompt.contains(ownerEdited.successCriteria[0]))
+    #expect(retryPrompt.contains(ownerEdited.constraints))
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    await retryTransport.emit(
+      Self.completedTurn(
+        threadID: "thread-e08",
+        turnID: "turn-e08-retry",
+        text: Self.epicPlanResponse
+      )
+    )
+    await recoveredModel.epicPlanningWorkflowCoordinator.settlePlanning()
+    let retried = try await store.fetchTicketSuggestionBatch(sessionID: failed.session.id)
+    #expect(retried.session.errorMessage == nil)
+    #expect(retried.session.status == .ready)
+    #expect(retried.suggestions.map(\.reference) == ["S1"])
+    let retainedEpic = try #require(
+      try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }
+    )
+    #expect(retainedEpic.title == ownerEdited.title)
+    #expect(retainedEpic.goal == ownerEdited.goal)
+    #expect(retainedEpic.successCriteria == ownerEdited.successCriteria)
+    #expect(retainedEpic.constraints == ownerEdited.constraints)
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+
+    await recoveredModel.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+  @Test("E09 edited suggested ticket stays isolated and accepts with its details")
+  func e09EditedSuggestionAcceptsWithoutChangingUnrelatedProposals() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Reviewed suggestions")
+    let otherProduct = try await registry.createProduct(name: "Unrelated suggestions")
+    let store = try #require(registry.store(for: product.id))
+    let otherStore = try #require(registry.store(for: otherProduct.id))
+    _ = try await store.seedDefaultProfiles(productID: product.id)
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Review one suggested ticket before acceptance"
+    )
+    let session = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    let ready = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Define the rollout contract",
+          type: .task,
+          role: .businessAnalyst,
+          priority: .high
+        ),
+        Self.suggestionDraft(
+          reference: "S2",
+          title: "Build the rollout controls",
+          body: "Implement the proposed controls.",
+          criteria: ["The proposed controls work"],
+          role: .implementer,
+          dependsOn: ["S1"]
+        ),
+        Self.suggestionDraft(
+          reference: "S3",
+          title: "Document the rollout",
+          type: .task,
+          role: .knowledgeCurator
+        ),
+      ]
+    )
+    let otherSession = try await otherStore.beginTicketSuggestionSession(
+      productID: otherProduct.id
+    )
+    let otherBatch = try await otherStore.completeTicketSuggestionSession(
+      sessionID: otherSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Keep another Product unchanged",
+          role: .implementer
+        )
+      ]
+    )
+    let target = try #require(ready.suggestions.first { $0.reference == "S2" })
+    let unrelated = try #require(ready.suggestions.first { $0.reference == "S3" })
+    #expect(target.rationale == "Required by the agreed Epic outcome.")
+    #expect(target.dependencyIDs.count == 1)
+    #expect(
+      transitiveSuggestedPrerequisites(of: target, in: ready.suggestions)
+        .map(\.reference) == ["S1"]
+    )
+
+    let model = AppModel(storeRegistry: registry, selectedProductID: product.id)
+    await model.reload()
+    let updateResult: TicketSuggestion? = await withCheckedContinuation { continuation in
+      model.updateTicketSuggestion(
+        target,
+        title: "Build owner-reviewed rollout controls",
+        type: .story,
+        body: "Implement the controls exactly as reviewed.",
+        acceptanceCriteria: [
+          "The owner can advance one cohort",
+          "Paused rollout remains visible",
+        ],
+        suggestedRole: .uxDesigner,
+        priority: .high,
+        rationale: "The owner needs explicit rollout control."
+      ) {
+        continuation.resume(returning: $0)
+      }
+    }
+    #expect(updateResult?.id == target.id)
+    #expect(model.errorMessage == nil)
+    let afterEdit = try await store.fetchTicketSuggestionBatch(sessionID: session.id)
+    let edited = try #require(afterEdit.suggestions.first { $0.id == target.id })
+    #expect(edited.title == "Build owner-reviewed rollout controls")
+    #expect(edited.body == "Implement the controls exactly as reviewed.")
+    #expect(edited.acceptanceCriteria == [
+      "The owner can advance one cohort",
+      "Paused rollout remains visible",
+    ])
+    #expect(edited.suggestedRole == .uxDesigner)
+    #expect(edited.priority == .high)
+    #expect(edited.rationale == "The owner needs explicit rollout control.")
+    #expect(edited.dependencyIDs == target.dependencyIDs)
+    #expect(afterEdit.suggestions.first { $0.id == unrelated.id } == unrelated)
+    #expect(
+      try await otherStore.fetchTicketSuggestionBatch(sessionID: otherSession.id) == otherBatch
+    )
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+
+    let recoveredRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    try await recoveredRegistry.prepare()
+    let recoveredStore = try #require(recoveredRegistry.store(for: product.id))
+    let recoveredOtherStore = try #require(recoveredRegistry.store(for: otherProduct.id))
+    let recoveredModel = AppModel(
+      storeRegistry: recoveredRegistry,
+      selectedProductID: product.id
+    )
+    await recoveredModel.reload()
+    let recoveredBatch = try #require(
+      recoveredModel.suggestionBatches.first { $0.session.id == session.id }
+    )
+    let recoveredEdit = try #require(
+      recoveredBatch.suggestions.first { $0.id == target.id }
+    )
+    #expect(recoveredEdit.title == edited.title)
+    let acceptedResult: WorkItem? = await withCheckedContinuation { continuation in
+      recoveredModel.decideTicketSuggestion(recoveredEdit, accept: true) {
+        continuation.resume(returning: $0)
+      }
+    }
+    #expect(acceptedResult?.title == edited.title)
+
+    let decided = try await recoveredStore.fetchTicketSuggestionBatch(sessionID: session.id)
+    #expect(
+      decided.suggestions
+        .filter { ["S1", "S2"].contains($0.reference) }
+        .allSatisfy { $0.status == .accepted }
+    )
+    #expect(decided.suggestions.first { $0.reference == "S3" }?.status == .proposed)
+    let acceptedItem = try #require(
+      try await recoveredStore.fetchWorkItems(productID: product.id)
+        .first { $0.title == edited.title }
+    )
+    #expect(acceptedItem.type == edited.type)
+    #expect(acceptedItem.body == edited.body)
+    #expect(acceptedItem.acceptanceCriteria == edited.acceptanceCriteria)
+    #expect(acceptedItem.priority == edited.priority)
+    #expect(acceptedItem.epicID == epic.id)
+    #expect(try await recoveredStore.fetchCurrentSprint(productID: product.id) == nil)
+    #expect(
+      try await recoveredOtherStore.fetchTicketSuggestionBatch(sessionID: otherSession.id)
+        == otherBatch
+    )
+
+    await recoveredModel.shutdown()
+    for productStore in recoveredRegistry.allStores {
+      await productStore.close()
+    }
+  }
+
+  @Test("E10 Accept all and Reject all persist their exact reviewed scope")
+  func e10AllSuggestionDecisionsPersistWithoutStartingSprint() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Batch decisions")
+    let otherProduct = try await registry.createProduct(name: "Other batch decisions")
+    let store = try #require(registry.store(for: product.id))
+    let otherStore = try #require(registry.store(for: otherProduct.id))
+    _ = try await store.seedDefaultProfiles(productID: product.id)
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Decide reviewed suggestions in one command"
+    )
+    let acceptedSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    let acceptedReady = try await store.completeTicketSuggestionSession(
+      sessionID: acceptedSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Define the contract",
+          type: .task,
+          role: .businessAnalyst
+        ),
+        Self.suggestionDraft(
+          reference: "S2",
+          title: "Build the reviewed contract",
+          body: "Preserve the complete proposal.",
+          criteria: ["The proposal is delivered"],
+          role: .implementer,
+          priority: .high,
+          dependsOn: ["S1"]
+        ),
+      ]
+    )
+    let otherSession = try await otherStore.beginTicketSuggestionSession(
+      productID: otherProduct.id
+    )
+    let otherReady = try await otherStore.completeTicketSuggestionSession(
+      sessionID: otherSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Do not decide this Product",
+          role: .implementer
+        )
+      ]
+    )
+
+    let model = AppModel(storeRegistry: registry, selectedProductID: product.id)
+    await model.reload()
+    try await store.execute(
+      """
+      CREATE TRIGGER fail_e10_batch_acceptance
+      BEFORE INSERT ON activity_events
+      WHEN NEW.kind = 'ticket_suggestion.accepted'
+        AND NEW.detail = 'Build the reviewed contract'
+      BEGIN
+        SELECT RAISE(ABORT, 'injected E10 batch interruption');
+      END;
+      """
+    )
+    let interruptedAll = await withCheckedContinuation { continuation in
+      model.decideAllTicketSuggestions(
+        sessionID: acceptedSession.id,
+        accept: true
+      ) {
+        continuation.resume(returning: $0)
+      }
+    }
+    #expect(!interruptedAll)
+    let afterInterruption = try await store.fetchTicketSuggestionBatch(
+      sessionID: acceptedSession.id
+    )
+    #expect(afterInterruption.suggestions.allSatisfy { $0.status == .proposed })
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    try await store.execute("DROP TRIGGER fail_e10_batch_acceptance;")
+    let acceptedAll = await withCheckedContinuation { continuation in
+      model.decideAllTicketSuggestions(
+        sessionID: acceptedSession.id,
+        accept: true
+      ) {
+        continuation.resume(returning: $0)
+      }
+    }
+    #expect(acceptedAll)
+    let accepted = try await store.fetchTicketSuggestionBatch(
+      sessionID: acceptedSession.id
+    )
+    #expect(accepted.suggestions.allSatisfy { $0.status == .accepted })
+    let acceptedItems = try await store.fetchWorkItems(productID: product.id)
+    #expect(acceptedItems.count == acceptedReady.suggestions.count)
+    let prerequisite = try #require(
+      accepted.suggestions.first { $0.reference == "S1" }?.acceptedWorkItemID
+    )
+    let dependent = try #require(
+      accepted.suggestions.first { $0.reference == "S2" }?.acceptedWorkItemID
+    )
+    #expect(
+      try await store.fetchWorkItemDependencies(productID: product.id)
+        .contains(
+          WorkItemDependency(
+            workItemID: dependent,
+            dependsOnWorkItemID: prerequisite
+          )
+        )
+    )
+    #expect(try await store.fetchCurrentSprint(productID: product.id) == nil)
+
+    let rejectedSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    _ = try await store.completeTicketSuggestionSession(
+      sessionID: rejectedSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Decline the first proposal",
+          role: .implementer
+        ),
+        Self.suggestionDraft(
+          reference: "S2",
+          title: "Decline the second proposal",
+          role: .qualityAssurance
+        ),
+      ]
+    )
+    await model.reload()
+    let rejectedAll = await withCheckedContinuation { continuation in
+      model.decideAllTicketSuggestions(
+        sessionID: rejectedSession.id,
+        accept: false
+      ) {
+        continuation.resume(returning: $0)
+      }
+    }
+    #expect(rejectedAll)
+    let rejected = try await store.fetchTicketSuggestionBatch(
+      sessionID: rejectedSession.id
+    )
+    #expect(rejected.suggestions.allSatisfy { $0.status == .rejected })
+    #expect(try await store.fetchWorkItems(productID: product.id).count == 2)
+    #expect(try await store.fetchCurrentSprint(productID: product.id) == nil)
+    #expect(
+      try await otherStore.fetchTicketSuggestionBatch(sessionID: otherSession.id) == otherReady
+    )
+    await model.shutdown()
+
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+
+    let recoveredRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    try await recoveredRegistry.prepare()
+    let recoveredStore = try #require(recoveredRegistry.store(for: product.id))
+    let recoveredOtherStore = try #require(recoveredRegistry.store(for: otherProduct.id))
+    #expect(
+      try await recoveredStore.fetchTicketSuggestionBatch(sessionID: acceptedSession.id)
+        .suggestions.allSatisfy { $0.status == .accepted }
+    )
+    #expect(
+      try await recoveredStore.fetchTicketSuggestionBatch(sessionID: rejectedSession.id)
+        .suggestions.allSatisfy { $0.status == .rejected }
+    )
+    #expect(try await recoveredStore.fetchWorkItems(productID: product.id).count == 2)
+    #expect(try await recoveredStore.fetchCurrentSprint(productID: product.id) == nil)
+    #expect(
+      try await recoveredOtherStore.fetchTicketSuggestionBatch(sessionID: otherSession.id)
+        == otherReady
+    )
+
+    for productStore in recoveredRegistry.allStores {
+      await productStore.close()
+    }
+  }
+
+  @Test("E13 interrupted generation retries without duplicates or Product leakage")
+  func e13InterruptedGenerationRetriesWithoutDuplicatesOrProductLeakage() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let firstProduct = try await registry.createProduct(name: "Interrupted planning")
+    let secondProduct = try await registry.createProduct(name: "Unrelated planning")
+    let firstStore = try #require(registry.store(for: firstProduct.id))
+    let secondStore = try #require(registry.store(for: secondProduct.id))
+    let firstEpic = try await firstStore.createEpic(
+      productID: firstProduct.id,
+      outcome: "Recover one interrupted plan"
+    )
+    let secondEpic = try await secondStore.createEpic(
+      productID: secondProduct.id,
+      outcome: "Keep another Product isolated"
+    )
+    let earlierSession = try await firstStore.beginTicketSuggestionSession(
+      productID: firstProduct.id,
+      epicID: firstEpic.id
+    )
+    _ = try await firstStore.completeTicketSuggestionSession(
+      sessionID: earlierSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Preserve an earlier proposal",
+          role: .businessAnalyst
+        )
+      ]
+    )
+    let interruptedSession = try await firstStore.beginTicketSuggestionSession(
+      productID: firstProduct.id,
+      epicID: firstEpic.id
+    )
+    let otherSession = try await secondStore.beginTicketSuggestionSession(
+      productID: secondProduct.id,
+      epicID: secondEpic.id
+    )
+    _ = try await secondStore.completeTicketSuggestionSession(
+      sessionID: otherSession.id,
+      drafts: [
+        Self.suggestionDraft(
+          reference: "S1",
+          title: "Unrelated Product proposal",
+          role: .implementer
+        )
+      ]
+    )
+
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-e13-retry")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e13-retry")])])
+          ),
+        ]
+    )
+    let recoveredModel = Self.makeModel(
+      registry: registry,
+      selectedProductID: firstProduct.id,
+      transport: transport
+    )
+    await recoveredModel.load()
+    await transport.waitForRequest("turn/start")
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e13-retry",
+        turnID: "turn-e13-retry",
+        text: Self.epicPlanResponse
+      )
+    )
+    await recoveredModel.epicPlanningWorkflowCoordinator.settlePlanning()
+
+    let firstBatches = try await firstStore.fetchOutstandingTicketSuggestionBatches(
+      productID: firstProduct.id
+    )
+    #expect(firstBatches.map(\.session.id) == [earlierSession.id, interruptedSession.id])
+    #expect(firstBatches.allSatisfy { $0.session.status == .ready })
+    #expect(Set(firstBatches.flatMap(\.suggestions).map(\.id)).count == 2)
+    #expect(recoveredModel.suggestionBatches.map(\.session.id) == [
+      earlierSession.id, interruptedSession.id,
+    ])
+    let secondBatches = try await secondStore.fetchOutstandingTicketSuggestionBatches(
+      productID: secondProduct.id
+    )
+    #expect(secondBatches.map(\.session.id) == [otherSession.id])
+    #expect(secondBatches.flatMap(\.suggestions).map(\.title) == ["Unrelated Product proposal"])
+    #expect(recoveredModel.suggestionBatches.allSatisfy {
+      $0.session.productID == firstProduct.id
+    })
+
+    await recoveredModel.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+  private static func suggestionDraft(
+    reference: String,
+    title: String,
+    type: WorkItemType = .story,
+    body: String = "Deliver the agreed outcome.",
+    criteria: [String] = ["The agreed outcome is complete"],
+    role: AgentRole,
+    priority: WorkItemPriority = .normal,
+    dependsOn: [String] = []
+  ) -> TicketSuggestionDraft {
+    TicketSuggestionDraft(
+      reference: reference,
+      title: title,
+      type: type,
+      body: body,
+      acceptanceCriteria: criteria,
+      suggestedRole: role,
+      priority: priority,
+      rationale: "Required by the agreed Epic outcome.",
+      dependsOnReferences: dependsOn
+    )
+  }
 
   private static let epicPlanResponse = #"""
     {

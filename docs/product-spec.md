@@ -744,6 +744,10 @@ criteria, constraints, or tickets. Those fields remain absent until the business
 analyst completes analysis and returns the reviewable epic metadata and ticket
 plan. While analysis is pending, backlog and relationship labels may use the
 submitted outcome as a display fallback without storing it as the epic title.
+After analysis, the product owner may edit the title, goal, success criteria, or
+constraints before accepting any proposed tickets. Once edited, those fields
+are authoritative: a failed or interrupted planning retry receives them as
+owner-reviewed input and cannot replace them with newly generated wording.
 
 For a new product, one business-analyst profile can also propose a starter
 backlog rather than waiting for the owner to invent every ticket. This is one
@@ -949,6 +953,11 @@ dependent ticket already accepted into the backlog as one atomic action; tickets
 that have entered delivery prevent the cascade and require an explicit recovery
 decision. Rejections and edits become refinement feedback; they must not quietly
 reappear as committed scope.
+Editing a proposed ticket persists its title, type, description, acceptance
+criteria, suggested owner, priority, and rationale while preserving its
+proposal identity and dependency edges. The edited version survives relaunch
+and is the exact version converted into a Backlog ticket if accepted.
+
 After no proposals remain to review, the suggested-work region disappears; its
 decisions remain in the audit and future-analysis context rather than occupying
 permanent backlog space.

@@ -225,12 +225,15 @@ projection callbacks, then forwards owner commands.
 
 `EpicPlanningWorkflowCoordinator` owns epic clarification, plan and general
 ticket-suggestion generation, invalid-result repair, durable session recovery,
-suggestion decisions and owner routing, Codex turn interruption, and
+suggestion edits and decisions, owner routing, Codex turn interruption, and
 post-persistence notifications. Its bounded snapshot contains the active epic
-conversation, latest suggestion batch, and decision state. `AppModel` supplies
-product-scoped stores, the selected product and Codex client, inherited
-instructions, workspace and notification adapters, and selected-product
-projection callbacks, then forwards owner commands.
+conversation, outstanding suggestion batches, and decision state. SQLite
+remains authoritative for every proposal field and dependency edge. Owner-
+reviewed Epic metadata is supplied to retry prompts and retained when a
+successful retry persists its plan, so generated output cannot overwrite an
+owner edit. `AppModel` supplies product-scoped stores, the selected product and
+Codex client, inherited instructions, workspace and notification adapters, and
+selected-product projection callbacks, then forwards owner commands.
 
 `SprintPlanningWorkflowCoordinator` owns candidate sprint scope and ranking,
 ticket-planning conversations and interruption, exact-version goal generation,

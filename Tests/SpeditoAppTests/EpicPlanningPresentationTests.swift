@@ -708,11 +708,78 @@ struct EpicPlanningPresentationTests {
     #expect(suggestions.allSatisfy { $0.status == .proposed })
   }
 
+  @Test("E09 suggestion review discloses rationale dependencies and Backlog impact")
+  func e09SuggestionReviewDisclosesAcceptanceImpact() {
+    let sessionID = UUID()
+    let prerequisite = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S1",
+      position: 0
+    )
+    let target = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S2",
+      position: 1,
+      dependencyIDs: [prerequisite.id]
+    )
+    let impact = SuggestionAcceptanceImpact(
+      suggestion: target,
+      prerequisites: [prerequisite]
+    )
+
+    #expect(target.rationale == "Required delivery work.")
+    #expect(impact.requiresConfirmation)
+    #expect(impact.actionTitle == "Accept 2 tickets")
+    #expect(impact.message.contains("S1"))
+    #expect(impact.message.contains("backlog"))
+    #expect(impact.message.contains("does not add them to a sprint"))
+    #expect([prerequisite, target].allSatisfy { $0.status == .proposed })
+  }
+
+  @Test("E10 all-suggestion confirmations state exact scope and no sprint effect")
+  func e10AllSuggestionConfirmationsStateScope() {
+    let sessionID = UUID()
+    let first = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S1",
+      position: 0
+    )
+    let second = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S2",
+      position: 1
+    )
+    let alreadyAccepted = ticketSuggestion(
+      sessionID: sessionID,
+      reference: "S3",
+      position: 2,
+      dependencyIDs: [first.id],
+      status: .accepted,
+      acceptedWorkItemID: UUID()
+    )
+    let suggestions = [first, second, alreadyAccepted]
+    let impact = SuggestionBatchDecisionImpact(suggestions: suggestions)
+
+    #expect(impact.proposedCount == 2)
+    #expect(impact.acceptActionTitle == "Accept 2 suggestions")
+    #expect(impact.acceptMessage.contains("All 2 remaining suggestions"))
+    #expect(impact.acceptMessage.contains("does not add them to a sprint"))
+    #expect(impact.rejectActionTitle == "Reject 2 suggestions")
+    #expect(impact.acceptedCascadeTicketCount == 1)
+    #expect(impact.rejectMessage.contains("All 2 remaining suggestions"))
+    #expect(impact.rejectMessage.contains("archives 1 dependent ticket"))
+    #expect(impact.rejectMessage.contains("no ticket is added to a sprint"))
+    #expect(suggestions.map(\.status) == [.proposed, .proposed, .accepted])
+  }
+
+
   private func ticketSuggestion(
     sessionID: UUID,
     reference: String,
     position: Int,
-    dependencyIDs: [UUID] = []
+    dependencyIDs: [UUID] = [],
+    status: TicketSuggestionStatus = .proposed,
+    acceptedWorkItemID: UUID? = nil
   ) -> TicketSuggestion {
     TicketSuggestion(
       sessionID: sessionID,
@@ -724,7 +791,9 @@ struct EpicPlanningPresentationTests {
       suggestedRole: .implementer,
       priority: .normal,
       rationale: "Required delivery work.",
-      dependencyIDs: dependencyIDs
+      dependencyIDs: dependencyIDs,
+      status: status,
+      acceptedWorkItemID: acceptedWorkItemID
     )
   }
 
