@@ -4,8 +4,8 @@
 - **Status:** Priority 0 ledger reconciled; remaining Priority 1 and 2 journeys stay planned
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
-- **Executable coverage ledger:** section 3.4
-- **Evidence baseline:** `69227e6`; section 2 preserves measurements from that commit, while sections 3.4 and 7.4 record implemented packet evidence.
+- **Executable coverage ledger:** section 3
+- **Evidence baseline:** `69227e6`; section 2 preserves measurements from that commit, while sections 3 and 7.4 record implemented packet evidence.
 
 ## 1. Conclusion
 
@@ -21,13 +21,13 @@ The right shape is layered:
 This follows the repository's architecture and verification rules in `AGENTS.md`. It does not replace strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
 
 The inventory below defines **124 owner journey contracts**. The Priority 0
-ledger in section 3.4 gives every Priority 0 row a named test or a
-non-duplicative composed proof. Priority 1 and 2 rows remain future journey
-work. Some contracts should become parameterized tests or several interruption
-variants, so the eventual test-method count will be higher. Only the contracts
-marked **Shell = Y** need proof from a launched application process. The 13 rows
-named in the completed Priority 0 shell packet each have both a deterministic
-journey and a launched-process contract.
+ledger in section 3 gives every Priority 0 row named or non-duplicative composed
+deterministic evidence. Priority 1 and 2 rows remain future journey work. Some
+contracts should become parameterized tests or several interruption variants,
+so the eventual test-method count will be higher. Only contracts marked
+**Shell = Y** are candidates for proof from a launched application process.
+Sixteen Priority 0 rows carry that designation; 14 currently have a
+launched-process contract, with the D17 and I07 gaps recorded in section 7.4.
 
 ## 2. Repository evidence
 
@@ -38,9 +38,9 @@ Baseline scale at evidence commit `69227e6`:
 - 42 Swift source files in `Sources/SpeditoApp`, approximately 44,700 lines.
 - 55 Swift test files: 28 app-layer files and 27 Core files.
 - `swift test list` exposed 464 automated tests, including 191 app-layer tests,
-  and the commit declared 463 `@Test` functions. The close-out tree declares
-  483 `@Test` functions, so all counts remain pinned evidence rather than a
-  durable invariant.
+  and the commit declared 463 `@Test` functions. The close-out tree at
+  `0f844d9` declares 517 `@Test` functions, so all counts remain pinned evidence
+  rather than a durable invariant.
 - No XCUITest target, Xcode project, workspace, or UI test plan exists.
 - No `XCUIApplication` tests exist.
 - No `.accessibilityIdentifier(...)` contracts exist in `Sources/SpeditoApp`.
@@ -67,14 +67,15 @@ Strong existing foundations include:
 
 The missing proof is composition across those boundaries. A route test can prove that an epic notification creates an `OwnerNotificationNavigationRequest`; an epic persistence test can prove that questions survive a product switch; neither alone proves that selecting the banner changes Product, opens Backlog, presents the correct Epic, and renders the restored questions.
 
-## 3. Priority 0 executable coverage
-
-### 3.4 Priority 0 executable coverage ledger — 15 August 2026
+## 3. Priority 0 executable coverage ledger — 17 August 2026
 
 This ledger applies the section 5 deduplication rule to every Priority 0 row.
-**Named** means a test carries the row ID. **Composed** means existing tests
-jointly prove the contract and a wrapper test is intentionally omitted because
-it would repeat the same commands and assertions.
+**Named** means at least one cited test carries the row ID. **Composed** means
+pre-existing tests jointly or directly prove the deterministic contract and a
+wrapper test is intentionally omitted because it would repeat the same commands
+and assertions. The 11 pre-existing A11/D01/D02/D04/D05/D10/D11/D12/D17/D18/D19
+entries are therefore labelled **Composed**, not retroactively re-badged
+**Named**.
 
 | Row | Executable evidence | Coverage |
 | --- | --- | --- |
@@ -84,7 +85,7 @@ it would repeat the same commands and assertions.
 | A06 | `ProductScopedPersistenceTests.a06ArchiveSelectedProductRoutesToRemainingProduct`, `PriorityZeroShellJourneyUITests.testA06ArchivingSelectedProductRoutesToRemainingProduct` | **Named:** the deterministic journey archives only the selected Product and routes to the remaining active Product; the launched-process contract proves the Product-library and destination projection. |
 | A09 | `SQLiteStoreTests.a09SchemaMigrationPreservesCompleteProductHistory` | **Named:** the A09 fixture migrates one version-7 Product containing backlog, work log, knowledge, repository provenance, and delivery history through the complete migration chain. |
 | A10 | `ProductExecutionLifecycleTests.a10BoundedShutdownGraceAndQuitNow`, `.appShutdownHasGlobalScope`, `FeatureOperationRegistryTests.scopedAndGlobalSettlement` | **Named:** A10 composes the bounded grace deadline and **Quit now** action without duplicating the existing global-suspension and operation-settlement proofs. |
-| A11 | `TicketDeliveryWorkflowCoordinatorTests.crashRecoveryUsesLastDurableMilestone`, `SQLiteStoreTests.invalidCandidateRecoveryIsAtomic` | **Named:** A11 covers durable-workspace reuse and the labelled missing-workspace explanation; lower-level recovery tests retain atomicity and stale-candidate protection. |
+| A11 | `TicketDeliveryWorkflowCoordinatorTests.crashRecoveryUsesLastDurableMilestone`, `SQLiteStoreTests.invalidCandidateRecoveryIsAtomic` | **Composed:** durable-workspace reuse, the labelled missing-workspace explanation, atomicity, and stale-candidate protection are covered at their owning boundaries. |
 | R01 | `RemoteRepositoryAppModelTests.r01ImportedProductOpensBeforeUnderstandingContinues` | **Named:** the imported Product becomes selectable with exact provenance before its explicitly gated background understanding continues. |
 | R05 | `RemoteRepositoryAppModelTests.r05EmptyGitHubRepositoryCreation`, `PriorityZeroShellJourneyUITests.testR05ConnectedBlankProductShowsItsExactGitHubRepository` | **Named:** the deterministic journey initializes the exact observed remote default branch; the launched-process contract proves its Product-settings projection. |
 | R06 | `RepositoryImportKnowledgeTests.r06ImportedRevisionPreservesDefaultBranchHistory` | **Named:** the imported revision equals the accepted default-branch head and preserves the source history without rewriting it. |
@@ -109,23 +110,23 @@ it would repeat the same commands and assertions.
 | B09 | `PlanningDropPolicyTests.b09PartialSprintScopeExplainsMissingRelationship` | **Named:** invalid partial scope names the exact missing prerequisite relationship in the owner-facing refusal. |
 | P03 | `SprintBoardSelectionTests.p03PartialPlanAndDiscardedPickerState` | **Named:** P03 saves an intentionally partial plan, proves unsaved picker state is not durable, discards to the saved assignment set, and reopens the same durable draft. |
 | P05 | `SQLiteStoreTests.p05MissingEstimateAndInvalidDependencyBlockStart`, `PriorityZeroShellJourneyUITests.testP05SprintPlanningShowsStartBlockers` | **Named:** the deterministic journey proves missing-estimate and invalid-dependency blockers; the launched-process contract proves the exact Sprint planning blocker projection. |
-| D01 | `SQLiteStoreTests.sprintExecutionSnapshotIsScoped`, `.sprintStartIsDurableAndIdempotent` | **Named:** D01 freezes the scoped execution snapshot; persistence coverage proves one durable start. |
-| D02 | `WorkflowPolicyTests.dependencyAwareRunAdmission`, `.uncappedIndependentRunAdmission`, `TicketDeliveryRuntimeCoordinatorTests.duplicateSchedulingWakesExistingScheduler` | **Named:** D02 covers the independent first wave, prerequisite release, and identity-safe scheduler wake. |
+| D01 | `SQLiteStoreTests.sprintExecutionSnapshotIsScoped`, `.sprintStartIsDurableAndIdempotent` | **Composed:** the scoped execution snapshot and one durable idempotent start are directly covered. |
+| D02 | `WorkflowPolicyTests.dependencyAwareRunAdmission`, `.uncappedIndependentRunAdmission`, `TicketDeliveryRuntimeCoordinatorTests.duplicateSchedulingWakesExistingScheduler` | **Composed:** the independent first wave, prerequisite release, and identity-safe scheduler wake are covered at their owning boundaries. |
 | D03 | `TicketAttentionTests.d03ProductSwitchPreservesActiveQuestionRoute` | **Named:** Product switching leaves active delivery running and routes attention back to the exact ticket question. |
-| D04 | `TicketDeliveryWorkflowCoordinatorTests.pausedDeliveryResumesExistingRun`, `SQLiteStoreTests.sprintPauseAndResumeAreDurable` | **Named:** D04 relaunches a paused durable run and resumes its preserved workspace instead of restarting. |
-| D05 | `TicketDeliveryWorkflowCoordinatorTests.stoppedDeliveryPreservesAuditAndReturnsTicketToReady`, `SQLiteStoreTests.stoppingSprintPreservesAcceptedWorkAndSupersedesUnacceptedWork` | **Named:** the public stop command preserves accepted work and audit history, supersedes unaccepted candidates, and returns unfinished tickets to Ready. |
+| D04 | `TicketDeliveryWorkflowCoordinatorTests.pausedDeliveryResumesExistingRun`, `SQLiteStoreTests.sprintPauseAndResumeAreDurable` | **Composed:** a paused durable run relaunches and resumes its preserved workspace instead of restarting. |
+| D05 | `TicketDeliveryWorkflowCoordinatorTests.stoppedDeliveryPreservesAuditAndReturnsTicketToReady`, `SQLiteStoreTests.stoppingSprintPreservesAcceptedWorkAndSupersedesUnacceptedWork` | **Composed:** the public stop command preserves accepted work and audit history, supersedes unaccepted candidates, and returns unfinished tickets to Ready. |
 | D08 | `TicketDeliveryWorkflowCoordinatorTests.d08PermissionReviewActionsPersistDistinctDecisions`, `PriorityZeroShellJourneyUITests.testD08PermissionReviewPresentsDenyAllowOnceAndAlwaysAllow` | **Named:** the deterministic journey persists Deny, Allow once, and Always allow as distinct decisions; the launched-process contract proves all three review controls. |
 | D09 | `TicketDeliveryWorkflowCoordinatorTests.d09SubmittedAnswersResumeExactRun`, `PriorityZeroShellJourneyUITests.testD09OwnerQuestionPresentsListedOtherAndSubmitAnswers` | **Named:** the deterministic journey proves **Submit answers** resumes the exact paused run; the launched-process contract proves listed choice, **Other**, and submission wiring. |
-| D10 | `ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity`, `TicketDeliveryRuntimeCoordinatorTests.staleCompletionCannotClearReplacement` | **Named:** D10 requeues failed and interrupted implementations with the preserved run identity, workspace, and thread while stale completion remains harmless. |
-| D11 | `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `GitWorkspaceManagerTests.candidateLifecycle` | **Named:** D11 binds independent review and its handoff to the immutable integrated candidate. |
-| D12 | `GitWorkspaceManagerTests.candidateLifecycle`, `.conflictResolutionLifecycle`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview` | **Named:** D12 serializes exact integration and covers conflict resolution plus changed-result review ordering. |
+| D10 | `ProductScopedPersistenceTests.implementationRetryPreservesRunIdentity`, `TicketDeliveryRuntimeCoordinatorTests.staleCompletionCannotClearReplacement` | **Composed:** failed and interrupted implementations requeue with preserved run identity, workspace, and thread while stale completion remains harmless. |
+| D11 | `TicketDeliveryWorkflowCoordinatorTests.approvedReviewRemainsCandidateBound`, `GitWorkspaceManagerTests.candidateLifecycle` | **Composed:** independent review and its handoff remain bound to the immutable integrated candidate. |
+| D12 | `GitWorkspaceManagerTests.candidateLifecycle`, `.conflictResolutionLifecycle`, `WorkflowPolicyTests.candidateIntegrationsPrecedeReview` | **Composed:** exact integration, conflict resolution, and changed-result review ordering are covered at their owning boundaries. |
 | D13 | `RemoteRepositoryAppModelTests.d13RequestedChangesResumePublishedTicket` | **Named:** requested GitHub changes return the ticket to In progress and resume the same immutable publication branch. |
 | D14 | `TicketDeliveryWorkflowCoordinatorTests.d14DemoRetryReusesReviewedCandidate`, `PriorityZeroShellJourneyUITests.testD14DemoRetrySelectsTheReviewedCandidate` | **Named:** the deterministic journey retries host preparation only for the reviewed candidate; the launched-process contract proves exact App-version selection. |
 | D15 | `SprintTicketWorkLogHistoryTests.d15ReadyForDemoCommentPreservesCandidate`, `PriorityZeroShellJourneyUITests.testD15ReadyForDemoCommentKeepsCandidateActionable` | **Named:** the deterministic journey proves a ready-for-demo owner comment preserves the reviewed candidate; the launched-process contract leaves that candidate actionable after the comment settles. |
 | D16 | `SQLiteStoreTests.d16CandidateKnowledgeDecisionsPublishOnlyAcceptedContent` | **Named:** only accepted candidate knowledge becomes canonical; rejected and unreviewed proposals remain non-authoritative after relaunch. |
-| D17 | `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision` | **Named:** D17 promotes the exact reviewed repository revision and records Done only after successful finalization. |
-| D18 | `TicketDeliveryWorkflowCoordinatorTests.failedAcceptanceRetriesWithoutDuplicateCompletion` | **Named:** D18 preserves the reviewed result and retries without duplicate promotion. |
-| D19 | `TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` | **Named:** D19 publishes repository-free handoff and knowledge without a Git mutation. |
+| D17 | `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision` | **Composed (deterministic only):** the exact reviewed repository revision is promoted and Done follows successful finalization; section 7.4 records the missing launched-process proof for immediate detail dismissal and **Completing** presentation. |
+| D18 | `TicketDeliveryWorkflowCoordinatorTests.failedAcceptanceRetriesWithoutDuplicateCompletion` | **Composed:** the reviewed result survives failure and retries without duplicate promotion. |
+| D19 | `TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` | **Composed:** repository-free handoff and knowledge publish without a Git mutation. |
 | C02 | `CodexTransportApplicationTests.c02ConcurrentConversationsRemainIndependent` | **Named:** concurrent same-agent replies settle out of order while each thread retains its own durable transcript, unread state, and notification identity. |
 | C07 | `TicketAttentionTests.c07BackgroundChatRoutesAndClearsOnlyTarget`, `PriorityZeroShellJourneyUITests.testC07BackgroundChatOpensItsExactSourceThread` | **Named:** the deterministic journey routes to the exact cross-Product Chat thread and clears only its unread target; the launched-process contract proves shell navigation and the persisted reply. |
 | C09 | `TicketAttentionTests.c09VisibleTargetReadResolutionAndCounts` | **Named:** visible-target suppression, read, resolution, and deduplicated Product counts are composed in one deterministic journey. |
@@ -138,9 +139,9 @@ it would repeat the same commands and assertions.
 | S02 | `SQLiteStoreTests.s02SavedAgentAccessRevocationJourney` | **Named:** revoke-one and confirmed revoke-all preserve the audit trail and cause subsequent exact access requests to prompt again. |
 | S04 | `SQLiteStoreTests.teamSettingsUpdateIsAtomic`, `ProductScopedPersistenceTests.teamSettingsCommandReturnsCommittedSnapshot` | **Composed:** atomic persistence and retryable application presentation cover the shared-guidance/member-settings boundary. |
 
-Every Priority 0 row is now backed by a named test or a non-duplicative composed
-proof. Each of the 13 rows named in the completed Priority 0 shell packet
-retains a deterministic journey beneath its launched-process contract.
+Every Priority 0 row has named or non-duplicative composed deterministic
+evidence. Fourteen of the 16 Priority 0 rows designated `Shell = Y` also have a
+launched-process contract; D17 and I07 remain explicit gaps in section 7.4.
 
 ## 4. Test taxonomy
 
@@ -150,7 +151,10 @@ retains a deterministic journey beneath its launched-process contract.
 | **P** | Presentation scenario/policy | Render or resolve a bounded presentation state. Cover normal, empty, busy, interrupted, failed, retryable, stale, actionable, and completed states. |
 | **M** | Controlled external smoke | Run manually or in a dedicated controlled macOS/GitHub environment. Keep outside the deterministic pull-request suite. |
 
-The inventory carries a separate **Shell** column because proof type and application-shell wiring are different questions. `Shell = Y` means the contract cannot be proved without launching the application, because it crosses control wiring, sheet or window routing, product switching, or destination selection. `Shell = —` means the deterministic proof is sufficient and no XCUITest may be added for it until a real shell-wiring defect demonstrates the need. A `Y` never replaces the row's deterministic proof; it is added on top of it.
+The inventory carries a separate **Shell** column because proof type and
+application-shell wiring are different questions. `AGENTS.md` is the binding
+rule for when a launched-process contract may be added; this plan records each
+row's `Shell = Y` or `Shell = —` designation and the resulting inventory.
 
 Full-app UI contracts launch an isolated debug composition and exercise actual owner controls, asserting stable accessibility identifiers, window and sheet routing, and visible state. They must not use display strings as the only selector.
 
@@ -166,7 +170,7 @@ Two rules apply to every row before it is scheduled.
 
 **Record existing evidence first.** The repository already contains 464 automated tests, and many rows are partly covered by them. Before implementing a row, list the existing tests that already prove part of it in the header comment of the new journey test, and implement only the uncovered composition. A row is not an instruction to rewrite passing component tests.
 
-**Keep the row ID in the test name.** Each journey test is named for its row (`A02_…`, `D17_…`) so that the inventory, the test suite, and any future defect report share one identifier. Coordinator journeys live beside the feature they exercise in `Tests/SpeditoAppTests` or `Tests/SpeditoCoreTests`; only the launched-process contracts live in the separate UI target.
+**Keep the row ID in every new journey test name.** New journey tests use their row (`A02_…`, `D17_…`) so the inventory, suite, and defect reports share one identifier. A genuinely sufficient pre-existing test is not renamed or called **Named** retroactively; mark the row **Composed** and explain why another wrapper would duplicate proof. Coordinator journeys live beside the feature they exercise in `Tests/SpeditoAppTests` or `Tests/SpeditoCoreTests`; only launched-process contracts live in the separate UI target.
 
 ### 5.1 Application shell and Product lifecycle — 12
 
@@ -461,7 +465,9 @@ Prefer durable UUID-backed identifiers for rows and details. Use stable semantic
 
 ### 7.4 Initial full-app smoke suite
 
-Keep the first UI suite to high-value shell wiring. These 14 scenarios cover exactly the 19 rows marked `Shell = Y`, and no other row may add a launched-process test without a demonstrated shell-wiring defect:
+The initial inventory has 14 high-value shell-wiring scenarios covering the 19
+rows designated `Shell = Y`. `AGENTS.md` owns the binding rule for adding a
+launched-process contract; this section records implementation status:
 
 1. blank Product creation and selection — A02;
 2. Product switch and relaunch restoration — A05;
@@ -478,17 +484,29 @@ Keep the first UI suite to high-value shell wiring. These 14 scenarios cover exa
 13. Product archive and restore — A06, A07;
 14. Codebase commit-to-Ticket navigation — V04.
 
-**Implementation status — 15 August 2026:** the debug-only composition now
-uses an isolated application-support root and defaults domain, deterministic
-Codex and GitHub boundaries, no-op sound/system-notification adapters, and a
-file-system response gate. `EpicOwnerNotificationUITests` creates the Epic
-through the launched app, switches Products before releasing the structured
-reply, opens the non-expiring in-app banner, and verifies the exact Epic,
-Backlog destination, Business Analyst reply, question choices, custom answer,
-and enabled **Submit answers** control through stable accessibility
-identifiers. Release compilation excludes the fixture types. The complete
-serialized launched-process contract passed in the target environment in
-[CI run 31891394137](https://github.com/cristianrgreco/Spedito/actions/runs/31891394137).
+**Implementation status — 17 August 2026:** the target contains 15 tests: one
+bundle-launch smoke test, the E02 contract in `EpicOwnerNotificationUITests`,
+and 13 contracts in `PriorityZeroShellJourneyUITests`. They cover 14 Priority 0
+rows: A02, A05, A06, B02, C07, D08, D09, D14, D15, E02, P05, R05, R13, and V06.
+
+- Fully implemented scenarios: 1, 2, 3, 4, 5, 6, 8, 10, and 12.
+- Partially implemented scenarios: 7 covers D14 and D15 but not D17; 13 covers
+  A06 but not the Priority 1 A07 contract.
+- Not implemented: 9 (Priority 1 K05), 11 (Priority 0 I07), and 14 (Priority 1
+  V04).
+
+D17 therefore lacks launched proof that approval immediately dismisses Ticket
+detail and presents **Completing**. I07 lacks deterministic composition and
+launched proof that accepting the retrospective action opens refinement for the
+exact created ticket. These are coverage exceptions, not claims that the
+contracts are proved elsewhere.
+
+The debug-only composition uses an isolated application-support root and
+defaults domain, deterministic Codex and GitHub boundaries, no-op
+sound/system-notification adapters, and a file-system response gate. Release
+compilation excludes fixture types. The independent close-out audit at
+`0f844d9` ran all 15 tests successfully in 182 seconds, so CI's serialized
+10-minute timeout retains substantial headroom.
 
 Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
 
@@ -556,7 +574,7 @@ Implement P0 journeys feature by feature, in this order:
 10. atomic Team settings; and
 11. retrospective actions that mutate Ways of working or Backlog.
 
-For each feature, write the state table first and cover every durable intermediate state with interruption and fresh-instance recovery. Extend the UI smoke suite only when the contract crosses application-shell wiring.
+For each feature, write the state table first and cover every durable intermediate state with interruption and fresh-instance recovery. Apply the binding launched-process rule in `AGENTS.md` and record the row's resulting `Shell` designation here.
 
 ### Work packet 4 — P1 primary owner journeys
 
@@ -564,7 +582,7 @@ Add the normal workflows for Backlog editing, planning, Chat, Knowledge, Codebas
 
 ### Work packet 5 — P2 convenience and presentation journeys
 
-Cover shortcuts, filters, display preferences, report variants, counts, and secondary navigation with policy/presentation tests. Add no full-process test unless a real shell-wiring defect demonstrates the need.
+Cover shortcuts, filters, display preferences, report variants, counts, and secondary navigation with policy/presentation tests. Apply the binding launched-process rule in `AGENTS.md`.
 
 ### Work packet 6 — CI and maintenance ratchet
 
@@ -572,7 +590,7 @@ Cover shortcuts, filters, display preferences, report variants, counts, and seco
 2. Add a separate serialized `xcodebuild test` job for the small UI contract suite.
 3. Run bounded fake external journeys on pull requests.
 4. Run real external smoke checks manually or on a controlled schedule.
-5. Require every future long-running or multi-screen feature to add/update its journey row, state table, coordinator proof, and UI-shell proof only when needed.
+5. Require every future long-running or multi-screen feature to follow the journey inventory and `Shell` designation checklist in `AGENTS.md`.
 6. Quarantine no flaky test silently: fix its synchronization contract or remove the invalid assertion.
 
 ## 9. Cross-cutting acceptance rules

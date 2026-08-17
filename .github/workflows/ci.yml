@@ -54,8 +54,8 @@ jobs:
       - name: Check architecture ratchets
         run: ./scripts/check_architecture_ratchets.sh
 
-  ui-runner-spike:
-    name: UI runner spike
+  launched-process-contracts:
+    name: Launched-process UI contracts
     runs-on: macos-26
     timeout-minutes: 10
     env:
@@ -65,21 +65,5 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - name: Build isolated debug app
-        run: |
-          env \
-            SPEDITO_BUNDLE_IDENTIFIER=io.spedito.app.ui-testing \
-            SPEDITO_SIGN_IDENTITY=- \
-            ./scripts/build_app.sh debug
-
-      - name: Run serialized launch assertion
-        run: |
-          xcodebuild \
-            -project SpeditoUITests.xcodeproj \
-            -scheme SpeditoUITests \
-            -destination 'platform=macOS' \
-            -derivedDataPath .build/ui-test-derived \
-            -parallel-testing-enabled NO \
-            test \
-            CODE_SIGN_IDENTITY=- \
-            CODE_SIGNING_ALLOWED=YES
+      - name: Run serialized launched-process contracts
+        run: ./scripts/run_ui_tests.sh

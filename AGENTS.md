@@ -413,6 +413,10 @@ Before implementing or accepting a long-running or multi-screen feature, record
 the following in its work packet or accepted ticket:
 
 - the owner journey, exact behavior, and explicit non-goals;
+- a journey inventory row added or updated for the feature;
+- an explicit `Shell = Y` or `Shell = —` designation for that row;
+- for every `Shell = Y`, a written justification against the launched-process
+  criterion in the verification model;
 - a state table naming every durable intermediate state, the command that enters
   it, the evidence stored in SQLite, what the owner sees, available actions, and
   relaunch recovery;
@@ -511,6 +515,19 @@ The catalog must include normal, empty, busy, interrupted, failed, retryable,
 stale, and completed states where applicable. It must not contain a fake product
 path presented as real functionality to release users.
 
+### Launched-process shell contracts
+
+Launched-process tests prove application-shell contracts that deterministic
+tests cannot: control wiring, sheet and window routing, Product switching, and
+destination selection. They are added on top of the appropriate deterministic
+policy, persistence, or coordinator proof, never instead of it.
+
+The restrictive default is binding: do not add a launched-process test when the
+deterministic proof is sufficient. Add one only after a real shell-wiring defect
+demonstrates that the contract needs launched-application coverage. The journey
+inventory records each feature's `Shell = Y` or `Shell = —` designation; every
+`Y` requires a written justification against this criterion.
+
 ### Product-owner inspection
 
 Agent verification ends with a relaunched app and an explicit inspection
@@ -520,21 +537,36 @@ coverage before fixing it where practical.
 
 ## Validate changes
 
-Run the full suite with the project-local module caches:
+Default validation for every change is safe to run concurrently across
+worktrees:
 
 ```sh
 env \
   SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
   CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
   swift test -Xswiftc -warnings-as-errors
-```
-
-Also run:
-
-```sh
 git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
+
+The launched-process suite is machine-exclusive because it drives the shared
+GUI login session and builds an application whose UI-test bundle identifier and
+defaults domain are shared by every run. It is required only when a change
+touches application-shell wiring: `ContentView.swift`, view files under
+`Sources/SpeditoApp`, accessibility identifiers, `UIFixtureRuntime.swift`,
+`SpeditoApplication.swift`, or anything under `Tests/SpeditoUITests`.
+
+When required, run only the affected contracts through the machine-wide mutex,
+never the whole suite by reflex:
+
+```sh
+./scripts/run_ui_tests.sh \
+  -only-testing:SpeditoUITests/PriorityZeroShellJourneyUITests/testA02BlankProductLaunchesItsCompleteWorkspace
+```
+
+CI remains the backstop that runs all 15 launched-process tests with parallel
+testing disabled. An agent that skips this suite must say so in its handoff and
+state why the change does not touch application-shell wiring.
 
 Do not claim a change is complete if relevant tests are failing. If the full
 suite cannot run, state exactly what was and was not validated.
