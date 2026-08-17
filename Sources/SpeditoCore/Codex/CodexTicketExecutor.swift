@@ -437,7 +437,9 @@ public enum CodexTicketExecutor {
       }.joined(separator: "\n")
     let existingScope =
       existingItems
-      .filter { $0.id != item.id && $0.state != .cancelled }
+      .filter {
+        $0.id != item.id && $0.state != .cancelled && $0.state != .released
+      }
       .map { "- \($0.key) [\($0.type.title)]: \($0.title)" }
       .joined(separator: "\n")
 

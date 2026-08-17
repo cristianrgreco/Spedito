@@ -124,11 +124,35 @@ struct SprintTicketRunTelemetryPresentationTests {
     #expect(selected.id == runningRun.id)
   }
 
+  @Test("[D22] Capacity wait explains recovery without reporting failure")
+  func d22CapacityWaitExplainsRecoveryWithoutFailure() throws {
+    let retryAt = Date(timeIntervalSince1970: 1_800_001_800)
+    let presentation = try #require(
+      SprintTicketExecutionConstraintPresentation(
+        run: run(
+          status: .queued,
+          executionConstraint: AgentRunExecutionConstraint(
+            kind: .accountRateLimit,
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            retryAt: retryAt,
+            technicalEvidence: "primary"
+          )
+        )
+      )
+    )
+
+    #expect(presentation.title == "Waiting for Codex capacity")
+    #expect(presentation.explanation.contains("continue automatically"))
+    #expect(presentation.retryAt == retryAt)
+    #expect(presentation.technicalEvidence == "primary")
+  }
+
   private func run(
     status: AgentRunStatus,
     contextUsedTokens: Int? = nil,
     contextWindowTokens: Int? = nil,
     compactionCount: Int = 0,
+    executionConstraint: AgentRunExecutionConstraint? = nil,
     updatedAt: Date = Date()
   ) -> AgentRun {
     AgentRun(
@@ -139,6 +163,7 @@ struct SprintTicketRunTelemetryPresentationTests {
       contextUsedTokens: contextUsedTokens,
       contextWindowTokens: contextWindowTokens,
       compactionCount: compactionCount,
+      executionConstraint: executionConstraint,
       createdAt: updatedAt,
       updatedAt: updatedAt
     )

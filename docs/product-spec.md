@@ -1772,6 +1772,12 @@ concurrency limit. Account rate limits, machine resources, dependencies, and
 repository integration still create observable back-pressure; these are runtime
 conditions, not a claim that the AI team contains a finite number of employees.
 
+When Codex reports an account limit or Spedito applies safety back-pressure,
+the affected Agent run remains durably queued rather than failing. The Ticket
+shows the limiting reason, next known retry time, and safe technical evidence.
+The dispatcher preserves that wait across relaunch and starts exactly one
+implementation operation after a current capacity observation clears it.
+
 The sidebar represents configuration only. For each reusable team member it
 shows name, governed capability, model, effort, and a route to team settings. It
 does not show presence dots, “idle,” or aggregate activity attached to the

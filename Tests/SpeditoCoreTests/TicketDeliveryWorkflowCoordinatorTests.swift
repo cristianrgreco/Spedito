@@ -665,6 +665,135 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  @Test("[D20] Reviewed research follow-ups publish once with source provenance")
+  @MainActor
+  func d20ReviewedResearchFollowUpsPublishWithProvenance() async throws {
+    let proposals = [
+      FollowUpTicketProposalDraft(
+        reference: "F1",
+        title: "Design provider failure states",
+        type: .task,
+        body: "Define the unavailable and partial-data owner experience.",
+        acceptanceCriteria: ["Every state is reviewable"],
+        suggestedRole: .uxDesigner,
+        priority: .high,
+        rationale: "The approved research identified provider failure behavior."
+      ),
+      FollowUpTicketProposalDraft(
+        reference: "F2",
+        title: "Integrate the approved provider",
+        type: .story,
+        body: "Implement the approved provider contract.",
+        acceptanceCriteria: ["The approved provider supplies product data"],
+        suggestedRole: .implementer,
+        priority: .normal,
+        rationale: "This delivers the approved recommendation.",
+        dependsOnReferences: ["F1"]
+      ),
+    ]
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .localOutcome,
+      epicOutcome: "Customers receive reliable external data",
+      followUpTicketProposals: proposals
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .reviewing
+    )
+    #expect(
+      !(await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      ))
+    )
+    #expect(
+      try await harness.store.fetchLatestTicketSuggestionBatch(
+        productID: harness.product.id
+      ) == nil
+    )
+
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .readyForDemo
+    )
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    let batch = try #require(
+      try await harness.store.fetchLatestTicketSuggestionBatch(
+        productID: harness.product.id
+      )
+    )
+    let acceptedWorkItems = try await harness.store.fetchWorkItems(
+      productID: harness.product.id
+    )
+
+    #expect(batch.session.sourceWorkItemID == harness.workItem.id)
+    #expect(batch.session.epicID == harness.workItem.epicID)
+    #expect(batch.suggestions.map(\.status).allSatisfy { $0 == .proposed })
+    #expect(batch.suggestions.map(\.reference) == ["S1", "S2"])
+    #expect(batch.suggestions[0].existingDependencyWorkItemIDs == [harness.workItem.id])
+    #expect(batch.suggestions[1].existingDependencyWorkItemIDs == [harness.workItem.id])
+    #expect(batch.suggestions[1].dependencyIDs == [batch.suggestions[0].id])
+    #expect(acceptedWorkItems.map(\.id) == [harness.workItem.id])
+    await harness.store.close()
+  }
+
+  @Test("[D21] Final acceptance completes Sprint report evidence durably")
+  @MainActor
+  func d21FinalAcceptanceCompletesSprintReportEvidence() async throws {
+    let harness = try await makeAcceptanceHarness(deliveryKind: .localOutcome)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    let completed = try #require(
+      try await harness.store.fetchSprintHistory(productID: harness.product.id).first
+    )
+    let completedAt = try #require(completed.sprint.completedAt)
+    let startedAt = try #require(completed.sprint.startedAt)
+    let acceptedCandidates = try await harness.store
+      .fetchCandidateRevisions(productID: harness.product.id)
+      .filter { $0.sprintID == completed.sprint.id && $0.status == .accepted }
+    let recordedRuns = try await harness.store.fetchAgentRuns(productID: harness.product.id)
+      .filter { $0.sprintID == completed.sprint.id }
+
+    #expect(completed.sprint.state == .completed)
+    #expect(completed.items.map(\.workItemID) == [harness.workItem.id])
+    #expect(completedAt >= startedAt)
+    #expect(Set(acceptedCandidates.map(\.workItemID)) == Set([harness.workItem.id]))
+    #expect(!recordedRuns.isEmpty)
+    await harness.store.close()
+
+    let recoveredStore = try SQLiteStore(
+      url: harness.root.appendingPathComponent("product.sqlite")
+    )
+    let recovered = try #require(
+      try await recoveredStore.fetchSprintHistory(productID: harness.product.id).first
+    )
+    let recoveredCandidates = try await recoveredStore
+      .fetchCandidateRevisions(productID: harness.product.id)
+      .filter { $0.sprintID == recovered.sprint.id && $0.status == .accepted }
+    let recoveredRuns = try await recoveredStore.fetchAgentRuns(productID: harness.product.id)
+      .filter { $0.sprintID == recovered.sprint.id }
+
+    #expect(recovered.sprint.state == .completed)
+    #expect(recovered.sprint.completedAt == completedAt)
+    #expect(recovered.sprint.startedAt == startedAt)
+    #expect(recoveredCandidates.map(\.id) == acceptedCandidates.map(\.id))
+    #expect(recoveredRuns.map(\.id) == recordedRuns.map(\.id))
+    await recoveredStore.close()
+  }
+
   @Test("[D04] Paused delivery relaunches and resumes the same durable run")
   @MainActor
   func pausedDeliveryResumesExistingRun() async throws {
@@ -780,7 +909,9 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   @MainActor
   private func makeAcceptanceHarness(
     deliveryKind: CandidateDeliveryKind,
-    demo: DemoLaunchSpecification? = nil
+    demo: DemoLaunchSpecification? = nil,
+    epicOutcome: String? = nil,
+    followUpTicketProposals: [FollowUpTicketProposalDraft] = []
   ) async throws -> AcceptanceHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-acceptance-coordinator-\(UUID())",
@@ -793,6 +924,12 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
     let implementer = try #require(profiles.first { $0.role == .implementer })
     let techLead = try #require(profiles.first { $0.role == .lead })
+    let epic =
+      if let epicOutcome {
+        try await store.createEpic(productID: product.id, outcome: epicOutcome)
+      } else {
+        Optional<Epic>.none
+      }
     var workItem = try await store.createWorkItem(
       productID: product.id,
       title: deliveryKind == .localOutcome
@@ -801,7 +938,8 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       type: .story,
       body: "Complete only the exact reviewed result.",
       acceptanceCriteria: ["The accepted result becomes durable exactly once."],
-      priority: .normal
+      priority: .normal,
+      epicID: epic?.id
     )
     workItem = try await store.transitionWorkItem(
       id: workItem.id,
@@ -866,9 +1004,33 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       demo: demo,
       retrospectiveWentWell: [],
       retrospectiveCouldImprove: [],
-      retrospectiveActions: []
+      retrospectiveActions: [],
+      followUpTicketProposals: followUpTicketProposals
     )
-    let resultData = try JSONEncoder().encode(result)
+    let encodedResult = try JSONEncoder().encode(result)
+    var resultObject = try #require(
+      JSONSerialization.jsonObject(with: encodedResult) as? [String: Any]
+    )
+    resultObject["followUpTicketProposals"] = followUpTicketProposals.map { proposal in
+      let priority = switch proposal.priority {
+      case .urgent: "urgent"
+      case .high: "high"
+      case .normal: "normal"
+      case .low: "low"
+      }
+      return [
+        "reference": proposal.reference,
+        "title": proposal.title,
+        "type": proposal.type.rawValue,
+        "body": proposal.body,
+        "acceptanceCriteria": proposal.acceptanceCriteria,
+        "role": proposal.suggestedRole.rawValue,
+        "priority": priority,
+        "rationale": proposal.rationale,
+        "dependsOn": proposal.dependsOnReferences,
+      ] as [String: Any]
+    }
+    let resultData = try JSONSerialization.data(withJSONObject: resultObject)
     let resultJSON = try #require(String(data: resultData, encoding: .utf8))
     let gitWorkspaceManager = GitWorkspaceManager()
     let candidateID = UUID()

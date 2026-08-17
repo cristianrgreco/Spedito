@@ -1341,6 +1341,19 @@ Recovery error handling has three explicit classes:
   publication and are retried by later cleanup or made harmless by
   create-or-replace ref semantics.
 
+Delivery-capacity waits are durable `AgentRun` state, not scheduler cache
+authority. A queued run may store a typed execution constraint
+(`account_rate_limit` or `safety_backpressure`), the observation time, an
+optional retry time, and bounded technical evidence. The coordinator derives
+one current capacity policy from the latest Codex observation plus these
+durable waits. A fresh available observation clears the constraint before
+admission; an absent or stale observation preserves it. The runtime coordinator
+then starts at most one child operation for the run identity.
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Queued for capacity | Current Codex limits or safety back-pressure block an otherwise eligible implementation | `AgentRun.status = queued` plus typed constraint, observation time, optional retry time, and bounded evidence in SQLite | **Waiting for Codex capacity** or **Waiting for safe capacity**, an automatic-recovery explanation, and retry time/evidence when available | Stop or pause the Sprint through the existing delivery controls; no manual retry is required | A fresh coordinator preserves the wait while observations are unavailable or stale, clears it only from current available capacity, and admits one operation |
+
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral
 conversation, except when a live permission decision was outstanding; that run

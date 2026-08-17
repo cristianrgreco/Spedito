@@ -50,6 +50,49 @@ public struct TicketDeliveryRuntimeSnapshot: Equatable, Sendable {
   }
 }
 
+public enum TicketDeliveryCapacityPolicy {
+  public static func constraint(
+    from snapshot: CodexRateLimitsSnapshot?,
+    isObservationStale: Bool,
+    durableRuns: [AgentRun],
+    observedAt: Date = Date()
+  ) -> AgentRunExecutionConstraint? {
+    if !isObservationStale,
+      let reachedLimitType = snapshot?.reachedLimitType?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !reachedLimitType.isEmpty
+    {
+      let normalizedType = reachedLimitType.lowercased()
+      let kind: AgentRunExecutionConstraintKind =
+        normalizedType.contains("safety") || normalizedType.contains("back")
+        ? .safetyBackPressure
+        : .accountRateLimit
+      let retryAt = snapshot?.nextResetAt
+      if let existing = durableRuns
+        .compactMap(\.executionConstraint)
+        .first(where: {
+          $0.kind == kind
+            && $0.retryAt == retryAt
+            && $0.technicalEvidence == reachedLimitType
+        })
+      {
+        return existing
+      }
+      return AgentRunExecutionConstraint(
+        kind: kind,
+        observedAt: observedAt,
+        retryAt: retryAt,
+        technicalEvidence: reachedLimitType
+      )
+    }
+
+    guard snapshot == nil || isObservationStale else { return nil }
+    return durableRuns
+      .compactMap(\.executionConstraint)
+      .max { $0.observedAt < $1.observedAt }
+  }
+}
+
 @MainActor
 public final class TicketDeliveryRuntimeCoordinator {
   public typealias SchedulerPreparation = @MainActor (UUID) async -> Void

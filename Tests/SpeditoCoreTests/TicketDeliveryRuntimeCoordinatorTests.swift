@@ -31,6 +31,92 @@ struct TicketDeliveryRuntimeCoordinatorTests {
     await coordinator.cancel()
   }
 
+  @Test("[D22] Capacity waits wake one durable implementation operation")
+  func d22CapacityWaitWakesOneImplementationOperation() async {
+    let harness = DeliveryCapacityHarness()
+    let productID = harness.productID
+    let runID = harness.runID
+    let coordinator = harness.coordinator
+    let probe = harness.probe
+    let operationGate = harness.operationGate
+
+    coordinator.schedule(productID: productID)
+    await probe.waitForDrain(productID: productID, count: 1)
+    coordinator.schedule(productID: productID)
+    await probe.waitForDrain(productID: productID, count: 2)
+    #expect(coordinator.snapshot().implementationRunIDs.isEmpty)
+
+    harness.isConstrained = false
+    coordinator.schedule(productID: productID)
+    await probe.waitForDrain(productID: productID, count: 3)
+    await operationGate.waitUntilReady(label: "implementation")
+    coordinator.schedule(productID: productID)
+    await probe.waitForDrain(productID: productID, count: 4)
+    #expect(coordinator.snapshot().implementationRunIDs == Set([runID]))
+
+    await coordinator.cancel(productID: productID)
+    #expect(operationGate.wasCancelled(label: "implementation"))
+  }
+
+  @Test("[D22] Capacity policy preserves durable waits until fresh recovery")
+  func d22CapacityPolicyPreservesDurableWaitUntilFreshRecovery() throws {
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let resetAt = observedAt.addingTimeInterval(900)
+    let queuedRun = AgentRun(
+      productID: UUID(),
+      workItemID: UUID(),
+      profileID: UUID(),
+      status: .queued
+    )
+    let limited = CodexRateLimitsSnapshot(
+      windows: [
+        CodexRateLimitWindow(
+          id: "primary",
+          usedPercent: 100,
+          windowDurationMinutes: 300,
+          resetsAt: resetAt
+        )
+      ],
+      reachedLimitType: "primary"
+    )
+
+    let observed = try #require(
+      TicketDeliveryCapacityPolicy.constraint(
+        from: limited,
+        isObservationStale: false,
+        durableRuns: [queuedRun],
+        observedAt: observedAt
+      )
+    )
+    #expect(observed.kind == .accountRateLimit)
+    #expect(observed.retryAt == resetAt)
+
+    let recoveredRun = AgentRun(
+      productID: queuedRun.productID,
+      workItemID: queuedRun.workItemID,
+      profileID: queuedRun.profileID,
+      status: .queued,
+      executionConstraint: observed
+    )
+    #expect(
+      TicketDeliveryCapacityPolicy.constraint(
+        from: nil,
+        isObservationStale: true,
+        durableRuns: [recoveredRun],
+        observedAt: observedAt.addingTimeInterval(60)
+      ) == observed
+    )
+
+    let available = CodexRateLimitsSnapshot(windows: [], reachedLimitType: nil)
+    #expect(
+      TicketDeliveryCapacityPolicy.constraint(
+        from: available,
+        isObservationStale: false,
+        durableRuns: [recoveredRun]
+      ) == nil
+    )
+  }
+
   @Test("Cancelling one product leaves another product running")
   func productCancellationIsIsolated() async {
     let firstProductID = UUID()
@@ -123,6 +209,7 @@ struct TicketDeliveryRuntimeCoordinatorTests {
     await gate.waitUntilReady(label: "live activity")
     await gate.waitUntilReady(label: "acceptance")
 
+
     await coordinator.cancel(productID: productID)
 
     #expect(gate.didFinish(label: "implementation"))
@@ -192,6 +279,53 @@ struct TicketDeliveryRuntimeCoordinatorTests {
   }
 }
 
+@MainActor
+private final class DeliveryCapacityHarness {
+  let state = DeliveryCapacityState()
+  let coordinator: TicketDeliveryRuntimeCoordinator
+
+  var productID: UUID { state.productID }
+  var runID: UUID { state.runID }
+  var probe: DeliverySchedulerProbe { state.probe }
+  var operationGate: DeliveryOperationGate { state.operationGate }
+  var isConstrained: Bool {
+    get { state.isConstrained }
+    set { state.isConstrained = newValue }
+  }
+
+  init() {
+    coordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { [state] productID in
+        state.drain(productID: productID)
+      }
+    )
+    state.coordinator = coordinator
+  }
+}
+
+@MainActor
+private final class DeliveryCapacityState {
+  let productID = UUID()
+  let runID = UUID()
+  let probe = DeliverySchedulerProbe()
+  let operationGate = DeliveryOperationGate()
+  weak var coordinator: TicketDeliveryRuntimeCoordinator?
+  var isConstrained = true
+
+  func drain(productID: UUID) -> TicketDeliverySchedulerDisposition {
+    guard let coordinator else { return .finished }
+    probe.recordDrain(productID: productID)
+    guard !isConstrained else { return .waitForWake }
+    coordinator.startImplementation(runID: runID, productID: productID) {
+      await self.operationGate.run(
+        label: "implementation",
+        releasesOnCancellation: true
+      )
+    }
+    return .waitForWake
+  }
+}
 @MainActor
 private final class DeliverySchedulerProbe {
   private struct WaitKey: Hashable {

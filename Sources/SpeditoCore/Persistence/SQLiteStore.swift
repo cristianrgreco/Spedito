@@ -217,6 +217,9 @@ public actor SQLiteStore {
           migration = ProductDatabaseSchema.migrationV11ToV12
         case 12:
           migration = ProductDatabaseSchema.migrationV12ToV13
+        case 13:
+          try ensureAgentRunExecutionConstraintColumns(database: database)
+          migration = ProductDatabaseSchema.migrationV13ToV14
         default:
           throw PersistenceError.corruptData(
             "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
@@ -234,6 +237,26 @@ public actor SQLiteStore {
     } catch {
       try? execute("ROLLBACK;", database: database)
       throw error
+    }
+  }
+
+  private static func ensureAgentRunExecutionConstraintColumns(
+    database: OpaquePointer
+  ) throws {
+    let existingColumns = Set(
+      try columnNames(table: "agent_runs", schema: "main", database: database)
+    )
+    let requiredColumns = [
+      ("execution_constraint_kind", "TEXT"),
+      ("execution_constraint_observed_at", "REAL"),
+      ("execution_constraint_retry_at", "REAL"),
+      ("execution_constraint_evidence", "TEXT"),
+    ]
+    for (name, type) in requiredColumns where !existingColumns.contains(name) {
+      try execute(
+        "ALTER TABLE agent_runs ADD COLUMN \(quotedIdentifier(name)) \(type);",
+        database: database
+      )
     }
   }
 
@@ -847,8 +870,11 @@ public actor SQLiteStore {
           worktree_path, ticket_budget_used, context_used_tokens,
           context_window_tokens, compaction_count, created_at, updated_at,
           sprint_id, sprint_item_id, turn_started_at, last_activity_at,
-          last_activity_text, last_activity_kind, active_duration_seconds
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          last_activity_text, last_activity_kind, active_duration_seconds,
+          execution_constraint_kind, execution_constraint_observed_at,
+          execution_constraint_retry_at, execution_constraint_evidence
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?);
       """
     ) { statement in
       try bind(run.id.uuidString, to: 1, in: statement)
@@ -871,6 +897,10 @@ public actor SQLiteStore {
       try bindOptionalString(run.lastActivityText, to: 18, in: statement)
       try bindOptionalString(run.lastActivityKind?.rawValue, to: 19, in: statement)
       try bind(run.activeDurationSeconds, to: 20, in: statement)
+      try bindOptionalString(run.executionConstraint?.kind.rawValue, to: 21, in: statement)
+      try bindOptionalDate(run.executionConstraint?.observedAt, to: 22, in: statement)
+      try bindOptionalDate(run.executionConstraint?.retryAt, to: 23, in: statement)
+      try bindOptionalString(run.executionConstraint?.technicalEvidence, to: 24, in: statement)
       try stepDone(statement)
     }
   }

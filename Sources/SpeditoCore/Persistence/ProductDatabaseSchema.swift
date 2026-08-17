@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 13
+  static let version: Int32 = 14
 
   static let sql = """
     CREATE TABLE products (
@@ -229,6 +229,10 @@ enum ProductDatabaseSchema {
         last_activity_text TEXT,
         last_activity_kind TEXT,
         active_duration_seconds REAL NOT NULL DEFAULT 0,
+        execution_constraint_kind TEXT,
+        execution_constraint_observed_at REAL,
+        execution_constraint_retry_at REAL,
+        execution_constraint_evidence TEXT,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL
     );
@@ -809,6 +813,7 @@ enum ProductDatabaseSchema {
     \(migrationV10ToV11)
     \(migrationV11ToV12)
     \(migrationV12ToV13)
+    \(migrationV13ToV14)
     """
 
   static let migrationV1ToV2 = """
@@ -1461,6 +1466,10 @@ enum ProductDatabaseSchema {
       AND external_id GLOB 'github:*:review:*';
 
     PRAGMA user_version = 13;
+    """
+
+  static let migrationV13ToV14 = """
+    PRAGMA user_version = 14;
     """
 
   static let legacyCopyTableOrder = [

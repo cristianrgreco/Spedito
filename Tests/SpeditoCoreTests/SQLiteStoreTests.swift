@@ -1209,6 +1209,74 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
+  @Test("[D22] Version 13 capacity waits migrate and survive a fresh store")
+  func d22QueuedDeliveryCapacityWaitSurvivesFreshStore() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let observedAt = Date(timeIntervalSince1970: 1_800_000_000)
+    let retryAt = observedAt.addingTimeInterval(1_800)
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Capacity recovery")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Resume constrained delivery"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Preserve a safe delivery wait",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: nil,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    _ = try await store.startSprint(id: draft.sprint.id)
+    let run = try #require(await store.fetchAgentRuns(productID: product.id).first)
+    await store.close()
+    try fixture.execute(
+      """
+      ALTER TABLE agent_runs DROP COLUMN execution_constraint_kind;
+      ALTER TABLE agent_runs DROP COLUMN execution_constraint_observed_at;
+      ALTER TABLE agent_runs DROP COLUMN execution_constraint_retry_at;
+      ALTER TABLE agent_runs DROP COLUMN execution_constraint_evidence;
+      PRAGMA user_version = 13;
+      """
+    )
+
+    let migratedStore = try SQLiteStore(url: fixture.databaseURL)
+    let constraint = AgentRunExecutionConstraint(
+      kind: .safetyBackPressure,
+      observedAt: observedAt,
+      retryAt: retryAt,
+      technicalEvidence: "safety_backpressure"
+    )
+    _ = try await migratedStore.setAgentRunExecutionConstraint(
+      id: run.id,
+      constraint: constraint
+    )
+    await migratedStore.close()
+
+    let recoveredStore = try SQLiteStore(url: fixture.databaseURL)
+    let recovered = try await recoveredStore.fetchAgentRun(id: run.id)
+    #expect(recovered.status == .queued)
+    #expect(recovered.executionConstraint == constraint)
+    let cleared = try await recoveredStore.setAgentRunExecutionConstraint(
+      id: run.id,
+      constraint: nil
+    )
+    #expect(cleared.executionConstraint == nil)
+    #expect(cleared.codexThreadID == nil)
+    await recoveredStore.close()
+  }
+
   @Test("Invalid transition leaves durable state unchanged")
   func invalidTransitionIsAtomic() async throws {
     let fixture = try DatabaseFixture()

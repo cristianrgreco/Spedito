@@ -17,7 +17,9 @@ extension SQLiteStore {
              status, codex_thread_id, worktree_path, ticket_budget_used,
              context_used_tokens, context_window_tokens, compaction_count,
              created_at, updated_at, turn_started_at, last_activity_at,
-             last_activity_text, last_activity_kind, active_duration_seconds
+             last_activity_text, last_activity_kind, active_duration_seconds,
+             execution_constraint_kind, execution_constraint_observed_at,
+             execution_constraint_retry_at, execution_constraint_evidence
       FROM agent_runs
       WHERE \(predicate)
       ORDER BY created_at ASC;
@@ -56,6 +58,13 @@ extension SQLiteStore {
             lastActivityText: try optionalText(statement, column: 17),
             lastActivityKind: try optionalText(statement, column: 18)
               .flatMap(CodexLiveActivityKind.init(rawValue:)),
+            executionConstraint: try decodeAgentRunExecutionConstraint(
+              statement,
+              kindColumn: 20,
+              observedAtColumn: 21,
+              retryAtColumn: 22,
+              evidenceColumn: 23
+            ),
             createdAt: date(statement, column: 13),
             updatedAt: date(statement, column: 14)
           )
@@ -72,7 +81,9 @@ extension SQLiteStore {
              status, codex_thread_id, worktree_path, ticket_budget_used,
              context_used_tokens, context_window_tokens, compaction_count,
              created_at, updated_at, turn_started_at, last_activity_at,
-             last_activity_text, last_activity_kind, active_duration_seconds
+             last_activity_text, last_activity_kind, active_duration_seconds,
+             execution_constraint_kind, execution_constraint_observed_at,
+             execution_constraint_retry_at, execution_constraint_evidence
       FROM agent_runs
       WHERE id = ?;
       """
@@ -110,6 +121,13 @@ extension SQLiteStore {
         lastActivityText: try optionalText(statement, column: 17),
         lastActivityKind: try optionalText(statement, column: 18)
           .flatMap(CodexLiveActivityKind.init(rawValue:)),
+        executionConstraint: try decodeAgentRunExecutionConstraint(
+          statement,
+          kindColumn: 20,
+          observedAtColumn: 21,
+          retryAtColumn: 22,
+          evidenceColumn: 23
+        ),
         createdAt: date(statement, column: 13),
         updatedAt: date(statement, column: 14)
       )
@@ -163,6 +181,9 @@ extension SQLiteStore {
         try bind(id.uuidString, to: 7, in: statement)
         try stepDone(statement)
       }
+      if status != .queued {
+        try writeAgentRunExecutionConstraint(id: id, constraint: nil, updatedAt: now)
+      }
       if existing.status != status, let eventActor, let eventDetail {
         _ = try insertEvent(
           productID: existing.productID,
@@ -189,6 +210,24 @@ extension SQLiteStore {
       try bind(id.uuidString, to: 2, in: statement)
       try stepDone(statement)
     }
+    return try fetchAgentRun(id: id)
+  }
+
+  public func setAgentRunExecutionConstraint(
+    id: UUID,
+    constraint: AgentRunExecutionConstraint?
+  ) throws -> AgentRun {
+    let existing = try fetchAgentRun(id: id)
+    guard existing.status == .queued || constraint == nil else {
+      throw PersistenceError.corruptData(
+        "Only a queued agent run can wait for an execution constraint."
+      )
+    }
+    try writeAgentRunExecutionConstraint(
+      id: id,
+      constraint: constraint,
+      updatedAt: Date()
+    )
     return try fetchAgentRun(id: id)
   }
 
@@ -238,6 +277,56 @@ extension SQLiteStore {
       try stepDone(statement)
     }
     return try fetchAgentRun(id: id)
+  }
+
+  private func writeAgentRunExecutionConstraint(
+    id: UUID,
+    constraint: AgentRunExecutionConstraint?,
+    updatedAt: Date
+  ) throws {
+    try withStatement(
+      """
+      UPDATE agent_runs
+      SET execution_constraint_kind = ?,
+          execution_constraint_observed_at = ?,
+          execution_constraint_retry_at = ?,
+          execution_constraint_evidence = ?,
+          updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bindOptionalString(constraint?.kind.rawValue, to: 1, in: statement)
+      try bindOptionalDate(constraint?.observedAt, to: 2, in: statement)
+      try bindOptionalDate(constraint?.retryAt, to: 3, in: statement)
+      try bindOptionalString(constraint?.technicalEvidence, to: 4, in: statement)
+      try bind(updatedAt.timeIntervalSince1970, to: 5, in: statement)
+      try bind(id.uuidString, to: 6, in: statement)
+      try stepDone(statement)
+    }
+  }
+
+  private func decodeAgentRunExecutionConstraint(
+    _ statement: OpaquePointer,
+    kindColumn: Int32,
+    observedAtColumn: Int32,
+    retryAtColumn: Int32,
+    evidenceColumn: Int32
+  ) throws -> AgentRunExecutionConstraint? {
+    guard let rawKind = try optionalText(statement, column: kindColumn) else {
+      return nil
+    }
+    guard
+      let kind = AgentRunExecutionConstraintKind(rawValue: rawKind),
+      let observedAt = optionalDate(statement, column: observedAtColumn)
+    else {
+      throw PersistenceError.corruptData("Invalid agent run execution constraint")
+    }
+    return AgentRunExecutionConstraint(
+      kind: kind,
+      observedAt: observedAt,
+      retryAt: optionalDate(statement, column: retryAtColumn),
+      technicalEvidence: try optionalText(statement, column: evidenceColumn)
+    )
   }
 
 }

@@ -2294,6 +2294,58 @@ struct CodexAdapterTests {
     #expect(developerInstructions.contains(#"not "S1 - Choose a provider""#))
   }
 
+  @Test("[D20] Research receives active scope and cannot duplicate covered work")
+  func d20ResearchPromptIncludesActiveScopeAndExcludesHistory() {
+    let product = Product(name: "Provider decision")
+    let analyst = AgentProfile(
+      productID: product.id,
+      name: "Business analyst",
+      role: .businessAnalyst
+    )
+    let research = WorkItem(
+      productID: product.id,
+      key: "T1",
+      title: "Recommend a suitable content provider",
+      type: .task,
+      state: .running
+    )
+    let activeDesign = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Design provider loading and unavailable states",
+      type: .task,
+      state: .ready
+    )
+    let deliveredHistory = WorkItem(
+      productID: product.id,
+      key: "T9",
+      title: "Historical provider spike",
+      type: .task,
+      state: .released
+    )
+
+    let prompt = CodexTicketExecutor.prompt(
+      product: product,
+      item: research,
+      assignee: analyst,
+      prerequisites: [],
+      dependants: [activeDesign],
+      prerequisiteComments: [:],
+      ticketComments: [],
+      knowledgeContext: [],
+      existingItems: [research, activeDesign, deliveredHistory]
+    )
+
+    #expect(
+      prompt.contains(
+        "- T2 [Task]: Design provider loading and unavailable states"
+      )
+    )
+    #expect(prompt.contains("Return an empty\nfollowUpTicketProposals array"))
+    #expect(!prompt.contains("T9 [Task]: Historical provider spike"))
+    #expect(prompt.contains("do not duplicate it in follow-up proposals"))
+  }
+
   @Test("Owner and persona prompts are appended beneath platform controls")
   func promptComposition() {
     let prompt = CodexTicketSuggestionGenerator.developerInstructions(

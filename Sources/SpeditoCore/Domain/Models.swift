@@ -1404,6 +1404,47 @@ public enum AgentRunStatus: String, Codable, CaseIterable, Sendable {
   case cancelled
 }
 
+public enum AgentRunExecutionConstraintKind: String, Codable, Hashable, Sendable {
+  case accountRateLimit = "account_rate_limit"
+  case safetyBackPressure = "safety_back_pressure"
+
+  public var ownerFacingTitle: String {
+    switch self {
+    case .accountRateLimit: "Waiting for Codex capacity"
+    case .safetyBackPressure: "Waiting for a safe Codex window"
+    }
+  }
+
+  public var ownerFacingExplanation: String {
+    switch self {
+    case .accountRateLimit:
+      "Codex reached an account limit. Delivery will continue automatically after the capacity window resets."
+    case .safetyBackPressure:
+      "Codex applied safety back-pressure. Delivery will continue automatically when it clears."
+    }
+  }
+}
+
+public struct AgentRunExecutionConstraint: Codable, Hashable, Sendable {
+  public let kind: AgentRunExecutionConstraintKind
+  public let observedAt: Date
+  public let retryAt: Date?
+  public let technicalEvidence: String?
+
+  public init(
+    kind: AgentRunExecutionConstraintKind,
+    observedAt: Date,
+    retryAt: Date?,
+    technicalEvidence: String?
+  ) {
+    self.kind = kind
+    self.observedAt = observedAt
+    self.retryAt = retryAt
+    self.technicalEvidence = technicalEvidence
+  }
+}
+
+
 public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
   public let id: UUID
   public let productID: UUID
@@ -1423,6 +1464,7 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
   public var lastActivityAt: Date?
   public var lastActivityText: String?
   public var lastActivityKind: CodexLiveActivityKind?
+  public var executionConstraint: AgentRunExecutionConstraint?
   public let createdAt: Date
   public var updatedAt: Date
 
@@ -1445,6 +1487,7 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
     lastActivityAt: Date? = nil,
     lastActivityText: String? = nil,
     lastActivityKind: CodexLiveActivityKind? = nil,
+    executionConstraint: AgentRunExecutionConstraint? = nil,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
   ) {
@@ -1466,6 +1509,7 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
     self.lastActivityAt = lastActivityAt
     self.lastActivityText = lastActivityText
     self.lastActivityKind = lastActivityKind
+    self.executionConstraint = executionConstraint
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }

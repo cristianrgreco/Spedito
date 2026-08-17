@@ -892,7 +892,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  private func store(for productID: UUID) -> SQLiteStore? {
+  func store(for productID: UUID) -> SQLiteStore? {
     injectedStore ?? storeRegistry?.store(for: productID)
   }
 
@@ -3692,7 +3692,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  private func scheduleSprintExecution(productID: UUID? = nil) {
+  func scheduleSprintExecution(productID: UUID? = nil) {
     guard
       codexClient != nil,
       let productID = productID ?? selectedProductID
@@ -3709,7 +3709,19 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       return .finished
     }
 
-    let eligibleRuns = eligibleImplementationRuns(in: context)
+    let queuedRuns = context.runs.filter { $0.status == .queued }
+    let executionConstraint = TicketDeliveryCapacityPolicy.constraint(
+      from: codexRateLimits,
+      isObservationStale: isCodexUsageStale,
+      durableRuns: queuedRuns
+    )
+    await persistDeliveryExecutionConstraint(
+      executionConstraint,
+      on: queuedRuns,
+      productID: productID
+    )
+    let eligibleRuns =
+      executionConstraint == nil ? eligibleImplementationRuns(in: context) : []
     for run in eligibleRuns {
       ticketDeliveryRuntimeCoordinator.startImplementation(
         runID: run.id,
@@ -3735,12 +3747,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       eligibleRuns.isEmpty,
       !startedIntegration
     {
-      return .finished
+      return executionConstraint != nil && !queuedRuns.isEmpty
+        ? .waitForWake
+        : .finished
     }
     return startedIntegration ? .continueImmediately : .waitForWake
   }
 
-  private func reloadSelectedProductIfCurrent(productID: UUID) async {
+
+  func reloadSelectedProductIfCurrent(productID: UUID) async {
     guard selectedProductID == productID else {
       await refreshTicketAttentions(productID: productID)
       return
@@ -3761,7 +3776,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     await sprintPlanningWorkflowCoordinator.settleMutations()
   }
 
-  private func presentExecutionError(_ error: Error, productID: UUID) {
+  func presentExecutionError(_ error: Error, productID: UUID) {
     guard selectedProductID == productID else { return }
     errorMessage = error.localizedDescription
   }
@@ -4540,7 +4555,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  private func refreshCodexUsage(
+  func refreshCodexUsage(
     client: CodexAppServerClient,
     monitorToken: FeatureOperationToken<CodexConnectionRuntime.Operation>
   ) async {
@@ -4553,6 +4568,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       codexUsageUpdatedAt = Date()
       isCodexUsageStale = false
       isRefreshingCodexUsage = false
+      await synchronizeDeliveryExecutionConstraints()
       scheduleCodexUsageReset(
         snapshot.nextResetAt,
         client: client,
@@ -4562,35 +4578,10 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       guard codexConnectionRuntime.isCurrent(monitorToken) else { return }
       isRefreshingCodexUsage = false
       isCodexUsageStale = codexRateLimits != nil
+      await synchronizeDeliveryExecutionConstraints()
     }
   }
 
-  private func scheduleCodexUsageReset(
-    _ resetAt: Date?,
-    client: CodexAppServerClient,
-    monitorToken: FeatureOperationToken<CodexConnectionRuntime.Operation>
-  ) {
-    codexConnectionRuntime.stopNow(.usageReset)
-    guard let resetAt else {
-      return
-    }
-    let delay = resetAt.timeIntervalSinceNow + 1
-    guard delay > 0 else {
-      return
-    }
-    codexConnectionRuntime.start(.usageReset) { [weak self] _ in
-      do {
-        try await Task.sleep(for: .seconds(delay))
-      } catch {
-        return
-      }
-      guard let self, self.codexConnectionRuntime.isCurrent(monitorToken) else {
-        return
-      }
-      self.isRefreshingCodexUsage = true
-      await self.refreshCodexUsage(client: client, monitorToken: monitorToken)
-    }
-  }
 
   private func stopCodexUsageMonitoring() {
     codexConnectionRuntime.stopNow(.usageMonitor)

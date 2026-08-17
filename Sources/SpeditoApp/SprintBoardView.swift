@@ -948,6 +948,21 @@ struct SprintTicketRunDetailsSelection {
   }
 }
 
+struct SprintTicketExecutionConstraintPresentation: Equatable {
+  let title: String
+  let explanation: String
+  let retryAt: Date?
+  let technicalEvidence: String?
+
+  init?(run: AgentRun?) {
+    guard let constraint = run?.executionConstraint else { return nil }
+    title = constraint.kind.ownerFacingTitle
+    explanation = constraint.kind.ownerFacingExplanation
+    retryAt = constraint.retryAt
+    technicalEvidence = constraint.technicalEvidence
+  }
+}
+
 private enum WorkItemCardLayout {
   static let edgePadding: CGFloat = 12
 }
@@ -1170,7 +1185,20 @@ private struct SprintRunDetailsPopover: View {
             detailLine("Last activity", value: Text(lastActivityAt, style: .relative))
           }
         case .queued:
-          detailLine("Timing", value: "Starts when picked up")
+          if let constraint = SprintTicketExecutionConstraintPresentation(run: run) {
+            detailLine("Waiting", value: constraint.title)
+            Text(constraint.explanation)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            if let retryAt = constraint.retryAt {
+              detailLine("Estimated retry", value: Text(retryAt, style: .relative))
+            }
+            if let technicalEvidence = constraint.technicalEvidence {
+              detailLine("Codex detail", value: technicalEvidence)
+            }
+          } else {
+            detailLine("Timing", value: "Starts when picked up")
+          }
           if run.activeDurationSeconds > 0 {
             detailLine(
               "Recorded active time",
@@ -1298,6 +1326,13 @@ private struct SprintTicketStatusBadge: View {
       return SprintCardActivity(
         title: "Needs your input",
         symbol: "hand.raised.fill",
+        tint: .orange
+      )
+    }
+    if let constraint = SprintTicketExecutionConstraintPresentation(run: run) {
+      return SprintCardActivity(
+        title: constraint.title,
+        symbol: "clock.badge.exclamationmark",
         tint: .orange
       )
     }
