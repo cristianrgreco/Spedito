@@ -14,6 +14,8 @@ Use the following documents as the durable source of truth:
 - `docs/product-spec.md` for product behavior, terminology, journeys, and scope.
 - `docs/technical-design.md` for architecture, persistence, execution, and
   recovery boundaries.
+- `docs/architecture/owner-journey-test-plan.md` for the journey inventory and
+  executable coverage ledger.
 - `README.md` for a concise user-facing overview and developer entry points.
 
 Keep those documents accurate when a change materially alters their claims.
@@ -71,6 +73,100 @@ migrations and work for every product. Never add migrations, fixtures, prompts,
 or defaults that refer specifically to the weather-app development example.
 Archived records remain available for audit history but must not leak into
 active planning, dependency, or suggestion calculations.
+
+### Required architecture invariants
+
+#### Durable and transient state
+
+For each workflow, classify every field as one of:
+
+- **Durable domain state:** must survive process termination and belongs in SQLite.
+- **Recoverable external observation:** immutable evidence captured in SQLite before it can authorize a mutation.
+- **Transient operation state:** task handles, continuations, short-lived credentials, or live activity that cannot be made authoritative.
+- **Presentation state:** a deterministic projection of durable state, transient operation state, and a typed owner-facing failure.
+
+Never copy durable workflow authority into a service cache or SwiftUI state. A
+cache may accelerate a read only when it can be discarded and rebuilt without
+changing behavior.
+
+#### Feature coordinator contract
+
+Every extracted long-running feature must provide the equivalent of:
+
+```swift
+protocol FeatureCoordinating: Sendable {
+  associatedtype Command: Sendable
+  associatedtype Snapshot: Equatable, Sendable
+
+  func snapshot() async -> Snapshot
+  func send(_ command: Command) async
+  func recover() async
+  func shutdown() async
+}
+```
+
+This is a shape, not a required generic protocol. Prefer a feature-specific
+protocol when a generic abstraction would hide meaningful behavior.
+
+A coordinator must:
+
+- own all tasks for its workflow;
+- serialize or explicitly partition operations;
+- identify operations so stale results can be rejected;
+- persist a durable transition before exposing it as complete;
+- derive its snapshot through one canonical path;
+- make recovery idempotent;
+- cancel only work it owns;
+- remain product-scoped; and
+- emit bounded state changes for presentation and tests.
+
+#### Application model contract
+
+After a feature is extracted, `AppModel` may:
+
+- construct the coordinator;
+- select the active product;
+- retain a bounded feature model or snapshot needed by the UI;
+- route a user command to the coordinator;
+- coordinate truly application-wide shutdown; and
+- react to a completed result when global navigation must change.
+
+It must not retain a second set of feature task handles, operation identifiers,
+busy flags, errors, or recovery rules.
+
+#### View contract
+
+A feature view should be constructible with:
+
+```swift
+FeatureView(
+  state: FeaturePresentationState,
+  send: @escaping (FeatureCommand) -> Void
+)
+```
+
+Environment injection is acceptable where it remains feature-bounded. The
+important constraints are:
+
+- the view cannot mutate persistence directly;
+- the view cannot decide whether a durable transition is legal;
+- the view does not own a long-running operation;
+- sheet visibility is derived from feature presentation state when it represents workflow state;
+- ephemeral editing text and focus may remain local; and
+- all owner-facing states can be constructed without running a real external operation.
+
+#### Failure contract
+
+Do not use one unstructured string as both diagnostic and workflow state. Each
+extracted feature should distinguish:
+
+- the stable failure category used for recovery and available actions;
+- a concise owner-facing title and explanation;
+- optional technical evidence safe to expose; and
+- whether retry, cancel, reconnect, or owner input is valid.
+
+Retain underlying errors for logs or tests only where doing so does not expose
+secrets.
 
 ### Feature navigation map
 
@@ -241,6 +337,76 @@ the single durable product sequence `T1`, `T2`, and so on.
 - Verify UI changes at representative light/dark and laptop-sized layouts when
   practical.
 
+### Change and commit protocol
+
+1. One work packet changes one coherent behavior or extracts one complete
+   workflow boundary.
+2. Begin with a clean or explicitly understood working tree.
+3. Reproduce a bug before fixing it.
+4. Add a new test only for a new observable contract or a plausible regression
+   not already covered.
+5. Do not mix opportunistic UX redesign with a behavior-preserving extraction.
+6. Finish all call-site migrations and remove obsolete paths before verification.
+7. Run focused checks, the full suite, `git diff --check`, and the required
+   relaunch.
+8. Ask the product owner to inspect the named journey when visual judgment is
+   required.
+9. Commit the accepted packet before beginning another unrelated packet.
+10. If the packet cannot be accepted, keep it isolated and record the exact
+    failing acceptance criterion.
+
+### Standard work-packet template
+
+Use this template when starting every extraction or later feature:
+
+```markdown
+# Work packet: <owner-visible outcome or architecture boundary>
+
+## Problem
+<What is difficult or incorrect today?>
+
+## Behavior to preserve or add
+<Exact owner-observable contract.>
+
+## Non-goals
+<Adjacent behavior that remains unchanged.>
+
+## Current authority
+- Durable state:
+- Task owner:
+- Presentation state:
+- Known duplicate state:
+
+## Target authority
+- Coordinator:
+- Commands:
+- Snapshot:
+- Persistence operations:
+- View boundary:
+
+## State table
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+
+## Call sites to migrate
+- [ ] ...
+
+## Obsolete state to remove
+- [ ] ...
+
+## Verification
+- [ ] Existing focused tests
+- [ ] New observable-contract test
+- [ ] Interruption and fresh-instance recovery
+- [ ] Full test suite
+- [ ] `git diff --check`
+- [ ] Relaunch
+- [ ] Product-owner inspection
+
+## Completion evidence
+<Exact commands and observed results.>
+```
+
 ### Long-running and multi-screen feature checklist
 
 Before implementing or accepting a long-running or multi-screen feature, record
@@ -275,6 +441,83 @@ Review uses these architecture ratchets:
   extraction improves it, so the improvement is locked in. Raising a baseline
   requires an explicit reason in the accepted work packet.
 
+## Verification model
+
+### Policy tests
+
+Use pure tests for transition permissions, presentation mapping, sorting,
+prioritization, and other deterministic rules. These should be fast and contain
+no tasks, files, or databases.
+
+### Persistence and side-effect tests
+
+Continue using:
+
+- temporary product databases;
+- schema fixtures and migration tests;
+- temporary Git repositories and command wrappers;
+- bounded fake GitHub transports;
+- credential-store fakes; and
+- Codex adapter fixtures.
+
+These tests prove the safety boundary but do not replace journey tests.
+
+### Coordinator journey tests
+
+A journey test drives public coordinator commands and observes snapshots while
+using real local persistence and local Git where applicable. It must verify both
+the presentation-relevant result and the underlying durable state.
+
+The standard shape is:
+
+```text
+Temporary product database
+        +
+Temporary Git repository
+        +
+Fake bounded external transport
+        +
+Feature coordinator
+        |
+Owner command -> explicit state event -> injected interruption
+        |
+Fresh coordinator instance -> recover -> final state and durable evidence
+```
+
+Tests must not reach into private task dictionaries or manually mutate
+presentation flags.
+
+### Deterministic asynchronous control
+
+Provide narrow test tools only when a workflow needs them:
+
+- a manually controlled operation gate;
+- an injected clock or sleep closure;
+- an async stream recorder;
+- a test polling policy; or
+- a fake transport whose response is resumed explicitly by the test.
+
+Replace `Task.sleep`-based observation in affected tests as each workflow is
+extracted. Do not add a global test framework that production code must
+understand.
+
+### Presentation scenarios
+
+For each extracted feature, provide a development-only catalog of meaningful
+presentation states. It may use SwiftUI previews, an internal debug scenario
+gallery, or focused hosting fixtures consistent with the existing build system.
+
+The catalog must include normal, empty, busy, interrupted, failed, retryable,
+stale, and completed states where applicable. It must not contain a fake product
+path presented as real functionality to release users.
+
+### Product-owner inspection
+
+Agent verification ends with a relaunched app and an explicit inspection
+script. The product owner performs visual and interaction inspection. Record any
+discovered defect as a reproducible journey and add automated behavioral
+coverage before fixing it where practical.
+
 ## Validate changes
 
 Run the full suite with the project-local module caches:
@@ -290,6 +533,7 @@ Also run:
 
 ```sh
 git diff --check
+./scripts/check_architecture_ratchets.sh
 ```
 
 Do not claim a change is complete if relevant tests are failing. If the full
