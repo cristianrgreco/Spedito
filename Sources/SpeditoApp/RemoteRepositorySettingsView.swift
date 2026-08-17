@@ -192,7 +192,7 @@ struct GitHubRepositorySettingsSection: View {
       case .needsTargetReview:
         targetReviewContent(connection)
       case .needsAuthorization:
-        disconnectedContent(actionTitle: connectionActionTitle)
+        authorizationContent(connection)
       case .needsInstallation:
         installationContent(connection)
       case .unavailable:
@@ -257,6 +257,29 @@ struct GitHubRepositorySettingsSection: View {
 
   private var connectionActionTitle: String {
     importedRepository == nil ? "Set up GitHub repository" : "Connect GitHub"
+  }
+
+  @ViewBuilder
+  private func authorizationContent(_ connection: RemoteRepositoryConnection) -> some View {
+    let presentation = GitHubAuthorizationRecoveryPresentation.resolve(
+      repositoryID: connection.repositoryID
+    )
+    if presentation.showsRepositoryIdentity {
+      repositoryIdentity(connection)
+    }
+    Text(presentation.message)
+      .font(.callout)
+      .foregroundStyle(.secondary)
+    HStack(spacing: 8) {
+      Button(presentation.actionTitle) {
+        connectGitHub()
+      }
+      .buttonStyle(.borderedProminent)
+      .disabled(isBusy)
+      if presentation.showsRepositoryIdentity {
+        connectionManagementButtons(connection)
+      }
+    }
   }
 
   @ViewBuilder

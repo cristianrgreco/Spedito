@@ -178,7 +178,7 @@ struct RemoteRepositoryPublishingTests {
     await store.close()
   }
 
-  @Test("Safe synchronization and publication reject stale transitions")
+  @Test("Safe synchronization is idempotent and publication rejects stale transitions")
   func persistenceCAS() async throws {
     let root = temporaryDirectory(named: "cas")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -253,6 +253,16 @@ struct RemoteRepositoryPublishingTests {
     #expect(synchronizedConnection.latestRelationship == .aligned)
     #expect(synchronizedConnection.latestAheadCount == 0)
     #expect(synchronizedConnection.latestBehindCount == 0)
+
+    try await store.markRemoteRepositoryConnectionsNeedAuthorization(accountID: accountID)
+    let authorizationRequired = try #require(
+      try await store.fetchRemoteRepositoryConnection(productID: product.id)
+    )
+    #expect(authorizationRequired.status == .needsAuthorization)
+    let recoveredConnection = try await store.reconcileRemoteRepositoryConnection(
+      afterAcceptedSafeSync: accepted
+    )
+    #expect(recoveredConnection == authorizationRequired)
 
     let publication = try await store.createRemotePublication(
       RemotePublication(

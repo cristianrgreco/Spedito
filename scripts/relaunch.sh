@@ -6,17 +6,17 @@ script_dir=${0:A:h}
 project_root=${script_dir:h}
 app_path="$project_root/.build/app/debug/Spedito.app"
 info_plist="$app_path/Contents/Info.plist"
-github_client_id=${SPEDITO_GITHUB_CLIENT_ID:-}
-github_app_slug=${SPEDITO_GITHUB_APP_SLUG:-}
-
-if [[ -f "$info_plist" ]]; then
-  if [[ -z "$github_client_id" ]]; then
-    github_client_id=$(plutil -extract SpeditoGitHubClientID raw "$info_plist" 2>/dev/null || true)
-  fi
-  if [[ -z "$github_app_slug" ]]; then
-    github_app_slug=$(plutil -extract SpeditoGitHubAppSlug raw "$info_plist" 2>/dev/null || true)
-  fi
+github_config=("${(@f)$("$script_dir/resolve_github_app_config.sh" "$project_root" "$info_plist")}")
+if (( ${#github_config[@]} != 2 )); then
+  echo "GitHub App configuration resolver returned an invalid result." >&2
+  exit 70
 fi
+if [[ "${github_config[1]}" != client_id=* || "${github_config[2]}" != app_slug=* ]]; then
+  echo "GitHub App configuration resolver returned an invalid result." >&2
+  exit 70
+fi
+github_client_id=${github_config[1]#client_id=}
+github_app_slug=${github_config[2]#app_slug=}
 
 cd "$project_root"
 

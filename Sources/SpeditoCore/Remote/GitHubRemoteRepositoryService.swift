@@ -348,22 +348,26 @@ public final class GitHubProductStoreConnectionCoordinator:
           "Disconnect the current GitHub account before connecting another one."
         )
       }
+      let preservesTarget =
+        existing.status == .needsAuthorization && existing.repositoryID != nil
       existing.accountID = accountID
-      existing.installationID = nil
-      existing.repositoryID = nil
-      existing.owner = nil
-      existing.name = nil
-      existing.fullName = nil
-      existing.canonicalHTTPSURL = nil
-      existing.isPrivate = nil
-      existing.defaultBranch = nil
-      existing.permissions = RemoteRepositoryPermissions(
-        metadataRead: false,
-        contentsWrite: false,
-        pullRequestsWrite: false,
-        workflowsWrite: false
-      )
-      existing.status = .needsInstallation
+      if !preservesTarget {
+        existing.installationID = nil
+        existing.repositoryID = nil
+        existing.owner = nil
+        existing.name = nil
+        existing.fullName = nil
+        existing.canonicalHTTPSURL = nil
+        existing.isPrivate = nil
+        existing.defaultBranch = nil
+        existing.permissions = RemoteRepositoryPermissions(
+          metadataRead: false,
+          contentsWrite: false,
+          pullRequestsWrite: false,
+          workflowsWrite: false
+        )
+        existing.status = .needsInstallation
+      }
       existing.errorCode = nil
       _ = try await store.saveRemoteRepositoryConnection(
         existing,

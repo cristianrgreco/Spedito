@@ -497,6 +497,7 @@ final class RemoteRepositoryFeatureModel: ObservableObject, RepositoryImportSour
     for productID in productIDs where operationTasks[productID] == nil {
       let task = Task { @MainActor [weak self] in
         guard let self else { return }
+        setFailure(nil, productID: productID)
         await lifecycleService.recover(productID: productID)
         setState(await stateService.state(productID: productID), productID: productID)
         operationTasks[productID] = nil

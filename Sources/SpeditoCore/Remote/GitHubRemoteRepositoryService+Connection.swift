@@ -116,7 +116,12 @@ extension GitHubRemoteRepositoryService {
     try requireAvailable()
     transientPresentationErrors[productID] = nil
     if try await accountCatalog.linkProductToOnlyAuthorizedAccount(productID: productID) {
-      return try await refreshRepositories(productID: productID)
+      do {
+        return try await refreshRepositories(productID: productID)
+      } catch let error as GitHubAPIError where error == .unauthorized {
+        // A revoked or differently registered token cannot recover through refresh.
+        // Continue into Device Flow so the owner can replace it in place.
+      }
     }
     _ = try await accountCatalog.authorize(productID: productID, onPrompt: onPrompt)
     return try await refreshRepositories(productID: productID)
@@ -168,6 +173,43 @@ extension GitHubRemoteRepositoryService {
     let choices = access.choices
     transientRepositoryChoices[productID] = choices
     if connection.kind == .localEmptyRepository {
+      if let repositoryID = connection.repositoryID {
+        guard
+          let choice = choices.first(where: { $0.repository.id == repositoryID }),
+          choice.permissions.permitsPublication
+        else {
+          connection.installationID = access.installations.first?.id
+          connection.status = .needsInstallation
+          connection.errorCode = "installation_or_permissions_required"
+          _ = try await store.saveRemoteRepositoryConnection(
+            connection,
+            expectedVersion: connection.version
+          )
+          return await makeState(productID: productID)
+        }
+        connection.installationID = choice.installationID
+        connection.isPrivate = choice.repository.isPrivate
+        connection.permissions = choice.permissions
+        connection.errorCode = nil
+        if connection.fullName == choice.repository.fullName,
+          connection.canonicalHTTPSURL == choice.repository.canonicalHTTPSURL,
+          connection.defaultBranch == choice.repository.defaultBranch
+        {
+          connection.status = .connected
+        } else {
+          connection.status = .needsTargetReview
+          connection.pendingRepositoryID = choice.repository.id
+          connection.pendingFullName = choice.repository.fullName
+          connection.pendingCanonicalHTTPSURL = choice.repository.canonicalHTTPSURL
+          connection.pendingDefaultBranch = choice.repository.defaultBranch
+          connection.pendingObservedAt = Date()
+        }
+        _ = try await store.saveRemoteRepositoryConnection(
+          connection,
+          expectedVersion: connection.version
+        )
+        return await makeState(productID: productID)
+      }
       guard let firstInstallation = access.installations.first else {
         connection.status = .needsInstallation
         connection.errorCode = "installation_required"

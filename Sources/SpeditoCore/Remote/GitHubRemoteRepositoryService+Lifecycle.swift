@@ -18,6 +18,7 @@ extension GitHubRemoteRepositoryService {
           )
         }
       }
+      try await recoverSavedAuthorizationIfPossible(productID: productID, store: store)
       let recoverable = try await store.fetchRecoverableRemoteOperations(productID: productID)
       let baselinePublications = try await store.fetchRemotePublications(productID: productID)
         .filter {
@@ -54,6 +55,25 @@ extension GitHubRemoteRepositoryService {
       }
     } catch {
       transientPresentationErrors[productID] = error.localizedDescription
+    }
+  }
+
+  private func recoverSavedAuthorizationIfPossible(
+    productID: UUID,
+    store: SQLiteStore
+  ) async throws {
+    guard
+      let connection = try await store.fetchRemoteRepositoryConnection(productID: productID),
+      connection.status == .needsAuthorization,
+      connection.accountID != nil
+    else { return }
+    do {
+      _ = try await refreshRepositories(productID: productID)
+    } catch let error as GitHubAPIError where error == .unauthorized {
+      // The saved credential was genuinely rejected. Keep the durable
+      // authorization state so the owner can reconnect explicitly.
+    } catch let error as GitHubCredentialStoreError where error == .invalidPayload {
+      // Missing or unreadable saved credentials require the same explicit action.
     }
   }
 

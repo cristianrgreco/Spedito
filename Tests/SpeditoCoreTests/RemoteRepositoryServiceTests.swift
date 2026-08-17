@@ -834,6 +834,127 @@ struct RemoteRepositoryServiceTests {
     await store.close()
   }
 
+  @Test("Invalid saved authorization reconnects through Device Flow")
+  func invalidAuthorizationReconnectsThroughDeviceFlow() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-Invalid-Authorization-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Reauthorize Product")
+    let accountID = UUID()
+    _ = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .localEmptyRepository,
+        accountID: accountID,
+        installationID: 1,
+        repositoryID: 91,
+        owner: "example",
+        name: "service",
+        fullName: "example/service",
+        canonicalHTTPSURL: URL(string: "https://github.com/example/service.git"),
+        isPrivate: false,
+        defaultBranch: "main",
+        permissions: RemoteRepositoryPermissions(
+          metadataRead: true,
+          contentsWrite: true,
+          pullRequestsWrite: true,
+          workflowsWrite: true
+        ),
+        status: .needsAuthorization,
+        bootstrapRootSHA: String(repeating: "1", count: 40),
+        bootstrapRootTree: String(repeating: "2", count: 40),
+        initializationAttemptCount: 1,
+        seededSHA: String(repeating: "1", count: 40),
+        originVerified: true,
+      )
+    )
+    let credentialStore = ServiceMemoryCredentialStore()
+    try await credentialStore.save(
+      GitHubAccountTokenSet(
+        accountID: accountID,
+        githubUserID: 5,
+        login: "owner",
+        accessToken: "ghu_revoked",
+        accessTokenExpiresAt: .distantPast,
+        refreshToken: "ghr_revoked",
+        refreshTokenExpiresAt: .distantFuture
+      )
+    )
+    let transport = ServiceFakeGitHubTransport(
+      repositoryID: 91,
+      canonicalURL: URL(string: "https://github.com/example/service.git")!,
+      defaultBranch: "main"
+    )
+    await transport.makeNextRefreshUnauthorized()
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(temporaryDirectory: root),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    let prompt = ServicePromptRecorder()
+
+    let state = try await service.connect(productID: product.id) { value in
+      await prompt.record(value)
+    }
+
+    #expect(state.connection?.status == .connected)
+    #expect(state.connection?.repositoryID == 91)
+    #expect(state.connection?.fullName == "example/service")
+    #expect(state.repositories.map(\.id) == [91])
+    #expect(await prompt.value?.userCode == "ABCD-EFGH")
+    #expect(await transport.deviceCodeRequestCount == 1)
+    #expect(await transport.oauthTokenRequestCount == 2)
+    #expect(
+      try await credentialStore.tokenSet(accountID: accountID)?.accessToken.hasPrefix("ghu_")
+        == true
+    )
+    await service.shutdown()
+    await store.close()
+  }
+
+  @Test("Startup retries saved authorization before asking the owner to reconnect")
+  func startupRetriesSavedAuthorization() async throws {
+    let fixture = try await makeAuthorizationRecoveryFixture(rejectsRefresh: false)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    await fixture.service.recover(productID: fixture.productID)
+    let state = await fixture.service.state(productID: fixture.productID)
+
+    #expect(state.connection?.status == .connected)
+    #expect(state.connection?.repositoryID == 91)
+    #expect(state.errorMessage == nil)
+    #expect(await fixture.transport.oauthTokenRequestCount == 1)
+    #expect(await fixture.transport.deviceCodeRequestCount == 0)
+    await fixture.service.shutdown()
+    await fixture.store.close()
+  }
+
+  @Test("Startup leaves a genuinely rejected credential owner-actionable")
+  func startupKeepsRejectedAuthorizationActionable() async throws {
+    let fixture = try await makeAuthorizationRecoveryFixture(rejectsRefresh: true)
+    defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+    await fixture.service.recover(productID: fixture.productID)
+    let state = await fixture.service.state(productID: fixture.productID)
+
+    #expect(state.connection?.status == .needsAuthorization)
+    #expect(state.connection?.repositoryID == 91)
+    #expect(state.errorMessage == nil)
+    #expect(await fixture.transport.oauthTokenRequestCount == 1)
+    #expect(await fixture.transport.deviceCodeRequestCount == 0)
+    await fixture.service.shutdown()
+    await fixture.store.close()
+  }
+
   @Test("Cancelling repository setup does not access Keychain")
   func cancelSetupWithoutCredentials() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -1042,6 +1163,82 @@ struct RemoteRepositoryServiceTests {
     await store.close()
   }
 
+  private func makeAuthorizationRecoveryFixture(
+    rejectsRefresh: Bool
+  ) async throws -> ServiceAuthorizationRecoveryFixture {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-Automatic-Authorization-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Automatic authorization")
+    let accountID = UUID()
+    _ = try await store.createRemoteRepositoryConnection(
+      RemoteRepositoryConnection(
+        productID: product.id,
+        kind: .localEmptyRepository,
+        accountID: accountID,
+        installationID: 1,
+        repositoryID: 91,
+        owner: "example",
+        name: "service",
+        fullName: "example/service",
+        canonicalHTTPSURL: URL(string: "https://github.com/example/service.git"),
+        isPrivate: false,
+        defaultBranch: "main",
+        permissions: RemoteRepositoryPermissions(
+          metadataRead: true,
+          contentsWrite: true,
+          pullRequestsWrite: true,
+          workflowsWrite: true
+        ),
+        status: .needsAuthorization,
+        bootstrapRootSHA: String(repeating: "1", count: 40),
+        bootstrapRootTree: String(repeating: "2", count: 40),
+        initializationAttemptCount: 1,
+        seededSHA: String(repeating: "1", count: 40),
+        originVerified: true
+      )
+    )
+    let credentialStore = ServiceMemoryCredentialStore()
+    try await credentialStore.save(
+      GitHubAccountTokenSet(
+        accountID: accountID,
+        githubUserID: 5,
+        login: "owner",
+        accessToken: "ghu_expired",
+        accessTokenExpiresAt: .distantPast,
+        refreshToken: "ghr_saved",
+        refreshTokenExpiresAt: .distantFuture
+      )
+    )
+    let transport = ServiceFakeGitHubTransport(
+      repositoryID: 91,
+      canonicalURL: URL(string: "https://github.com/example/service.git")!,
+      defaultBranch: "main"
+    )
+    if rejectsRefresh {
+      await transport.makeNextRefreshUnauthorized()
+    }
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(temporaryDirectory: root),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    return ServiceAuthorizationRecoveryFixture(
+      root: root,
+      store: store,
+      productID: product.id,
+      service: service,
+      transport: transport
+    )
+  }
   @discardableResult
   private func runProcess(
     executable: URL,
@@ -1102,6 +1299,14 @@ struct RemoteRepositoryServiceTests {
       ofItemAtPath: wrapper.path
     )
   }
+}
+
+private struct ServiceAuthorizationRecoveryFixture {
+  let root: URL
+  let store: SQLiteStore
+  let productID: UUID
+  let service: GitHubRemoteRepositoryService
+  let transport: ServiceFakeGitHubTransport
 }
 private enum ServiceImportProbe: Error {
   case recorded
@@ -1198,6 +1403,7 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
   private(set) var deviceCodeRequestCount = 0
   private(set) var oauthTokenRequestCount = 0
   private var repositoriesVisible = true
+  private var nextRefreshIsUnauthorized = false
   private var repositoryContainsBranches = false
   private var pendingMergedHeadSHA: String?
   private var mergedHeadVisibilityDelay = 0
@@ -1244,6 +1450,10 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
     nextUserRequestTimesOut = true
   }
 
+  func makeNextRefreshUnauthorized() {
+    nextRefreshIsUnauthorized = true
+  }
+
   func delayMergedHeadVisibility(requestCount: Int) {
     mergedHeadVisibilityDelay = requestCount
   }
@@ -1277,6 +1487,19 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
     }
     if url.host == "github.com", path == "/login/oauth/access_token" {
       oauthTokenRequestCount += 1
+      if nextRefreshIsUnauthorized,
+        String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+          .contains("grant_type=refresh_token")
+      {
+        nextRefreshIsUnauthorized = false
+        return response(
+          request,
+          json: [
+            "error": "incorrect_client_credentials",
+            "error_description": "The saved authorization is no longer valid.",
+          ]
+        )
+      }
       return response(
         request,
         json: [

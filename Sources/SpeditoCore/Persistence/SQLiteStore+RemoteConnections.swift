@@ -237,16 +237,14 @@ extension SQLiteStore {
       aheadCount = 1
     }
     let current = try requireRemoteRepositoryConnection(id: sync.connectionID)
-    guard current.productID == sync.productID,
-      current.status == .connected,
-      current.latestRemoteSHA == sync.remoteSHA,
-      current.latestRemoteTree == sync.remoteTree
-    else {
+    guard current.productID == sync.productID else {
       throw PersistenceError.corruptData(
         "The GitHub connection changed before synchronization completed."
       )
     }
-    if current.latestLocalSHA == sync.candidateSHA,
+    if current.latestRemoteSHA == sync.remoteSHA,
+      current.latestRemoteTree == sync.remoteTree,
+      current.latestLocalSHA == sync.candidateSHA,
       current.latestLocalTree == sync.candidateTree,
       current.latestRelationship == relationship,
       current.latestAheadCount == aheadCount,
@@ -254,7 +252,10 @@ extension SQLiteStore {
     {
       return current
     }
-    guard current.version == sync.connectionVersion,
+    guard current.status == .connected,
+      current.latestRemoteSHA == sync.remoteSHA,
+      current.latestRemoteTree == sync.remoteTree,
+      current.version == sync.connectionVersion,
       current.latestLocalSHA == sync.localSHA,
       current.latestLocalTree == sync.localTree
     else {

@@ -62,6 +62,28 @@ enum GitHubRepositorySetupLaunch: Equatable {
   }
 }
 
+struct GitHubAuthorizationRecoveryPresentation: Equatable {
+  let message: String
+  let actionTitle: String
+  let showsRepositoryIdentity: Bool
+
+  static func resolve(repositoryID: Int64?) -> GitHubAuthorizationRecoveryPresentation {
+    if repositoryID != nil {
+      return GitHubAuthorizationRecoveryPresentation(
+        message:
+          "This product is still linked to its existing GitHub repository. Reconnect GitHub to restore access without changing the repository.",
+        actionTitle: "Reconnect GitHub",
+        showsRepositoryIdentity: true
+      )
+    }
+    return GitHubAuthorizationRecoveryPresentation(
+      message: "GitHub authorization is required before repository setup can continue.",
+      actionTitle: "Continue with GitHub",
+      showsRepositoryIdentity: false
+    )
+  }
+}
+
 struct GitHubVerifiedRepositoryPresentation: Equatable {
   let message: String
   let actionTitle: String

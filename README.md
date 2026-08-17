@@ -58,6 +58,10 @@ export SPEDITO_GITHUB_APP_SLUG="<public app slug>"
 ./scripts/build_app.sh debug
 ```
 
+`scripts/relaunch.sh` uses those exports when present. Otherwise, an authenticated
+GitHub CLI refreshes the public values from the current repository variables
+before the script falls back to the previous development bundle.
+
 The App requests only Metadata read, Contents read/write, Pull requests
 read/write, and Workflows write. It does not use a client secret or private key.
 

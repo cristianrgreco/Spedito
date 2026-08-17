@@ -377,6 +377,27 @@ struct RemoteRepositoryAppModelTests {
     #expect(GitHubRepositorySetupLaunch.resolve(status: .connected) == .none)
   }
 
+  @Test("Authorization recovery keeps an existing repository explicit")
+  func authorizationRecoveryPresentation() {
+    #expect(
+      GitHubAuthorizationRecoveryPresentation.resolve(repositoryID: 91)
+        == GitHubAuthorizationRecoveryPresentation(
+          message:
+            "This product is still linked to its existing GitHub repository. Reconnect GitHub to restore access without changing the repository.",
+          actionTitle: "Reconnect GitHub",
+          showsRepositoryIdentity: true
+        )
+    )
+    #expect(
+      GitHubAuthorizationRecoveryPresentation.resolve(repositoryID: nil)
+        == GitHubAuthorizationRecoveryPresentation(
+          message: "GitHub authorization is required before repository setup can continue.",
+          actionTitle: "Continue with GitHub",
+          showsRepositoryIdentity: false
+        )
+    )
+  }
+
   @Test("Repository picker distinguishes loading failures from empty access")
   func repositoryPickerContent() {
     #expect(
@@ -1426,11 +1447,29 @@ struct RemoteRepositoryFeatureModelTests {
     #expect(!feature.snapshot(for: productID).isBusy)
   }
 
-  @Test("Recovery is owned and settled by the feature model")
+  @Test("Recovery is owned, clears stale failures, and settles through the feature model")
   func recovery() async {
     let productID = UUID()
     let service = AppModelRemoteService()
     let feature = RemoteRepositoryFeatureModel(service: service)
+    feature.setFailure(
+      RemoteRepositoryFeatureFailure(
+        kind: .operation,
+        message: "The prior recovery failed."
+      ),
+      productID: productID
+    )
+    await service.setRecoveryState(
+      GitHubRemoteRepositoryState(
+        isConfigured: true,
+        connection: RemoteRepositoryConnection(
+          productID: productID,
+          kind: .localEmptyRepository,
+          repositoryID: 91,
+          status: .needsAuthorization
+        )
+      )
+    )
 
     feature.scheduleRecovery(productIDs: [productID])
     await service.waitForRecovery()
@@ -1438,6 +1477,8 @@ struct RemoteRepositoryFeatureModelTests {
 
     #expect(await service.recoveryCount == 1)
     #expect(await service.didShutdown)
+    #expect(feature.snapshot(for: productID).failure == nil)
+    #expect(feature.snapshot(for: productID).repositoryState.connection?.repositoryID == 91)
   }
 
   @Test("Polling uses injected time and cancels on product and activity changes")

@@ -79,6 +79,77 @@ struct ReleasePackagingTests {
     #expect(!website.contains("/Spedito/releases/latest\""))
   }
 
+  @Test("Development relaunch refreshes a stale GitHub App registration")
+  func developmentRelaunchRefreshesGitHubConfiguration() throws {
+    let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-GitHub-Config-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: fixture) }
+    let bin = fixture.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+    let gh = bin.appendingPathComponent("gh")
+    try Data(
+      """
+      #!/bin/sh
+      case "$3" in
+        SPEDITO_GITHUB_CLIENT_ID) printf '%s\\n' 'current-client-id' ;;
+        SPEDITO_GITHUB_APP_SLUG) printf '%s\\n' 'current-app-slug' ;;
+        *) exit 64 ;;
+      esac
+      """.utf8
+    ).write(to: gh)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: gh.path
+    )
+
+    let infoPlist = fixture.appendingPathComponent("Info.plist")
+    let staleConfiguration = [
+      "SpeditoGitHubClientID": "deleted-client-id",
+      "SpeditoGitHubAppSlug": "deleted-app-slug",
+    ]
+    try PropertyListSerialization.data(
+      fromPropertyList: staleConfiguration,
+      format: .xml,
+      options: 0
+    ).write(to: infoPlist)
+
+    let process = Process()
+    let output = Pipe()
+    let errors = Pipe()
+    process.executableURL = projectRoot()
+      .appendingPathComponent("scripts/resolve_github_app_config.sh")
+    process.arguments = [projectRoot().path, infoPlist.path]
+    var environment = ProcessInfo.processInfo.environment
+    environment.removeValue(forKey: "SPEDITO_GITHUB_CLIENT_ID")
+    environment.removeValue(forKey: "SPEDITO_GITHUB_APP_SLUG")
+    environment["PATH"] = "\(bin.path):/usr/bin:/bin"
+    process.environment = environment
+    process.standardOutput = output
+    process.standardError = errors
+    try process.run()
+    process.waitUntilExit()
+
+    let standardOutput = String(
+      decoding: output.fileHandleForReading.readDataToEndOfFile(),
+      as: UTF8.self
+    )
+    let standardError = String(
+      decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+      as: UTF8.self
+    )
+    #expect(process.terminationStatus == 0, Comment(rawValue: standardError))
+    #expect(
+      standardOutput
+        == """
+          client_id=current-client-id
+          app_slug=current-app-slug
+
+          """
+    )
+  }
+
   private func buildDMGScript() throws -> String {
     let scriptURL = projectRoot().appendingPathComponent("scripts/build_dmg.sh")
     return try String(contentsOf: scriptURL, encoding: .utf8)
