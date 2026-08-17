@@ -375,6 +375,32 @@ application sheet boundary and uses the shared current-sprint mode policy.
 | Imported source recipe publishing | Independent review approves the exact proposal | Reviewed proposal, evidence, and publishing run in SQLite | Verification/publishing progress | Wait or interrupt | Recovery resumes the durable publishing phase before exposing the version |
 | Imported source recipe available | Publication commits the reviewed launch | Completed run and verified `ImportedAppLaunch` in SQLite | Imported version in the same newest-first history | Open the version or check the source again later | Fresh store reconstructs the exact approved revision and recipe |
 
+### 3.10 Priority 1 work packet 4 — Retrospectives
+
+This slice closes I01, I02, I04, I05, and I08 without introducing a second
+Sprint, retrospective-note, action-decision, or conclusion authority. SQLite
+remains authoritative for Sprint evidence, synthesis sources, proposed actions,
+their destinations, and conclusion; `AppModel` continues to compose the
+existing retrospective synthesis runtime and owner commands. All five rows
+remain `Shell = —`: their persistence, selection, attribution, bulk-decision,
+and recovery contracts are deterministic without a launched process.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| I01 | `SQLiteStoreTests.productOwnerRetrospectiveActionIdeaCapture`, `.retrospectiveEvidenceLifecycle` | **Composed:** the active Sprint accepts attributed Product owner action ideas and immutable Ticket/team-member evidence, keeps both as undecided source notes, rejects premature action decisions, and freezes the exact sources for synthesis after completion. |
+| I02 | `RetrospectiveSprintSelectionTests.latestCompletedSprintIsPreferred`, `.retrospectivePhasesFollowSprintLifecycle`, `SQLiteStoreTests.retrospectiveSynthesisLifecycle` | **Composed:** the selection and phase policies choose the latest completed Sprint for review while the persistence lifecycle binds its outcomes, source improvement ideas, synthesized action, and provenance to that same durable Sprint. |
+| I04 | `SQLiteStoreTests.retrospectiveConclusionLifecycle` | **Composed/direct:** after synthesis resolves, the Product owner can propose trimmed actions for either Ways of working or a Backlog ticket; both remain proposed until an explicit decision, and pre-completion or post-conclusion proposals fail closed. |
+| I05 | `RetrospectiveJourneyTests.i05IndividualAndBulkDecisionsResolveExactAttributedActions`, `SQLiteStoreTests.retrospectiveEvidenceLifecycle`, `.retrospectivePracticeLifecycle`, `.retrospectiveConclusionLifecycle` | **Named:** one public application journey dismisses an exact action individually, accepts every remaining action in one valid bulk across both destinations, preserves each source author/profile, creates only the accepted Backlog ticket and Ways of working change, leaves no proposal unresolved, and recovers the result in a fresh application model. |
+| I08 | `SQLiteStoreTests.retrospectiveConclusionLifecycle` | **Composed/direct:** conclusion is refused while any proposed action remains, succeeds once every action is accepted or dismissed, writes one durable conclusion event, is idempotent, blocks later decisions and proposals, and remains historical after reopening SQLite. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Sprint evidence collecting | Add a Product owner action idea or settle a team Ticket run | Attributed retrospective note tied to its Sprint, Ticket, and profile where applicable | Current Sprint outcomes and improvement evidence without premature decisions | Add or remove an owner idea; continue delivery | Fresh load reconstructs all immutable team evidence and remaining owner ideas |
+| Completed Sprint selected | Open Retrospectives after Sprint completion | Completed Sprint, Ticket outcomes, notes, and synthesis source identities in SQLite | Latest completed Sprint with outcomes, ideas, and synthesis status | Select another Sprint, wait, retry, or continue without AI | Selection recomputes from durable Sprint state; source identities remain fixed |
+| Action proposed | Complete synthesis or add an owner proposal | Proposed note, destination, expected effect, source attribution, and optional synthesis provenance | Reviewable action for Ways of working or the Backlog | Accept, dismiss, or add another proposal | Fresh load returns every unresolved proposal to review |
+| Actions decided | Accept or dismiss individually or in a valid bulk | Decision status; accepted Backlog Ticket link or verified Ways of working revision | Resolved actions with original attribution and destination outcome | Review remaining actions or conclude | Partial interruption remains visible as unresolved proposals; retry decides only those still proposed |
+| Retrospective concluded | Conclude after all proposals are resolved | One conclusion timestamp and activity event on the completed Sprint | Historical concluded retrospective | Inspect history | Fresh SQLite and application instances preserve the exact conclusion and prohibit later mutation |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

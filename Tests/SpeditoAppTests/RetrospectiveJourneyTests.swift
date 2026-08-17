@@ -179,6 +179,167 @@ struct RetrospectiveJourneyTests {
     }
   }
 
+  /// Existing evidence:
+  /// - `SQLiteStoreTests.retrospectiveEvidenceLifecycle` proves individual accept and dismiss.
+  /// - `SQLiteStoreTests.retrospectivePracticeLifecycle` proves the Ways of working destination.
+  /// - `SQLiteStoreTests.retrospectiveConclusionLifecycle` proves unresolved actions block conclusion.
+  /// This journey adds I05's missing individual-plus-bulk AppModel composition, exact attribution,
+  /// and durable recovery across both action destinations.
+  @Test("[I05] Individual and bulk decisions resolve exact attributed retrospective actions")
+  @MainActor
+  func i05IndividualAndBulkDecisionsResolveExactAttributedActions() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-I05-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let workspacesURL = directory.appendingPathComponent("workspaces", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: workspacesURL,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: workspacesURL)
+    let product = try await registry.createProduct(name: "Retrospective decisions")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let deliveredItem = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Source retrospective evidence"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Decide every proposed action",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: deliveredItem.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    _ = try await store.startSprint(id: draft.sprint.id)
+    if let run = try await store.fetchAgentRuns(productID: product.id).first {
+      _ = try await store.updateAgentRun(id: run.id, status: .completed)
+    }
+    try await complete(deliveredItem, in: store)
+    _ = try await store.completeSprintIfFinished(id: draft.sprint.id)
+    let synthesis = try #require(
+      try await store.fetchRetrospectiveSyntheses(productID: product.id)
+        .first { $0.sprintID == draft.sprint.id }
+    )
+    _ = try await store.skipRetrospectiveSynthesis(id: synthesis.id)
+
+    let dismissed = RetrospectiveNote(
+      productID: product.id,
+      sprintID: draft.sprint.id,
+      workItemID: deliveredItem.id,
+      profileID: analyst.id,
+      authorName: analyst.name,
+      category: .suggestedAction,
+      body: "Dismiss this proposed action individually",
+      actionStatus: .proposed,
+      actionDestination: .backlog,
+      expectedEffect: "The action remains audit evidence.",
+      synthesisID: synthesis.id
+    )
+    let backlogAction = RetrospectiveNote(
+      productID: product.id,
+      sprintID: draft.sprint.id,
+      workItemID: deliveredItem.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: "Create a focused backlog improvement",
+      actionStatus: .proposed,
+      actionDestination: .backlog,
+      expectedEffect: "A reviewable Ticket is created.",
+      synthesisID: synthesis.id
+    )
+    let practiceAction = RetrospectiveNote(
+      productID: product.id,
+      sprintID: draft.sprint.id,
+      workItemID: deliveredItem.id,
+      profileID: analyst.id,
+      authorName: analyst.name,
+      category: .suggestedAction,
+      body: "Review action ownership before sprint close",
+      actionStatus: .proposed,
+      actionDestination: .teamPractice,
+      expectedEffect: "Ways of working records the practice.",
+      synthesisID: synthesis.id
+    )
+    try await store.saveRetrospectiveNotes([dismissed, backlogAction, practiceAction])
+
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: RetrospectiveJourneyNotificationSound(),
+      ownerNotificationSystemNotifier: RetrospectiveJourneySystemNotifier()
+    )
+    await model.load()
+    let loadedDismissed = try #require(
+      model.retrospectiveNotes.first { $0.id == dismissed.id }
+    )
+    let loadedBulkActions = [
+      try #require(model.retrospectiveNotes.first { $0.id == backlogAction.id }),
+      try #require(model.retrospectiveNotes.first { $0.id == practiceAction.id }),
+    ]
+
+    _ = await model.decideRetrospectiveAction(loadedDismissed, accept: false)
+    await model.decideRetrospectiveActions(loadedBulkActions, accept: true)
+
+    let durableNotes = try await store.fetchRetrospectiveNotes(productID: product.id)
+    let durableDismissed = try #require(durableNotes.first { $0.id == dismissed.id })
+    let durableBacklog = try #require(durableNotes.first { $0.id == backlogAction.id })
+    let durablePractice = try #require(durableNotes.first { $0.id == practiceAction.id })
+    #expect(durableNotes.filter { $0.actionStatus == .proposed }.isEmpty)
+    #expect(durableDismissed.actionStatus == .dismissed)
+    #expect(durableDismissed.acceptedWorkItemID == nil)
+    #expect(durableDismissed.profileID == analyst.id)
+    #expect(durableDismissed.authorName == analyst.name)
+    #expect(durableBacklog.actionStatus == .accepted)
+    #expect(durableBacklog.acceptedWorkItemID != nil)
+    #expect(durableBacklog.profileID == implementer.id)
+    #expect(durableBacklog.authorName == implementer.name)
+    #expect(durablePractice.actionStatus == .accepted)
+    #expect(durablePractice.acceptedWorkItemID == nil)
+    #expect(durablePractice.profileID == analyst.id)
+    #expect(durablePractice.authorName == analyst.name)
+    let createdTicketID = try #require(durableBacklog.acceptedWorkItemID)
+    #expect(
+      model.workItems.contains {
+        $0.id == createdTicketID && $0.title == backlogAction.body && $0.state == .backlog
+      }
+    )
+    let waysOfWorking = try #require(
+      try await store.fetchKnowledgePages(productID: product.id)
+        .first { $0.slug == "ways-of-working" }
+    )
+    #expect(waysOfWorking.bodyMarkdown.contains(practiceAction.body))
+
+    await model.shutdown()
+    let recoveredModel = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: RetrospectiveJourneyNotificationSound(),
+      ownerNotificationSystemNotifier: RetrospectiveJourneySystemNotifier()
+    )
+    await recoveredModel.reload()
+    #expect(
+      recoveredModel.retrospectiveNotes.filter { $0.actionStatus == .proposed }.isEmpty
+    )
+    #expect(recoveredModel.workItems.contains { $0.id == createdTicketID })
+    await recoveredModel.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   private static func connectionResponses() -> [ScriptedCodexTransport.Response] {
     [
       .init(
