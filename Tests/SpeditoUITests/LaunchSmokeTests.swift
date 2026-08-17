@@ -1,13 +1,9 @@
+import Darwin
 import XCTest
 
 final class LaunchSmokeTests: XCTestCase {
   func testDebugBundleLaunches() throws {
-    let applicationURL = Bundle(for: type(of: self)).bundleURL
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("Spedito.app", isDirectory: true)
+    let applicationURL = try speditoUITestApplicationURL()
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: applicationURL.path),
       "Build the debug app bundle before running UI tests."
@@ -23,4 +19,11 @@ final class LaunchSmokeTests: XCTestCase {
     app.activate()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
   }
+}
+
+func speditoUITestApplicationURL() throws -> URL {
+  URL(
+    fileURLWithPath: "/tmp/spedito-ui-tests-\(getuid())/Spedito.app",
+    isDirectory: true
+  )
 }

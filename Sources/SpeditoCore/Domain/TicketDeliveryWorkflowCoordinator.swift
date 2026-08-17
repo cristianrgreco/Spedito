@@ -170,21 +170,26 @@ public protocol TicketDeliveryWorkflowDelegate: AnyObject {
 
 @MainActor
 public final class TicketDeliveryWorkflowCoordinator {
+  public typealias AcceptancePreparation = @MainActor (UUID, UUID) async -> Void
+
   private weak var delegate: (any TicketDeliveryWorkflowDelegate)?
   private let gitWorkspaceManager: GitWorkspaceManager
   private let runtimeCoordinator: TicketDeliveryRuntimeCoordinator
   private let recoveryPolicy: SprintWorkRecoveryPolicy
+  private let prepareAcceptance: AcceptancePreparation
 
   public init(
     delegate: any TicketDeliveryWorkflowDelegate,
     gitWorkspaceManager: GitWorkspaceManager,
     runtimeCoordinator: TicketDeliveryRuntimeCoordinator,
-    recoveryPolicy: SprintWorkRecoveryPolicy
+    recoveryPolicy: SprintWorkRecoveryPolicy,
+    prepareAcceptance: @escaping AcceptancePreparation = { _, _ in }
   ) {
     self.delegate = delegate
     self.gitWorkspaceManager = gitWorkspaceManager
     self.runtimeCoordinator = runtimeCoordinator
     self.recoveryPolicy = recoveryPolicy
+    self.prepareAcceptance = prepareAcceptance
   }
 
   private func store(for productID: UUID) -> SQLiteStore? {
@@ -3873,6 +3878,8 @@ public final class TicketDeliveryWorkflowCoordinator {
       productID: item.productID
     ) { [weak self] in
       guard let self else { return }
+      await self.prepareAcceptance(item.id, item.productID)
+      guard !Task.isCancelled else { return }
       _ = await self.completeSprintTicketAcceptance(
         workItemID: item.id,
         productID: item.productID

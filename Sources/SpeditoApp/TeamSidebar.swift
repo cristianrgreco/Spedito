@@ -395,6 +395,7 @@ struct TeamSidebar: View {
             }
           }
           .tag(WorkspaceDestination.retrospectives)
+          .accessibilityIdentifier("nav.retrospectives")
           Label("Reports", systemImage: "chart.xyaxis.line")
             .tag(WorkspaceDestination.reports)
         }

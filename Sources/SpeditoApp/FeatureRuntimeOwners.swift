@@ -32,6 +32,15 @@ final class SprintPlanningFeatureModel: ObservableObject {
   )
 }
 
+@MainActor
+func prepareTicketDeliveryAcceptanceForUIFixture(
+  _ workItemID: UUID,
+  _: UUID
+) async {
+  #if DEBUG
+    await UIFixtureRuntime.waitForAcceptanceReleaseIfNeeded(workItemID: workItemID)
+  #endif
+}
 
 @MainActor
 final class RetrospectiveSynthesisRuntime: ObservableObject {

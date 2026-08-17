@@ -3,7 +3,7 @@ import SwiftUI
 
 struct RetrospectivesView: View {
   @EnvironmentObject private var model: AppModel
-  let onConcluded: () -> Void
+  let onShowBacklog: () -> Void
   let onOpenRefiningTicket: (WorkItem) -> Void
   @State private var selectedSprintID: UUID?
   @State private var isConcluding = false
@@ -255,6 +255,7 @@ struct RetrospectivesView: View {
           sprint: selectedPlan?.sprint,
           synthesis: selectedSynthesis,
           notes: selectedNotes.filter { $0.category == .suggestedAction },
+          onShowBacklog: onShowBacklog,
           onOpenRefiningTicket: onOpenRefiningTicket
         )
         .frame(width: decisionWidth)
@@ -324,7 +325,7 @@ struct RetrospectivesView: View {
         .foregroundStyle(.secondary)
         .monospacedDigit()
       if plan.sprint.retrospectiveConcludedAt != nil {
-        Button("Back to backlog", action: onConcluded)
+        Button("Back to backlog", action: onShowBacklog)
           .buttonStyle(.borderedProminent)
       } else if plan.sprint.state == .completed {
         let synthesisIsResolved = selectedSynthesis?.status.isResolved == true
@@ -343,7 +344,7 @@ struct RetrospectivesView: View {
             )
             isConcluding = false
             if didConclude {
-              onConcluded()
+              onShowBacklog()
             }
           }
         }
@@ -373,6 +374,7 @@ private struct RetrospectiveActionPanel: View {
   let sprint: Sprint?
   let synthesis: RetrospectiveSynthesis?
   let notes: [RetrospectiveNote]
+  let onShowBacklog: () -> Void
   let onOpenRefiningTicket: (WorkItem) -> Void
   @State private var isDecidingAll = false
   @State private var selectedNoteID: UUID?
@@ -567,6 +569,7 @@ private struct RetrospectiveActionPanel: View {
             RetrospectiveActionDecisionDetail(
               note: selectedNote,
               allowsDecisions: phase == .reviewing,
+              onShowBacklog: onShowBacklog,
               onOpenRefiningTicket: onOpenRefiningTicket
             )
 
@@ -1078,6 +1081,7 @@ private struct RetrospectiveActionDecisionDetail: View {
   @EnvironmentObject private var model: AppModel
   let note: RetrospectiveNote
   let allowsDecisions: Bool
+  let onShowBacklog: () -> Void
   let onOpenRefiningTicket: (WorkItem) -> Void
   @State private var areSourcesExpanded = false
 
@@ -1262,6 +1266,7 @@ private struct RetrospectiveActionDecisionDetail: View {
                 accept: true
               )
               if let createdItem {
+                onShowBacklog()
                 onOpenRefiningTicket(createdItem)
               }
             }
@@ -1269,6 +1274,7 @@ private struct RetrospectiveActionDecisionDetail: View {
             Label("Accept", systemImage: "checkmark.circle")
           }
           .buttonStyle(.borderedProminent)
+          .accessibilityIdentifier("retrospective.action.accept.\(note.id.uuidString)")
         }
         .controlSize(.small)
       } else {

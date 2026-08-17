@@ -13,6 +13,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let permissionRequestID: UUID?
     let candidateRevisionIDs: [UUID]
     let remoteSafeSyncID: UUID?
+    let retrospectiveNoteID: UUID?
   }
 
   private struct FixtureSession {
@@ -199,6 +200,74 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   }
 
   /// Existing deterministic coverage:
+  /// - `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`
+  /// This launched-process test covers only D17's immediate detail dismissal and Completing
+  /// projection while repository-changing acceptance remains in progress.
+  func testD17ApprovalClosesDetailAndPresentsCompleting() throws {
+    let session = try launchFixture("d17")
+    let workItemID = try XCTUnwrap(session.manifest.workItemID)
+    try openPermissionTicket(session)
+
+    let detail = element(session.app, "ticket.detail.\(workItemID.uuidString)")
+    let approve = element(session.app, "sprint.ticket.approve")
+    XCTAssertTrue(approve.waitForExistence(timeout: 5))
+    approve.click()
+
+    wait(
+      until: NSPredicate(format: "exists == false"),
+      evaluates: detail,
+      timeout: 5,
+      message: "D17 approval did not close Ticket detail immediately."
+    )
+    let ticket = element(session.app, "sprint.ticket.\(workItemID.uuidString)")
+    wait(
+      until: NSPredicate(format: "label CONTAINS %@", "Completing ticket"),
+      evaluates: ticket,
+      timeout: 5,
+      message: "D17 Ticket did not present the Completing state. \(ticket.debugDescription)"
+    )
+    waitForFixtureSignal(
+      "d17-acceptance-started-\(workItemID.uuidString)",
+      session: session,
+      message: "D17 approval did not enter the acceptance coordinator."
+    )
+  }
+
+  /// Existing deterministic coverage:
+  /// - `SQLiteStoreTests.retrospectiveEvidenceLifecycle`
+  /// - `TicketConversationHistoryTests.completeHistory`
+  /// This launched-process test covers only I07's Backlog routing, exact Ticket detail, and
+  /// normal Business Analyst refinement start after accepting the retrospective action.
+  func testI07AcceptedRetrospectiveActionOpensExactTicketRefinement() throws {
+    let session = try launchFixture("i07")
+    let noteID = try XCTUnwrap(session.manifest.retrospectiveNoteID)
+    element(session.app, "nav.retrospectives").click()
+    let accept = element(
+      session.app,
+      "retrospective.action.accept.\(noteID.uuidString)"
+    )
+    XCTAssertTrue(accept.waitForExistence(timeout: 10))
+    accept.click()
+
+    waitForFixtureSignal(
+      "i07-refinement-started",
+      session: session,
+      message: "I07 did not start the Business Analyst refinement turn."
+    )
+    let detailPrefix = "ticket.detail."
+    let detail = session.app.descendants(matching: .any).matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", detailPrefix)
+    ).firstMatch
+    XCTAssertTrue(detail.waitForExistence(timeout: 5))
+    let workItemID = try XCTUnwrap(
+      UUID(uuidString: String(detail.identifier.dropFirst(detailPrefix.count)))
+    )
+
+    XCTAssertTrue(element(session.app, "nav.backlog").isSelected)
+    XCTAssertEqual(detail.identifier, "ticket.detail.\(workItemID.uuidString)")
+  }
+
+  /// Existing deterministic coverage:
   /// - `SQLiteStoreTests.p05MissingEstimatesAndInvalidDependenciesBlockSprintStart`
   /// - `SprintStartAvailabilityTests.activeSprintBlocksDraftStart`
   /// This launched-process test covers only P05's blocker projection in sprint planning.
@@ -317,13 +386,24 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     )
   }
 
+  private func waitForFixtureSignal(
+    _ name: String,
+    session: FixtureSession,
+    message: String
+  ) {
+    let signalURL = session.rootURL.appendingPathComponent(name)
+    wait(
+      until: NSPredicate { _, _ in
+        FileManager.default.fileExists(atPath: signalURL.path)
+      },
+      evaluates: NSObject(),
+      timeout: 10,
+      message: message
+    )
+  }
+
   private func launchFixture(_ scenario: String) throws -> FixtureSession {
-    let applicationURL = Bundle(for: type(of: self)).bundleURL
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("Spedito.app", isDirectory: true)
+    let applicationURL = try speditoUITestApplicationURL()
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: applicationURL.path),
       "Build the debug app bundle before running UI tests."
@@ -357,6 +437,13 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
       timeout: 15,
       message: "The launched fixture did not publish its explicit ready manifest."
     )
+    guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+      let alert = app.alerts.firstMatch
+      XCTFail(
+        "Fixture preparation failed before publishing its manifest. \(alert.debugDescription)"
+      )
+      throw CocoaError(.fileNoSuchFile)
+    }
     let manifest = try JSONDecoder().decode(
       FixtureManifest.self,
       from: Data(contentsOf: manifestURL)

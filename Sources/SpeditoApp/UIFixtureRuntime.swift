@@ -20,6 +20,8 @@
       case d09 = "d09"
       case d14 = "d14"
       case d15 = "d15"
+      case d17 = "d17"
+      case i07 = "i07"
       case p05 = "p05"
       case r05 = "r05"
       case r13 = "r13"
@@ -54,12 +56,25 @@
       scenario == .d08
     }
 
+    static func waitForAcceptanceReleaseIfNeeded(workItemID: UUID) async {
+      guard scenario == .d17, let rootURL = applicationSupportURL else { return }
+      recordInteraction("d17-acceptance-started-\(workItemID.uuidString)")
+      await UIFixtureSignal.wait(
+        for: rootURL.appendingPathComponent("d17-acceptance-release")
+      )
+    }
+
     static func transportFactoryOutput() -> CodexTransportFactoryOutput? {
-      guard scenario == .epicNeedsInput,
-        let signalPath = ProcessInfo.processInfo.environment[signalEnvironmentKey],
-        !signalPath.isEmpty,
+      guard let scenario,
+        scenario == .epicNeedsInput || scenario == .i07,
         let rootURL = applicationSupportURL
       else { return nil }
+      let configuredSignalPath = ProcessInfo.processInfo.environment[signalEnvironmentKey]
+      let releaseSignalURL =
+        configuredSignalPath.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        ?? rootURL.appendingPathComponent("i07-refinement-release")
+      let turnStartedSignalName =
+        scenario == .epicNeedsInput ? "epic-turn-started" : "i07-refinement-started"
       return CodexTransportFactoryOutput(
         descriptor: CodexRuntimeDescriptor(
           executableURL: URL(fileURLWithPath: "/private/tmp/spedito-ui-fixture-codex"),
@@ -67,8 +82,8 @@
           source: .custom
         ),
         transport: UIFixtureCodexTransport(
-          releaseSignalURL: URL(fileURLWithPath: signalPath),
-          turnStartedSignalURL: rootURL.appendingPathComponent("epic-turn-started")
+          releaseSignalURL: releaseSignalURL,
+          turnStartedSignalURL: rootURL.appendingPathComponent(turnStartedSignalName)
         )
       )
     }
@@ -243,8 +258,11 @@
           workItemID: seeded.workItemID,
           candidateRevisionIDs: seeded.candidateRevisionIDs
         )
-      case .d15:
-        let product = try await registry.createProduct(name: "D15 reviewed demo comment")
+      case .d15, .d17:
+        let isD17 = scenario == .d17
+        let product = try await registry.createProduct(
+          name: isD17 ? "D17 completing ticket" : "D15 reviewed demo comment"
+        )
         let store = try requireStore(registry, productID: product.id)
         let repositorySHA = try await ensureProductRepository(
           registry: registry,
@@ -253,7 +271,9 @@
         let seeded = try await seedReadyForDemoCandidate(
           store: store,
           product: product,
-          repositorySHA: repositorySHA
+          repositorySHA: repositorySHA,
+          title: isD17 ? "D17 promote reviewed change" : "D15 keep the reviewed demo",
+          fixtureSlug: isD17 ? "d17" : "d15"
         )
         UserDefaults.standard.set(
           WorkspaceDestination.sprint.rawValue,
@@ -266,6 +286,23 @@
           workItemID: seeded.workItemID,
           sprintID: seeded.sprintID,
           candidateRevisionIDs: [seeded.candidateRevisionID]
+        )
+      case .i07:
+        let product = try await registry.createProduct(name: "I07 retrospective refinement")
+        let store = try requireStore(registry, productID: product.id)
+        let seeded = try await seedRetrospectiveBacklogAction(
+          store: store,
+          product: product
+        )
+        UserDefaults.standard.set(
+          WorkspaceDestination.retrospectives.rawValue,
+          forKey: "workspaceDestination.\(product.id.uuidString)"
+        )
+        manifest = UIFixtureManifest(
+          selectedProductID: product.id,
+          firstProductID: product.id,
+          sprintID: seeded.sprintID,
+          retrospectiveNoteID: seeded.noteID
         )
       case .p05:
         let product = try await registry.createProduct(name: "P05 blocked sprint")
@@ -488,7 +525,9 @@
     private static func seedReadyForDemoCandidate(
       store: SQLiteStore,
       product: Product,
-      repositorySHA: String
+      repositorySHA: String,
+      title: String,
+      fixtureSlug: String
     ) async throws -> (
       workItemID: UUID,
       sprintID: UUID,
@@ -497,7 +536,7 @@
       let seeded = try await seedSprint(
         store: store,
         product: product,
-        title: "D15 keep the reviewed demo",
+        title: title,
         active: true
       )
       let run = try await completeSeededRun(store: store, productID: product.id)
@@ -509,7 +548,7 @@
           $0.id == seeded.workItemID
         })
       else {
-        throw UIFixtureError.missingFixtureState("D15 reviewed candidate")
+        throw UIFixtureError.missingFixtureState("Reviewed candidate")
       }
       item = try await store.transitionWorkItem(
         id: item.id,
@@ -560,8 +599,8 @@
         baseSHA: repositorySHA,
         headSHA: repositorySHA,
         integratedSHA: repositorySHA,
-        worktreePath: "/private/tmp/spedito-ui-d15-ticket",
-        integrationWorktreePath: "/private/tmp/spedito-ui-d15-integration",
+        worktreePath: "/private/tmp/spedito-ui-\(fixtureSlug)-ticket",
+        integrationWorktreePath: "/private/tmp/spedito-ui-\(fixtureSlug)-integration",
         status: .readyForDemo,
         commitCount: 1,
         executionResultJSON: String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
@@ -574,6 +613,65 @@
         body: "The exact candidate is reviewed and ready for demo."
       )
       return (item.id, seeded.sprintID, candidate.id)
+    }
+
+    private static func seedRetrospectiveBacklogAction(
+      store: SQLiteStore,
+      product: Product
+    ) async throws -> (sprintID: UUID, noteID: UUID) {
+      let seeded = try await seedSprint(
+        store: store,
+        product: product,
+        title: "I07 completed delivery",
+        active: true
+      )
+      _ = try await completeSeededRun(store: store, productID: product.id)
+      let profiles = try await store.fetchAgentProfiles(productID: product.id)
+      guard
+        let implementer = profiles.first(where: { $0.role == .implementer }),
+        let analyst = profiles.first(where: { $0.role == .businessAnalyst })
+      else {
+        throw UIFixtureError.missingFixtureState("I07 retrospective profiles")
+      }
+      for state in [
+        WorkItemState.running,
+        .integrating,
+        .verifying,
+        .acceptance,
+        .readyToRelease,
+        .released,
+      ] {
+        _ = try await store.transitionWorkItem(
+          id: seeded.workItemID,
+          to: state,
+          actor: implementer.name,
+          reason: "Complete I07 source delivery"
+        )
+      }
+      _ = try await store.completeSprintIfFinished(id: seeded.sprintID)
+      guard
+        let synthesis = try await store.fetchRetrospectiveSyntheses(productID: product.id)
+          .first(where: { $0.sprintID == seeded.sprintID })
+      else {
+        throw UIFixtureError.missingFixtureState("I07 retrospective synthesis")
+      }
+      _ = try await store.skipRetrospectiveSynthesis(id: synthesis.id)
+      let note = RetrospectiveNote(
+        productID: product.id,
+        sprintID: seeded.sprintID,
+        workItemID: seeded.workItemID,
+        profileID: analyst.id,
+        authorName: analyst.name,
+        category: .suggestedAction,
+        body: "I07 refine the accepted retrospective ticket",
+        isActionCandidate: false,
+        actionStatus: .proposed,
+        actionDestination: .backlog,
+        expectedEffect: "The exact action enters normal backlog refinement.",
+        synthesisID: synthesis.id
+      )
+      try await store.saveRetrospectiveNotes([note])
+      return (seeded.sprintID, note.id)
     }
 
     private static func seedAcceptedAppVersions(
@@ -701,6 +799,7 @@
     var permissionRequestID: UUID?
     var candidateRevisionIDs: [UUID] = []
     var remoteSafeSyncID: UUID?
+    var retrospectiveNoteID: UUID?
   }
 
   private enum UIFixtureError: Error {

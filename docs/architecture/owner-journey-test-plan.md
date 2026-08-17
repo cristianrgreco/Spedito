@@ -26,8 +26,8 @@ deterministic evidence. Priority 1 and 2 rows remain future journey work. Some
 contracts should become parameterized tests or several interruption variants,
 so the eventual test-method count will be higher. Only contracts marked
 **Shell = Y** are candidates for proof from a launched application process.
-Sixteen Priority 0 rows carry that designation; 14 currently have a
-launched-process contract, with the D17 and I07 gaps recorded in section 7.4.
+Sixteen Priority 0 rows carry that designation and all 16 now have a
+launched-process contract.
 
 ## 2. Repository evidence
 
@@ -124,7 +124,7 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 | D14 | `TicketDeliveryWorkflowCoordinatorTests.d14DemoRetryReusesReviewedCandidate`, `PriorityZeroShellJourneyUITests.testD14DemoRetrySelectsTheReviewedCandidate` | **Named:** the deterministic journey retries host preparation only for the reviewed candidate; the launched-process contract proves exact App-version selection. |
 | D15 | `SprintTicketWorkLogHistoryTests.d15ReadyForDemoCommentPreservesCandidate`, `PriorityZeroShellJourneyUITests.testD15ReadyForDemoCommentKeepsCandidateActionable` | **Named:** the deterministic journey proves a ready-for-demo owner comment preserves the reviewed candidate; the launched-process contract leaves that candidate actionable after the comment settles. |
 | D16 | `SQLiteStoreTests.d16CandidateKnowledgeDecisionsPublishOnlyAcceptedContent` | **Named:** only accepted candidate knowledge becomes canonical; rejected and unreviewed proposals remain non-authoritative after relaunch. |
-| D17 | `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision` | **Composed (deterministic only):** the exact reviewed repository revision is promoted and Done follows successful finalization; section 7.4 records the missing launched-process proof for immediate detail dismissal and **Completing** presentation. |
+| D17 | `TicketDeliveryWorkflowCoordinatorTests.repositoryAcceptancePromotesExactRevision`, `PriorityZeroShellJourneyUITests.testD17ApprovalClosesDetailAndPresentsCompleting` | **Named:** the deterministic proof promotes the exact reviewed repository revision before Done; the launched-process contract proves approval immediately closes Ticket detail and presents **Completing** while finalization remains in progress. |
 | D18 | `TicketDeliveryWorkflowCoordinatorTests.failedAcceptanceRetriesWithoutDuplicateCompletion` | **Composed:** the reviewed result survives failure and retries without duplicate promotion. |
 | D19 | `TicketDeliveryWorkflowCoordinatorTests.repositoryFreeAcceptanceCompletesWithoutGit` | **Composed:** repository-free handoff and knowledge publish without a Git mutation. |
 | C02 | `CodexTransportApplicationTests.c02ConcurrentConversationsRemainIndependent` | **Named:** concurrent same-agent replies settle out of order while each thread retains its own durable transcript, unread state, and notification identity. |
@@ -135,13 +135,13 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 | V06 | `MacOSDemoLauncherTests.v06HistoricalAcceptedVersionLaunchesExactRevision`, `PriorityZeroShellJourneyUITests.testV06HistoricalAcceptedAppVersionIsIndependentlySelectable` | **Named:** the deterministic journey stops the active version and reconstructs the selected accepted revision; the launched-process contract proves historical versions remain independently selectable. |
 | I03 | `SQLiteStoreTests.i03RetrospectiveSynthesisRecoveryAndSkipPreserveSources` | **Named:** interruption, failed retry, and explicit continue-without-AI preserve one durable synthesis command and its evidence sources. |
 | I06 | `SQLiteStoreTests.retrospectivePracticeLifecycle` | **Composed/direct:** the accepted action updates the inherited verified Ways of working page once with source provenance; no wrapper is needed. |
-| I07 | `SQLiteStoreTests.retrospectiveEvidenceLifecycle` | **Composed/direct:** the accepted action creates its durable Backlog ticket; the normal refinement policy is already independently covered. |
+| I07 | `RetrospectiveJourneyTests.i07AcceptedBacklogActionOpensExactTicketRefinement`, `PriorityZeroShellJourneyUITests.testI07AcceptedRetrospectiveActionOpensExactTicketRefinement` | **Named:** the deterministic journey proves accept creates the exact durable Backlog ticket, starts its Business Analyst refinement, and preserves the accepted link across relaunch; the launched-process contract proves Backlog routing and opens that exact ticket while the refinement turn is active. |
 | S02 | `SQLiteStoreTests.s02SavedAgentAccessRevocationJourney` | **Named:** revoke-one and confirmed revoke-all preserve the audit trail and cause subsequent exact access requests to prompt again. |
 | S04 | `SQLiteStoreTests.teamSettingsUpdateIsAtomic`, `ProductScopedPersistenceTests.teamSettingsCommandReturnsCommittedSnapshot` | **Composed:** atomic persistence and retryable application presentation cover the shared-guidance/member-settings boundary. |
 
 Every Priority 0 row has named or non-duplicative composed deterministic
-evidence. Fourteen of the 16 Priority 0 rows designated `Shell = Y` also have a
-launched-process contract; D17 and I07 remain explicit gaps in section 7.4.
+evidence. All 16 Priority 0 rows designated `Shell = Y` also have a
+launched-process contract.
 
 ## 4. Test taxonomy
 
@@ -484,29 +484,24 @@ launched-process contract; this section records implementation status:
 13. Product archive and restore — A06, A07;
 14. Codebase commit-to-Ticket navigation — V04.
 
-**Implementation status — 17 August 2026:** the target contains 15 tests: one
+**Implementation status — 17 August 2026:** the target contains 17 tests: one
 bundle-launch smoke test, the E02 contract in `EpicOwnerNotificationUITests`,
-and 13 contracts in `PriorityZeroShellJourneyUITests`. They cover 14 Priority 0
-rows: A02, A05, A06, B02, C07, D08, D09, D14, D15, E02, P05, R05, R13, and V06.
+and 15 contracts in `PriorityZeroShellJourneyUITests`. They cover all 16
+Priority 0 `Shell = Y` rows: A02, A05, A06, B02, C07, D08, D09, D14, D15,
+D17, E02, I07, P05, R05, R13, and V06.
 
-- Fully implemented scenarios: 1, 2, 3, 4, 5, 6, 8, 10, and 12.
-- Partially implemented scenarios: 7 covers D14 and D15 but not D17; 13 covers
-  A06 but not the Priority 1 A07 contract.
-- Not implemented: 9 (Priority 1 K05), 11 (Priority 0 I07), and 14 (Priority 1
-  V04).
-
-D17 therefore lacks launched proof that approval immediately dismisses Ticket
-detail and presents **Completing**. I07 lacks deterministic composition and
-launched proof that accepting the retrospective action opens refinement for the
-exact created ticket. These are coverage exceptions, not claims that the
-contracts are proved elsewhere.
+- Fully implemented scenarios: 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, and 12.
+- Partially implemented scenario: 13 covers A06 but not the Priority 1 A07
+  contract.
+- Not implemented: 9 (Priority 1 K05) and 14 (Priority 1 V04).
 
 The debug-only composition uses an isolated application-support root and
 defaults domain, deterministic Codex and GitHub boundaries, no-op
 sound/system-notification adapters, and a file-system response gate. Release
 compilation excludes fixture types. The independent close-out audit at
-`0f844d9` ran all 15 tests successfully in 182 seconds, so CI's serialized
-10-minute timeout retains substantial headroom.
+`0f844d9` ran the prior 15 tests successfully in 182 seconds. The added D17
+and I07 contracts pass independently in 18 and 12 test seconds, respectively,
+so CI's serialized 10-minute timeout retains substantial headroom for all 17.
 
 Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
 

@@ -33,9 +33,14 @@ if [[ ! "$lock_timeout_seconds" =~ ^[0-9]+$ ]]; then
 fi
 
 lock_directory="/tmp/spedito-ui-tests-${UID}.lock"
+staged_root="/tmp/spedito-ui-tests-${UID}"
+staged_app_path="$staged_root/Spedito.app"
+staged_executable="$staged_app_path/Contents/MacOS/Spedito"
 lock_acquired=false
 release_lock() {
   if [[ "$lock_acquired" == true ]]; then
+    /usr/bin/pkill -TERM -f -x "$staged_executable" 2>/dev/null || true
+    rm -rf "$staged_root"
     rm -f "$lock_directory/owner"
     rmdir "$lock_directory" 2>/dev/null || true
     lock_acquired=false
@@ -65,11 +70,15 @@ env \
   SPEDITO_SIGN_IDENTITY=- \
   ./scripts/build_app.sh debug
 
+rm -rf "$staged_root"
+mkdir -p "$staged_root"
+/usr/bin/ditto ".build/app/debug/Spedito.app" "$staged_app_path"
+
 xcodebuild \
   -project SpeditoUITests.xcodeproj \
   -scheme SpeditoUITests \
   -destination 'platform=macOS' \
-  -derivedDataPath .build/ui-test-derived \
+  -derivedDataPath "$staged_root/derived" \
   -parallel-testing-enabled NO \
   test \
   CODE_SIGN_IDENTITY=- \

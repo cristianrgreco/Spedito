@@ -7,12 +7,7 @@ final class EpicOwnerNotificationUITests: XCTestCase {
   }
 
   func testE02NeedsInputOpensTheExactEpicAcrossProducts() throws {
-    let applicationURL = Bundle(for: type(of: self)).bundleURL
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("Spedito.app", isDirectory: true)
+    let applicationURL = try speditoUITestApplicationURL()
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: applicationURL.path),
       "Build the debug app bundle before running UI tests."
@@ -61,9 +56,16 @@ final class EpicOwnerNotificationUITests: XCTestCase {
       "The launched app did not make the Backlog ready."
     )
 
-    let manifestData = try Data(
-      contentsOf: fixtureRoot.appendingPathComponent("fixture-manifest.json")
+    let manifestURL = fixtureRoot.appendingPathComponent("fixture-manifest.json")
+    wait(
+      until: NSPredicate { _, _ in
+        FileManager.default.fileExists(atPath: manifestURL.path)
+      },
+      evaluates: NSObject(),
+      timeout: 15,
+      message: "The fixture did not publish its manifest."
     )
+    let manifestData = try Data(contentsOf: manifestURL)
     let manifest = try JSONDecoder().decode(FixtureManifest.self, from: manifestData)
     XCTAssertNotEqual(manifest.firstProductID, manifest.secondProductID)
 

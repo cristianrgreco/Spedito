@@ -477,7 +477,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     delegate: self,
     gitWorkspaceManager: gitWorkspaceManager,
     runtimeCoordinator: ticketDeliveryRuntimeCoordinator,
-    recoveryPolicy: sprintWorkRecoveryPolicy
+    recoveryPolicy: sprintWorkRecoveryPolicy,
+    prepareAcceptance: prepareTicketDeliveryAcceptanceForUIFixture
   )
   private lazy var ticketDeliveryPermissionWorkflowCoordinator =
     TicketDeliveryPermissionWorkflowCoordinator(
@@ -2736,8 +2737,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         .filter { $0.actionNoteID == actionNoteID }
         .map(\.sourceNoteID)
     )
-    return
-      retrospectiveNotes
+    return retrospectiveNotes
       .filter { sourceIDs.contains($0.id) }
       .sorted {
         if $0.createdAt == $1.createdAt {

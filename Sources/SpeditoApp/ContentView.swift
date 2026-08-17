@@ -317,7 +317,7 @@ private struct ProductWorkspaceView: View {
           AppVersionsView()
         case .retrospectives:
           RetrospectivesView(
-            onConcluded: { destination = .backlog },
+            onShowBacklog: { destination = .backlog },
             onOpenRefiningTicket: { item in
               ticketDetailPresentation = TicketDetailPresentation(
                 item: item,
