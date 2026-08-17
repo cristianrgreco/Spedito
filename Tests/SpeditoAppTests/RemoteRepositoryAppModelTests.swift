@@ -475,6 +475,59 @@ struct RemoteRepositoryAppModelTests {
     #expect(GitHubRepositorySetupLaunch.resolve(status: .connected) == .none)
   }
 
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryAppModelTests.relaunchedRepositorySetupRecovery`
+  /// - `RemoteRepositoryServiceTests.importedProductConnection`
+  /// This journey adds the application-return decision and proves that automatic and manual
+  /// refreshes use the same bounded Product-scoped command.
+  @Test("R04 returning from GitHub access settings refreshes automatically and manually")
+  func r04InstallationReturnAndManualRefresh() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-AppModel-R04-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Access refresh")
+    let service = AppModelRemoteService()
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
+    await model.reload()
+
+    #expect(
+      !GitHubInstallationReturnPolicy.shouldRefresh(
+        awaitingInstallationAccess: false,
+        isApplicationActive: true
+      )
+    )
+    #expect(
+      !GitHubInstallationReturnPolicy.shouldRefresh(
+        awaitingInstallationAccess: true,
+        isApplicationActive: false
+      )
+    )
+    #expect(
+      GitHubInstallationReturnPolicy.shouldRefresh(
+        awaitingInstallationAccess: true,
+        isApplicationActive: true
+      )
+    )
+    await model.refreshGitHubRepositories(productID: product.id)
+    #expect(await service.refreshRepositoryCount == 1)
+    #expect(
+      model.remoteRepositorySnapshot(for: product.id).repositoryState.repositories.map(\.id)
+        == [91]
+    )
+
+    await model.refreshGitHubRepositories(productID: product.id)
+    #expect(await service.refreshRepositoryCount == 2)
+    await model.shutdown()
+    await store.close()
+  }
+
   @Test("Authorization recovery keeps an existing repository explicit")
   func authorizationRecoveryPresentation() {
     #expect(

@@ -489,6 +489,94 @@ struct RemoteRepositoryServiceTests {
     await store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryServiceTests.localProductLifecycle`
+  /// - `RepositoryImportCoordinatorTests.authorizedImport`
+  /// - `GitCredentialSessionTests.credentialHelperArguments`
+  /// This journey adds one Device Flow catalog containing both public and private repositories,
+  /// then inspects the exact private import boundary for URL and Git-argument credential safety.
+  @Test("R03 Device Flow lists public and private repositories without credential-bearing sources")
+  func r03DeviceFlowCatalogAndCredentialBoundary() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-R03-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Device Flow Product")
+    let transport = ServiceFakeGitHubTransport(
+      repositoryID: 91,
+      canonicalURL: URL(string: "https://github.com/example/service.git")!,
+      defaultBranch: "main",
+      includesPrivateRepository: true
+    )
+    let credentialStore = ServiceMemoryCredentialStore()
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    let prompt = ServicePromptRecorder()
+
+    let state = try await service.connect(productID: product.id) { value in
+      await prompt.record(value)
+    }
+    #expect(await prompt.value?.userCode == "ABCD-EFGH")
+    #expect(await transport.deviceCodeRequestCount == 1)
+    #expect(
+      state.repositories.map(\.repository.fullName)
+        == ["example/private", "example/service"]
+    )
+    #expect(state.repositories.map(\.repository.isPrivate) == [true, false])
+
+    let importRecorder = ServiceImportRecorder()
+    await #expect(throws: ServiceImportProbe.self) {
+      _ = try await service.importProduct(name: "Private import", repositoryID: 92) {
+        source,
+        credential in
+        await importRecorder.record(source: source, credential: credential)
+        throw ServiceImportProbe.recorded
+      }
+    }
+    let sourceURL = try #require(await importRecorder.sourceURL)
+    #expect(sourceURL.absoluteString == "https://github.com/example/private.git")
+    #expect(sourceURL.user == nil)
+    #expect(sourceURL.password == nil)
+    #expect(sourceURL.query == nil)
+    #expect(sourceURL.fragment == nil)
+    let configurationArguments = await importRecorder.configurationArguments
+    #expect(configurationArguments.contains("credential.helper="))
+    #expect(!configurationArguments.joined(separator: " ").contains("ghu_"))
+
+    await service.shutdown()
+    let recoveredService = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    let interrupted = await recoveredService.state(productID: product.id)
+    #expect(interrupted.connection?.status == .selectingRepository)
+    #expect(interrupted.repositories.isEmpty)
+    let recovered = try await recoveredService.refreshRepositories(productID: product.id)
+    #expect(
+      recovered.repositories.map(\.repository.fullName)
+        == ["example/private", "example/service"]
+    )
+    await recoveredService.shutdown()
+    await store.close()
+  }
+
   @Test("Connecting a mature local Product publishes and merges its existing history")
   func matureLocalProductConnection() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -760,6 +848,80 @@ struct RemoteRepositoryServiceTests {
       try await git.run(["remote", "get-url", "origin"], at: repository)
         == canonicalURL.absoluteString)
     await service.shutdown()
+    await store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryServiceTests.importedProductConnection`
+  /// - `RemoteRepositoryAppModelTests.repositorySetupLaunch`
+  /// This journey adds a catalog that exposes only an unrelated repository while the imported
+  /// Product retains different provenance.
+  @Test("R11 imported Product never adopts an unrelated accessible GitHub repository")
+  func r11ImportedProductRejectsUnrelatedAccessibleTarget() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-Service-R11-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Preserved import")
+    let preservedURL = URL(string: "https://github.com/acme/preserved.git")!
+    try await store.createProductRepository(
+      ProductRepository(
+        productID: product.id,
+        originURL: preservedURL,
+        sourceDefaultBranch: "main",
+        importedSHA: String(repeating: "a", count: 40)
+      )
+    )
+    let transport = ServiceFakeGitHubTransport(
+      repositoryID: 91,
+      canonicalURL: URL(string: "https://github.com/example/unrelated.git")!,
+      defaultBranch: "main"
+    )
+    let credentialStore = ServiceMemoryCredentialStore()
+    let service = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+
+    let state = try await service.connect(productID: product.id) { _ in }
+    #expect(state.repositories.map(\.repository.fullName) == ["example/service"])
+    #expect(state.connection?.kind == .importedSource)
+    #expect(state.connection?.status == .needsInstallation)
+    #expect(state.connection?.repositoryID == nil)
+    #expect(state.connection?.fullName == nil)
+    #expect(state.connection?.canonicalHTTPSURL == nil)
+    let persisted = try #require(
+      try await store.fetchRemoteRepositoryConnection(productID: product.id)
+    )
+    #expect(persisted.repositoryID == nil)
+    #expect(try await store.fetchProductRepository(productID: product.id)?.originURL == preservedURL)
+
+    await service.shutdown()
+    let recoveredService = GitHubRemoteRepositoryService(
+      configuration: GitHubConfiguration(clientID: "client-id", appSlug: "spedito-test"),
+      api: GitHubAPIClient(transport: transport, sleep: { _ in }),
+      credentialStore: credentialStore,
+      credentialSession: GitCredentialSession(),
+      git: GitWorkspaceManager(),
+      storeProvider: { requestedID in requestedID == product.id ? store : nil },
+      storesProvider: { [store] },
+      workspaceProvider: { _ in root }
+    )
+    let recovered = await recoveredService.state(productID: product.id)
+    #expect(recovered.connection?.status == .needsInstallation)
+    #expect(recovered.connection?.repositoryID == nil)
+    #expect(recovered.repositories.isEmpty)
+    #expect(try await store.fetchProductRepository(productID: product.id)?.originURL == preservedURL)
+    await recoveredService.shutdown()
     await store.close()
   }
 
@@ -1403,6 +1565,7 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
   private(set) var deviceCodeRequestCount = 0
   private(set) var oauthTokenRequestCount = 0
   private var repositoriesVisible = true
+  private let includesPrivateRepository: Bool
   private var nextRefreshIsUnauthorized = false
   private var repositoryContainsBranches = false
   private var pendingMergedHeadSHA: String?
@@ -1413,11 +1576,13 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
     repositoryID: Int64,
     canonicalURL: URL,
     defaultBranch: String,
+    includesPrivateRepository: Bool = false,
     onMerge: @escaping @Sendable (String) throws -> Void = { _ in }
   ) {
     self.repositoryID = repositoryID
     self.canonicalURL = canonicalURL
     self.defaultBranch = defaultBranch
+    self.includesPrivateRepository = includesPrivateRepository
     self.onMerge = onMerge
   }
 
@@ -1539,10 +1704,15 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
       )
     }
     if path == "/user/installations/1/repositories" {
-      return response(
-        request,
-        json: ["repositories": repositoriesVisible ? [repositoryJSON()] : []]
-      )
+      let repositories =
+        if repositoriesVisible {
+          includesPrivateRepository
+            ? [repositoryJSON(), privateRepositoryJSON()]
+            : [repositoryJSON()]
+        } else {
+          []
+        }
+      return response(request, json: ["repositories": repositories])
     }
     if path == "/repos/example/service/branches" {
       return response(
@@ -1717,6 +1887,19 @@ private actor ServiceFakeGitHubTransport: GitHubHTTPTransport {
       "clone_url": canonicalURL.absoluteString,
       "private": false,
       "default_branch": defaultBranch,
+    ]
+  }
+
+  private func privateRepositoryJSON() -> [String: Any] {
+    [
+      "id": 92,
+      "owner": ["login": "example"],
+      "name": "private",
+      "full_name": "example/private",
+      "html_url": "https://github.com/example/private",
+      "clone_url": "https://github.com/example/private.git",
+      "private": true,
+      "default_branch": "trunk",
     ]
   }
 

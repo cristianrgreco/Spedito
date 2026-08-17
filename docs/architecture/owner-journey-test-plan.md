@@ -201,6 +201,40 @@ A01, A03, and A12 remain `Shell = —`: their application commands, bounded
 presentation projections, Product switching, and recovery are deterministic without
 a launched process.
 
+### 3.5 Priority 1 work packet 4 — Repository import and GitHub connection
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| R02 | `RepositoryImportKnowledgeTests.publicRepositoryURLValidation`, `.activationFailureCleansOwnedPaths` | **Composed/direct:** the typed repository URL boundary rejects insecure schemes, credentials, query or fragment data, local addresses, non-default ports, and unsupported hosts before an import command can exist; the importer cleanup proof independently establishes that even a later activation failure leaves no staged or registered Product. A wrapper would repeat those same boundaries. |
+| R03 | `RemoteRepositoryServiceTests.r03DeviceFlowCatalogAndCredentialBoundary`, `.localProductLifecycle`, `RepositoryImportCoordinatorTests.authorizedImport`, `GitCredentialSessionTests.defaultCredentialSocketPath`, `RemoteRepositoryPublishingTests.apiRequestSafety` | **Named J:** bounded Device Flow returns public and private choices, passes the selected private repository through a canonical credential-free URL and an ephemeral credential helper, and recovers the durable selecting-repository state plus its transient catalog through a fresh service instance. Bearer-token request safety remains covered at the API boundary. **M remains external:** real GitHub authorization and installation access are not represented by the fake. |
+| R04 | `RemoteRepositoryAppModelTests.r04InstallationReturnAndManualRefresh`, `.relaunchedRepositorySetupRecovery`, `RemoteRepositoryServiceTests.importedProductConnection` | **Named J:** one application-return policy triggers the Product-scoped refresh only after access settings were opened and the app becomes active; the same command remains available for manual propagation-delay refresh, and interrupted setup recovers from its durable selection. **M remains external:** browser return and real GitHub installation propagation require the controlled smoke below. |
+| R11 | `RemoteRepositoryServiceTests.r11ImportedProductRejectsUnrelatedAccessibleTarget`, `.importedProductConnection`, `RemoteRepositoryAppModelTests.repositorySetupLaunch` | **Named:** when only an unrelated repository is accessible, the imported Product persists `needsInstallation` without adopting any repository identity; a fresh service retains its exact source provenance, and presentation routes to installation access rather than a target picker. The existing success proof connects only after that preserved repository becomes accessible. |
+
+All four rows remain `Shell = —`: URL admission, Device Flow orchestration,
+refresh commands, imported-source matching, and interruption recovery are
+deterministic at their Core or bounded application boundary. Their external
+GitHub behavior is `M`, not application-shell wiring.
+
+Controlled external smoke, outside the deterministic suite:
+
+- **R03:** with a disposable GitHub account whose Spedito installation can see
+  one public and one private test repository, complete Device Flow, confirm both
+  repositories are listed, import the private repository, and verify its saved
+  origin and local Git configuration contain neither the access token nor an
+  embedded credential.
+- **R04:** remove the test repository from the GitHub App installation, choose
+  **Manage access**, grant it in GitHub, return to Spedito, and confirm the list
+  refreshes automatically; repeat with delayed propagation and confirm
+  **Refresh list** reveals it without restarting setup.
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Input rejected | Enter an unsupported or credential-bearing URL | No Product, workspace, or import operation exists | The repository link remains invalid | Correct the link or cancel | There is no operation to recover |
+| Device authorization | Authorize GitHub | The credential is confined to the credential store; no source URL contains it | Verification code and GitHub destination | Complete or cancel authorization | Cancellation settles; a later command starts a new authorization |
+| Repository selection | Complete authorization | Product-scoped connection and account link in SQLite; catalog remains transient | Accessible public and private repositories | Select a repository, refresh, or cancel | A fresh service reloads the durable selection state and refreshes the catalog |
+| Installation access required | The preserved imported source is absent or lacks permissions | `needsInstallation` and unchanged Product provenance in SQLite | Exact access guidance, never an unrelated target picker | Manage access, refresh, or cancel setup | A fresh service restores the access-required state and original provenance |
+| Access refresh | Return from GitHub or choose **Refresh list** | Any resulting connection transition is saved by the remote service | Updated accessible repository list or the same access guidance | Select, retry refresh, or manage access | Relaunch refreshes a durable pending selection before eligibility checking |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

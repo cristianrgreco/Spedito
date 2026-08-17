@@ -156,7 +156,12 @@ struct GitHubRepositorySettingsSection: View {
       )
     }
     .onChange(of: scenePhase) { _, phase in
-      guard phase == .active, awaitingGitHubInstallation else { return }
+      guard
+        GitHubInstallationReturnPolicy.shouldRefresh(
+          awaitingInstallationAccess: awaitingGitHubInstallation,
+          isApplicationActive: phase == .active
+        )
+      else { return }
       awaitingGitHubInstallation = false
       Task { await model.refreshGitHubRepositories(productID: product.id) }
     }

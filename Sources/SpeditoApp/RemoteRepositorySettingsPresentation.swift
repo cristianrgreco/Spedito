@@ -62,6 +62,15 @@ enum GitHubRepositorySetupLaunch: Equatable {
   }
 }
 
+enum GitHubInstallationReturnPolicy {
+  static func shouldRefresh(
+    awaitingInstallationAccess: Bool,
+    isApplicationActive: Bool
+  ) -> Bool {
+    awaitingInstallationAccess && isApplicationActive
+  }
+}
+
 struct GitHubAuthorizationRecoveryPresentation: Equatable {
   let message: String
   let actionTitle: String
