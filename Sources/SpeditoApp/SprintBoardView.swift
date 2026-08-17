@@ -2,6 +2,39 @@ import AppKit
 import SpeditoCore
 import SwiftUI
 
+struct SprintBoardSelectionPolicy {
+  static func preferredPlan(in plans: [SprintPlan]) -> SprintPlan? {
+    plans.first(where: { $0.sprint.state == .active })
+      ?? plans.first(where: { $0.sprint.state == .paused })
+      ?? plans.first(where: {
+        $0.sprint.state == .completed
+          && $0.sprint.retrospectiveConcludedAt == nil
+      })
+      ?? plans.first(where: { $0.sprint.state == .draft })
+      ?? plans.first
+  }
+
+  static func resolvedSelection(
+    availablePlans: [SprintPlan],
+    currentID: UUID?,
+    restoredID: UUID?,
+    isLoading: Bool
+  ) -> UUID? {
+    if let currentID,
+      availablePlans.contains(where: { $0.sprint.id == currentID })
+    {
+      return currentID
+    }
+    if let restoredID,
+      availablePlans.contains(where: { $0.sprint.id == restoredID })
+    {
+      return restoredID
+    }
+    guard !isLoading else { return nil }
+    return preferredPlan(in: availablePlans)?.sprint.id
+  }
+}
+
 struct SprintBoardView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selectedSprintID: UUID?
@@ -333,14 +366,7 @@ struct SprintBoardView: View {
   }
 
   private var preferredPlan: SprintPlan? {
-    availablePlans.first(where: { $0.sprint.state == .active })
-      ?? availablePlans.first(where: { $0.sprint.state == .paused })
-      ?? availablePlans.first(where: {
-        $0.sprint.state == .completed
-          && $0.sprint.retrospectiveConcludedAt == nil
-      })
-      ?? availablePlans.first(where: { $0.sprint.state == .draft })
-      ?? availablePlans.first
+    SprintBoardSelectionPolicy.preferredPlan(in: availablePlans)
   }
 
   private var selectedSprintBinding: Binding<UUID> {
@@ -351,21 +377,18 @@ struct SprintBoardView: View {
   }
 
   private func selectPreferredPlanIfNeeded() {
-    if let selectedSprintID,
-      availablePlans.contains(where: { $0.sprint.id == selectedSprintID })
-    {
-      return
+    let resolvedID = SprintBoardSelectionPolicy.resolvedSelection(
+      availablePlans: availablePlans,
+      currentID: selectedSprintID,
+      restoredID: restoredSprintID,
+      isLoading: model.isLoading
+    )
+    guard resolvedID != selectedSprintID else { return }
+    if resolvedID == restoredSprintID {
+      selectedSprintID = resolvedID
+    } else {
+      selectSprint(resolvedID)
     }
-    if let restoredSprintID,
-      availablePlans.contains(where: { $0.sprint.id == restoredSprintID })
-    {
-      selectedSprintID = restoredSprintID
-      return
-    }
-    guard !model.isLoading, !availablePlans.isEmpty else {
-      return
-    }
-    selectSprint(preferredPlan?.sprint.id)
   }
 
   private var restoredSprintID: UUID? {

@@ -1,7 +1,7 @@
 # Owner journey test research and implementation plan
 
 - **Date:** 15 August 2026
-- **Status:** Priority 0 complete; Priority 1 work packet 4 covers the Backlog and editable Ticket slice
+- **Status:** Priority 0 complete; Priority 1 work packet 4 covers Backlog, editable Ticket, and Sprint planning slices
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Executable coverage ledger:** section 3
@@ -22,9 +22,10 @@ This follows the repository's architecture and verification rules in `AGENTS.md`
 
 The inventory below defines **124 owner journey contracts**. The executable
 ledger in section 3 gives every Priority 0 row named or non-duplicative composed
-deterministic evidence and now records the first Priority 1 slice: B01, B04,
-B06, B07, B08, B10, and B11. Remaining Priority 1 and 2 rows stay planned. Some
-contracts should become parameterized tests or several interruption variants,
+deterministic evidence and now records two Priority 1 slices: B01, B04, B06,
+B07, B08, B10, B11, P01, P02, P04, P06, and P07. Remaining Priority 1 and 2
+rows stay planned. Some contracts should become parameterized tests or several
+interruption variants,
 so the eventual test-method count will be higher. Only contracts marked
 **Shell = Y** are candidates for proof from a launched application process.
 Sixteen Priority 0 rows carry that designation and all 16 now have a
@@ -157,6 +158,33 @@ launched-process contract.
 | B08 | `EditableTicketJourneyTests.b08LinkedNavigationPreservesUnsavedEdits`, `EpicPlanningPresentationTests.ticketDetailsResolveEpic`, `.relationshipLinksResolveRelatedTicket` | **Named:** the editor's bounded presentation state opens and returns from both Epic and Ticket relationships while retaining the exact unsaved title, context, and blockers. |
 | B10 | `EditableTicketJourneyTests.b10BacklogReorderPersistsDependencyOrder`, `PlanningDropPolicyTests.placementPreviewsIdentifyValidRange`, `.repeatedInvalidPreviewRemainsInvalid`, `SQLiteStoreTests.dependencyAwareRanking` | **Named:** a valid reorder survives a fresh store instance; invalid drag previews remain stable, and top/bottom commands cannot move either side of a dependency across the other. |
 | B11 | `EditableTicketJourneyTests.b11ConfirmedArchiveRemovesActiveTicketReferences`, `SQLiteStoreTests.ownerManagedBlockers`, `.bulkArchiveWorkItems` | **Named:** cancellation leaves the Ticket active, confirmation archives the exact requested Ticket, active sprint planning and dependency/suggestion projections exclude it, and its work log plus archive event remain available after a fresh instance. |
+
+### 3.3 Priority 1 work packet 4 — Sprint planning
+
+This coherent slice covers P01, P02, P04, P06, and P07. It preserves the
+existing P03 discard boundary and P05 start-readiness authority. Changing
+start-readiness rules, delivering a sprint, changing backlog scope, and
+redesigning the surrounding Backlog or Sprint board are non-goals. All five
+rows remain `Shell = —` because their coordinator, persistence, and bounded
+presentation contracts are deterministic; no launched-process test is
+justified.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| P01 | `SprintBoardSelectionTests.p01PlanningScopeMatchesNextSprintAcrossRelaunch`, `PlanningDropPolicyTests.bulkActionsMoveExactRequestedScope`, `SQLiteStoreTests.candidateSprintDefinesPlanningScope` | **Named:** the application command persists the exact Next sprint set, the planning presentation projects every scoped Ticket once and no backlog-only Ticket, and a fresh store and model recover the same set. |
+| P02 | `SprintPlanningWorkflowJourneyTests.p02TicketPlanningAppliesSelectedProposalAndAssignment`, `CodexAdapterTests.sprintPlanningConversation`, `TicketRefinementApplicationTests.b05StaleCompletionPreservesNewerDraft` | **Named:** one selected team member receives the owner-edited Ticket snapshot and proposed assignee; only the accepted version-safe proposal changes its Ticket, the other scoped Ticket remains unchanged, and the saved assignment and work-log evidence recover in a fresh model. |
+| P04 | `SprintBoardSelectionTests.p04PlanningSummaryPresentsAllDecisionSignals`, `SprintForecastTests`, `SQLiteStoreTests.sprintPlanningHasNoConcurrencySetting` | **Named:** the bounded summary orders a dependant after its prerequisite and aggregates Ticket forecast, elapsed waves, the most constrained Codex usage window, risks, and one owner demo per scoped Ticket. |
+| P06 | `SprintPlanningWorkflowJourneyTests.p06GoalFailureLeavesDeliveryUsable`, `.generatedGoalStaysWithOwningPlanAcrossProductSwitchAndRelaunch`, `SQLiteStoreTests.sprintGoalCanFinishAfterStart`, `SprintGoalSuggestionPolicyTests` | **Named:** only a missing goal is eligible; generation remains bounded and exact-plan scoped, stale output is rejected, start does not wait, and an invalid terminal response leaves the saved draft startable and recoverable without affecting another Product. |
+| P07 | `SprintBoardSelectionTests.p07SavedDraftAndBoardContextRecoverWithoutUnsavedChanges`, `.p03PartialPlanAndDiscardedPickerState`, `.newlyPlannedSprintBecomesSelected` | **Named:** a fresh store and model restore the durable draft assignment and Product-scoped board selection, discard the unsaved picker choice, and fall back to the valid draft when a stored selection is stale. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Draft scope loaded | Open Sprint planning | One SQLite draft sprint whose items are the Next sprint scope | Every scoped Ticket once, in dependency waves | Review a Ticket, assign delivery, save, or close | A fresh model rebuilds scope from the draft |
+| Ticket review editing | Edit a scoped Ticket or choose an assignee | No write until the explicit Ticket or plan save | Local edits and the selected team member | Save, ask one team member, apply a version-safe proposal, or discard | Unsaved edits disappear; the last saved Ticket and assignment return |
+| Team reply running | Send a Ticket-scoped planning message | Owner comment is durable before the bounded Codex turn; reply or labelled failure is appended afterward | One selected team member and a Stop action | Stop or await the reply | Interruption settles to durable work-log evidence without changing the Ticket |
+| Plan summary | Review sprint | Draft scope, dependency edges, estimates, and assignments remain in SQLite | Dependency order, forecast, remaining usage, and owner acceptance load | Return to Ticket review or save | Recomputed from durable state |
+| Goal generation | Save a plan with no goal | The versioned draft remains authoritative while generation is transient | Delivery remains usable while a bounded suggestion runs | Continue to the board or start when otherwise ready | Stale output is rejected; failure leaves the draft startable |
+| Saved draft selected | Save and open the board | Draft plan and Product-scoped board selection | The same valid planning/board context | Resume planning or start | Fresh-instance recovery restores the saved draft and ignores unsaved picker state |
 
 ## 4. Test taxonomy
 
@@ -589,10 +617,10 @@ For each feature, write the state table first and cover every durable intermedia
 ### Work packet 4 — P1 primary owner journeys (in progress)
 
 The Backlog and editable Ticket slice B01, B04, B06, B07, B08, B10, and B11 is
-complete in section 3.2. Continue with planning, Chat, Knowledge, Codebase
-navigation, App versions, and Retrospectives as separate coherent packets.
-Reuse presentation-policy tests for branches that do not need full coordinator
-state.
+complete in section 3.2. The Sprint planning slice P01, P02, P04, P06, and P07
+is complete in section 3.3. Continue with Chat, Knowledge, Codebase navigation,
+App versions, and Retrospectives as separate coherent packets. Reuse
+presentation-policy tests for branches that do not need full coordinator state.
 
 ### Work packet 5 — P2 convenience and presentation journeys
 

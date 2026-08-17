@@ -7,6 +7,113 @@ enum SprintGoalSuggestionPolicy {
   }
 }
 
+struct SprintPlanningScope {
+  static func items(in plan: SprintPlan?, from workItems: [WorkItem]) -> [WorkItem] {
+    guard let plan else { return [] }
+    let scopedIDs = Set(plan.items.map(\.workItemID))
+    return workItems.filter { scopedIDs.contains($0.id) }
+  }
+}
+
+struct SprintPlanningWavePolicy {
+  static func groups(
+    items: [WorkItem],
+    dependencies: [WorkItemDependency]
+  ) -> [[WorkItem]] {
+    let scopedIDs = Set(items.map(\.id))
+    let dependenciesByItem = Dictionary(
+      grouping: dependencies.filter {
+        scopedIDs.contains($0.workItemID) && scopedIDs.contains($0.dependsOnWorkItemID)
+      },
+      by: \.workItemID
+    )
+    var waveByItem: [UUID: Int] = [:]
+    var remaining = items
+    while !remaining.isEmpty {
+      var progressed = false
+      for item in remaining {
+        let prerequisiteIDs = dependenciesByItem[item.id, default: []].map(
+          \.dependsOnWorkItemID
+        )
+        guard prerequisiteIDs.allSatisfy({ waveByItem[$0] != nil }) else { continue }
+        waveByItem[item.id] = (prerequisiteIDs.compactMap { waveByItem[$0] }.max() ?? 0) + 1
+        remaining.removeAll { $0.id == item.id }
+        progressed = true
+      }
+      if !progressed {
+        let fallback = (waveByItem.values.max() ?? 0) + 1
+        for item in remaining {
+          waveByItem[item.id] = fallback
+        }
+        remaining.removeAll()
+      }
+    }
+    return Dictionary(grouping: items, by: { waveByItem[$0.id] ?? 1 })
+      .sorted { $0.key < $1.key }
+      .map { $0.value.sorted { $0.rank < $1.rank } }
+  }
+}
+
+struct SprintPlanningSummaryPresentation: Equatable {
+  let scopeCount: Int
+  let waveCount: Int
+  let tokenLow: Int
+  let tokenHigh: Int
+  let elapsedLowSeconds: Int
+  let elapsedHighSeconds: Int
+  let riskCount: Int
+  let ownerReviewCount: Int
+  let remainingUsagePercent: Int?
+
+  init(
+    waves: [[SprintPlanningLine]],
+    rateLimits: CodexRateLimitsSnapshot?
+  ) {
+    let lines = waves.flatMap { $0 }
+    scopeCount = lines.count
+    waveCount = waves.count
+    tokenLow = lines.reduce(0) { $0 + $1.forecast.tokenLow }
+    tokenHigh = lines.reduce(0) { $0 + $1.forecast.tokenHigh }
+    elapsedLowSeconds = waves.reduce(0) {
+      $0 + ($1.map(\.forecast.durationLowSeconds).max() ?? 0)
+    }
+    elapsedHighSeconds = waves.reduce(0) {
+      $0 + ($1.map(\.forecast.durationHighSeconds).max() ?? 0)
+    }
+    riskCount = lines.reduce(0) { $0 + $1.risks.count }
+    ownerReviewCount = lines.count
+    if rateLimits?.reachedLimitType != nil {
+      remainingUsagePercent = 0
+    } else {
+      remainingUsagePercent = rateLimits?.windows
+        .map(\.availablePercent)
+        .min()
+        .map { Int($0.rounded(.down)) }
+    }
+  }
+}
+
+struct SprintPlanningTicketProposalPolicy {
+  static func conflict(
+    proposal: SprintPlanningTicketProposal,
+    baseSnapshot: SprintPlanningTicketSnapshot,
+    currentSnapshot: SprintPlanningTicketSnapshot,
+    storedVersion: Int?
+  ) -> String? {
+    guard proposal.baseVersion == baseSnapshot.version else {
+      return "The proposal does not target the ticket version that was sent to the agent."
+    }
+    guard currentSnapshot == baseSnapshot else {
+      return
+        "You edited the ticket after this request. Save your edits and ask again before applying the proposal."
+    }
+    guard storedVersion == baseSnapshot.version else {
+      return "The saved ticket changed after this request. Reload it before applying the proposal."
+    }
+    return nil
+  }
+}
+
 struct SprintPlanningDraftAssignments: Equatable {
   private(set) var saved: [UUID: UUID]
   private(set) var selected: [UUID: UUID]
@@ -46,14 +153,13 @@ struct SprintPlanningView: View {
   @State private var assignments = SprintPlanningDraftAssignments()
   @State private var isShowingDiscardConfirmation = false
 
+  @State private var isShowingTicketReview = false
   private var sprintNumber: Int {
     model.candidateSprintPlan?.sprint.number ?? 1
   }
 
   private var scopedItems: [WorkItem] {
-    guard let plan = model.candidateSprintPlan else { return [] }
-    let ids = Set(plan.items.map(\.workItemID))
-    return model.workItems.filter { ids.contains($0.id) }
+    SprintPlanningScope.items(in: model.candidateSprintPlan, from: model.workItems)
   }
 
   private var sprintItemsByWorkItemID: [UUID: SprintItem] {
@@ -69,75 +175,34 @@ struct SprintPlanningView: View {
   }
 
   private var waves: [[SprintPlanningLine]] {
-    let scopedIDs = Set(scopedItems.map(\.id))
-    let dependenciesByItem = Dictionary(
-      grouping: model.dependencies.filter {
-        scopedIDs.contains($0.workItemID) && scopedIDs.contains($0.dependsOnWorkItemID)
-      },
-      by: \.workItemID
-    )
-    var waveByItem: [UUID: Int] = [:]
-    var remaining = scopedItems
-    while !remaining.isEmpty {
-      var progressed = false
-      for item in remaining {
-        let prerequisiteIDs = dependenciesByItem[item.id, default: []].map(
-          \.dependsOnWorkItemID
+    SprintPlanningWavePolicy.groups(
+      items: scopedItems,
+      dependencies: model.dependencies
+    ).map { wave in
+      wave.map { item in
+        SprintPlanningLine(
+          item: item,
+          owner: resolvedOwner(for: item),
+          forecast: SprintForecast.estimate(for: item),
+          wave: 0,
+          risks: risks(
+            for: item,
+            scopedIDs: Set(scopedItems.map(\.id))
+          )
         )
-        guard prerequisiteIDs.allSatisfy({ waveByItem[$0] != nil }) else { continue }
-        waveByItem[item.id] = (prerequisiteIDs.compactMap { waveByItem[$0] }.max() ?? 0) + 1
-        remaining.removeAll { $0.id == item.id }
-        progressed = true
-      }
-      if !progressed {
-        let fallback = (waveByItem.values.max() ?? 0) + 1
-        for item in remaining {
-          waveByItem[item.id] = fallback
-        }
-        remaining.removeAll()
       }
     }
-
-    let lines = scopedItems.map { item in
-      SprintPlanningLine(
-        item: item,
-        owner: resolvedOwner(for: item),
-        forecast: SprintForecast.estimate(for: item),
-        wave: waveByItem[item.id] ?? 1,
-        risks: risks(for: item, scopedIDs: scopedIDs)
-      )
-    }
-    return Dictionary(grouping: lines, by: \.wave)
-      .sorted { $0.key < $1.key }
-      .map { $0.value.sorted { $0.item.rank < $1.item.rank } }
   }
 
   private var lines: [SprintPlanningLine] {
     waves.flatMap { $0 }
   }
 
-  private var totalTokenLow: Int {
-    lines.reduce(0) { $0 + $1.forecast.tokenLow }
-  }
-
-  private var totalTokenHigh: Int {
-    lines.reduce(0) { $0 + $1.forecast.tokenHigh }
-  }
-
-  private var elapsedLowSeconds: Int {
-    waves.reduce(0) { total, wave in
-      total + (wave.map(\.forecast.durationLowSeconds).max() ?? 0)
-    }
-  }
-
-  private var elapsedHighSeconds: Int {
-    waves.reduce(0) { total, wave in
-      total + (wave.map(\.forecast.durationHighSeconds).max() ?? 0)
-    }
-  }
-
-  private var riskCount: Int {
-    lines.reduce(0) { $0 + $1.risks.count }
+  private var summary: SprintPlanningSummaryPresentation {
+    SprintPlanningSummaryPresentation(
+      waves: waves,
+      rateLimits: model.codexRateLimits
+    )
   }
 
   private var canSave: Bool {
@@ -154,6 +219,13 @@ struct SprintPlanningView: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
+        if !scopedItems.isEmpty {
+          Button("Review tickets with team") {
+            isShowingTicketReview = true
+          }
+          .buttonStyle(.borderedProminent)
+          .tint(.purple)
+        }
         Button("Close") { requestClose() }
       }
 
@@ -169,43 +241,56 @@ struct SprintPlanningView: View {
         HStack(spacing: 10) {
           SprintPlanningMetric(
             title: "Scope",
-            value: "\(lines.count) \(lines.count == 1 ? "ticket" : "tickets")",
+            value:
+              "\(summary.scopeCount) \(summary.scopeCount == 1 ? "ticket" : "tickets")",
             detail: "ranked backlog order",
             symbol: "checklist"
           )
           SprintPlanningMetric(
             title: "Execution",
-            value: "\(waves.count) \(waves.count == 1 ? "wave" : "waves")",
-            detail: "all eligible work starts together",
+            value:
+              "\(summary.waveCount) \(summary.waveCount == 1 ? "wave" : "waves")",
+            detail: "dependency order",
             symbol: "point.3.connected.trianglepath.dotted"
           )
           SprintPlanningMetric(
             title: "Token forecast",
-            value: "\(compactTokens(totalTokenLow))–\(compactTokens(totalTokenHigh))",
+            value: "\(compactTokens(summary.tokenLow))–\(compactTokens(summary.tokenHigh))",
             detail: "planning range",
             symbol: "gauge.with.dots.needle.33percent"
           )
           SprintPlanningMetric(
             title: "Elapsed time",
-            value: "\(duration(elapsedLowSeconds))–\(duration(elapsedHighSeconds))",
+            value:
+              "\(duration(summary.elapsedLowSeconds))–\(duration(summary.elapsedHighSeconds))",
             detail: "agent work, not a deadline",
             symbol: "clock"
           )
           SprintPlanningMetric(
-            title: "Risks",
-            value: riskCount == 0 ? "No flags" : "\(riskCount) flagged",
-            detail: "review before saving",
-            symbol: riskCount == 0 ? "checkmark.shield" : "exclamationmark.triangle"
+            title: "Owner review",
+            value:
+              "\(summary.ownerReviewCount) \(summary.ownerReviewCount == 1 ? "demo" : "demos")",
+            detail: "acceptance load",
+            symbol: "person.crop.circle.badge.checkmark"
+          )
+          SprintPlanningMetric(
+            title: "Remaining usage",
+            value: summary.remainingUsagePercent.map { "\($0)% available" } ?? "Unavailable",
+            detail:
+              summary.remainingUsagePercent == nil
+              ? "Connect Codex to check"
+              : "most constrained window",
+            symbol: "chart.bar"
           )
         }
 
-        if riskCount > 0 {
+        if summary.riskCount > 0 {
           VStack(alignment: .leading, spacing: 9) {
             Label("Plan needs attention", systemImage: "exclamationmark.triangle.fill")
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(.orange)
             Text(
-              "Resolve \(riskCount) \(riskCount == 1 ? "issue" : "issues") before this sprint can start."
+              "Resolve \(summary.riskCount) \(summary.riskCount == 1 ? "issue" : "issues") before this sprint can start."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -324,11 +409,22 @@ struct SprintPlanningView: View {
       Text("The last saved draft remains unchanged.")
     }
     .interactiveDismissDisabled(assignments.hasUnsavedChanges || isSaving)
+    .sheet(
+      isPresented: $isShowingTicketReview,
+      onDismiss: synchronizeAssignments
+    ) {
+      SprintPlanningTicketReviewView(isPresented: $isShowingTicketReview)
+        .environmentObject(model)
+    }
   }
 
   private func prepare() {
     guard !didPrepare else { return }
     didPrepare = true
+    synchronizeAssignments()
+  }
+
+  private func synchronizeAssignments() {
     assignments = SprintPlanningDraftAssignments(
       saved: scopedItems.reduce(into: [:]) { result, item in
         let plannedOwnerID = sprintItemsByWorkItemID[item.id]?.implementerProfileID
@@ -583,7 +679,7 @@ private struct SprintPlanningTicketRow: View {
   }
 }
 
-private struct LegacySprintPlanningView: View {
+private struct SprintPlanningTicketReviewView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   @State private var selections: [UUID: TicketPlanSelection] = [:]
@@ -1266,19 +1362,12 @@ private struct LegacySprintPlanningView: View {
     for item: WorkItem,
     pending: PendingPlanningProposal
   ) -> String? {
-    guard pending.proposal.baseVersion == pending.baseSnapshot.version else {
-      return "The proposal does not target the ticket version that was sent to the agent."
-    }
-    guard draftSnapshot(for: item) == pending.baseSnapshot else {
-      return
-        "You edited the ticket after this request. Save your edits and ask again before applying the proposal."
-    }
-    guard
-      model.workItems.first(where: { $0.id == item.id })?.version == pending.baseSnapshot.version
-    else {
-      return "The saved ticket changed after this request. Reload it before applying the proposal."
-    }
-    return nil
+    SprintPlanningTicketProposalPolicy.conflict(
+      proposal: pending.proposal,
+      baseSnapshot: pending.baseSnapshot,
+      currentSnapshot: draftSnapshot(for: item),
+      storedVersion: model.workItems.first(where: { $0.id == item.id })?.version
+    )
   }
 
   private func acceptProposal(for item: WorkItem, pending: PendingPlanningProposal) {
@@ -1606,7 +1695,7 @@ private struct TicketPlanSelection {
   var implementerID: UUID?
 }
 
-private struct SprintPlanningTicketDraft {
+struct SprintPlanningTicketDraft: Equatable {
   var baseVersion: Int
   var title: String
   var type: WorkItemType
