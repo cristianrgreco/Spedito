@@ -338,14 +338,16 @@ struct RetrospectivesView: View {
         Button(isConcluding ? "Concluding…" : "Conclude retrospective") {
           isConcluding = true
           Task {
-            let didConclude = await model.concludeRetrospective(
-              productID: plan.sprint.productID,
-              sprintID: plan.sprint.id
+            await RetrospectiveConclusionAction.perform(
+              conclude: {
+                await model.concludeRetrospective(
+                  productID: plan.sprint.productID,
+                  sprintID: plan.sprint.id
+                )
+              },
+              showBacklog: onShowBacklog
             )
             isConcluding = false
-            if didConclude {
-              onShowBacklog()
-            }
           }
         }
         .buttonStyle(.borderedProminent)

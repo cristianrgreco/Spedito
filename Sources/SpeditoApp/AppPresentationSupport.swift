@@ -234,6 +234,19 @@ struct ProductConversationThreadPresentation {
   }
 }
 
+@MainActor
+enum RetrospectiveConclusionAction {
+  @discardableResult
+  static func perform(
+    conclude: () async -> Bool,
+    showBacklog: () -> Void
+  ) async -> Bool {
+    guard await conclude() else { return false }
+    showBacklog()
+    return true
+  }
+}
+
 struct ProductConversationFailurePresentation {
   static let retryableMessage =
     "The reply could not be completed. Retry when you are ready."

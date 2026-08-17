@@ -89,6 +89,24 @@ struct RetrospectiveSprintSelectionTests {
     #expect(concludedPhase.pickerTitle == "Concluded")
   }
 
+  @Test("[I08] Successful conclusion returns to Backlog and failure stays put")
+  @MainActor
+  func i08ConclusionReturnsToBacklogOnlyAfterDurableSuccess() async {
+    var backlogRouteCount = 0
+    let succeeded = await RetrospectiveConclusionAction.perform(
+      conclude: { true },
+      showBacklog: { backlogRouteCount += 1 }
+    )
+    let failed = await RetrospectiveConclusionAction.perform(
+      conclude: { false },
+      showBacklog: { backlogRouteCount += 1 }
+    )
+
+    #expect(succeeded)
+    #expect(!failed)
+    #expect(backlogRouteCount == 1)
+  }
+
   @Test("Synthesized actions credit each source observation owner once")
   func synthesizedActionAttributionUsesSourceOwners() {
     let productID = UUID()
