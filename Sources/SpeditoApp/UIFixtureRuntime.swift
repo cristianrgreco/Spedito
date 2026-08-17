@@ -51,7 +51,7 @@
     }
 
     static var preservesPendingPermissionRequest: Bool {
-      scenario == .d08 || scenario == .d09
+      scenario == .d08
     }
 
     static func transportFactoryOutput() -> CodexTransportFactoryOutput? {
@@ -188,8 +188,8 @@
           threadID: thread.id,
           messageID: reply.id
         )
-      case .d08, .d09:
-        let product = try await registry.createProduct(name: scenario == .d08 ? "D08 permissions" : "D09 permissions")
+      case .d08:
+        let product = try await registry.createProduct(name: "D08 permissions")
         let store = try requireStore(registry, productID: product.id)
         let seeded = try await seedPermissionRequest(store: store, product: product)
         UserDefaults.standard.set(
@@ -203,6 +203,21 @@
           workItemID: seeded.workItemID,
           sprintID: seeded.sprintID,
           permissionRequestID: seeded.permissionRequestID
+        )
+      case .d09:
+        let product = try await registry.createProduct(name: "D09 owner question")
+        let store = try requireStore(registry, productID: product.id)
+        let seeded = try await seedOwnerQuestion(store: store, product: product)
+        UserDefaults.standard.set(
+          WorkspaceDestination.sprint.rawValue,
+          forKey: "workspaceDestination.\(product.id.uuidString)"
+        )
+        SprintBoardSelectionDefaults.select(seeded.sprintID, for: product.id)
+        manifest = UIFixtureManifest(
+          selectedProductID: product.id,
+          firstProductID: product.id,
+          workItemID: seeded.workItemID,
+          sprintID: seeded.sprintID
         )
       case .d14, .v06:
         let product = try await registry.createProduct(
@@ -425,6 +440,49 @@
         )
       )
       return (seeded.workItemID, seeded.sprintID, request.id)
+    }
+
+    private static func seedOwnerQuestion(
+      store: SQLiteStore,
+      product: Product
+    ) async throws -> (workItemID: UUID, sprintID: UUID) {
+      let seeded = try await seedSprint(
+        store: store,
+        product: product,
+        title: "Answer one exact owner question",
+        active: true
+      )
+      let profiles = try await store.fetchAgentProfiles(productID: product.id)
+      guard
+        let implementer = profiles.first(where: { $0.role == .implementer }),
+        let run = try await store.fetchAgentRuns(productID: product.id).first
+      else {
+        throw UIFixtureError.missingFixtureState("Owner-question AgentRun")
+      }
+      _ = try await store.transitionWorkItem(
+        id: seeded.workItemID,
+        to: .running,
+        actor: implementer.name,
+        reason: "Fixture delivery"
+      )
+      _ = try await store.updateAgentRun(
+        id: run.id,
+        status: .awaitingOwner,
+        codexThreadID: "thread-ui-owner-question",
+        eventActor: implementer.name,
+        eventDetail: "Waiting for one product decision"
+      )
+      _ = try await store.appendComment(
+        workItemID: seeded.workItemID,
+        authorKind: .agent,
+        authorName: implementer.name,
+        body: "Choose the release channel.",
+        ownerQuestion: TicketOwnerQuestion(
+          prompt: "Which release channel should this ticket use?",
+          options: ["Stable", "Preview"]
+        )
+      )
+      return (seeded.workItemID, seeded.sprintID)
     }
 
     private static func seedReadyForDemoCandidate(

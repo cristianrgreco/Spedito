@@ -4447,6 +4447,7 @@ private struct SprintTicketCommentComposer: View {
           systemImage: "paperplane.fill"
         )
       }
+      .accessibilityIdentifier("sprint.ticket.owner-question.submit")
       .buttonStyle(.borderedProminent)
       .disabled(!canResumeWork)
     } else if failedDeliveryName != nil {
@@ -5986,6 +5987,7 @@ private struct SprintTicketCommentRow: View {
         .font(.body.weight(.medium))
         .fixedSize(horizontal: false, vertical: true)
         .textSelection(.enabled)
+        .accessibilityIdentifier("sprint.ticket.owner-question.prompt")
 
       if let artifact = question.decisionArtifact {
         Button {
@@ -5999,22 +6001,25 @@ private struct SprintTicketCommentRow: View {
       }
 
       VStack(spacing: 6) {
-        ForEach(question.options, id: \.self) { option in
+        ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
           ownerAnswerRow(
             option,
             selection: .option(option)
           )
+          .accessibilityIdentifier("sprint.ticket.owner-question.option.\(index)")
         }
         ownerAnswerRow(
           "Other",
           selection: .custom
         )
+        .accessibilityIdentifier("sprint.ticket.owner-question.other")
       }
 
       if presentedOwnerAnswerSelection == .custom, let customOwnerAnswer {
         TextField("Type another answer", text: customOwnerAnswer)
           .textFieldStyle(.roundedBorder)
           .focused($isCustomOwnerAnswerFocused)
+          .accessibilityIdentifier("sprint.ticket.owner-question.custom")
           .task {
             await Task.yield()
             isCustomOwnerAnswerFocused = true

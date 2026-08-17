@@ -113,17 +113,41 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   }
 
   /// Existing deterministic coverage:
-  /// - `AgentPermissionResolutionTests.rememberForProductPersistsExactlyOneGrant`
-  /// - `SQLiteStoreTests.agentPermissionGrantsAreProductScopedAndRevocable`
-  /// This launched-process test covers only D09's Product-scoped persistent-access affordance.
-  func testD09AlwaysAllowIsPresentedAsProductScopedAccess() throws {
+  /// - `TicketDeliveryWorkflowCoordinatorTests.d09SubmittedAnswersResumeExactRun`
+  /// This launched-process test covers only D09's listed choice, Other, and Submit answers wiring.
+  func testD09OwnerQuestionPresentsListedOtherAndSubmitAnswers() throws {
     let session = try launchFixture("d09")
     try openPermissionTicket(session)
-    let requestID = try XCTUnwrap(session.manifest.permissionRequestID)
 
-    let alwaysAllow = element(session.app, "permission.always.\(requestID.uuidString)")
-    XCTAssertTrue(alwaysAllow.waitForExistence(timeout: 5))
-    XCTAssertEqual(alwaysAllow.label, "Always allow")
+    let prompt = element(session.app, "sprint.ticket.owner-question.prompt")
+    XCTAssertTrue(prompt.waitForExistence(timeout: 5))
+    let firstChoice = element(session.app, "sprint.ticket.owner-question.option.0")
+    let secondChoice = element(session.app, "sprint.ticket.owner-question.option.1")
+    let otherChoice = element(session.app, "sprint.ticket.owner-question.other")
+    XCTAssertTrue(firstChoice.exists)
+    XCTAssertTrue(secondChoice.exists)
+    XCTAssertTrue(otherChoice.exists)
+    XCTAssertTrue(firstChoice.label.contains("Stable"))
+    XCTAssertTrue(secondChoice.label.contains("Preview"))
+
+    firstChoice.click()
+    let submitAnswers = element(session.app, "sprint.ticket.owner-question.submit")
+    XCTAssertTrue(submitAnswers.exists)
+    XCTAssertTrue(submitAnswers.isEnabled)
+
+    otherChoice.click()
+    let customAnswer = element(session.app, "sprint.ticket.owner-question.custom")
+    XCTAssertTrue(customAnswer.waitForExistence(timeout: 5))
+    customAnswer.click()
+    customAnswer.typeText("Canary")
+    XCTAssertTrue(submitAnswers.isEnabled)
+    submitAnswers.click()
+    wait(
+      until: NSPredicate(format: "exists == false"),
+      evaluates: submitAnswers,
+      timeout: 10,
+      message: "Submitting the owner answer did not settle the paused question."
+    )
   }
 
   /// Existing deterministic coverage:
