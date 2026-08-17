@@ -66,6 +66,27 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   }
 
   /// Existing deterministic coverage:
+  /// - `ProductScopedPersistenceTests.a07RestorePreservesCompleteProductHistory`
+  /// This launched-process test covers only A07's archived-Product restore control and workspace route.
+  func testA07ArchivedProductRestoresIntoItsWorkspace() throws {
+    let session = try launchFixture("a07")
+    let productID = session.manifest.firstProductID
+
+    element(session.app, "nav.products").click()
+    let archivedToggle = element(session.app, "products.archived.toggle")
+    XCTAssertTrue(archivedToggle.waitForExistence(timeout: 5))
+    archivedToggle.click()
+
+    let restore = element(session.app, "product.archived.restore.\(productID.uuidString)")
+    XCTAssertTrue(restore.waitForExistence(timeout: 5))
+    XCTAssertTrue(restore.isEnabled)
+    restore.click()
+
+    XCTAssertTrue(element(session.app, "nav.products").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(session.app, "nav.backlog").isSelected)
+  }
+
+  /// Existing deterministic coverage:
   /// - `TicketAttentionTests.b02ClosingIncompleteTicketCanReturnFromAnotherProduct`
   /// This launched-process test covers only B02's source-Product switch and exact ticket presentation.
   func testB02ClosingIncompleteTicketReturnsToExactSourceTicket() throws {

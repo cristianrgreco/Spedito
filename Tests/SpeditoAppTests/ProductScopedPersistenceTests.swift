@@ -787,6 +787,208 @@ struct ProductScopedPersistenceTests {
     }
   }
 
+
+  /// Existing partial coverage:
+  /// - `AppModelStartupTests.legacyDefaultsMigration`
+  /// - `SprintBoardSelectionTests.newlyPlannedSprintBecomesSelected`
+  /// This journey adds active Product search, switching, and per-Product destination recovery.
+  @Test("A03 Product search and switching restore each persisted destination after relaunch")
+  func a03ProductSearchAndSwitchingRestoreDestinationsAfterRelaunch() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let defaultsName = "A03-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: defaultsName))
+    defer { defaults.removePersistentDomain(forName: defaultsName) }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let first = try await registry.createProduct(name: "Atlas")
+    let second = try await registry.createProduct(name: "Beacon")
+    WorkspaceDestinationDefaults.select(.knowledge, for: first.id, defaults: defaults)
+    WorkspaceDestinationDefaults.select(.retrospectives, for: second.id, defaults: defaults)
+
+    #expect(
+      ProductLibraryPresentation.products([second, first], matching: " bea ")
+        .map(\.id) == [second.id]
+    )
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+
+    let relaunchedRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    try await relaunchedRegistry.prepare()
+    let relaunched = AppModel(
+      storeRegistry: relaunchedRegistry,
+      selectedProductID: second.id
+    )
+    await relaunched.reload()
+
+    #expect(relaunched.selectedProductID == second.id)
+    let freshDefaults = try #require(UserDefaults(suiteName: defaultsName))
+    #expect(
+      WorkspaceDestinationDefaults.destination(
+        for: relaunched.selectedProductID,
+        hasActiveSprint: false,
+        defaults: freshDefaults
+      ) == .retrospectives
+    )
+
+    await relaunched.selectProduct(first)
+    #expect(
+      WorkspaceDestinationDefaults.destination(
+        for: relaunched.selectedProductID,
+        hasActiveSprint: false,
+        defaults: freshDefaults
+      ) == .knowledge
+    )
+    await relaunched.shutdown()
+    for productStore in relaunchedRegistry.allStores {
+      await productStore.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `SQLiteStoreTests.productArchiveAndRestorePreserveHistory`
+  /// - `ProductExecutionLifecycleTests.productArchivalHasProductScope`
+  /// This journey adds repository provenance, knowledge revisions, delivery history, and
+  /// interruption at the durable archived phase before restoration through a fresh instance.
+  @Test("A07 restore preserves Product backlog delivery repository and knowledge history")
+  func a07RestorePreservesCompleteProductHistory() async throws {
+    let fixture = try ProductScopedPersistenceFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: fixture.workspacesURL)
+    let product = try await registry.createProduct(name: "Durable archive")
+    let store = try #require(registry.store(for: product.id))
+    let backlogItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Keep accepted backlog scope",
+      acceptanceCriteria: ["History remains intact"]
+    )
+    let workLogBody = "The product owner kept this backlog decision."
+    _ = try await store.appendComment(
+      workItemID: backlogItem.id,
+      authorKind: .owner,
+      authorName: "Me",
+      body: workLogBody
+    )
+
+    var deliveredItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Keep delivered outcome",
+      acceptanceCriteria: ["The delivered outcome remains auditable"]
+    )
+    for state: WorkItemState in [.refining, .ready] {
+      deliveredItem = try await store.transitionWorkItem(
+        id: deliveredItem.id,
+        to: state,
+        actor: "Journey fixture",
+        reason: "Prepare durable delivery history"
+      )
+    }
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Preserve delivery history",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: deliveredItem.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    _ = try await store.startSprint(id: draft.sprint.id)
+    for state: WorkItemState in [
+      .running, .integrating, .verifying, .acceptance, .readyToRelease, .released,
+    ] {
+      deliveredItem = try await store.transitionWorkItem(
+        id: deliveredItem.id,
+        to: state,
+        actor: "Journey fixture",
+        reason: "Record durable delivery history"
+      )
+    }
+
+    let pages = try await store.seedKnowledgeBase(productID: product.id)
+    let overview = try #require(pages.first { $0.slug == "overview" })
+    let knowledgeBody = "This durable product decision survives archive and restore."
+    _ = try await store.updateKnowledgePage(
+      id: overview.id,
+      title: overview.title,
+      bodyMarkdown: knowledgeBody,
+      authorName: "Me",
+      changeSummary: "Record archive requirement"
+    )
+    let originURL = try #require(URL(string: "https://github.com/example/durable.git"))
+    try await store.createProductRepository(
+      ProductRepository(
+        productID: product.id,
+        originURL: originURL,
+        sourceDefaultBranch: "main",
+        importedSHA: String(repeating: "a", count: 40)
+      )
+    )
+
+    _ = try await store.archiveProduct(id: product.id)
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+
+    let recoveredRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    try await recoveredRegistry.prepare()
+    let archived = try #require(
+      try await recoveredRegistry.fetchProducts(status: .archived)
+        .first { $0.id == product.id }
+    )
+    #expect(archived.status == .archived)
+    let recoveredModel = AppModel(
+      storeRegistry: recoveredRegistry,
+      selectedProductID: product.id
+    )
+    await recoveredModel.reload()
+    #expect(recoveredModel.products.isEmpty)
+    #expect(recoveredModel.archivedProducts.map(\.id) == [product.id])
+    #expect(await recoveredModel.restoreProductAndSelect(archived))
+    let recoveredStore = try #require(recoveredRegistry.store(for: product.id))
+
+    #expect(recoveredModel.selectedProductID == product.id)
+    #expect(
+      try await recoveredStore.fetchWorkItems(productID: product.id)
+        .first { $0.id == backlogItem.id }?.acceptanceCriteria == ["History remains intact"]
+    )
+    #expect(
+      try await recoveredStore.fetchComments(workItemID: backlogItem.id).map(\.body)
+        == [workLogBody]
+    )
+    #expect(
+      try await recoveredStore.fetchWorkItems(productID: product.id)
+        .first { $0.id == deliveredItem.id }?.state == .released
+    )
+    #expect(
+      try await recoveredStore.fetchActivity(workItemID: deliveredItem.id)
+        .filter { $0.kind == "work_item.transitioned" }.count == 8
+    )
+    #expect(
+      try await recoveredStore.fetchProductRepository(productID: product.id)?.originURL
+        == originURL
+    )
+    #expect(
+      try await recoveredStore.fetchKnowledgePages(productID: product.id)
+        .first { $0.id == overview.id }?.bodyMarkdown == knowledgeBody
+    )
+    #expect(
+      try await recoveredStore.fetchKnowledgePageRevisions(pageID: overview.id).count == 2
+    )
+    await recoveredModel.shutdown()
+    for productStore in recoveredRegistry.allStores {
+      await productStore.close()
+    }
+  }
+
 }
 
 private struct ProductScopedPersistenceFixture {

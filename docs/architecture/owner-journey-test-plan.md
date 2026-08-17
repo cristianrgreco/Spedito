@@ -1,7 +1,7 @@
 # Owner journey test research and implementation plan
 
 - **Date:** 15 August 2026
-- **Status:** Priority 0 complete; Priority 1 work packet 4 covers Backlog, editable Ticket, and Sprint planning slices
+- **Status:** Priority 0 complete; Priority 1 work packet 4 covers Backlog, editable Ticket, Sprint planning, and application lifecycle slices
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Executable coverage ledger:** section 3
@@ -185,6 +185,21 @@ justified.
 | Plan summary | Review sprint | Draft scope, dependency edges, estimates, and assignments remain in SQLite | Dependency order, forecast, remaining usage, and owner acceptance load | Return to Ticket review or save | Recomputed from durable state |
 | Goal generation | Save a plan with no goal | The versioned draft remains authoritative while generation is transient | Delivery remains usable while a bounded suggestion runs | Continue to the board or start when otherwise ready | Stale output is rejected; failure leaves the draft startable |
 | Saved draft selected | Save and open the board | Draft plan and Product-scoped board selection | The same valid planning/board context | Resume planning or start | Fresh-instance recovery restores the saved draft and ignores unsaved picker state |
+
+### 3.4 Priority 1 work packet 4 — Application shell and Product lifecycle
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| A01 | `RemoteRepositoryAppModelTests.a01CancelingCreationLeavesEmptyOnboardingUsable`, `RepositoryImportCoordinatorTests.authorizationCancellationAndRetry` | **Named:** a cancellable GitHub authorization drives the real AppModel cancellation command; the empty Product collection remains on the onboarding root and a second authorization command succeeds through the same flow. |
+| A03 | `ProductScopedPersistenceTests.a03ProductSearchAndSwitchingRestoreDestinationsAfterRelaunch`, `AppModelStartupTests.legacyDefaultsMigration`, `SprintBoardSelectionTests.newlyPlannedSprintBecomesSelected` | **Named:** the production Product-library projection finds the exact active Product, a fresh AppModel restores its selection, and switching between Products resolves each Product's own persisted workspace destination. |
+| A07 | `ProductScopedPersistenceTests.a07RestorePreservesCompleteProductHistory`, `PriorityZeroShellJourneyUITests.testA07ArchivedProductRestoresIntoItsWorkspace` | **Named:** interruption leaves the Product durably archived; a fresh registry restores its backlog, work log, complete delivery transitions, repository provenance, and knowledge revisions, while the launched-process contract proves the restore control opens that Product's workspace. |
+| A12 | `RemoteRepositoryAppModelTests.a12FailureRetryAndProductSwitchingStayScoped`, `RemoteRepositoryFeatureModelTests.snapshotLifecycle` | **Named:** a repository failure remains attached only to its Product while another Product is selected, and an explicit retry clears the failed Product without replacing the other Product's valid presentation. |
+
+A07 remains `Shell = Y` because restoring from the empty onboarding root crosses
+the launched application's archived-Product sheet and workspace-routing boundary.
+A01, A03, and A12 remain `Shell = —`: their application commands, bounded
+presentation projections, Product switching, and recovery are deterministic without
+a launched process.
 
 ## 4. Test taxonomy
 

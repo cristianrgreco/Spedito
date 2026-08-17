@@ -100,6 +100,104 @@ struct RemoteRepositoryAppModelTests {
     await store.close()
   }
 
+  /// Existing partial coverage:
+  /// - `RepositoryImportCoordinatorTests.authorizationCancellationAndRetry`
+  /// This journey adds the no-Product application root, real AppModel cancellation command,
+  /// and a retry through the same still-usable onboarding flow.
+  @Test("A01 canceling Product creation leaves empty onboarding usable")
+  func a01CancelingCreationLeavesEmptyOnboardingUsable() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-AppModel-A01-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: root.appendingPathComponent("Product Workspaces")
+    )
+    let service = AppModelRemoteService()
+    let model = AppModel(
+      storeRegistry: registry,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service),
+      repositoryImportActivator: AppModelRepositoryImportActivator(registry: registry)
+    )
+    await model.reload()
+    #expect(
+      ContentRootPresentation.resolve(
+        isLoading: model.isLoading,
+        productCount: model.products.count
+      ) == .onboarding
+    )
+
+    await service.pauseNextImportAuthorization()
+    let authorization = Task {
+      await model.sendRepositoryImportCommand(.authorizeGitHub)
+    }
+    await service.waitForImportAuthorizationStart()
+    #expect(model.repositoryImportSnapshot.authorizationPrompt?.userCode == "IMPORT-1")
+
+    await model.cancelRepositoryImport()
+    #expect(await authorization.value == nil)
+    #expect(model.repositoryImportSnapshot.phase == .cancelled)
+    #expect(model.products.isEmpty)
+    #expect(
+      ContentRootPresentation.resolve(
+        isLoading: model.isLoading,
+        productCount: model.products.count
+      ) == .onboarding
+    )
+
+    _ = await model.sendRepositoryImportCommand(.authorizeGitHub)
+    #expect(model.repositoryImportSnapshot.phase == .idle)
+    #expect(model.repositoryImportSnapshot.catalog.choices.map(\.repository.id) == [99])
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+  /// Existing partial coverage:
+  /// - `RemoteRepositoryAppModelTests.remoteLifecycle`
+  /// - `RemoteRepositoryFeatureModelTests.snapshotLifecycle`
+  /// This journey adds the AppModel Product switch between failure and explicit retry.
+  @Test("A12 retry and Product switching keep a failure scoped to its repository")
+  func a12FailureRetryAndProductSwitchingStayScoped() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "Spedito-AppModel-A12-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let first = try await store.createProduct(name: "First repository")
+    let second = try await store.createProduct(name: "Second repository")
+    let service = AppModelRemoteService()
+    let model = AppModel(
+      store: store,
+      selectedProductID: first.id,
+      remoteRepositoryFeature: RemoteRepositoryFeatureModel(service: service)
+    )
+    await model.reload()
+
+    await service.failChecks()
+    await model.checkRemoteRepository(productID: first.id)
+    #expect(
+      model.remoteRepositorySnapshot(for: first.id).failure?.message
+        == "GitHub is temporarily unavailable."
+    )
+    #expect(model.remoteRepositorySnapshot(for: second.id).failure == nil)
+
+    await service.resumeChecks()
+    await model.selectProduct(second)
+    #expect(model.selectedProductID == second.id)
+    #expect(model.remoteRepositorySnapshot(for: second.id).failure == nil)
+
+    await model.checkRemoteRepository(productID: first.id)
+    #expect(model.remoteRepositorySnapshot(for: first.id).failure == nil)
+    #expect(model.remoteRepositorySnapshot(for: second.id).failure == nil)
+
+    await model.shutdown()
+    await store.close()
+  }
+
   @Test("Relaunched repository setup reloads access before verification")
   func relaunchedRepositorySetupRecovery() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -1700,6 +1798,9 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
   private var shouldPauseInitialization = false
   private(set) var didStartInitialization = false
   private var nextImportError: ProductRepositoryImportError?
+  private var shouldPauseImportAuthorization = false
+  private var importAuthorizationContinuation: CheckedContinuation<Void, Error>?
+  private var importAuthorizationStartWaiters: [CheckedContinuation<Void, Never>] = []
   private(set) var connectedLocalProductID: UUID?
   private(set) var connectedLocalRepositoryID: Int64?
   private(set) var acceptedSafeSyncIDs: [UUID] = []
@@ -1755,6 +1856,17 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
     }
   }
 
+  func pauseNextImportAuthorization() {
+    shouldPauseImportAuthorization = true
+  }
+
+  func waitForImportAuthorizationStart() async {
+    if importAuthorizationContinuation != nil { return }
+    await withCheckedContinuation { continuation in
+      importAuthorizationStartWaiters.append(continuation)
+    }
+  }
+
   func importRepositories() async throws -> GitHubRepositoryImportCatalog {
     let repository = GitHubRepository(
       id: 99,
@@ -1801,7 +1913,27 @@ private actor AppModelRemoteService: GitHubRemoteRepositoryServing {
         expiresAt: Date().addingTimeInterval(900)
       )
     )
+    if shouldPauseImportAuthorization {
+      shouldPauseImportAuthorization = false
+      try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+          importAuthorizationContinuation = continuation
+          let waiters = importAuthorizationStartWaiters
+          importAuthorizationStartWaiters.removeAll()
+          for waiter in waiters {
+            waiter.resume()
+          }
+        }
+      } onCancel: {
+        Task { await self.cancelImportAuthorization() }
+      }
+    }
     return try await importRepositories()
+  }
+
+  private func cancelImportAuthorization() {
+    importAuthorizationContinuation?.resume(throwing: CancellationError())
+    importAuthorizationContinuation = nil
   }
   func importProduct(
     name: String,

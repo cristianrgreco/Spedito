@@ -1,17 +1,6 @@
 import SpeditoCore
 import SwiftUI
 
-private struct WorkspaceContainerSizeKey: EnvironmentKey {
-  static let defaultValue = CGSize(width: 1_320, height: 820)
-}
-
-extension EnvironmentValues {
-  var workspaceContainerSize: CGSize {
-    get { self[WorkspaceContainerSizeKey.self] }
-    set { self[WorkspaceContainerSizeKey.self] = newValue }
-  }
-}
-
 struct ConversationDetailSheetSizing {
   static func size(for containerSize: CGSize) -> CGSize {
     CGSize(
@@ -30,17 +19,9 @@ struct ContentView: View {
 
   var body: some View {
     GeometryReader { geometry in
-      Group {
-        if model.isLoading && model.products.isEmpty {
-          ProgressView("Opening workspace…")
-        } else if model.products.isEmpty {
-          ProductOnboardingView()
-        } else {
-          ProductWorkspaceView()
-        }
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .environment(\.workspaceContainerSize, geometry.size)
+      ProductContentRootView()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.workspaceContainerSize, geometry.size)
     }
     .environment(\.openURL, SafeURLPolicy.openURLAction)
     .environment(
@@ -78,6 +59,34 @@ enum WorkspaceDestination: String, Hashable {
   case reports
   case knowledge
   case codebase
+}
+
+enum WorkspaceDestinationDefaults {
+  private static let prefix = "workspaceDestination"
+
+  static func destination(
+    for productID: UUID?,
+    hasActiveSprint: Bool,
+    defaults: UserDefaults = .standard
+  ) -> WorkspaceDestination {
+    guard let productID else { return .backlog }
+    return defaults.string(forKey: key(for: productID))
+      .flatMap(WorkspaceDestination.init(rawValue:))
+      ?? (hasActiveSprint ? .sprint : .backlog)
+  }
+
+  static func select(
+    _ destination: WorkspaceDestination,
+    for productID: UUID?,
+    defaults: UserDefaults = .standard
+  ) {
+    guard let productID else { return }
+    defaults.set(destination.rawValue, forKey: key(for: productID))
+  }
+
+  private static func key(for productID: UUID) -> String {
+    "\(prefix).\(productID.uuidString)"
+  }
 }
 
 enum SprintBoardSelectionDefaults {
@@ -254,7 +263,7 @@ struct SprintStartAvailability: Equatable {
   }
 }
 
-private struct ProductWorkspaceView: View {
+struct ProductWorkspaceView: View {
   @EnvironmentObject private var model: AppModel
   @State private var columnVisibility = NavigationSplitViewVisibility.automatic
   @State private var destination = WorkspaceDestination.backlog
@@ -266,8 +275,6 @@ private struct ProductWorkspaceView: View {
   @State private var ticketDetailPresentation: TicketDetailPresentation?
   @State private var selectedSprintID: UUID?
   @State private var attentionWorkItemIDs: Set<UUID>?
-
-  private static let destinationDefaultsPrefix = "workspaceDestination"
 
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -451,28 +458,14 @@ private struct ProductWorkspaceView: View {
   }
 
   private func restoreDestination(for productID: UUID?) {
-    guard let productID else {
-      destination = .backlog
-      return
-    }
-    let rawValue = UserDefaults.standard.string(
-      forKey: destinationDefaultsKey(for: productID)
+    destination = WorkspaceDestinationDefaults.destination(
+      for: productID,
+      hasActiveSprint: model.sprintPlan?.sprint.state.isInProgress == true
     )
-    destination =
-      rawValue.flatMap(WorkspaceDestination.init(rawValue:))
-      ?? (model.sprintPlan?.sprint.state.isInProgress == true ? .sprint : .backlog)
   }
 
   private func persist(_ destination: WorkspaceDestination, for productID: UUID?) {
-    guard let productID else { return }
-    UserDefaults.standard.set(
-      destination.rawValue,
-      forKey: destinationDefaultsKey(for: productID)
-    )
-  }
-
-  private func destinationDefaultsKey(for productID: UUID) -> String {
-    "\(Self.destinationDefaultsPrefix).\(productID.uuidString)"
+    WorkspaceDestinationDefaults.select(destination, for: productID)
   }
 
   private func openSprintBoard(sprintID: UUID) {

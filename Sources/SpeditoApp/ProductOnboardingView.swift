@@ -36,6 +36,7 @@ struct ProductOnboardingView: View {
               showingProductLibrary = true
             }
             .buttonStyle(.bordered)
+            .accessibilityIdentifier("products.archived.open")
             .disabled(isCreating)
           }
         }

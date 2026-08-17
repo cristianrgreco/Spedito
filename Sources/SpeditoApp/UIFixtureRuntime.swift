@@ -14,6 +14,7 @@
       case a02 = "a02"
       case a05 = "a05"
       case a06 = "a06"
+      case a07 = "a07"
       case b02 = "b02"
       case c07 = "c07"
       case d08 = "d08"
@@ -137,6 +138,16 @@
           selectedProductID: remaining.id,
           firstProductID: archived.id,
           secondProductID: remaining.id
+        )
+      case .a07:
+        let archived = try await registry.createProduct(name: "A07 durable archive")
+        let current = try await registry.createProduct(name: "A07 current product")
+        let archivedStore = try requireStore(registry, productID: archived.id)
+        _ = try await archivedStore.archiveProduct(id: archived.id)
+        manifest = UIFixtureManifest(
+          selectedProductID: current.id,
+          firstProductID: archived.id,
+          secondProductID: current.id
         )
       case .b02:
         let source = try await registry.createProduct(name: "B02 source product")

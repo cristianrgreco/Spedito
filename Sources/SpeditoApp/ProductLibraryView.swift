@@ -1,6 +1,61 @@
 import SpeditoCore
 import SwiftUI
 
+enum ProductLibraryPresentation {
+  static func products(_ products: [Product], matching searchText: String) -> [Product] {
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    return products
+      .filter {
+        query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)
+      }
+      .sorted {
+        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+      }
+  }
+}
+
+private struct WorkspaceContainerSizeKey: EnvironmentKey {
+  static let defaultValue = CGSize(width: 1_320, height: 820)
+}
+
+extension EnvironmentValues {
+  var workspaceContainerSize: CGSize {
+    get { self[WorkspaceContainerSizeKey.self] }
+    set { self[WorkspaceContainerSizeKey.self] = newValue }
+  }
+}
+
+enum ContentRootPresentation: Equatable {
+  case loading
+  case onboarding
+  case workspace
+
+  static func resolve(isLoading: Bool, productCount: Int) -> Self {
+    if isLoading && productCount == 0 {
+      return .loading
+    }
+    return productCount == 0 ? .onboarding : .workspace
+  }
+}
+
+struct ProductContentRootView: View {
+  @EnvironmentObject private var model: AppModel
+
+  var body: some View {
+    switch ContentRootPresentation.resolve(
+      isLoading: model.isLoading,
+      productCount: model.products.count
+    ) {
+    case .loading:
+      ProgressView("Opening workspace…")
+    case .onboarding:
+      ProductOnboardingView()
+    case .workspace:
+      ProductWorkspaceView()
+    }
+  }
+}
+
 struct ProductLibraryView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
@@ -23,15 +78,7 @@ struct ProductLibraryView: View {
   }
 
   private var visibleProducts: [Product] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    return model.products
-      .filter { product in
-        query.isEmpty
-          || product.name.localizedCaseInsensitiveContains(query)
-      }
-      .sorted {
-        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-      }
+    ProductLibraryPresentation.products(model.products, matching: searchText)
   }
 
   private var visibleAttentionProducts: [Product] {
@@ -65,15 +112,7 @@ struct ProductLibraryView: View {
   }
 
   private var visibleArchivedProducts: [Product] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    return model.archivedProducts
-      .filter { product in
-        query.isEmpty
-          || product.name.localizedCaseInsensitiveContains(query)
-      }
-      .sorted {
-        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-      }
+    ProductLibraryPresentation.products(model.archivedProducts, matching: searchText)
   }
 
   private var displaysArchivedProducts: Bool {
@@ -411,12 +450,13 @@ private struct ArchivedProductLibraryRow: View {
       Spacer(minLength: 12)
 
       Button(isRestoring ? "Restoring…" : "Restore and open", action: onRestore)
+        .accessibilityIdentifier("product.archived.restore.\(product.id.uuidString)")
         .disabled(isDisabled)
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 5)
     .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: .contain)
     .accessibilityIdentifier("product.archived.row.\(product.id.uuidString)")
   }
 }
