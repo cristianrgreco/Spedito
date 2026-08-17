@@ -254,19 +254,6 @@ struct SprintStartAvailability: Equatable {
   }
 }
 
-private struct TicketDetailPresentation: Identifiable {
-  enum Mode {
-    case editable
-    case delivery
-  }
-
-  let item: WorkItem
-  let startRefinementOnAppear: Bool
-  let mode: Mode
-
-  var id: UUID { item.id }
-}
-
 private struct ProductWorkspaceView: View {
   @EnvironmentObject private var model: AppModel
   @State private var columnVisibility = NavigationSplitViewVisibility.automatic
@@ -411,7 +398,7 @@ private struct ProductWorkspaceView: View {
       NewTicketView(
         isPresented: $showingNewTicket,
         initialEpicID: newTicketEpicID,
-        onCreated: { item, shouldRefine in
+        onCreated: { item in
           showingNewTicket = false
           Task {
             try? await Task.sleep(for: .milliseconds(180))
@@ -419,11 +406,7 @@ private struct ProductWorkspaceView: View {
               !Task.isCancelled,
               model.selectedProductID == item.productID
             else { return }
-            ticketDetailPresentation = TicketDetailPresentation(
-              item: item,
-              startRefinementOnAppear: shouldRefine,
-              mode: .editable
-            )
+            ticketDetailPresentation = .newlyCreated(item)
           }
         }
       )
@@ -531,17 +514,14 @@ private struct ProductWorkspaceView: View {
         model.consumeOwnerNotificationNavigationRequest(id: request.id)
         return
       }
-      let activeSprintContainsTicket =
-        model.sprintPlan?.sprint.state.isInProgress == true
-        && model.sprintPlan?.items.contains { $0.workItemID == item.id } == true
-      destination = activeSprintContainsTicket ? .sprint : .backlog
-      selectedSprintID = activeSprintContainsTicket ? model.sprintPlan?.sprint.id : nil
-      attentionWorkItemIDs = nil
-      ticketDetailPresentation = TicketDetailPresentation(
-        item: item,
-        startRefinementOnAppear: false,
-        mode: activeSprintContainsTicket ? .delivery : .editable
+      let presentation = TicketDetailPresentation.existing(
+        item,
+        activeSprint: model.sprintPlan
       )
+      destination = presentation.mode == .delivery ? .sprint : .backlog
+      selectedSprintID = presentation.mode == .delivery ? model.sprintPlan?.sprint.id : nil
+      attentionWorkItemIDs = nil
+      ticketDetailPresentation = presentation
 
     case .epic:
       destination = .backlog

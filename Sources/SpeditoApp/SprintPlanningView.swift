@@ -1677,7 +1677,7 @@ extension SprintPlanningTicketSnapshot {
   }
 }
 
-struct TicketCustomFieldDraft: Identifiable {
+struct TicketCustomFieldDraft: Identifiable, Equatable {
   let id = UUID()
   var name: String
   var value: String

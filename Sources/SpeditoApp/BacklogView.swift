@@ -2415,6 +2415,27 @@ struct PlanningTicketDropSlot: View {
   }
 }
 
+struct TicketArchiveConfirmationState: Equatable {
+  private(set) var requestedWorkItemIDs: Set<UUID>?
+
+  var isPresented: Bool {
+    requestedWorkItemIDs != nil
+  }
+
+  mutating func request(_ items: [WorkItem]) {
+    requestedWorkItemIDs = Set(items.map(\.id))
+  }
+
+  mutating func confirm() -> Set<UUID> {
+    defer { requestedWorkItemIDs = nil }
+    return requestedWorkItemIDs ?? []
+  }
+
+  mutating func cancel() {
+    requestedWorkItemIDs = nil
+  }
+}
+
 struct PlanningTicketRow: View {
   @EnvironmentObject private var model: AppModel
   let item: WorkItem
@@ -2428,7 +2449,7 @@ struct PlanningTicketRow: View {
   let onDropTargeted: (Bool) -> Void
   let onToggleSelection: () -> Void
   let onOpen: () -> Void
-  @State private var confirmingArchive = false
+  @State private var archiveConfirmation = TicketArchiveConfirmationState()
   @State private var isHovering = false
 
   private var prerequisites: [WorkItem] {
@@ -2481,6 +2502,22 @@ struct PlanningTicketRow: View {
 
   private var targetsMultipleTickets: Bool {
     targetItems.count > 1
+  }
+
+  private var archiveTargetItems: [WorkItem] {
+    guard let requestedIDs = archiveConfirmation.requestedWorkItemIDs else { return [] }
+    return model.workItems.filter { requestedIDs.contains($0.id) }
+  }
+
+  private var isArchiveConfirmationPresented: Binding<Bool> {
+    Binding(
+      get: { archiveConfirmation.isPresented },
+      set: { isPresented in
+        if !isPresented {
+          archiveConfirmation.cancel()
+        }
+      }
+    )
   }
 
   var body: some View {
@@ -2653,7 +2690,7 @@ struct PlanningTicketRow: View {
       }
       Divider()
       Button(role: .destructive) {
-        confirmingArchive = true
+        archiveConfirmation.request(targetItems)
       } label: {
         Label {
           Text(archiveMenuTitle)
@@ -2665,22 +2702,27 @@ struct PlanningTicketRow: View {
       .tint(.red)
     }
     .confirmationDialog(
-      targetsMultipleTickets
-        ? "Archive \(targetItems.count) tickets?"
-        : "Archive \(item.key)?",
-      isPresented: $confirmingArchive,
+      archiveTargetItems.count > 1
+        ? "Archive \(archiveTargetItems.count) tickets?"
+        : "Archive \(archiveTargetItems.first?.key ?? item.key)?",
+      isPresented: isArchiveConfirmationPresented,
       titleVisibility: .visible
     ) {
       Button(
-        targetsMultipleTickets ? "Archive tickets" : "Archive ticket",
+        archiveTargetItems.count > 1 ? "Archive tickets" : "Archive ticket",
         role: .destructive
       ) {
-        model.archiveWorkItems(targetItems)
+        let confirmedIDs = archiveConfirmation.confirm()
+        model.archiveWorkItems(
+          model.workItems.filter { confirmedIDs.contains($0.id) }
+        )
       }
-      Button("Cancel", role: .cancel) {}
+      Button("Cancel", role: .cancel) {
+        archiveConfirmation.cancel()
+      }
     } message: {
       Text(
-        targetsMultipleTickets
+        archiveTargetItems.count > 1
           ? "The tickets leave the backlog but their history remains in the local workspace."
           : "The ticket leaves the backlog but its history remains in the local workspace."
       )
@@ -3135,6 +3177,12 @@ struct TicketSuggestionPlaceholderLines: View {
   }
 }
 
+enum TicketSuggestionDependencyPresentation {
+  static func activeExistingDependencies(in items: [WorkItem]) -> [WorkItem] {
+    items.filter { $0.state != .released && $0.state != .cancelled }
+  }
+}
+
 struct InlineTicketSuggestionRow: View {
   @EnvironmentObject private var model: AppModel
   let suggestion: TicketSuggestion
@@ -3329,7 +3377,9 @@ struct InlineTicketSuggestionRow: View {
   }
 
   private var activeExistingDependencies: [WorkItem] {
-    existingDependencies.filter { $0.state != .released }
+    TicketSuggestionDependencyPresentation.activeExistingDependencies(
+      in: existingDependencies
+    )
   }
 }
 
@@ -3365,7 +3415,9 @@ struct TicketSuggestionDetailView: View {
   }
 
   private var activeExistingDependencies: [WorkItem] {
-    existingDependencies.filter { $0.state != .released }
+    TicketSuggestionDependencyPresentation.activeExistingDependencies(
+      in: existingDependencies
+    )
   }
 
   private var dependents: [TicketSuggestion] {

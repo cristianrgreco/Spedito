@@ -23,6 +23,153 @@ enum TicketRefinementConflictPolicy {
     return nil
   }
 }
+
+extension TicketRefinementProposal {
+  init(conversationProposal proposal: SprintPlanningTicketProposal) {
+    self.init(
+      baseVersion: proposal.baseVersion,
+      title: proposal.title,
+      type: proposal.type,
+      body: proposal.body,
+      acceptanceCriteria: proposal.acceptanceCriteria,
+      priority: proposal.priority,
+      rationale: proposal.rationale,
+      dependencies: [],
+      potentialDuplicates: [],
+      splitRecommendation: nil,
+      missingQuestions: []
+    )
+  }
+}
+
+enum TicketEditorLinkedDestination: Identifiable, Equatable {
+  case epic(Epic)
+  case ticket(WorkItem)
+
+  var id: String {
+    switch self {
+    case .epic(let epic):
+      "epic-\(epic.id.uuidString)"
+    case .ticket(let item):
+      "ticket-\(item.id.uuidString)"
+    }
+  }
+}
+
+struct TicketEditorPresentationState: Equatable {
+  var title: String
+  var type: WorkItemType
+  var bodyText: String
+  var criteria: [AcceptanceCriterionDraft]
+  var priority: WorkItemPriority
+  var blockerIDs: Set<UUID>
+  var customFields: [TicketCustomFieldDraft]
+  var assigneeID: UUID?
+  var linkedDestination: TicketEditorLinkedDestination?
+
+  init(item: WorkItem, dependsOnWorkItemIDs: Set<UUID>) {
+    title = item.title
+    type = item.type
+    bodyText = item.body
+    criteria = item.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
+    priority = item.priority
+    blockerIDs = dependsOnWorkItemIDs
+    customFields = item.customFields.keys.sorted().map {
+      TicketCustomFieldDraft(name: $0, value: item.customFields[$0] ?? "")
+    }
+    assigneeID = item.ownerProfileID
+  }
+
+  static func needsInitialRefinement(for item: WorkItem) -> Bool {
+    item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || item.acceptanceCriteria.isEmpty
+  }
+
+  var parsedAcceptanceCriteria: [String] {
+    criteria
+      .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
+  var normalizedCustomFields: [String: String] {
+    customFields.reduce(into: [:]) { result, field in
+      let name = field.name.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !name.isEmpty else { return }
+      result[name] = field.value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+  }
+
+  var duplicateCustomFieldNames: Set<String> {
+    let names = customFields.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    return Set(
+      names.filter { name in
+        names.filter { $0.caseInsensitiveCompare(name) == .orderedSame }.count > 1
+      }
+    )
+  }
+
+  var isValidForSave: Bool {
+    !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && customFields.allSatisfy {
+        !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      }
+      && duplicateCustomFieldNames.isEmpty
+  }
+
+  mutating func open(epic: Epic) {
+    linkedDestination = .epic(epic)
+  }
+
+  mutating func openRelationship(
+    id: UUID,
+    source: WorkItem,
+    workItems: [WorkItem]
+  ) {
+    linkedDestination = TicketRelationshipNavigation.destination(
+      for: id,
+      source: source,
+      in: workItems
+    ).map(TicketEditorLinkedDestination.ticket)
+  }
+
+  mutating func apply(
+    field: TicketRefinementField,
+    from proposal: TicketRefinementProposal
+  ) {
+    switch field {
+    case .title:
+      title = proposal.title
+    case .type:
+      type = proposal.type
+    case .context:
+      bodyText = proposal.body
+    case .acceptanceCriteria:
+      criteria = proposal.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
+    case .priority:
+      priority = proposal.priority
+    }
+  }
+
+  mutating func applyAll(
+    from proposal: TicketRefinementProposal,
+    workItems: [WorkItem],
+    dismissedDependencyKeys: Set<String>
+  ) {
+    title = proposal.title
+    type = proposal.type
+    bodyText = proposal.body
+    criteria = proposal.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
+    priority = proposal.priority
+    for dependency in proposal.dependencies
+    where !dismissedDependencyKeys.contains(dependency.ticketKey) {
+      if let relatedItem = workItems.first(where: { $0.key == dependency.ticketKey }) {
+        blockerIDs.insert(relatedItem.id)
+      }
+    }
+  }
+}
+
 struct TicketDetailView: View {
   @EnvironmentObject private var model: AppModel
   @Environment(\.dismiss) private var dismiss
@@ -30,14 +177,7 @@ struct TicketDetailView: View {
   let itemID: UUID
   let productID: UUID
   let startRefinementOnAppear: Bool
-  @State private var title: String
-  @State private var type: WorkItemType
-  @State private var bodyText: String
-  @State private var criteria: [AcceptanceCriterionDraft]
-  @State private var priority: WorkItemPriority
-  @State private var blockerIDs: Set<UUID>
-  @State private var customFields: [TicketCustomFieldDraft]
-  @State private var assigneeID: UUID?
+  @State private var editorState: TicketEditorPresentationState
   @State private var isSaving = false
   @State private var isStartingRefinement = false
   @State private var didStartInitialRefinement = false
@@ -50,7 +190,6 @@ struct TicketDetailView: View {
   @State private var dismissedDependencyKeys: Set<String> = []
   @State private var conversationRefreshToken = 0
   @State private var refinementPanelTitle = "Business analyst review"
-  @State private var selectedRelationshipTicket: WorkItem?
 
   init(
     item: WorkItem,
@@ -60,20 +199,52 @@ struct TicketDetailView: View {
     itemID = item.id
     productID = item.productID
     self.startRefinementOnAppear = startRefinementOnAppear
-    _title = State(initialValue: item.title)
-    _type = State(initialValue: item.type)
-    _bodyText = State(initialValue: item.body)
-    _criteria = State(
-      initialValue: item.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
+    _editorState = State(
+      initialValue: TicketEditorPresentationState(
+        item: item,
+        dependsOnWorkItemIDs: dependsOnWorkItemIDs
+      )
     )
-    _priority = State(initialValue: item.priority)
-    _blockerIDs = State(initialValue: dependsOnWorkItemIDs)
-    _customFields = State(
-      initialValue: item.customFields.keys.sorted().map {
-        TicketCustomFieldDraft(name: $0, value: item.customFields[$0] ?? "")
-      }
-    )
-    _assigneeID = State(initialValue: item.ownerProfileID)
+  }
+
+  private var title: String {
+    get { editorState.title }
+    nonmutating set { editorState.title = newValue }
+  }
+
+  private var type: WorkItemType {
+    get { editorState.type }
+    nonmutating set { editorState.type = newValue }
+  }
+
+  private var bodyText: String {
+    get { editorState.bodyText }
+    nonmutating set { editorState.bodyText = newValue }
+  }
+
+  private var criteria: [AcceptanceCriterionDraft] {
+    get { editorState.criteria }
+    nonmutating set { editorState.criteria = newValue }
+  }
+
+  private var priority: WorkItemPriority {
+    get { editorState.priority }
+    nonmutating set { editorState.priority = newValue }
+  }
+
+  private var blockerIDs: Set<UUID> {
+    get { editorState.blockerIDs }
+    nonmutating set { editorState.blockerIDs = newValue }
+  }
+
+  private var customFields: [TicketCustomFieldDraft] {
+    get { editorState.customFields }
+    nonmutating set { editorState.customFields = newValue }
+  }
+
+  private var assigneeID: UUID? {
+    get { editorState.assigneeID }
+    nonmutating set { editorState.assigneeID = newValue }
   }
 
   private var item: WorkItem? {
@@ -85,21 +256,11 @@ struct TicketDetailView: View {
   }
 
   private var duplicateFieldNames: Set<String> {
-    let names = customFields.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
-    return Set(
-      names.filter { name in
-        names.filter { $0.caseInsensitiveCompare(name) == .orderedSame }.count > 1
-      })
+    editorState.duplicateCustomFieldNames
   }
 
   private var canSave: Bool {
-    !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && customFields.allSatisfy {
-        !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      }
-      && duplicateFieldNames.isEmpty
-      && !isSaving
+    editorState.isValidForSave && !isSaving
   }
 
   private var detailSize: CGSize {
@@ -135,11 +296,7 @@ struct TicketDetailView: View {
   }
 
   private var draftCustomFields: [String: String] {
-    customFields.reduce(into: [:]) { result, field in
-      let name = field.name.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !name.isEmpty else { return }
-      result[name] = field.value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    editorState.normalizedCustomFields
   }
 
   private var savedAssigneeID: UUID? {
@@ -168,9 +325,7 @@ struct TicketDetailView: View {
   }
 
   private var parsedCriteria: [String] {
-    criteria
-      .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .filter { !$0.isEmpty }
+    editorState.parsedAcceptanceCriteria
   }
 
   private var isContextMissing: Bool {
@@ -178,9 +333,7 @@ struct TicketDetailView: View {
   }
 
   private var needsInitialRefinement: Bool {
-    guard let item else { return false }
-    return item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      || item.acceptanceCriteria.isEmpty
+    item.map(TicketEditorPresentationState.needsInitialRefinement(for:)) ?? false
   }
 
 
@@ -210,13 +363,13 @@ struct TicketDetailView: View {
             EditableTextField(
               title: "Title",
               prompt: "Describe the outcome",
-              text: $title
+              text: $editorState.title
             )
 
             EditableTextArea(
               title: "Context",
               prompt: "Explain the user need, constraints, and relevant background.",
-              text: $bodyText,
+              text: $editorState.bodyText,
               statusText: isContextMissing ? "Required" : nil,
               minHeight: 126
             )
@@ -227,14 +380,14 @@ struct TicketDetailView: View {
                 in: model.epics
               )
             {
-              TicketEpicLink(epic: epic)
+              TicketEpicLink(epic: epic) { editorState.open(epic: $0) }
             }
 
             HStack(spacing: 18) {
               VStack(alignment: .leading, spacing: 7) {
                 Text("Type")
                   .font(.subheadline.weight(.semibold))
-                Picker("Type", selection: $type) {
+                Picker("Type", selection: $editorState.type) {
                   ForEach(WorkItemType.allCases, id: \.self) { value in
                     Label(value.title, systemImage: value.symbolName).tag(value)
                   }
@@ -246,7 +399,7 @@ struct TicketDetailView: View {
               VStack(alignment: .leading, spacing: 7) {
                 Text("Priority")
                   .font(.subheadline.weight(.semibold))
-                Picker("Priority", selection: $priority) {
+                Picker("Priority", selection: $editorState.priority) {
                   ForEach(WorkItemPriority.allCases, id: \.self) { value in
                     Text(value.title).tag(value)
                   }
@@ -258,7 +411,7 @@ struct TicketDetailView: View {
               VStack(alignment: .leading, spacing: 7) {
                 Text("Assignee")
                   .font(.subheadline.weight(.semibold))
-                Picker("Assignee", selection: $assigneeID) {
+                Picker("Assignee", selection: $editorState.assigneeID) {
                   Text("Choose assignee")
                     .tag(nil as UUID?)
                   ForEach(deliveryProfiles) { profile in
@@ -285,7 +438,7 @@ struct TicketDetailView: View {
               }
             }
 
-            AcceptanceCriteriaEditor(criteria: $criteria)
+            AcceptanceCriteriaEditor(criteria: $editorState.criteria)
 
             relationshipSection
             customFieldSection
@@ -401,15 +554,20 @@ struct TicketDetailView: View {
         target: OwnerNotificationTarget(kind: .ticket, id: itemID)
       )
     }
-    .sheet(item: $selectedRelationshipTicket) { relatedItem in
-      TicketDetailView(
-        item: relatedItem,
-        dependsOnWorkItemIDs: Set(
-          model.dependencies
-            .filter { $0.workItemID == relatedItem.id }
-            .map(\.dependsOnWorkItemID)
+    .sheet(item: $editorState.linkedDestination) { destination in
+      switch destination {
+      case .epic(let epic):
+        EpicDetailView(epic: epic)
+      case .ticket(let relatedItem):
+        TicketDetailView(
+          item: relatedItem,
+          dependsOnWorkItemIDs: Set(
+            model.dependencies
+              .filter { $0.workItemID == relatedItem.id }
+              .map(\.dependsOnWorkItemID)
+          )
         )
-      )
+      }
     }
   }
 
@@ -807,7 +965,7 @@ struct TicketDetailView: View {
           .foregroundStyle(.secondary)
 
         TicketBlockerEditor(
-          selectedIDs: $blockerIDs,
+          selectedIDs: $editorState.blockerIDs,
           excludingWorkItemID: itemID,
           onOpen: openRelationship
         )
@@ -835,10 +993,10 @@ struct TicketDetailView: View {
 
   private func openRelationship(_ relationshipID: UUID) {
     guard let item else { return }
-    selectedRelationshipTicket = TicketRelationshipNavigation.destination(
-      for: relationshipID,
+    editorState.openRelationship(
+      id: relationshipID,
       source: item,
-      in: model.workItems
+      workItems: model.workItems
     )
   }
 
@@ -869,7 +1027,7 @@ struct TicketDetailView: View {
           .padding(.vertical, 8)
       } else {
         VStack(spacing: 8) {
-          ForEach($customFields) { $field in
+          ForEach($editorState.customFields) { $field in
             HStack(spacing: 8) {
               TextField("Field name", text: $field.name)
                 .textFieldStyle(.plain)
@@ -1038,19 +1196,7 @@ struct TicketDetailView: View {
     dismissedDependencyKeys.removeAll()
     refinementReply = TicketRefinementReply(
       message: "",
-      proposal: TicketRefinementProposal(
-        baseVersion: proposal.baseVersion,
-        title: proposal.title,
-        type: proposal.type,
-        body: proposal.body,
-        acceptanceCriteria: proposal.acceptanceCriteria,
-        priority: proposal.priority,
-        rationale: proposal.rationale,
-        dependencies: [],
-        potentialDuplicates: [],
-        splitRecommendation: nil,
-        missingQuestions: []
-      )
+      proposal: TicketRefinementProposal(conversationProposal: proposal)
     )
     if currentDraftSnapshot != base {
       refinementConflictMessage =
@@ -1074,36 +1220,19 @@ struct TicketDetailView: View {
       refinementConflictMessage == nil,
       let proposal = refinementReply?.proposal
     else { return }
-    switch field {
-    case .title:
-      title = proposal.title
-    case .type:
-      type = proposal.type
-    case .context:
-      bodyText = proposal.body
-    case .acceptanceCriteria:
-      criteria = proposal.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
-    case .priority:
-      priority = proposal.priority
-    }
+    editorState.apply(field: field, from: proposal)
     acceptedRefinementFields.insert(field)
     autoDismissRefinementReviewIfResolved()
   }
 
   private func acceptAllRefinementSuggestions(_ proposal: TicketRefinementProposal) {
     guard refinementConflictMessage == nil else { return }
-    title = proposal.title
-    type = proposal.type
-    bodyText = proposal.body
-    criteria = proposal.acceptanceCriteria.map(AcceptanceCriterionDraft.init(text:))
-    priority = proposal.priority
+    editorState.applyAll(
+      from: proposal,
+      workItems: model.workItems,
+      dismissedDependencyKeys: dismissedDependencyKeys
+    )
     acceptedRefinementFields.formUnion(TicketRefinementField.allCases)
-    for dependency in proposal.dependencies
-    where !dismissedDependencyKeys.contains(dependency.ticketKey) {
-      if let relatedItem = model.workItems.first(where: { $0.key == dependency.ticketKey }) {
-        blockerIDs.insert(relatedItem.id)
-      }
-    }
     refinementReply = nil
     refinementConflictMessage = nil
     model.dismissTicketAssistantResult(workItemID: itemID)
@@ -2363,7 +2492,7 @@ struct NewTicketView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   let initialEpicID: UUID?
-  let onCreated: (WorkItem, Bool) -> Void
+  let onCreated: (WorkItem) -> Void
   @State private var outcome = ""
   @State private var selectedEpicID: UUID?
   @State private var isCreating = false
@@ -2371,7 +2500,7 @@ struct NewTicketView: View {
   init(
     isPresented: Binding<Bool>,
     initialEpicID: UUID?,
-    onCreated: @escaping (WorkItem, Bool) -> Void
+    onCreated: @escaping (WorkItem) -> Void
   ) {
     _isPresented = isPresented
     self.initialEpicID = initialEpicID
@@ -2464,7 +2593,7 @@ struct NewTicketView: View {
       )
       isCreating = false
       if let item {
-        onCreated(item, true)
+        onCreated(item)
       }
     }
   }

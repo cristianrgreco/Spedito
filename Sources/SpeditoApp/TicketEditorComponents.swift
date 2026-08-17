@@ -1,14 +1,47 @@
 import SpeditoCore
 import SwiftUI
 
+struct TicketDetailPresentation: Identifiable, Equatable {
+  enum Mode: Equatable {
+    case editable
+    case delivery
+  }
+
+  let item: WorkItem
+  let startRefinementOnAppear: Bool
+  let mode: Mode
+
+  var id: UUID { item.id }
+
+  static func newlyCreated(_ item: WorkItem) -> Self {
+    Self(item: item, startRefinementOnAppear: true, mode: .editable)
+  }
+
+  static func existing(_ item: WorkItem, activeSprint: SprintPlan?) -> Self {
+    let isActiveSprintTicket =
+      activeSprint?.sprint.state.isInProgress == true
+      && activeSprint?.items.contains { $0.workItemID == item.id } == true
+    return Self(
+      item: item,
+      startRefinementOnAppear: false,
+      mode: isActiveSprintTicket ? .delivery : .editable
+    )
+  }
+}
+
 struct TicketEpicLink: View {
   let epic: Epic
+  var onOpen: ((Epic) -> Void)?
   @State private var selectedEpic: Epic?
   @State private var isHovered = false
 
   var body: some View {
     Button {
-      selectedEpic = epic
+      if let onOpen {
+        onOpen(epic)
+      } else {
+        selectedEpic = epic
+      }
     } label: {
       HStack(spacing: 6) {
         Image(systemName: "flag.checkered")
@@ -56,7 +89,7 @@ struct TicketEpicLink: View {
   }
 }
 
-struct AcceptanceCriterionDraft: Identifiable {
+struct AcceptanceCriterionDraft: Identifiable, Equatable {
   let id = UUID()
   var text: String
 }
@@ -254,6 +287,20 @@ struct AcceptanceCriteriaEditor: View {
   }
 }
 
+enum TicketBlockerChoices {
+  static func availableItems(
+    in workItems: [WorkItem],
+    excludingWorkItemID: UUID?,
+    selectedIDs: Set<UUID>
+  ) -> [WorkItem] {
+    workItems.filter {
+      [.backlog, .refining, .ready].contains($0.state)
+        && $0.id != excludingWorkItemID
+        && !selectedIDs.contains($0.id)
+    }
+  }
+}
+
 struct TicketBlockerEditor: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selectedIDs: Set<UUID>
@@ -265,11 +312,11 @@ struct TicketBlockerEditor: View {
   }
 
   private var availableItems: [WorkItem] {
-    model.workItems.filter {
-      [.backlog, .refining, .ready].contains($0.state)
-        && $0.id != excludingWorkItemID
-        && !selectedIDs.contains($0.id)
-    }
+    TicketBlockerChoices.availableItems(
+      in: model.workItems,
+      excludingWorkItemID: excludingWorkItemID,
+      selectedIDs: selectedIDs
+    )
   }
 
   var body: some View {

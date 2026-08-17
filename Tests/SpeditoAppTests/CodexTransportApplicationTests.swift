@@ -286,6 +286,13 @@ struct CodexTransportApplicationTests {
     #expect(firstReply.message == "I will keep the retention choice explicit.")
     #expect(followUp.message == "No. A proposal remains reviewable until you apply it.")
     #expect(model.ticketConversationResults[item.id]?.reply == followUp)
+    let unchangedItem = try #require(
+      try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }
+    )
+    #expect(unchangedItem.version == item.version)
+    #expect(unchangedItem.title == item.title)
+    #expect(unchangedItem.body == item.body)
+    #expect(unchangedItem.acceptanceCriteria == item.acceptanceCriteria)
     #expect(
       await transport.recordedRequests().filter { $0.method == "thread/start" }.count == 2
     )

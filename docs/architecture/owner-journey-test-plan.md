@@ -1,7 +1,7 @@
 # Owner journey test research and implementation plan
 
 - **Date:** 15 August 2026
-- **Status:** Priority 0 ledger reconciled; remaining Priority 1 and 2 journeys stay planned
+- **Status:** Priority 0 complete; Priority 1 work packet 4 covers the Backlog and editable Ticket slice
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Executable coverage ledger:** section 3
@@ -20,9 +20,10 @@ The right shape is layered:
 
 This follows the repository's architecture and verification rules in `AGENTS.md`. It does not replace strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
 
-The inventory below defines **124 owner journey contracts**. The Priority 0
+The inventory below defines **124 owner journey contracts**. The executable
 ledger in section 3 gives every Priority 0 row named or non-duplicative composed
-deterministic evidence. Priority 1 and 2 rows remain future journey work. Some
+deterministic evidence and now records the first Priority 1 slice: B01, B04,
+B06, B07, B08, B10, and B11. Remaining Priority 1 and 2 rows stay planned. Some
 contracts should become parameterized tests or several interruption variants,
 so the eventual test-method count will be higher. Only contracts marked
 **Shell = Y** are candidates for proof from a launched application process.
@@ -67,7 +68,9 @@ Strong existing foundations include:
 
 The missing proof is composition across those boundaries. A route test can prove that an epic notification creates an `OwnerNotificationNavigationRequest`; an epic persistence test can prove that questions survive a product switch; neither alone proves that selecting the banner changes Product, opens Backlog, presents the correct Epic, and renders the restored questions.
 
-## 3. Priority 0 executable coverage ledger — 17 August 2026
+## 3. Executable coverage ledger — 17 August 2026
+
+### 3.1 Priority 0
 
 This ledger applies the section 5 deduplication rule to every Priority 0 row.
 **Named** means at least one cited test carries the row ID. **Composed** means
@@ -142,6 +145,18 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 Every Priority 0 row has named or non-duplicative composed deterministic
 evidence. All 16 Priority 0 rows designated `Shell = Y` also have a
 launched-process contract.
+
+### 3.2 Priority 1 work packet 4 — Backlog and editable Ticket
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| B01 | `EditableTicketJourneyTests.b01ManualTicketOpensInitialRefinement` | **Named:** manual creation persists the incomplete Ticket with its optional Epic association, routes directly to editable detail with initial refinement enabled, and recovers the exact saved Ticket after a fresh store instance. |
+| B04 | `EditableTicketJourneyTests.b04RefinementSuggestionsApplySelectivelyThenSave`, `TicketRefinementApplicationTests.completedRefinementIsAppliedAsOneUpdate` | **Named:** one field remains local, apply-all respects a dismissed dependency, SQLite stays unchanged before Save, and the selected fields and dependency recover after a fresh instance. |
+| B06 | `EditableTicketJourneyTests.b06TeamProposalFieldsRemainUnsavedUntilSave`, `CodexTransportApplicationTests.ticketRefinementAndConversationJourney` | **Named:** the scripted conversation proves real team prose changes no Ticket fields and remains durable; B06 maps an explicit proposal into the editor without a write and persists only the fields passed through Save. |
+| B07 | `EditableTicketJourneyTests.b07EditableTicketFieldsValidateAndPersist`, `SQLiteStoreTests.editableTicketDetailsAreDurable` | **Named:** the complete editable field set, assignee, custom fields, and blocker are saved and recovered together; blank and case-insensitive duplicate custom-field names disable Save without mutating the draft. |
+| B08 | `EditableTicketJourneyTests.b08LinkedNavigationPreservesUnsavedEdits`, `EpicPlanningPresentationTests.ticketDetailsResolveEpic`, `.relationshipLinksResolveRelatedTicket` | **Named:** the editor's bounded presentation state opens and returns from both Epic and Ticket relationships while retaining the exact unsaved title, context, and blockers. |
+| B10 | `EditableTicketJourneyTests.b10BacklogReorderPersistsDependencyOrder`, `PlanningDropPolicyTests.placementPreviewsIdentifyValidRange`, `.repeatedInvalidPreviewRemainsInvalid`, `SQLiteStoreTests.dependencyAwareRanking` | **Named:** a valid reorder survives a fresh store instance; invalid drag previews remain stable, and top/bottom commands cannot move either side of a dependency across the other. |
+| B11 | `EditableTicketJourneyTests.b11ConfirmedArchiveRemovesActiveTicketReferences`, `SQLiteStoreTests.ownerManagedBlockers`, `.bulkArchiveWorkItems` | **Named:** cancellation leaves the Ticket active, confirmation archives the exact requested Ticket, active sprint planning and dependency/suggestion projections exclude it, and its work log plus archive event remain available after a fresh instance. |
 
 ## 4. Test taxonomy
 
@@ -571,9 +586,13 @@ Implement P0 journeys feature by feature, in this order:
 
 For each feature, write the state table first and cover every durable intermediate state with interruption and fresh-instance recovery. Apply the binding launched-process rule in `AGENTS.md` and record the row's resulting `Shell` designation here.
 
-### Work packet 4 — P1 primary owner journeys
+### Work packet 4 — P1 primary owner journeys (in progress)
 
-Add the normal workflows for Backlog editing, planning, Chat, Knowledge, Codebase navigation, App versions, and Retrospectives. Reuse presentation-policy tests for branches that do not need full coordinator state.
+The Backlog and editable Ticket slice B01, B04, B06, B07, B08, B10, and B11 is
+complete in section 3.2. Continue with planning, Chat, Knowledge, Codebase
+navigation, App versions, and Retrospectives as separate coherent packets.
+Reuse presentation-policy tests for branches that do not need full coordinator
+state.
 
 ### Work packet 5 — P2 convenience and presentation journeys
 
