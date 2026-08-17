@@ -47,9 +47,9 @@
     static var notificationBannerDismissDelay: Duration? {
       isEnabled ? nil : .seconds(8)
     }
-    static func recordInteraction(_ name: String) {
+    static func recordInteraction(_ name: String, value: String = "") {
       guard let rootURL = applicationSupportURL else { return }
-      try? Data().write(to: rootURL.appendingPathComponent(name))
+      try? Data(value.utf8).write(to: rootURL.appendingPathComponent(name))
     }
 
     static var preservesPendingPermissionRequest: Bool {
@@ -302,7 +302,8 @@
           selectedProductID: product.id,
           firstProductID: product.id,
           sprintID: seeded.sprintID,
-          retrospectiveNoteID: seeded.noteID
+          retrospectiveNoteID: seeded.noteID,
+          sourceWorkItemID: seeded.sourceWorkItemID
         )
       case .p05:
         let product = try await registry.createProduct(name: "P05 blocked sprint")
@@ -618,7 +619,7 @@
     private static func seedRetrospectiveBacklogAction(
       store: SQLiteStore,
       product: Product
-    ) async throws -> (sprintID: UUID, noteID: UUID) {
+    ) async throws -> (sprintID: UUID, noteID: UUID, sourceWorkItemID: UUID) {
       let seeded = try await seedSprint(
         store: store,
         product: product,
@@ -671,7 +672,7 @@
         synthesisID: synthesis.id
       )
       try await store.saveRetrospectiveNotes([note])
-      return (seeded.sprintID, note.id)
+      return (seeded.sprintID, note.id, seeded.workItemID)
     }
 
     private static func seedAcceptedAppVersions(
@@ -800,6 +801,7 @@
     var candidateRevisionIDs: [UUID] = []
     var remoteSafeSyncID: UUID?
     var retrospectiveNoteID: UUID?
+    var sourceWorkItemID: UUID?
   }
 
   private enum UIFixtureError: Error {

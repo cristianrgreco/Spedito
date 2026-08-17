@@ -35,9 +35,7 @@ final class EpicOwnerNotificationUITests: XCTestCase {
     app.launch()
     app.activate()
     addTeardownBlock {
-      if app.state != .notRunning {
-        app.terminate()
-      }
+      terminateSpeditoUITestApplication(app)
     }
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
 

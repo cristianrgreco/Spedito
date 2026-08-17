@@ -11,9 +11,7 @@ final class LaunchSmokeTests: XCTestCase {
 
     let app = XCUIApplication(url: applicationURL)
     addTeardownBlock {
-      if app.state != .notRunning {
-        app.terminate()
-      }
+      terminateSpeditoUITestApplication(app)
     }
     app.launch()
     app.activate()
@@ -25,5 +23,14 @@ func speditoUITestApplicationURL() throws -> URL {
   URL(
     fileURLWithPath: "/tmp/spedito-ui-tests-\(getuid())/Spedito.app",
     isDirectory: true
+  )
+}
+
+func terminateSpeditoUITestApplication(_ app: XCUIApplication) {
+  guard app.state != .notRunning else { return }
+  app.terminate()
+  XCTAssertTrue(
+    app.wait(for: .notRunning, timeout: 15),
+    "The launched Spedito fixture did not terminate before the next UI contract."
   )
 }

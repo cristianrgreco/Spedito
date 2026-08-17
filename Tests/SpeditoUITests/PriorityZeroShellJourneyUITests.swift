@@ -14,6 +14,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let candidateRevisionIDs: [UUID]
     let remoteSafeSyncID: UUID?
     let retrospectiveNoteID: UUID?
+    let sourceWorkItemID: UUID?
   }
 
   private struct FixtureSession {
@@ -241,6 +242,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   func testI07AcceptedRetrospectiveActionOpensExactTicketRefinement() throws {
     let session = try launchFixture("i07")
     let noteID = try XCTUnwrap(session.manifest.retrospectiveNoteID)
+    let sourceWorkItemID = try XCTUnwrap(session.manifest.sourceWorkItemID)
     element(session.app, "nav.retrospectives").click()
     let accept = element(
       session.app,
@@ -254,17 +256,36 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
       session: session,
       message: "I07 did not start the Business Analyst refinement turn."
     )
+    let acceptedWorkItemID = try XCTUnwrap(
+      UUID(
+        uuidString: String(
+          contentsOf: session.rootURL.appendingPathComponent(
+            "i07-accepted-work-item-id"
+          ),
+          encoding: .utf8
+        )
+      )
+    )
     let detailPrefix = "ticket.detail."
     let detail = session.app.descendants(matching: .any).matching(
       NSPredicate(format: "identifier BEGINSWITH %@", detailPrefix)
     ).firstMatch
     XCTAssertTrue(detail.waitForExistence(timeout: 5))
-    let workItemID = try XCTUnwrap(
+    let openedWorkItemID = try XCTUnwrap(
       UUID(uuidString: String(detail.identifier.dropFirst(detailPrefix.count)))
     )
 
+    XCTAssertEqual(
+      openedWorkItemID,
+      acceptedWorkItemID,
+      "I07 did not open the exact Backlog Ticket created by retrospective acceptance."
+    )
     XCTAssertTrue(element(session.app, "nav.backlog").isSelected)
-    XCTAssertEqual(detail.identifier, "ticket.detail.\(workItemID.uuidString)")
+    XCTAssertNotEqual(
+      openedWorkItemID,
+      sourceWorkItemID,
+      "I07 reopened the released source delivery instead of the Backlog Ticket created by acceptance."
+    )
   }
 
   /// Existing deterministic coverage:
@@ -421,9 +442,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     app.launch()
     app.activate()
     addTeardownBlock {
-      if app.state != .notRunning {
-        app.terminate()
-      }
+      terminateSpeditoUITestApplication(app)
       try? FileManager.default.removeItem(at: fixtureRoot)
     }
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))

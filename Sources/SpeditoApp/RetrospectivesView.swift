@@ -1266,6 +1266,12 @@ private struct RetrospectiveActionDecisionDetail: View {
                 accept: true
               )
               if let createdItem {
+                #if DEBUG
+                  UIFixtureRuntime.recordInteraction(
+                    "i07-accepted-work-item-id",
+                    value: createdItem.id.uuidString
+                  )
+                #endif
                 onShowBacklog()
                 onOpenRefiningTicket(createdItem)
               }

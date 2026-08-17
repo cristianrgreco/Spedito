@@ -564,9 +564,9 @@ never the whole suite by reflex:
   -only-testing:SpeditoUITests/PriorityZeroShellJourneyUITests/testA02BlankProductLaunchesItsCompleteWorkspace
 ```
 
-CI remains the backstop that runs all 15 launched-process tests with parallel
-testing disabled. An agent that skips this suite must say so in its handoff and
-state why the change does not touch application-shell wiring.
+CI remains the backstop that runs the complete launched-process suite with
+parallel testing disabled. An agent that skips this suite must say so in its
+handoff and state why the change does not touch application-shell wiring.
 
 Do not claim a change is complete if relevant tests are failing. If the full
 suite cannot run, state exactly what was and was not validated.
