@@ -136,6 +136,171 @@ struct CodexTransportApplicationTests {
     await store.close()
   }
 
+  @Test("C04 failed Product chat preserves its message and retries in place")
+  func c04ProductConversationFailureRetriesWithoutDuplicatingMessage() async throws {
+    #expect(CodexProductConversation.responseInactivityTimeout == .seconds(60))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-product-conversation-retry-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let store = try SQLiteStore(url: root.appendingPathComponent("product.sqlite"))
+    let product = try await store.createProduct(name: "Retry Product chat")
+    let recipient = try #require(
+      try await store.seedDefaultProfiles(productID: product.id).first
+    )
+    let conversation = ProductConversationThread(
+      productID: product.id,
+      recipientProfileID: recipient.id,
+      subject: "Recover a failed reply",
+      status: .complete,
+      codexThreadID: "thread-c04"
+    )
+    _ = try await store.createConversationThread(
+      conversation,
+      initialMessage: ProductConversationMessage(
+        threadID: conversation.id,
+        authorKind: .owner,
+        authorName: "Me",
+        body: "Earlier context"
+      )
+    )
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/resume",
+            result: .object(["thread": .object(["id": .string("thread-c04")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-c04-failed")])])
+          ),
+        ]
+    )
+    let model = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      codexTransportFactory: { _ in
+        CodexTransportFactoryOutput(
+          descriptor: CodexRuntimeDescriptor(
+            executableURL: URL(fileURLWithPath: "/private/tmp/codex-test"),
+            version: "test",
+            source: .custom
+          ),
+          transport: transport
+        )
+      },
+      ownerNotificationSoundPlayer: CodexTransportNotificationSound(),
+      ownerNotificationSystemNotifier: CodexTransportSystemNotifier()
+    )
+
+    await model.load()
+    let failedAttempt = Task { @MainActor in
+      await model.sendProductConversationMessage(
+        threadID: conversation.id,
+        recipientID: recipient.id,
+        body: "Keep this authored request."
+      )
+    }
+    await transport.waitForRequest("turn/start")
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-c04",
+        turnID: "turn-c04-failed",
+        text: ""
+      )
+    )
+    #expect(await failedAttempt.value == conversation.id)
+    #expect(
+      model.conversationThreads.first(where: { $0.id == conversation.id })?.status == .failed
+    )
+    #expect(model.conversationErrorsByThread[conversation.id] != nil)
+    #expect(
+      try await store.fetchConversationMessages(threadID: conversation.id).map(\.body)
+        == ["Earlier context", "Keep this authored request."]
+    )
+
+    await model.shutdown()
+
+    let retryTransport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/resume",
+            result: .object(["thread": .object(["id": .string("thread-c04")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-c04-retry")])])
+          ),
+        ]
+    )
+    let recoveredModel = AppModel(
+      store: store,
+      selectedProductID: product.id,
+      codexTransportFactory: { _ in
+        CodexTransportFactoryOutput(
+          descriptor: CodexRuntimeDescriptor(
+            executableURL: URL(fileURLWithPath: "/private/tmp/codex-test"),
+            version: "test",
+            source: .custom
+          ),
+          transport: retryTransport
+        )
+      },
+      ownerNotificationSoundPlayer: CodexTransportNotificationSound(),
+      ownerNotificationSystemNotifier: CodexTransportSystemNotifier()
+    )
+    await recoveredModel.load()
+    await recoveredModel.loadProductConversationMessages(threadID: conversation.id)
+    #expect(
+      recoveredModel.conversationThreads.first(where: { $0.id == conversation.id })?.status
+        == .failed
+    )
+    #expect(
+      ProductConversationFailurePresentation.message(
+        status: .failed,
+        technicalEvidence: recoveredModel.conversationErrorsByThread[conversation.id]
+      ) == ProductConversationFailurePresentation.retryableMessage
+    )
+    #expect(
+      recoveredModel.conversationMessagesByThread[conversation.id]?.map(\.body)
+        == ["Earlier context", "Keep this authored request."]
+    )
+
+    let retry = Task { @MainActor in
+      await recoveredModel.retryProductConversation(threadID: conversation.id)
+    }
+    await retryTransport.waitForRequest("turn/start")
+    await retryTransport.emit(
+      Self.completedTurn(
+        threadID: "thread-c04",
+        turnID: "turn-c04-retry",
+        text: "The reply recovered without duplicating your message."
+      )
+    )
+    #expect(await retry.value == conversation.id)
+    #expect(
+      recoveredModel.conversationThreads.first(where: { $0.id == conversation.id })?.status
+        == .complete
+    )
+    #expect(recoveredModel.conversationErrorsByThread[conversation.id] == nil)
+    #expect(
+      try await store.fetchConversationMessages(threadID: conversation.id).map(\.body)
+        == [
+          "Earlier context",
+          "Keep this authored request.",
+          "The reply recovered without duplicating your message.",
+        ]
+    )
+
+    await recoveredModel.shutdown()
+    await store.close()
+  }
+
   @Test("Ticket refinement and conversation survive Product switching and relaunch")
   func ticketRefinementAndConversationJourney() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(

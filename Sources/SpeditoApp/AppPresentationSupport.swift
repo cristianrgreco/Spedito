@@ -197,6 +197,56 @@ extension AgentRole {
   }
 }
 
+struct ConversationRecipientPolicy {
+  static func defaultRecipient(
+    profiles: [AgentProfile],
+    preferredProfileID: UUID? = nil
+  ) -> AgentProfile? {
+    if let preferredProfileID,
+      let preferred = profiles.first(where: { $0.id == preferredProfileID })
+    {
+      return preferred
+    }
+    return profiles.first { $0.role == .businessAnalyst }
+      ?? profiles.first { $0.role == .lead }
+      ?? profiles.first
+  }
+}
+
+struct ProductConversationThreadPresentation {
+  static func active(
+    _ threads: [ProductConversationThread]
+  ) -> [ProductConversationThread] {
+    threads.filter { !$0.isArchived }
+  }
+
+  static func archived(
+    _ threads: [ProductConversationThread]
+  ) -> [ProductConversationThread] {
+    threads.filter(\.isArchived)
+  }
+
+  static func visible(
+    _ threads: [ProductConversationThread],
+    showingArchived: Bool
+  ) -> [ProductConversationThread] {
+    showingArchived ? active(threads) + archived(threads) : active(threads)
+  }
+}
+
+struct ProductConversationFailurePresentation {
+  static let retryableMessage =
+    "The reply could not be completed. Retry when you are ready."
+
+  static func message(
+    status: ConversationThreadStatus,
+    technicalEvidence: String?
+  ) -> String? {
+    guard status == .failed else { return nil }
+    return technicalEvidence ?? retryableMessage
+  }
+}
+
 extension WorkItemPriority {
   var tint: Color {
     switch self {

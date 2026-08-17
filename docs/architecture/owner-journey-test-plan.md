@@ -269,6 +269,53 @@ launched process.
 | Batch decision | Confirm **Accept all** or **Reject all** | One durable decision per proposed suggestion and accepted Ticket links where applicable | Exact remaining scope and confirmation consequence | Confirm or cancel | Fresh registry recovers all decisions and Backlog Tickets; no Sprint is created |
 | Generation interrupted | Process ends during a generating session | Generating session, attached turn identity when available, and earlier completed batches | Recoverable planning state without duplicate proposals | Retry or leave the prior proposal available | Recovery resumes or replaces the turn idempotently and remains Product-scoped |
 
+### 3.7 Priority 1 work packet 4 — Chat and owner notifications
+
+This slice closes C01, C03, C04, C05, C06, C08, and C11 without changing
+notification timing, adding a new conversation representation, or moving
+notification authority out of SQLite. Product Chat operations remain owned by
+`ProductConversationFeatureModel` and `ProductConversationRuntime`; Ticket and
+Epic conversation operations remain owned by
+`PlanningConversationWorkflowCoordinator`; `OwnerNotificationCoordinator`
+remains the bounded notification projection. All seven rows remain
+`Shell = —`: their commands, persistence, routing metadata, presentation
+policies, and interruption recovery are deterministic without a launched
+process. C08 and C11 retain their real Notification Center `M` boundary.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| C01 | `CodexTransportApplicationTests.scriptedProductConversation`, `ProductConversationTests.durableThreads`, `.boundedContext`, `.splitReplyAndTitle` | **Composed:** the application transport journey, durable thread/title compare-and-set proof, bounded-room context policy, and strict title decoder jointly cover a new durable Product Chat thread, one owner/agent exchange, bounded context, and an independently generated concise title. |
+| C03 | `ProductConversationTests.retargetedThread`, `.boundedContext` | **Composed:** recipient retargeting preserves the Product thread identifier and complete message chronology, clears only the prior role-specific Codex session, supplies a bounded handoff to the next team member, and recovers the retargeted thread after a fresh store instance. |
+| C04 | `CodexTransportApplicationTests.c04ProductConversationFailureRetriesWithoutDuplicatingMessage` | **Named:** a malformed empty Codex response leaves the owner-authored message and failed thread durable; a fresh application model exposes that failure and Retry resumes the same thread to completion without duplicating the message. |
+| C05 | `TicketConversationHistoryTests.c05ArchivedProductChatPresentation`, `ProductConversationTests.durableThreads` | **Named:** active Product Chat hides archived threads until requested; archive survives a fresh store with transcript and Codex identity intact, and restore returns the same thread and messages to active history. |
+| C06 | `TicketConversationHistoryTests.c06ConversationRecipientDefaults`, `CodexTransportApplicationTests.ticketRefinementAndConversationJourney`, `.e04OrdinaryEpicChatPreservesPendingQuestions` | **Named:** Ticket conversation prefers its assigned implementer while Ticket and Epic conversations otherwise prefer the Business Analyst then Tech Lead; explicit recipient replies persist in the owning Ticket/Epic work log, and the Ticket path recovers after Product switching and relaunch. |
+| C08 | `TicketAttentionTests.c08ForegroundAndBackgroundNotificationDelivery`, `.notificationRouteRoundTrips` | **Named J/P:** foreground and background policies are mutually exclusive, the in-app banner and attention sound remain available, background metadata routes to the exact durable target, and a fresh coordinator recovers the unread notification. **M remains external:** real macOS Notification Center delivery and open routing require the controlled smoke below. |
+| C11 | `TicketAttentionTests.c11DeclinedSystemNotificationsPreserveInAppAttention`, `TicketAttentionSoundPolicyTests.enteringAwaitingOwnerPlaysSound`, `.existingAwaitingOwnerStateStaysQuiet`, `.appShutdownStaysQuiet` | **Named J/P:** a declined system-notification boundary cannot discard the durable alert, in-app presentation or attention sound; a fresh coordinator loads it without reposting or replaying sound, while policy keeps repeated refreshes and shutdown quiet. **M remains external:** the real macOS authorization prompt and denied setting require the controlled smoke below. |
+
+Controlled external smoke, outside the deterministic suite:
+
+- **C08:** in a disposable macOS user account with Spedito notifications
+  authorized, background Spedito and trigger both a team reply and a
+  needs-your-input event. Confirm Notification Center shows the correct Product,
+  title, summary, and one sound only for the question; open each notification
+  and confirm Spedito routes to its exact durable thread or Ticket. Repeat while
+  Spedito is foreground and confirm only the in-app banner appears.
+- **C11:** deny Spedito notification authorization in macOS, trigger a
+  needs-your-input event, and confirm the durable in-app indicator, banner, and
+  sound remain available. Relaunch twice and confirm Spedito neither prompts
+  again nor loses the alert; authorization may be changed later in System
+  Settings.
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Product thread active | Send the first Product Chat message | Thread, owner message, selected team member, and eventual reply in SQLite | One titled thread and chronological messages | Continue, switch recipient, stop, or archive | Fresh load reconstructs the thread and bounded transcript |
+| Recipient handoff | Send a follow-up to another team member | Same thread and messages; updated recipient; prior Codex identity cleared | One continuous conversation with the selected recipient | Continue or stop | Fresh store preserves the handoff and creates a bounded replacement context |
+| Product reply failed | A malformed or transient Codex result settles | Failed thread and original owner message; diagnostic remains presentation state | Clear failure and **Retry** | Retry, write another message, or archive | Fresh model offers Retry against the same durable message |
+| Product thread archived | Archive a settled thread | Archived status, transcript, generated title, and Codex identity | Hidden active history plus an optional archived section | Show archived or restore | Fresh store keeps it archived until restore |
+| Ticket or Epic conversation | Send to a selected team member | Owner message and reply in the entity's durable conversation/work log | Role-default recipient, alternatives, and chronological reply | Continue with any team member | Product switching and fresh models restore the owning entity history |
+| Foreground notification | Publish while Spedito is active | Owner notification and exact target in SQLite | In-app banner/indicator; questions use the bundled sound | Open or dismiss | Fresh coordinator reloads unread attention |
+| Background notification | Publish while Spedito is inactive | Same durable notification and route metadata | Notification Center when authorized; no in-app banner until active | Open from macOS or return to Spedito | Denial affects only system delivery; durable in-app attention remains |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

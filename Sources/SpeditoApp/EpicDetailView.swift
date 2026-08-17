@@ -918,9 +918,7 @@ struct EpicPlanningConversationPanel: View {
   }
 
   private var defaultRecipient: AgentProfile? {
-    analyst
-      ?? model.profiles.first { $0.role == .lead }
-      ?? model.profiles.first
+    ConversationRecipientPolicy.defaultRecipient(profiles: model.profiles)
   }
 
   private var isPlanningResponding: Bool {

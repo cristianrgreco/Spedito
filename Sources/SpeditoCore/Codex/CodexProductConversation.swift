@@ -122,6 +122,8 @@ public enum CodexProductConversation {
       """
   }
 
+  public static let responseInactivityTimeout: Duration = .seconds(60)
+
   public static let titleGenerationTimeout: Duration = .seconds(15)
 
   public static let titleDeveloperInstructions = """

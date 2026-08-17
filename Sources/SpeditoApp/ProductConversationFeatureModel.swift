@@ -80,7 +80,8 @@ final class ProductConversationFeatureModel: ObservableObject {
   func sendMessage(
     threadID: UUID?,
     recipientID: UUID,
-    body: String
+    body: String,
+    retrying: Bool = false
   ) async -> UUID? {
     let messageBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
     guard
@@ -115,12 +116,29 @@ final class ProductConversationFeatureModel: ObservableObject {
           authorName: "Me",
           body: messageBody
         )
-        thread = try await store.appendConversationMessage(
-          ownerMessage,
-          threadStatus: .working,
-          threadRecipientProfileID: switchesRecipient ? recipient.id : nil,
-          resetsCodexThread: switchesRecipient
-        )
+        if retrying {
+          guard
+            existingThread.status == .failed,
+            !switchesRecipient,
+            try await store.fetchConversationMessages(threadID: threadID)
+              .last(where: { $0.authorKind == .owner })?.body == messageBody
+          else {
+            throw PersistenceError.corruptData(
+              "Only the latest failed Product chat message can be retried."
+            )
+          }
+          thread = try await store.updateConversationThread(
+            id: threadID,
+            status: .working
+          )
+        } else {
+          thread = try await store.appendConversationMessage(
+            ownerMessage,
+            threadStatus: .working,
+            threadRecipientProfileID: switchesRecipient ? recipient.id : nil,
+            resetsCodexThread: switchesRecipient
+          )
+        }
         if switchesRecipient {
           turnPrompt = CodexProductConversation.handoffPrompt(
             messages: try await store.fetchConversationMessages(threadID: threadID)
@@ -261,7 +279,7 @@ final class ProductConversationFeatureModel: ObservableObject {
       let response = try await client.waitForFinalAgentMessage(
         threadID: codexThreadID,
         turnID: turnID,
-        timeout: .seconds(300)
+        timeout: CodexProductConversation.responseInactivityTimeout
       )
       let reply = try CodexProductConversation.decodeMessage(response)
       runtime.clearCancellation(thread.id)
@@ -297,6 +315,21 @@ final class ProductConversationFeatureModel: ObservableObject {
       try? await reload(productID: product.id, store: store, messageThreadID: thread.id)
       return thread.id
     }
+  }
+
+  func retry(threadID: UUID) async -> UUID? {
+    guard
+      let thread = threads.first(where: { $0.id == threadID && $0.status == .failed }),
+      let store = storeProvider(thread.productID),
+      let ownerMessage = try? await store.fetchConversationMessages(threadID: threadID)
+        .last(where: { $0.authorKind == .owner })
+    else { return nil }
+    return await sendMessage(
+      threadID: threadID,
+      recipientID: thread.recipientProfileID,
+      body: ownerMessage.body,
+      retrying: true
+    )
   }
 
   func cancel(threadID: UUID) {

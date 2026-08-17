@@ -13,11 +13,11 @@ struct ProductConversationView: View {
   @State private var visibleNotificationThreadID: UUID?
 
   private var activeThreads: [ProductConversationThread] {
-    conversations.threads.filter { !$0.isArchived }
+    ProductConversationThreadPresentation.active(conversations.threads)
   }
 
   private var archivedThreads: [ProductConversationThread] {
-    conversations.threads.filter(\.isArchived)
+    ProductConversationThreadPresentation.archived(conversations.threads)
   }
 
   private var selectedThread: ProductConversationThread? {
@@ -325,7 +325,10 @@ struct ProductConversationView: View {
         }
       )
     } else if let thread = selectedThread,
-      let error = conversations.errorsByThread[thread.id]
+      let error = ProductConversationFailurePresentation.message(
+        status: thread.status,
+        technicalEvidence: conversations.errorsByThread[thread.id]
+      )
     {
       HStack(spacing: 8) {
         Image(systemName: "exclamationmark.triangle")
@@ -334,6 +337,13 @@ struct ProductConversationView: View {
           .font(.caption)
           .foregroundStyle(.primary)
         Spacer()
+        Button("Retry") {
+          Task {
+            _ = await model.retryProductConversation(threadID: thread.id)
+          }
+        }
+        .buttonStyle(.borderedProminent)
+        .accessibilityIdentifier("conversation.retry")
       }
       .padding(.horizontal, 14)
       .frame(minHeight: 38)
@@ -447,10 +457,9 @@ struct ProductConversationView: View {
 
   private func chooseDefaultRecipient() {
     guard selectedRecipientID == nil else { return }
-    selectedRecipientID =
-      model.profiles.first(where: { $0.role == .businessAnalyst })?.id
-      ?? model.profiles.first(where: { $0.role == .lead })?.id
-      ?? model.profiles.first?.id
+    selectedRecipientID = ConversationRecipientPolicy.defaultRecipient(
+      profiles: model.profiles
+    )?.id
   }
 
   private func send() {

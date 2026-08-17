@@ -298,6 +298,147 @@ struct TicketAttentionTests {
     }
   }
 
+  @Test("C08 notifications choose in-app foreground or macOS background delivery")
+  func c08ForegroundAndBackgroundNotificationDelivery() async throws {
+    #expect(
+      OwnerNotificationDeliveryPolicy.presentsInApp(applicationIsActive: true)
+    )
+    #expect(
+      !OwnerNotificationDeliveryPolicy.postsToSystem(applicationIsActive: true)
+    )
+    #expect(
+      !OwnerNotificationDeliveryPolicy.presentsInApp(applicationIsActive: false)
+    )
+    #expect(
+      OwnerNotificationDeliveryPolicy.postsToSystem(applicationIsActive: false)
+    )
+
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Delivery policy")
+    let store = try #require(registry.store(for: product.id))
+    let sound = NotificationSoundSpy()
+    let system = NotificationSystemSpy()
+    let coordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in
+        productID == product.id ? store : nil
+      },
+      soundPlayer: sound,
+      systemNotifier: system
+    )
+    let foreground = OwnerNotification(
+      productID: product.id,
+      kind: .newReply,
+      target: OwnerNotificationTarget(kind: .conversationThread, id: UUID()),
+      title: "Business analyst replied",
+      body: "Review the answer in Product Chat."
+    )
+    #expect(await coordinator.publish(foreground, productName: product.name))
+    #expect(coordinator.presentedNotification?.id == foreground.id)
+    #expect(sound.playCount == 0)
+
+    coordinator.dismissPresented(id: foreground.id)
+    await coordinator.setApplicationActive(false)
+    let background = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .ticket, id: UUID()),
+      title: "T8 needs your input",
+      body: "Choose the delivery behavior."
+    )
+    #expect(await coordinator.publish(background, productName: product.name))
+    #expect(coordinator.presentedNotification == nil)
+    #expect(sound.playCount == 1)
+    let posted = try #require(system.posted.last)
+    #expect(posted.id == background.id)
+    #expect(
+      OwnerNotificationRoute(
+        userInfo: OwnerNotificationRoute.userInfo(for: posted)
+      )?.target == background.target
+    )
+
+    let recoveredCoordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in
+        productID == product.id ? store : nil
+      },
+      soundPlayer: NotificationSoundSpy(),
+      systemNotifier: NotificationSystemSpy()
+    )
+    await recoveredCoordinator.load(products: [product])
+    let recoveredBackground = try #require(
+      recoveredCoordinator.notifications(productID: product.id)
+        .first(where: { $0.id == background.id })
+    )
+    #expect(recoveredBackground.target == background.target)
+    #expect(recoveredBackground.isUnread)
+
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
+  @Test("C11 declined system notifications preserve in-app attention without launch prompts")
+  func c11DeclinedSystemNotificationsPreserveInAppAttention() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Declined notifications")
+    let store = try #require(registry.store(for: product.id))
+    let firstSound = NotificationSoundSpy()
+    let declinedSystem = DecliningNotificationSystemNotifier()
+    let firstCoordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in
+        productID == product.id ? store : nil
+      },
+      soundPlayer: firstSound,
+      systemNotifier: declinedSystem
+    )
+    let notification = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .epic, id: UUID()),
+      title: "Epic needs your input",
+      body: "The macOS notification was declined."
+    )
+
+    #expect(await firstCoordinator.publish(notification, productName: product.name))
+    #expect(firstCoordinator.presentedNotification?.id == notification.id)
+    #expect(firstSound.playCount == 1)
+    #expect(declinedSystem.postCount == 1)
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).map(\.id)
+        == [notification.id]
+    )
+
+    let relaunchedSound = NotificationSoundSpy()
+    let relaunchedSystem = DecliningNotificationSystemNotifier()
+    let relaunchedCoordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in
+        productID == product.id ? store : nil
+      },
+      soundPlayer: relaunchedSound,
+      systemNotifier: relaunchedSystem
+    )
+    await relaunchedCoordinator.load(products: [product])
+    await relaunchedCoordinator.load(products: [product])
+
+    #expect(relaunchedCoordinator.notifications(productID: product.id).map(\.id) == [
+      notification.id
+    ])
+    #expect(relaunchedCoordinator.presentedNotification == nil)
+    #expect(relaunchedSound.playCount == 0)
+    #expect(relaunchedSystem.postCount == 0)
+
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   @Test("Updates stay quiet while owner questions chime and resolution dismisses")
   func notificationKindControlsSoundAndResolution() async throws {
     let fixture = try TicketAttentionFixture()
@@ -808,4 +949,15 @@ private final class NotificationSystemSpy: OwnerNotificationSystemNotifying {
   func dismiss(ids: [UUID]) {
     dismissedIDs.formUnion(ids)
   }
+}
+
+@MainActor
+private final class DecliningNotificationSystemNotifier: OwnerNotificationSystemNotifying {
+  private(set) var postCount = 0
+
+  func post(_ presentation: OwnerNotificationPresentation) {
+    postCount += 1
+  }
+
+  func dismiss(ids: [UUID]) {}
 }

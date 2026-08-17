@@ -20,7 +20,8 @@ struct ProductConversationTests {
     let first = ProductConversationThread(
       productID: product.id,
       recipientProfileID: analyst.id,
-      subject: "Which ticket implemented search?"
+      subject: "Which ticket implemented search?",
+      codexThreadID: "thread-search"
     )
     _ = try await store.createConversationThread(
       first,
@@ -95,6 +96,7 @@ struct ProductConversationTests {
 
     let archived = try await reopened.archiveConversationThread(id: first.id)
     #expect(archived.isArchived)
+    #expect(archived.codexThreadID == "thread-search")
     #expect(try await reopened.fetchConversationMessages(threadID: first.id).count == 2)
     #expect(
       try await reopened.fetchRecentConversationMessages(
@@ -103,9 +105,20 @@ struct ProductConversationTests {
       ).map(\.body) == ["What remains risky?"]
     )
 
-    let restored = try await reopened.restoreConversationThread(id: first.id)
-    #expect(restored.status == .complete)
     await reopened.close()
+
+    let restoredStore = try SQLiteStore(url: fixture.databaseURL)
+    let archivedAfterRelaunch = try #require(
+      try await restoredStore.fetchConversationThreads(productID: product.id)
+        .first(where: { $0.id == first.id })
+    )
+    #expect(archivedAfterRelaunch.isArchived)
+    #expect(archivedAfterRelaunch.codexThreadID == "thread-search")
+    let restored = try await restoredStore.restoreConversationThread(id: first.id)
+    #expect(restored.status == .complete)
+    #expect(restored.codexThreadID == "thread-search")
+    #expect(try await restoredStore.fetchConversationMessages(threadID: first.id).count == 2)
+    await restoredStore.close()
   }
 
   @Test("New context is bounded while same-agent replies and cross-agent handoffs stay scoped")
@@ -185,6 +198,19 @@ struct ProductConversationTests {
     #expect(retargeted.codexThreadID == nil)
     #expect(try await store.fetchConversationMessages(threadID: thread.id).count == 2)
     await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recoveredThread = try #require(
+      try await reopened.fetchConversationThreads(productID: product.id)
+        .first(where: { $0.id == thread.id })
+    )
+    #expect(recoveredThread.recipientProfileID == lead.id)
+    #expect(recoveredThread.codexThreadID == nil)
+    #expect(
+      try await reopened.fetchConversationMessages(threadID: thread.id).map(\.body)
+        == ["Which ticket implemented search?", "What does the tech lead think?"]
+    )
+    await reopened.close()
   }
 
   @Test("Messages are plain text while generated titles remain strict")

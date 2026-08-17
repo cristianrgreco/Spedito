@@ -1797,19 +1797,14 @@ struct TicketConversationView<ReviewContent: View>: View {
   }
 
   private var defaultRecipient: AgentProfile? {
-    if let sprintItem =
+    let assignedImplementerID =
       (model.candidateSprintPlan?.items.first(where: { $0.workItemID == workItemID })
-        ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID })),
-      let implementerID = sprintItem.implementerProfileID,
-      let assignedImplementer = model.profiles.first(where: {
-        $0.id == implementerID
-      })
-    {
-      return assignedImplementer
-    }
-    return model.profiles.first { $0.role == .businessAnalyst }
-      ?? model.profiles.first { $0.role == .lead }
-      ?? model.profiles.first
+        ?? model.sprintPlan?.items.first(where: { $0.workItemID == workItemID }))?
+      .implementerProfileID
+    return ConversationRecipientPolicy.defaultRecipient(
+      profiles: model.profiles,
+      preferredProfileID: assignedImplementerID
+    )
   }
 
   var body: some View {

@@ -143,6 +143,17 @@ final class BundledOwnerNotificationSoundPlayer: OwnerNotificationSoundPlaying {
   }
 }
 
+struct OwnerNotificationDeliveryPolicy {
+  static func presentsInApp(applicationIsActive: Bool) -> Bool {
+    applicationIsActive
+  }
+
+  static func postsToSystem(applicationIsActive: Bool) -> Bool {
+    !applicationIsActive
+  }
+}
+
+
 @MainActor
 final class MacOSOwnerNotificationNotifier: OwnerNotificationSystemNotifying {
   private let centerProvider: () -> UNUserNotificationCenter
@@ -161,7 +172,11 @@ final class MacOSOwnerNotificationNotifier: OwnerNotificationSystemNotifying {
   }
 
   func post(_ presentation: OwnerNotificationPresentation) {
-    guard !applicationIsActive() else { return }
+    guard
+      OwnerNotificationDeliveryPolicy.postsToSystem(
+        applicationIsActive: applicationIsActive()
+      )
+    else { return }
     let center = centerProvider()
     Task {
       do {
@@ -292,7 +307,9 @@ final class OwnerNotificationCoordinator: ObservableObject {
       notification: notification,
       productName: productName
     )
-    if isApplicationActive {
+    if OwnerNotificationDeliveryPolicy.presentsInApp(
+      applicationIsActive: isApplicationActive
+    ) {
       presentedNotification = presentation
     }
     systemNotifier.post(presentation)
@@ -303,7 +320,9 @@ final class OwnerNotificationCoordinator: ObservableObject {
     guard !isShuttingDown else { return }
     soundPlayer.play()
     let presentation = OwnerNotificationPresentation(attention: attention)
-    if isApplicationActive {
+    if OwnerNotificationDeliveryPolicy.presentsInApp(
+      applicationIsActive: isApplicationActive
+    ) {
       presentedNotification = presentation
     }
     systemNotifier.post(presentation)

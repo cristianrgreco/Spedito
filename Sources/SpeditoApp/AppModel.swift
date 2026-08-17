@@ -1365,7 +1365,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     ownerNotificationNavigationRequest = nil
   }
 
-  private func retireOwnerNotifications(
+  func retireOwnerNotifications(
     productID: UUID,
     target: OwnerNotificationTarget
   ) async {
@@ -2625,45 +2625,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  @discardableResult
-  func sendProductConversationMessage(
-    threadID: UUID?,
-    recipientID: UUID,
-    body: String
-  ) async -> UUID? {
-    await productConversationFeature.sendMessage(
-      threadID: threadID,
-      recipientID: recipientID,
-      body: body
-    )
-  }
-
-  func cancelProductConversation(threadID: UUID) {
-    productConversationFeature.cancel(threadID: threadID)
-  }
-
-  @discardableResult
-  func archiveProductConversation(threadID: UUID) async -> Bool {
-    guard
-      let thread = productConversationFeature.threads.first(where: { $0.id == threadID }),
-      await productConversationFeature.archive(threadID: threadID)
-    else { return false }
-    await retireOwnerNotifications(
-      productID: thread.productID,
-      target: OwnerNotificationTarget(kind: .conversationThread, id: threadID)
-    )
-    return true
-  }
-
-  @discardableResult
-  func restoreProductConversation(threadID: UUID) async -> Bool {
-    await productConversationFeature.restore(threadID: threadID)
-  }
-
-
-  func loadProductConversationMessages(threadID: UUID) async {
-    await productConversationFeature.loadMessages(threadID: threadID)
-  }
 
   func proposeRetrospectiveAction(
     productID: UUID,

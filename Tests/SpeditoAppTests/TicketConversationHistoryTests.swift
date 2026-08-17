@@ -310,6 +310,74 @@ struct TicketConversationHistoryTests {
     await reopened.close()
   }
 
+  @Test("C05 archived Product chat appears only when requested and can return active")
+  func c05ArchivedProductChatPresentation() {
+    let productID = UUID()
+    let recipientID = UUID()
+    let active = ProductConversationThread(
+      productID: productID,
+      recipientProfileID: recipientID,
+      subject: "Active thread"
+    )
+    let archived = ProductConversationThread(
+      productID: productID,
+      recipientProfileID: recipientID,
+      subject: "Archived thread",
+      status: .archived,
+      codexThreadID: "thread-archived"
+    )
+
+    #expect(
+      ProductConversationThreadPresentation.visible(
+        [archived, active],
+        showingArchived: false
+      ).map(\.id) == [active.id]
+    )
+    #expect(
+      ProductConversationThreadPresentation.visible(
+        [archived, active],
+        showingArchived: true
+      ).map(\.id) == [active.id, archived.id]
+    )
+  }
+
+  @Test("C06 conversation recipients prefer assignment then role defaults")
+  func c06ConversationRecipientDefaults() throws {
+    let productID = UUID()
+    let lead = AgentProfile(
+      productID: productID,
+      name: "Tech lead",
+      role: .lead
+    )
+    let analyst = AgentProfile(
+      productID: productID,
+      name: "Business analyst",
+      role: .businessAnalyst
+    )
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+
+    #expect(
+      ConversationRecipientPolicy.defaultRecipient(
+        profiles: [lead, analyst, implementer],
+        preferredProfileID: implementer.id
+      )?.id == implementer.id
+    )
+    #expect(
+      ConversationRecipientPolicy.defaultRecipient(
+        profiles: [lead, analyst, implementer]
+      )?.id == analyst.id
+    )
+    #expect(
+      ConversationRecipientPolicy.defaultRecipient(
+        profiles: [lead, implementer]
+      )?.id == lead.id
+    )
+  }
+
 }
 
 @Suite("Conversation timeline scrolling")
