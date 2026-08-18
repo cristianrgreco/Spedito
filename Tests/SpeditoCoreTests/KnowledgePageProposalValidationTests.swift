@@ -27,7 +27,8 @@ struct KnowledgePageProposalValidationTests {
 
     try CodexTicketExecutor.validateKnowledgePageProposals(
       in: validResult,
-      canonicalPages: [operations, environments]
+      canonicalPages: [operations, environments],
+      writablePageIDs: [environments.id]
     )
 
     let breadcrumbResult = result(
@@ -37,7 +38,8 @@ struct KnowledgePageProposalValidationTests {
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.validateKnowledgePageProposals(
         in: breadcrumbResult,
-        canonicalPages: [operations, environments]
+        canonicalPages: [operations, environments],
+        writablePageIDs: [environments.id]
       )
     }
   }
@@ -52,9 +54,75 @@ struct KnowledgePageProposalValidationTests {
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.validateKnowledgePageProposals(
         in: result,
-        canonicalPages: []
+        canonicalPages: [],
+        writablePageIDs: []
       )
     }
+  }
+
+  @Test("Canonical page creation requires a writable section parent")
+  func creationRequiresWritableSectionParent() throws {
+    let productID = UUID()
+    let integrations = KnowledgePage(
+      productID: productID,
+      title: "Integrations",
+      slug: "integrations"
+    )
+    let invalidKindResult = creationResult(parentPageID: integrations.id)
+
+    #expect(throws: TicketExecutionGenerationError.self) {
+      try CodexTicketExecutor.validateKnowledgePageProposals(
+        in: invalidKindResult,
+        canonicalPages: [integrations],
+        writablePageIDs: [integrations.id]
+      )
+    }
+
+    let features = KnowledgePage(
+      productID: productID,
+      title: "Features",
+      slug: "features",
+      kind: .section
+    )
+    let validResult = creationResult(parentPageID: features.id)
+    try CodexTicketExecutor.validateKnowledgePageProposals(
+      in: validResult,
+      canonicalPages: [features],
+      writablePageIDs: [features.id]
+    )
+    #expect(throws: TicketExecutionGenerationError.self) {
+      try CodexTicketExecutor.validateKnowledgePageProposals(
+        in: validResult,
+        canonicalPages: [features],
+        writablePageIDs: []
+      )
+    }
+  }
+
+  private func creationResult(parentPageID: UUID) -> TicketExecutionResult {
+    TicketExecutionResult(
+      status: .completed,
+      comment: "Recorded an integration decision.",
+      question: nil,
+      options: [],
+      summary: "Recorded an integration decision.",
+      changedFiles: [],
+      tests: ["Provider comparison completed."],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the provider decision."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: [],
+      knowledgePageProposals: [
+        KnowledgePageProposalDraft(
+          operation: .create,
+          parentPageID: parentPageID,
+          title: "Provider decision",
+          proposedBodyMarkdown: "The selected provider meets the ticket contract.",
+          rationale: "Dependants need the approved provider contract."
+        )
+      ]
+    )
   }
 
   private func result(

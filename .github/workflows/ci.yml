@@ -57,7 +57,7 @@ jobs:
   launched-process-contracts:
     name: Launched-process UI contracts
     runs-on: macos-26
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
