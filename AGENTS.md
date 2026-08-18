@@ -443,7 +443,10 @@ Review uses these architecture ratchets:
   do not rewrite prior history to create that checkpoint.
 - Lower a value in `scripts/architecture_ratchets.baseline` whenever an
   extraction improves it, so the improvement is locked in. Raising a baseline
-  requires an explicit reason in the accepted work packet.
+  requires an explicit reason in the accepted work packet. The two line-count
+  metrics allow a 25-line drop before they demand a new baseline, so incidental
+  edits do not turn into baseline bookkeeping; the counts that carry
+  architectural meaning stay exact in both directions.
 
 ## Verification model
 

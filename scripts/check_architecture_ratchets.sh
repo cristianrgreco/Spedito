@@ -27,6 +27,17 @@ metric_label() {
   esac
 }
 
+# Line counts move on almost any edit, so a one-line drop must not fail the
+# build; only a drop large enough to be worth locking in has to be re-baselined.
+# Counts that carry architectural meaning stay exact, because every change to
+# one of those is deliberate.
+metric_slack() {
+  case "$1" in
+    app_model_lines|content_view_lines) echo 25 ;;
+    *) echo 0 ;;
+  esac
+}
+
 metric_value() {
   case "$1" in
     app_model_lines)
@@ -70,11 +81,12 @@ while IFS='=' read -r key baseline; do
   fi
 
   seen_metric_count=$((seen_metric_count + 1))
+  slack=$(metric_slack "$key")
   if (( actual > baseline )); then
     echo "Architecture ratchet failed: $label; baseline=$baseline actual=$actual." >&2
     echo "Fix: reduce $key to $baseline; raising the baseline requires an explicit packet reason." >&2
     failed=1
-  elif (( actual < baseline )); then
+  elif (( actual < baseline - slack )); then
     echo "Architecture improvement is not locked in: $label; baseline=$baseline actual=$actual." >&2
     echo "Fix: set $key=$actual in $baseline_file." >&2
     failed=1
