@@ -1,7 +1,7 @@
 # Owner journey test research and implementation plan
 
 - **Date:** 15 August 2026
-- **Status:** Priority 0 complete; Priority 1 work packet 4 covers Backlog, editable Ticket, Sprint planning, and application lifecycle slices
+- **Status:** Owner journey program complete with S08 retained as one explicit product gap
 - **Product authority:** `docs/product-spec.md`
 - **Architecture authority:** `docs/technical-design.md`
 - **Executable coverage ledger:** section 3
@@ -21,15 +21,13 @@ The right shape is layered:
 This follows the repository's architecture and verification rules in `AGENTS.md`. It does not replace strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
 
 The inventory below defines **124 owner journey contracts**. The executable
-ledger in section 3 gives every Priority 0 row named or non-duplicative composed
-deterministic evidence and now records two Priority 1 slices: B01, B04, B06,
-B07, B08, B10, B11, P01, P02, P04, P06, and P07. Remaining Priority 1 and 2
-rows stay planned. Some contracts should become parameterized tests or several
-interruption variants,
-so the eventual test-method count will be higher. Only contracts marked
-**Shell = Y** are candidates for proof from a launched application process.
-Sixteen Priority 0 rows carry that designation and all 16 now have a
-launched-process contract.
+ledger in section 3 records all 124: 94 have row-named evidence, 29 use
+non-duplicative composed evidence, and S08 remains explicitly blocked on an
+unimplemented product authority rather than receiving false coverage.
+Parameterized and interruption variants make the executable test-method count
+higher than the row count. Only contracts marked **Shell = Y** are candidates
+for proof from a launched application process. Nineteen rows carry that
+designation and all 19 have a launched-process contract.
 
 ## 2. Repository evidence
 
@@ -795,24 +793,23 @@ launched-process contract; this section records implementation status:
 13. Product archive and restore — A06, A07;
 14. Codebase commit-to-Ticket navigation — V04.
 
-**Implementation status — 17 August 2026:** the target contains 17 tests: one
+**Implementation status — 17 August 2026:** the target contains 20 tests: one
 bundle-launch smoke test, the E02 contract in `EpicOwnerNotificationUITests`,
-and 15 contracts in `PriorityZeroShellJourneyUITests`. They cover all 16
-Priority 0 `Shell = Y` rows: A02, A05, A06, B02, C07, D08, D09, D14, D15,
-D17, E02, I07, P05, R05, R13, and V06.
+and 18 contracts in `PriorityZeroShellJourneyUITests`. They cover all 19
+`Shell = Y` rows: A02, A05, A06, A07, B02, C07, D08, D09, D14, D15, D17,
+E02, I07, K05, P05, R05, R13, V04, and V06.
 
-- Fully implemented scenarios: 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, and 12.
-- Partially implemented scenario: 13 covers A06 but not the Priority 1 A07
-  contract.
-- Not implemented: 9 (Priority 1 K05) and 14 (Priority 1 V04).
+All 14 scenarios are implemented. The three Priority 1 additions retain the
+binding shell justification: A07 crosses archived-Product restoration and
+workspace routing, K05 crosses answer-sheet citation routing, and V04 crosses
+Codebase commit-to-Ticket routing and editable-detail selection.
 
 The debug-only composition uses an isolated application-support root and
 defaults domain, deterministic Codex and GitHub boundaries, no-op
 sound/system-notification adapters, and a file-system response gate. Release
-compilation excludes fixture types. The independent close-out audit at
-`0f844d9` ran the prior 15 tests successfully in 182 seconds. The added D17
-and I07 contracts pass independently in 18 and 12 test seconds, respectively,
-so CI's serialized 10-minute timeout retains substantial headroom for all 17.
+compilation excludes fixture types. The completed runner executes each contract
+serially under the machine-wide lock and fails if `xcodebuild` runs no tests.
+The close-out run executed all 20 tests with zero failures in 381 seconds.
 
 Reports, passive labels, every error string, every lane, every diff mode, and every state-machine branch do not need separate XCUITest coverage. Their policy/presentation tests remain faster and more diagnostic.
 
@@ -831,7 +828,7 @@ Repository rules prohibit agents from driving or inspecting the product owner's 
 
 ## 8. Implementation sequence
 
-These are the journey program's own packets. The Priority 0 foundation packets are complete; Priority 1 and Priority 2 remain planned in that order.
+These are the journey program's own packets. All packets are complete; S08 is retained as the separately accepted product gap recorded below.
 
 ### Gate 0 — Accepted baseline
 
@@ -895,7 +892,7 @@ Section 3.12 records the nine policy and presentation rows. None needed a
 launched-process contract because every row remains `Shell = —` and no
 shell-wiring defect was found.
 
-### Work packet 6 — CI and maintenance ratchet
+### Work packet 6 — CI and maintenance ratchet (completed; ongoing policy)
 
 1. Keep `swift test -Xswiftc -warnings-as-errors` as the fast required suite, and hold it to a stated wall-clock budget. CI currently allows 30 minutes for the whole job; journeys that open real SQLite stores and real temporary Git repositories are the expensive tests, so each work packet reports the suite's runtime before and after and states which suites must be `.serialized` and why.
 2. Add a separate serialized `xcodebuild test` job for the small UI contract suite.
@@ -933,7 +930,12 @@ Every full-app UI test must:
 
 ## 10. Decision
 
-The known-good baseline and Priority 0 matrix are complete. Continue with the
-Priority 1 primary owner journeys, then Priority 2 convenience and presentation
-journeys. Expand by owner risk, not by source-file order and not by converting
-all existing component tests into UI tests.
+The owner journey program is complete. Section 3 records every one of the 124
+inventory rows: 94 are **Named**, 29 are **Composed**, and S08 is the sole
+**Blocked on product** row. All 19 `Shell = Y` rows have launched-process
+coverage in a 20-test serialized target, including its bundle-launch guard.
+The deterministic close-out suite exposes 580 tests; the final validation
+records the observed suite and launched-process counts rather than treating a
+successful exit alone as evidence. Future work follows the maintenance ratchet
+in work packet 6. Building the shared S08 readiness profile requires a separate
+accepted product packet and is not hidden inside test coverage.
