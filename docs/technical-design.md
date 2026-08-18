@@ -154,33 +154,24 @@ repeat work while the former shared database remains intact as a recovery
 backup. Runtime persistence contains no `schema_migrations` table or historical
 migration chain.
 
-Schema version 2 adds imported-repository and repository-knowledge provenance,
-links verified knowledge pages back to their source analysis attempt, and adds
-the indexes needed for recovery and active publication guards. The migration
-runs in one immediate transaction with foreign-key enforcement restored and
-validated before commit.
+Schema version 2 is the single upgrade a released database can need. It adds
+imported-repository and repository-knowledge provenance, remote repository
+connections, safe synchronization attempts, immutable publication attempts and
+their pull-request snapshots, external comment provenance and GitHub review
+context, a non-null candidate delivery kind, durable owner notifications, and
+durable agent-run execution constraints; it generalizes demo sessions from
+accepted candidates to any launch source; and it clears the placeholder
+draft-sprint goal. Status-specific compare-and-swap updates guard every remote
+transition, and active-operation partial indexes enforce one synchronization,
+one publication, and one repository-knowledge run at a time per Product. The
+migration runs in one immediate transaction with foreign-key enforcement in
+force and the resulting version validated before commit.
 
-Schema version 4 adds remote repository connections, observations, safe
-synchronization attempts, immutable publication attempts, and pull-request
-snapshots. Status/version/SHA-specific compare-and-swap updates guard every
-transition, active-operation partial indexes enforce one synchronization and one
-publication at a time per Product, and terminal/failed/stale rows remain for
-audit.
-
-Schema version 7 records successful publication-branch deletion so later pull
-request refreshes and explicit merge retries do not repeat completed cleanup.
-
-Schema version 8 adds a non-null candidate delivery kind. Existing rows migrate
-to `repository_change`; new `local_outcome` rows preserve repository-free
-business analyst results without an empty commit or pull request.
-
-Schema version 9 removes the placeholder draft-sprint goal, and version 10
-enforces one active repository-knowledge run per product after retiring older
-unfinished attempts. Schema version 11 retires the owner-inaccessible manual
-publication path: any remaining manual publication is made terminal with a
-durable error code and normalized to existing-product-history provenance before
-runtime decoding. New publication records must declare either
-existing-product-history or ticket provenance explicitly.
+Versions the application only ever used before its first release are not
+reproduced. Development databases that carry one of those versions cannot be
+upgraded and are rejected with an explanation rather than repaired, and a
+database written by a newer Spedito is rejected as well. A fresh install and an
+upgraded 0.1.0 database are held to producing byte-identical schemas by test.
 
 The application catalog is the set of valid product workspace identifiers and
 their databases. Cross-product operations enumerate these stores; product

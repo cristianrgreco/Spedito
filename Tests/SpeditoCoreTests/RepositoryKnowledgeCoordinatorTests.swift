@@ -319,7 +319,7 @@ struct RepositoryKnowledgeCoordinatorTests {
   /// Existing partial coverage:
   /// - `concurrentExplicitRetries`
   /// - `refreshUsesExactDurableState`
-  /// - `SQLiteStoreTests.repositoryKnowledgeActiveRunMigrationAndRecovery`
+  /// - `SQLiteStoreTests.repositoryKnowledgeActiveRunConstraintAndRecovery`
   /// This test covers only R09's stale-retry race against the accepted newer revision.
   @Test("R09 a stale retry binds to the newer accepted repository revision")
   func r09StaleRetryUsesNewerAcceptedRevision() async throws {

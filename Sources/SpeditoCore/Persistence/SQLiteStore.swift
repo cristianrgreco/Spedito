@@ -70,7 +70,7 @@ public actor SQLiteStore {
     do {
       try Self.execute("PRAGMA foreign_keys = ON;", database: connection)
       try Self.execute("PRAGMA journal_mode = WAL;", database: connection)
-      try Self.initializeCurrentSchema(database: connection)
+      try Self.initializeCurrentSchema(database: connection, url: url)
     } catch {
       sqlite3_close(connection)
       database = nil
@@ -164,73 +164,47 @@ public actor SQLiteStore {
     }
   }
 
-  static func initializeCurrentSchema(database: OpaquePointer) throws {
+  static func initializeCurrentSchema(database: OpaquePointer, url: URL) throws {
     let hasProductTables = try tableExists(
       "products",
       schema: "main",
       database: database
     )
     if !hasProductTables {
-      try execute(ProductDatabaseSchema.sql, database: database)
+      try execute("BEGIN IMMEDIATE;", database: database)
+      do {
+        try execute(ProductDatabaseSchema.sql, database: database)
+        try execute("COMMIT;", database: database)
+      } catch {
+        try? execute("ROLLBACK;", database: database)
+        throw error
+      }
       return
     }
 
-    var version = try integerPragma("user_version", database: database)
-    guard version != ProductDatabaseSchema.version else { return }
+    let version = try integerPragma("user_version", database: database)
+    if version == ProductDatabaseSchema.version,
+      try tableExists("owner_notifications", schema: "main", database: database)
+    {
+      return
+    }
     if try tableExists("schema_migrations", schema: "main", database: database) {
       throw PersistenceError.corruptData(
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    guard (1..<ProductDatabaseSchema.version).contains(version) else {
-      throw PersistenceError.corruptData(
-        "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
-      )
+    guard version == 1 else {
+      throw unsupportedSchemaError(version: version, url: url)
     }
 
     try execute("BEGIN IMMEDIATE;", database: database)
     do {
-      while version < ProductDatabaseSchema.version {
-        let migration: String
-        switch version {
-        case 1:
-          migration = ProductDatabaseSchema.migrationV1ToV2
-        case 2:
-          migration = ProductDatabaseSchema.migrationV2ToV3
-        case 3:
-          migration = ProductDatabaseSchema.migrationV3ToV4
-        case 4:
-          migration = ProductDatabaseSchema.migrationV4ToV5
-        case 5:
-          migration = ProductDatabaseSchema.migrationV5ToV6
-        case 6:
-          migration = ProductDatabaseSchema.migrationV6ToV7
-        case 7:
-          migration = ProductDatabaseSchema.migrationV7ToV8
-        case 8:
-          migration = ProductDatabaseSchema.migrationV8ToV9
-        case 9:
-          migration = ProductDatabaseSchema.migrationV9ToV10
-        case 10:
-          migration = ProductDatabaseSchema.migrationV10ToV11
-        case 11:
-          migration = ProductDatabaseSchema.migrationV11ToV12
-        case 12:
-          migration = ProductDatabaseSchema.migrationV12ToV13
-        case 13:
-          try ensureAgentRunExecutionConstraintColumns(database: database)
-          migration = ProductDatabaseSchema.migrationV13ToV14
-        default:
-          throw PersistenceError.corruptData(
-            "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
-          )
-        }
-        try execute(migration, database: database)
-        version = try integerPragma("user_version", database: database)
-      }
-      guard version == ProductDatabaseSchema.version else {
+      try execute(ProductDatabaseSchema.migrationV1ToV2, database: database)
+      let migrated = try integerPragma("user_version", database: database)
+      guard migrated == ProductDatabaseSchema.version else {
         throw PersistenceError.corruptData(
-          "Unsupported product database schema \(version); expected \(ProductDatabaseSchema.version)."
+          "The product database upgrade finished at schema \(migrated); "
+            + "expected \(ProductDatabaseSchema.version)."
         )
       }
       try execute("COMMIT;", database: database)
@@ -240,24 +214,22 @@ public actor SQLiteStore {
     }
   }
 
-  private static func ensureAgentRunExecutionConstraintColumns(
-    database: OpaquePointer
-  ) throws {
-    let existingColumns = Set(
-      try columnNames(table: "agent_runs", schema: "main", database: database)
-    )
-    let requiredColumns = [
-      ("execution_constraint_kind", "TEXT"),
-      ("execution_constraint_observed_at", "REAL"),
-      ("execution_constraint_retry_at", "REAL"),
-      ("execution_constraint_evidence", "TEXT"),
-    ]
-    for (name, type) in requiredColumns where !existingColumns.contains(name) {
-      try execute(
-        "ALTER TABLE agent_runs ADD COLUMN \(quotedIdentifier(name)) \(type);",
-        database: database
+  /// Version 1 is the only schema a released Spedito ever wrote, so anything
+  /// else is either a newer build's database or a pre-release development one.
+  private static func unsupportedSchemaError(
+    version: Int32,
+    url: URL
+  ) -> PersistenceError {
+    if version > ProductDatabaseSchema.version {
+      return PersistenceError.corruptData(
+        "The product database at \(url.path) uses schema \(version), which a newer "
+          + "version of Spedito created. Update Spedito to open it."
       )
     }
+    return PersistenceError.corruptData(
+      "The product database at \(url.path) uses unreleased development schema "
+        + "\(version) and cannot be upgraded. Remove it to start from a new database."
+    )
   }
 
   static func integerPragma(

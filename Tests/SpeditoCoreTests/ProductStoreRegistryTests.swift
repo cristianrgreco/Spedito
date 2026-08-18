@@ -170,7 +170,10 @@ struct ProductStoreRegistryTests {
 
     let database = try ProductRegistryFixture.openReadOnly(databaseURL)
     defer { sqlite3_close(database) }
-    #expect(try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database) == 14)
+    #expect(
+      try ProductRegistryFixture.scalarInt("PRAGMA user_version;", in: database)
+        == ProductDatabaseSchema.version
+    )
     #expect(
       try ProductRegistryFixture.scalarInt(
         "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'owner_notifications';",
@@ -274,21 +277,28 @@ struct ProductStoreRegistryTests {
 
   @Test("Unknown product database versions fail closed")
   func unknownSchemaVersionFailsClosed() async throws {
-    let fixture = try ProductRegistryFixture()
-    defer { fixture.remove() }
-    let databaseURL = fixture.directoryURL.appendingPathComponent("product.sqlite")
-    let originalStore = try SQLiteStore(url: databaseURL)
-    _ = try await originalStore.createProduct(name: "Versioned product")
-    await originalStore.close()
-    try ProductRegistryFixture.execute(
+    // A database from a newer Spedito, a pre-release development database, and a
+    // development database that reused the current version number but predates
+    // the tables it implies. None may be opened.
+    for regression in [
+      "PRAGMA user_version = \(ProductDatabaseSchema.version + 1);",
+      "PRAGMA user_version = 7;",
       """
-      PRAGMA user_version = 15;
+      DROP TABLE owner_notifications;
+      PRAGMA user_version = \(ProductDatabaseSchema.version);
       """,
-      at: databaseURL
-    )
+    ] {
+      let fixture = try ProductRegistryFixture()
+      defer { fixture.remove() }
+      let databaseURL = fixture.directoryURL.appendingPathComponent("product.sqlite")
+      let originalStore = try SQLiteStore(url: databaseURL)
+      _ = try await originalStore.createProduct(name: "Versioned product")
+      await originalStore.close()
+      try ProductRegistryFixture.execute(regression, at: databaseURL)
 
-    #expect(throws: PersistenceError.self) {
-      _ = try SQLiteStore(url: databaseURL)
+      #expect(throws: PersistenceError.self) {
+        _ = try SQLiteStore(url: databaseURL)
+      }
     }
   }
 
@@ -314,6 +324,39 @@ struct ProductStoreRegistryTests {
       title: "Second product ticket",
       acceptanceCriteria: ["It remains isolated"]
     )
+
+    // Conversation history is durable Product data, so the split must carry it.
+    var conversationSubjects: [UUID: String] = [:]
+    var conversationReplies: [UUID: [String]] = [:]
+    for (product, subject) in [(first, "First product question"), (second, "Second product question")] {
+      let profiles = try await legacyStore.seedDefaultProfiles(productID: product.id)
+      let recipient = try #require(profiles.first { $0.role == .lead })
+      let thread = ProductConversationThread(
+        productID: product.id,
+        recipientProfileID: recipient.id,
+        subject: subject
+      )
+      _ = try await legacyStore.createConversationThread(
+        thread,
+        initialMessage: ProductConversationMessage(
+          threadID: thread.id,
+          authorKind: .owner,
+          authorName: "Me",
+          body: "\(subject) opening"
+        )
+      )
+      _ = try await legacyStore.appendConversationMessage(
+        ProductConversationMessage(
+          threadID: thread.id,
+          authorKind: .agent,
+          authorName: recipient.name,
+          body: "\(subject) reply"
+        ),
+        threadStatus: .needsInput
+      )
+      conversationSubjects[product.id] = subject
+      conversationReplies[product.id] = ["\(subject) opening", "\(subject) reply"]
+    }
     await legacyStore.close()
     try ProductRegistryFixture.execute(
       """
@@ -347,6 +390,18 @@ struct ProductStoreRegistryTests {
       ])
     #expect(try await firstStore.fetchWorkItems(productID: second.id).isEmpty)
     #expect(try await secondStore.fetchWorkItems(productID: first.id).isEmpty)
+
+    for (product, store) in [(first, firstStore), (second, secondStore)] {
+      let threads = try await store.fetchConversationThreads(productID: product.id)
+      #expect(threads.map(\.subject) == [conversationSubjects[product.id]])
+      let thread = try #require(threads.first)
+      #expect(
+        try await store.fetchConversationMessages(threadID: thread.id).map(\.body)
+          == conversationReplies[product.id]
+      )
+    }
+    #expect(try await firstStore.fetchConversationThreads(productID: second.id).isEmpty)
+    #expect(try await secondStore.fetchConversationThreads(productID: first.id).isEmpty)
 
     for store in registry.allStores {
       await store.close()

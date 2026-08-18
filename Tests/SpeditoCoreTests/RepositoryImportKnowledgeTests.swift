@@ -1050,32 +1050,6 @@ struct RepositoryImportKnowledgeTests {
       .appendingPathComponent("spedito-\(name)-\(UUID().uuidString)", isDirectory: true)
   }
 
-  private func createVersionOneDatabase(at url: URL) throws {
-    try FileManager.default.createDirectory(
-      at: url.deletingLastPathComponent(),
-      withIntermediateDirectories: true
-    )
-    let fixtureURL = try #require(
-      Bundle.module.url(
-        forResource: "product-schema-v1",
-        withExtension: "sql"
-      )
-    )
-    let sql = try String(contentsOf: fixtureURL, encoding: .utf8)
-    var database: OpaquePointer?
-    guard sqlite3_open(url.path, &database) == SQLITE_OK, let database else {
-      throw PersistenceError.corruptData("Could not create the version one fixture")
-    }
-    defer { sqlite3_close(database) }
-    var message: UnsafeMutablePointer<CChar>?
-    let result = sqlite3_exec(database, sql, nil, nil, &message)
-    guard result == SQLITE_OK else {
-      let detail = message.map { String(cString: $0) } ?? "unknown SQLite error"
-      sqlite3_free(message)
-      throw PersistenceError.corruptData(detail)
-    }
-  }
-
   private func runGit(_ arguments: [String], at directory: URL) throws -> String {
     let process = Process()
     let pipe = Pipe()
