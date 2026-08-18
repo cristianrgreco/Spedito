@@ -190,28 +190,12 @@ struct ReportsView: View {
   }
 
   private var sprintData: [SprintReportDatum] {
-    completedSprints.map { plan in
-      let candidates = acceptedCandidates.filter { $0.sprintID == plan.sprint.id }
-      let cycleTime =
-        if let started = plan.sprint.startedAt,
-          let completed = plan.sprint.completedAt
-        {
-          Optional(max(0, completed.timeIntervalSince(started)))
-        } else {
-          Optional<TimeInterval>.none
-        }
-      let runs = model.runs.filter { $0.sprintID == plan.sprint.id }
-      return SprintReportDatum(
-        sprintNumber: plan.sprint.number,
-        cycleTime: cycleTime,
-        activeAgentTime: runs.reduce(0) { $0 + $1.activeDuration() },
-        outcomes: Set(candidates.map(\.workItemID)).count,
-        reviewCorrections: candidates.reduce(0) { $0 + max(0, $1.version - 1) },
-        interruptedRuns: runs.filter {
-          $0.status == .failed || $0.status == .interrupted
-        }.count
-      )
-    }
+    SprintReportEvidence.completedData(
+      plans: model.sprintHistory,
+      candidates: model.candidateRevisions,
+      runs: model.runs,
+      retrospectiveNotes: model.retrospectiveNotes
+    )
   }
 
   private var visibleSprintData: [SprintReportDatum] {
@@ -242,17 +226,128 @@ enum SprintReportRange: String, CaseIterable, Identifiable {
 
 struct SprintReportDatum: Identifiable, Equatable {
   let sprintNumber: Int
+  let plannedTokens: Int
+  let reportedContextTokens: Int?
   let cycleTime: TimeInterval?
   let activeAgentTime: TimeInterval
   let outcomes: Int
   let reviewCorrections: Int
   let interruptedRuns: Int
+  let blockers: Int
+  let acceptedImprovements: Int
 
   var id: Int { sprintNumber }
 
   var agentTimePerOutcome: TimeInterval? {
     guard outcomes > 0, activeAgentTime > 0 else { return nil }
     return activeAgentTime / Double(outcomes)
+  }
+}
+
+enum SprintReportEvidence {
+  static func completedData(
+    plans: [SprintPlan],
+    candidates: [CandidateRevision],
+    runs: [AgentRun],
+    retrospectiveNotes: [RetrospectiveNote]
+  ) -> [SprintReportDatum] {
+    let completedPlans =
+      plans
+      .filter { $0.sprint.state == .completed }
+      .sorted { $0.sprint.number < $1.sprint.number }
+    let completedSprintIDs = Set(completedPlans.map(\.sprint.id))
+    let acceptedCandidates = candidates.filter {
+      completedSprintIDs.contains($0.sprintID) && $0.status == .accepted
+    }
+
+    return completedPlans.map { plan in
+      let sprintID = plan.sprint.id
+      let sprintCandidates = acceptedCandidates.filter { $0.sprintID == sprintID }
+      let sprintRuns = runs.filter { $0.sprintID == sprintID }
+      let reportedContext = sprintRuns.compactMap(\.contextUsedTokens)
+      let cycleTime =
+        if let startedAt = plan.sprint.startedAt,
+          let completedAt = plan.sprint.completedAt
+        {
+          Optional(max(0, completedAt.timeIntervalSince(startedAt)))
+        } else {
+          Optional<TimeInterval>.none
+        }
+      let activeAgentTime = sprintRuns.reduce(0) { total, run in
+        total + run.activeDuration(at: plan.sprint.completedAt ?? run.updatedAt)
+      }
+
+      return SprintReportDatum(
+        sprintNumber: plan.sprint.number,
+        plannedTokens: plan.estimatedTokens,
+        reportedContextTokens: reportedContext.isEmpty
+          ? nil : reportedContext.reduce(0, +),
+        cycleTime: cycleTime,
+        activeAgentTime: activeAgentTime,
+        outcomes: Set(sprintCandidates.map(\.workItemID)).count,
+        reviewCorrections: sprintCandidates.reduce(0) {
+          $0 + max(0, $1.version - 1)
+        },
+        interruptedRuns: sprintRuns.filter {
+          $0.status == .failed || $0.status == .interrupted
+        }.count,
+        blockers: sprintRuns.filter {
+          $0.executionConstraint != nil
+            || $0.status == .failed
+            || $0.status == .interrupted
+        }.count,
+        acceptedImprovements: retrospectiveNotes.filter {
+          $0.sprintID == sprintID && $0.actionStatus == .accepted
+        }.count
+      )
+    }
+  }
+}
+
+enum SprintReportEvidenceMetric: String, CaseIterable, Identifiable {
+  case forecast
+  case duration
+  case outcome
+  case rework
+  case blockers
+  case improvement
+
+  var id: Self { self }
+
+  var title: String {
+    switch self {
+    case .forecast: "Forecast and context"
+    case .duration: "Cycle time"
+    case .outcome: "Delivered outcomes"
+    case .rework: "Correction cycles"
+    case .blockers: "Delivery blockers"
+    case .improvement: "Adopted improvements"
+    }
+  }
+
+  func value(in datum: SprintReportDatum) -> String {
+    switch self {
+    case .forecast:
+      let planned =
+        datum.plannedTokens > 0
+        ? "\(datum.plannedTokens.formatted()) planned"
+        : "Not estimated"
+      let reported =
+        datum.reportedContextTokens.map {
+          "\($0.formatted()) context"
+        } ?? "No context reported"
+      return "\(planned) · \(reported)"
+    case .duration:
+      return datum.cycleTime.map(RunDurationFormatter.duration) ?? "Unavailable"
+    case .outcome:
+      return datum.outcomes.formatted()
+    case .rework:
+      return datum.reviewCorrections.formatted()
+    case .blockers:
+      return datum.blockers.formatted()
+    case .improvement:
+      return datum.acceptedImprovements.formatted()
+    }
   }
 }
 
@@ -740,25 +835,15 @@ private struct SprintReportSelectionSummary: View {
         alignment: .leading,
         spacing: 10
       ) {
-        ReportSelectionValue(
-          title: "Cycle time",
-          value: sprint.cycleTime.map(RunDurationFormatter.duration) ?? "Unavailable"
-        )
+        ForEach(SprintReportEvidenceMetric.allCases) { metric in
+          ReportSelectionValue(
+            title: metric.title,
+            value: metric.value(in: sprint)
+          )
+        }
         ReportSelectionValue(
           title: "Agent time per outcome",
           value: sprint.agentTimePerOutcome.map(RunDurationFormatter.duration) ?? "Unavailable"
-        )
-        ReportSelectionValue(
-          title: "Delivered outcomes",
-          value: sprint.outcomes.formatted()
-        )
-        ReportSelectionValue(
-          title: "Correction cycles",
-          value: sprint.reviewCorrections.formatted()
-        )
-        ReportSelectionValue(
-          title: "Interrupted runs",
-          value: sprint.interruptedRuns.formatted()
         )
       }
     }

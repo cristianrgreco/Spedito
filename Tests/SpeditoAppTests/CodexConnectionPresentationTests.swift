@@ -75,4 +75,48 @@ struct CodexConnectionPresentationTests {
       ) == "Reset reached · usage may be out of date"
     )
   }
+
+  @Test("[S07] Usage windows keep separate limits and expose refresh transitions")
+  func s07UsageWindowsAndRefreshTransitions() throws {
+    let now = Date(timeIntervalSince1970: 1_780_000_000)
+    let snapshot = CodexRateLimitsSnapshot(
+      windows: [
+        CodexRateLimitWindow(
+          id: "five-hour",
+          usedPercent: 100,
+          windowDurationMinutes: 300,
+          resetsAt: now.addingTimeInterval(600)
+        ),
+        CodexRateLimitWindow(
+          id: "weekly",
+          usedPercent: 40,
+          windowDurationMinutes: 10_080,
+          resetsAt: now.addingTimeInterval(3_600)
+        ),
+      ],
+      reachedLimitType: "five-hour"
+    )
+
+    #expect(
+      CodexUsagePresentation.accessibilitySummary(
+        for: snapshot,
+        isRefreshing: true
+      )
+        == "5-hour window, 0 percent available; 7-day window, 60 percent available; limit reached; refreshing"
+    )
+    #expect(
+      CodexUsagePresentation.accessibilitySummary(
+        for: snapshot,
+        isStale: true
+      )?.hasSuffix("usage may be out of date") == true
+    )
+    #expect(
+      CodexUsagePresentation.resetDetail(
+        resetAt: try #require(snapshot.windows.first?.resetsAt),
+        now: now,
+        isRefreshing: false
+      ).contains("in 10m")
+    )
+    #expect(Set(snapshot.windows.map(\.id)) == ["five-hour", "weekly"])
+  }
 }

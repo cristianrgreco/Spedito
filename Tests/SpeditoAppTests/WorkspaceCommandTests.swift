@@ -55,4 +55,29 @@ struct WorkspaceCommandTests {
       ]
     )
   }
+
+  @Test("[A08] Go menu commands resolve every destination and settings surface")
+  func a08GoMenuResolvesEveryWorkspaceCommand() {
+    #expect(
+      WorkspaceCommand.allCases.map(\.resolution) == [
+        .destination(.backlog),
+        .destination(.sprint),
+        .destination(.app),
+        .destination(.retrospectives),
+        .destination(.reports),
+        .destination(.knowledge),
+        .destination(.codebase),
+        .destination(.conversation),
+        .productSettings,
+        .teamSettings,
+      ]
+    )
+    #expect(
+      Set(
+        WorkspaceCommand.allCases.map {
+          "\($0.shortcut.key)-\($0.shortcut.modifiers.rawValue)"
+        }
+      ).count == WorkspaceCommand.allCases.count
+    )
+  }
 }

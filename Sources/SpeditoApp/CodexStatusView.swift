@@ -18,11 +18,24 @@ struct CodexUsagePresentation {
     return "\(minutes)-minute window"
   }
 
-  static func accessibilitySummary(for snapshot: CodexRateLimitsSnapshot) -> String? {
+  static func accessibilitySummary(
+    for snapshot: CodexRateLimitsSnapshot,
+    isRefreshing: Bool = false,
+    isStale: Bool = false
+  ) -> String? {
     guard !snapshot.windows.isEmpty else { return nil }
-    return snapshot.windows.map {
+    var parts = snapshot.windows.map {
       "\(windowTitle(minutes: $0.windowDurationMinutes)), \(availablePercentage(for: $0)) percent available"
-    }.joined(separator: "; ")
+    }
+    if snapshot.reachedLimitType != nil {
+      parts.append("limit reached")
+    }
+    if isRefreshing {
+      parts.append("refreshing")
+    } else if isStale {
+      parts.append("usage may be out of date")
+    }
+    return parts.joined(separator: "; ")
   }
 
   static func resetDetail(
@@ -294,8 +307,13 @@ struct SidebarCodexStatus: View {
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("Codex usage")
     .accessibilityValue(
-      model.codexRateLimits.flatMap(CodexUsagePresentation.accessibilitySummary(for:))
-        ?? (model.isRefreshingCodexUsage ? "Loading" : "Unavailable")
+      model.codexRateLimits.flatMap {
+        CodexUsagePresentation.accessibilitySummary(
+          for: $0,
+          isRefreshing: model.isRefreshingCodexUsage,
+          isStale: model.isCodexUsageStale
+        )
+      } ?? (model.isRefreshingCodexUsage ? "Loading" : "Unavailable")
     )
     .onHover { hovering in
       showingUsagePopover = hovering

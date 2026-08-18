@@ -147,6 +147,89 @@ struct SprintTicketRunTelemetryPresentationTests {
     #expect(presentation.technicalEvidence == "primary")
   }
 
+  @Test("[D23] Board lanes, activity, and run health share one presentation snapshot")
+  func d23BoardSnapshotPresentation() {
+    #expect(
+      SprintLane.board.map(\.title)
+        == ["Ready to pick", "In progress", "In review", "Ready for demo", "Done"]
+    )
+    #expect(
+      SprintLane.board.map(\.states) == [
+        [.queued],
+        [.running],
+        [.integrating, .verifying, .readyToRelease],
+        [.acceptance],
+        [.released],
+      ]
+    )
+
+    let workingRun = run(
+      status: .running,
+      contextUsedTokens: 129_200,
+      contextWindowTokens: 258_400,
+      compactionCount: 2
+    )
+    #expect(activityTitle(run: workingRun, itemState: .running) == "Working")
+    #expect(
+      activityTitle(
+        run: run(
+          status: .queued,
+          executionConstraint: AgentRunExecutionConstraint(
+            kind: .accountRateLimit,
+            observedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            retryAt: nil,
+            technicalEvidence: nil
+          )
+        ),
+        itemState: .queued
+      ) == "Waiting for Codex capacity"
+    )
+    #expect(
+      activityTitle(
+        run: nil,
+        itemState: .queued,
+        isDependencyBlocked: true
+      ) == "Blocked"
+    )
+    #expect(
+      activityTitle(
+        run: workingRun,
+        itemState: .verifying,
+        candidateStatus: .reviewing
+      ) == "Reviewing"
+    )
+    #expect(
+      activityTitle(
+        run: run(status: .awaitingOwner),
+        itemState: .running
+      ) == "Needs your input"
+    )
+
+    let telemetry = SprintTicketRunTelemetryPresentation(
+      run: workingRun,
+      hasLiveActivity: true
+    )
+    #expect(telemetry.contextPercentage == 50)
+    #expect(telemetry.compactionCount == 2)
+    #expect(telemetry.showsLiveActivity)
+  }
+
+  private func activityTitle(
+    run: AgentRun?,
+    itemState: WorkItemState,
+    candidateStatus: CandidateRevisionStatus? = nil,
+    isDependencyBlocked: Bool = false
+  ) -> String {
+    SprintTicketActivityPresentation.resolve(
+      run: run,
+      itemState: itemState,
+      candidateStatus: candidateStatus,
+      isDependencyBlocked: isDependencyBlocked,
+      isAcceptanceInProgress: false,
+      planningIssue: nil
+    ).title
+  }
+
   private func run(
     status: AgentRunStatus,
     contextUsedTokens: Int? = nil,

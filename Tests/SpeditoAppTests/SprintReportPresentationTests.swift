@@ -1,4 +1,5 @@
 import Foundation
+import SpeditoCore
 import Testing
 
 @testable import SpeditoApp
@@ -130,6 +131,172 @@ struct SprintReportPresentationTests {
     )
   }
 
+  @Test("[I09] Reports admit only completed sprint evidence and preserve range selection")
+  func i09ReportsExcludeIncompleteWork() {
+    let productID = UUID()
+    let active = SprintPlan(
+      sprint: Sprint(
+        productID: productID,
+        number: 1,
+        goal: "Still delivering",
+        state: .active,
+        startedAt: Date(timeIntervalSince1970: 100)
+      ),
+      items: []
+    )
+    let completed = SprintPlan(
+      sprint: Sprint(
+        productID: productID,
+        number: 2,
+        goal: "Accepted outcome",
+        state: .completed,
+        startedAt: Date(timeIntervalSince1970: 200),
+        completedAt: Date(timeIntervalSince1970: 500)
+      ),
+      items: []
+    )
+
+    #expect(
+      SprintReportEvidence.completedData(
+        plans: [],
+        candidates: [],
+        runs: [],
+        retrospectiveNotes: []
+      ).isEmpty
+    )
+    let data = SprintReportEvidence.completedData(
+      plans: [active, completed],
+      candidates: [],
+      runs: [],
+      retrospectiveNotes: []
+    )
+    #expect(data.map(\.sprintNumber) == [2])
+    #expect(data.first?.cycleTime == 300)
+    #expect(SprintReportPresentation.visibleData(data, range: .all) == data)
+  }
+
+  @Test("[I10] Every report metric is derived from the same completed sprint evidence")
+  func i10ReportMetricsShareCompletedSprintEvidence() throws {
+    let productID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let workItemID = UUID()
+    let profileID = UUID()
+    let plan = SprintPlan(
+      sprint: Sprint(
+        id: sprintID,
+        productID: productID,
+        number: 7,
+        goal: "Measure accepted delivery",
+        state: .completed,
+        startedAt: Date(timeIntervalSince1970: 1_000),
+        completedAt: Date(timeIntervalSince1970: 1_600)
+      ),
+      items: [
+        SprintItem(
+          id: sprintItemID,
+          sprintID: sprintID,
+          workItemID: workItemID,
+          estimatedTokens: 40_000
+        )
+      ]
+    )
+    let runID = UUID()
+    let candidates = [
+      CandidateRevision(
+        productID: productID,
+        sprintID: sprintID,
+        sprintItemID: sprintItemID,
+        workItemID: workItemID,
+        implementationRunID: runID,
+        version: 3,
+        branchName: "ticket/T7",
+        baseSHA: "base",
+        headSHA: "head",
+        worktreePath: "/tmp/ticket-T7",
+        status: .accepted,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    ]
+    let runs = [
+      AgentRun(
+        id: runID,
+        productID: productID,
+        sprintID: sprintID,
+        sprintItemID: sprintItemID,
+        workItemID: workItemID,
+        profileID: profileID,
+        status: .completed,
+        contextUsedTokens: 24_000,
+        activeDurationSeconds: 120
+      ),
+      AgentRun(
+        productID: productID,
+        sprintID: sprintID,
+        sprintItemID: sprintItemID,
+        workItemID: workItemID,
+        profileID: profileID,
+        status: .failed,
+        activeDurationSeconds: 30
+      ),
+    ]
+    let notes = [
+      RetrospectiveNote(
+        productID: productID,
+        sprintID: sprintID,
+        authorName: "Product owner",
+        category: .suggestedAction,
+        body: "Keep the smaller review batches.",
+        isActionCandidate: true,
+        actionStatus: .accepted,
+        actionDestination: .teamPractice
+      ),
+      RetrospectiveNote(
+        productID: productID,
+        sprintID: sprintID,
+        authorName: "Product owner",
+        category: .suggestedAction,
+        body: "Do not adopt this.",
+        isActionCandidate: true,
+        actionStatus: .dismissed,
+        actionDestination: .backlog
+      ),
+    ]
+
+    let datum = try #require(
+      SprintReportEvidence.completedData(
+        plans: [plan],
+        candidates: candidates,
+        runs: runs,
+        retrospectiveNotes: notes
+      ).first
+    )
+    #expect(datum.plannedTokens == 40_000)
+    #expect(datum.reportedContextTokens == 24_000)
+    #expect(datum.cycleTime == 600)
+    #expect(datum.activeAgentTime == 150)
+    #expect(datum.outcomes == 1)
+    #expect(datum.reviewCorrections == 2)
+    #expect(datum.blockers == 1)
+    #expect(datum.acceptedImprovements == 1)
+    #expect(
+      SprintReportEvidenceMetric.allCases.map(\.title) == [
+        "Forecast and context",
+        "Cycle time",
+        "Delivered outcomes",
+        "Correction cycles",
+        "Delivery blockers",
+        "Adopted improvements",
+      ]
+    )
+    #expect(
+      SprintReportEvidenceMetric.allCases.allSatisfy {
+        !$0.value(in: datum).isEmpty
+      }
+    )
+  }
+
   private func datum(
     sprintNumber: Int,
     cycleTime: TimeInterval? = 60,
@@ -138,11 +305,15 @@ struct SprintReportPresentationTests {
   ) -> SprintReportDatum {
     SprintReportDatum(
       sprintNumber: sprintNumber,
+      plannedTokens: 0,
+      reportedContextTokens: nil,
       cycleTime: cycleTime,
       activeAgentTime: activeAgentTime,
       outcomes: outcomes,
       reviewCorrections: 0,
-      interruptedRuns: 0
+      interruptedRuns: 0,
+      blockers: 0,
+      acceptedImprovements: 0
     )
   }
 }

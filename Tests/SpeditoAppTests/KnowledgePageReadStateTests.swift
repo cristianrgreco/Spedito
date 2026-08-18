@@ -268,6 +268,73 @@ struct KnowledgePageReadStateTests {
     )
   }
 
+  @Test("[K02] Knowledge navigation preserves a valid page across every navigation path")
+  func k02KnowledgeNavigationPreservesValidSelection() throws {
+    let productID = UUID()
+    let home = KnowledgePage(
+      productID: productID,
+      title: "Home",
+      slug: "home",
+      kind: .section,
+      sortOrder: 0
+    )
+    let runbook = KnowledgePage(
+      productID: productID,
+      parentID: home.id,
+      title: "Runbook",
+      slug: "runbook",
+      bodyMarkdown: "Use the release checklist.",
+      sortOrder: 2
+    )
+    let decision = KnowledgePage(
+      productID: productID,
+      parentID: home.id,
+      title: "Release decision",
+      slug: "release-decision",
+      bodyMarkdown: "See [[Runbook]] before release.",
+      sortOrder: 1
+    )
+    let pages = [runbook, home, decision]
+
+    #expect(
+      KnowledgePageNavigation.search(pages, query: "release").map(\.id)
+        == [decision.id, runbook.id]
+    )
+    #expect(
+      KnowledgePageNavigation.children(of: home.id, in: pages).map(\.id)
+        == [decision.id, runbook.id]
+    )
+    #expect(
+      KnowledgePageNavigation.breadcrumbs(for: runbook, in: pages).map(\.id)
+        == [home.id, runbook.id]
+    )
+    #expect(
+      KnowledgePageNavigation.backlinks(to: runbook, in: pages).map(\.id)
+        == [decision.id]
+    )
+    #expect(
+      KnowledgePageNavigation.resolvedSelection(
+        requestedID: UUID(),
+        currentID: runbook.id,
+        pages: pages
+      ) == runbook.id
+    )
+    #expect(
+      KnowledgePageNavigation.resolvedSelection(
+        requestedID: decision.id,
+        currentID: runbook.id,
+        pages: pages
+      ) == decision.id
+    )
+    #expect(
+      KnowledgePageNavigation.resolvedSelection(
+        requestedID: nil,
+        currentID: UUID(),
+        pages: pages
+      ) == home.id
+    )
+  }
+
   private func knowledgeProposal(
     productID: UUID,
     workItemID: UUID,

@@ -1,6 +1,69 @@
 import SpeditoCore
 import SwiftUI
 
+enum KnowledgePageNavigation {
+  static func sorted(_ pages: [KnowledgePage]) -> [KnowledgePage] {
+    pages.sorted {
+      $0.sortOrder == $1.sortOrder ? $0.title < $1.title : $0.sortOrder < $1.sortOrder
+    }
+  }
+
+  static func search(_ pages: [KnowledgePage], query: String) -> [KnowledgePage] {
+    let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return [] }
+    return sorted(
+      pages.filter {
+        $0.title.localizedCaseInsensitiveContains(query)
+          || $0.bodyMarkdown.localizedCaseInsensitiveContains(query)
+      }
+    )
+  }
+
+  static func children(of parentID: UUID, in pages: [KnowledgePage]) -> [KnowledgePage] {
+    sorted(pages.filter { $0.parentID == parentID })
+  }
+
+  static func breadcrumbs(for page: KnowledgePage, in pages: [KnowledgePage]) -> [KnowledgePage] {
+    var result = [page]
+    var visited = Set([page.id])
+    var parentID = page.parentID
+    while let id = parentID,
+      visited.insert(id).inserted,
+      let parent = pages.first(where: { $0.id == id })
+    {
+      result.insert(parent, at: 0)
+      parentID = parent.parentID
+    }
+    return result
+  }
+
+  static func backlinks(to page: KnowledgePage, in pages: [KnowledgePage]) -> [KnowledgePage] {
+    sorted(
+      pages.filter {
+        $0.id != page.id
+          && ($0.bodyMarkdown.localizedCaseInsensitiveContains("[[\(page.title)]]")
+            || $0.bodyMarkdown.localizedCaseInsensitiveContains(page.slug))
+      }
+    )
+  }
+
+  static func resolvedSelection(
+    requestedID: UUID?,
+    currentID: UUID?,
+    pages: [KnowledgePage]
+  ) -> UUID? {
+    let pageIDs = Set(pages.map(\.id))
+    if let requestedID, pageIDs.contains(requestedID) {
+      return requestedID
+    }
+    if let currentID, pageIDs.contains(currentID) {
+      return currentID
+    }
+    return pages.first(where: { $0.slug == "home" })?.id
+      ?? sorted(pages).first?.id
+  }
+}
+
 struct KnowledgeBaseView: View {
   @EnvironmentObject private var model: AppModel
   @State private var selectedPageID: UUID?
@@ -144,16 +207,11 @@ struct KnowledgeBaseView: View {
   }
 
   private var rootPages: [KnowledgePage] {
-    sorted(model.knowledgePages.filter { $0.parentID == nil })
+    KnowledgePageNavigation.sorted(model.knowledgePages.filter { $0.parentID == nil })
   }
 
   private var filteredPages: [KnowledgePage] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !query.isEmpty else { return [] }
-    return model.knowledgePages.filter {
-      $0.title.lowercased().contains(query)
-        || $0.bodyMarkdown.lowercased().contains(query)
-    }
+    KnowledgePageNavigation.search(model.knowledgePages, query: searchText)
   }
 
   private var changedPageIDs: Set<UUID> {
@@ -446,24 +504,12 @@ struct KnowledgeBaseView: View {
       .foregroundStyle(.secondary)
   }
 
-  private func sorted(_ pages: [KnowledgePage]) -> [KnowledgePage] {
-    pages.sorted {
-      $0.sortOrder == $1.sortOrder ? $0.title < $1.title : $0.sortOrder < $1.sortOrder
-    }
-  }
-
   private func childPages(of parentID: UUID) -> [KnowledgePage] {
-    sorted(model.knowledgePages.filter { $0.parentID == parentID })
+    KnowledgePageNavigation.children(of: parentID, in: model.knowledgePages)
   }
 
   private func breadcrumbs(for page: KnowledgePage) -> [KnowledgePage] {
-    var result = [page]
-    var parentID = page.parentID
-    while let id = parentID, let parent = model.knowledgePages.first(where: { $0.id == id }) {
-      result.insert(parent, at: 0)
-      parentID = parent.parentID
-    }
-    return result
+    KnowledgePageNavigation.breadcrumbs(for: page, in: model.knowledgePages)
   }
 
   private func tableOfContents(_ source: String) -> [String] {
@@ -475,28 +521,18 @@ struct KnowledgeBaseView: View {
   }
 
   private func backlinks(to page: KnowledgePage) -> [KnowledgePage] {
-    model.knowledgePages.filter {
-      $0.id != page.id
-        && ($0.bodyMarkdown.localizedCaseInsensitiveContains("[[\(page.title)]]")
-          || $0.bodyMarkdown.localizedCaseInsensitiveContains(page.slug))
-    }
+    KnowledgePageNavigation.backlinks(to: page, in: model.knowledgePages)
   }
 
   private func selectRequestedOrInitialPage() {
-    if let requestedPageID = model.knowledgeFocusPageID,
-      model.knowledgePages.contains(where: { $0.id == requestedPageID })
-    {
-      selectedPageID = requestedPageID
+    let requestedPageID = model.knowledgeFocusPageID
+    selectedPageID = KnowledgePageNavigation.resolvedSelection(
+      requestedID: requestedPageID,
+      currentID: selectedPageID,
+      pages: model.knowledgePages
+    )
+    if let requestedPageID, selectedPageID == requestedPageID {
       model.consumeKnowledgeFocus(pageID: requestedPageID)
-      loadSelectedPage()
-      return
-    }
-    if selectedPageID == nil
-      || !model.knowledgePages.contains(where: { $0.id == selectedPageID })
-    {
-      selectedPageID =
-        model.knowledgePages.first(where: { $0.slug == "home" })?.id
-        ?? model.knowledgePages.first?.id
     }
     loadSelectedPage()
   }
@@ -763,9 +799,7 @@ private struct KnowledgeTreeBranch: View {
   @State private var isExpanded = true
 
   private var children: [KnowledgePage] {
-    pages.filter { $0.parentID == page.id }.sorted {
-      $0.sortOrder == $1.sortOrder ? $0.title < $1.title : $0.sortOrder < $1.sortOrder
-    }
+    KnowledgePageNavigation.children(of: page.id, in: pages)
   }
 
   private var containsChangedPage: Bool {

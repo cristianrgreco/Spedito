@@ -520,23 +520,9 @@ struct TeamSidebar: View {
   }
 
   private func performWorkspaceCommand(_ command: WorkspaceCommand) {
-    switch command {
-    case .backlog:
-      selection = .backlog
-    case .sprintBoard:
-      selection = .sprint
-    case .app:
-      selection = .app
-    case .retrospectives:
-      selection = .retrospectives
-    case .reports:
-      selection = .reports
-    case .productKnowledge:
-      selection = .knowledge
-    case .codebase:
-      selection = .codebase
-    case .chat:
-      selection = .conversation
+    switch command.resolution {
+    case .destination(let destination):
+      selection = destination
     case .productSettings:
       showingTeamPrompts = false
       showingProductContext = true

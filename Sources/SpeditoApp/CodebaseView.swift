@@ -397,11 +397,10 @@ struct CodebaseView: View {
     do {
       let detail = try await model.codebaseCommitDetail(sha: requestedSHA)
       guard selectedCommitSHA == requestedSHA else { return }
-      if let selectedFilePath,
-        !detail.files.contains(where: { $0.path == selectedFilePath })
-      {
-        self.selectedFilePath = nil
-      }
+      selectedFilePath = CodebaseFileSelection.resolved(
+        currentPath: selectedFilePath,
+        files: detail.files
+      )
       selectedCommitDetail = detail
     } catch {
       guard selectedCommitSHA == requestedSHA else { return }
@@ -428,11 +427,10 @@ struct CodebaseView: View {
     do {
       let detail = try await model.codebaseBranchDetail(branch: branch)
       guard selectedBranchName == requestedBranchName else { return }
-      if let selectedFilePath,
-        !detail.files.contains(where: { $0.path == selectedFilePath })
-      {
-        self.selectedFilePath = nil
-      }
+      selectedFilePath = CodebaseFileSelection.resolved(
+        currentPath: selectedFilePath,
+        files: detail.files
+      )
       selectedBranchDetail = detail
     } catch {
       guard selectedBranchName == requestedBranchName else { return }
@@ -1434,6 +1432,18 @@ private struct CodebaseBranchDetailView: View {
   }
 }
 
+enum CodebaseFileSelection {
+  static func resolved(currentPath: String?, files: [GitChangedFile]) -> String? {
+    guard
+      let currentPath,
+      files.contains(where: { $0.path == currentPath })
+    else {
+      return nil
+    }
+    return currentPath
+  }
+}
+
 enum CodebaseDiffLayout: String, CaseIterable, Identifiable {
   case automatic
   case unified
@@ -1447,6 +1457,11 @@ enum CodebaseDiffLayout: String, CaseIterable, Identifiable {
     case .unified: "Unified"
     case .split: "Side by side"
     }
+  }
+
+  func resolved(for availableWidth: CGFloat) -> CodebaseDiffLayout {
+    guard self == .automatic else { return self }
+    return availableWidth >= 900 ? .split : .unified
   }
 }
 
@@ -1510,10 +1525,7 @@ private struct CodebaseDiffViewer: View {
         Divider()
 
         GeometryReader { geometry in
-          let effectiveLayout: CodebaseDiffLayout =
-            layout == .automatic
-            ? (geometry.size.width >= 900 ? .split : .unified)
-            : layout
+          let effectiveLayout = layout.resolved(for: geometry.size.width)
           if effectiveLayout == .split {
             splitDiff(
               minimumWidth: geometry.size.width,

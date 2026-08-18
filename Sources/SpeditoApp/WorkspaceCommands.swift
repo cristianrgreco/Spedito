@@ -17,6 +17,12 @@ enum WorkspaceCommand: CaseIterable, Hashable {
     let modifiers: EventModifiers
   }
 
+  enum Resolution: Equatable {
+    case destination(WorkspaceDestination)
+    case productSettings
+    case teamSettings
+  }
+
   static let navigation: [WorkspaceCommand] = [
     .backlog,
     .sprintBoard,
@@ -32,6 +38,21 @@ enum WorkspaceCommand: CaseIterable, Hashable {
     .productSettings,
     .teamSettings,
   ]
+
+  var resolution: Resolution {
+    switch self {
+    case .backlog: .destination(.backlog)
+    case .sprintBoard: .destination(.sprint)
+    case .app: .destination(.app)
+    case .retrospectives: .destination(.retrospectives)
+    case .reports: .destination(.reports)
+    case .productKnowledge: .destination(.knowledge)
+    case .codebase: .destination(.codebase)
+    case .chat: .destination(.conversation)
+    case .productSettings: .productSettings
+    case .teamSettings: .teamSettings
+    }
+  }
 
   var title: String {
     switch self {

@@ -433,6 +433,27 @@ Product owner accepts that feature packet.
 | Codex installation selected | Choose an official, included, or custom installation | Custom catalog and selected identifier in local preferences | Selected runtime and connected, incompatible, or unavailable state | Add, select, remove, or retry when no work is active | Retry re-resolves the selected executable; removing it selects the next discovered runtime or none |
 | Readiness profile unavailable | Open the specified S08 journey | No profile authority exists | No implemented editor | Accept a separate product feature packet | Remains an explicit specification gap rather than false executable coverage |
 
+### 3.12 Priority 2 work packet 5 — Convenience and presentation
+
+This slice closes A08, E15, D23, K02, V02, V03, I09, I10, and S07 through
+bounded policy and presentation proofs. It adds no launched-process contract:
+all nine inventory rows remain `Shell = —`, and no shell-wiring defect was
+needed to exercise their owner-visible projections. Existing Epic rank and
+disclosure tests remain the durable proof for E15 rather than receiving a
+duplicate wrapper.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| A08 | `WorkspaceCommandTests.a08GoMenuResolvesEveryWorkspaceCommand`, `.destinationShortcuts`, `.settingsShortcuts`, `.menuLabels` | **Named:** every Go menu command resolves to the exact workspace destination or settings surface, with unique stable shortcuts and owner-facing labels. |
+| E15 | `SQLiteStoreTests.e14ArchivingEpicDisposesTicketsAndProposals`, `EpicPlanningPresentationTests.closedDisclosurePersistsPerProduct` | **Composed:** the existing durable Epic test moves an Epic to the exact requested rank and persists the resulting order; the existing presentation test keeps completed-Epic disclosure collapsed by default and independently persisted for each Product. A new wrapper would duplicate those two direct boundaries. |
+| D23 | `SprintTicketRunTelemetryPresentationTests.d23BoardSnapshotPresentation`, `.completedRunRetainsContextFooter`, `.contextDonutCompactionCount` | **Named:** the five board lanes, working/waiting/blocked/reviewing/owner-input activity, context percentage, compaction count, and live-activity visibility resolve through the same run and activity presentation policies used by the board. |
+| K02 | `KnowledgePageReadStateTests.k02KnowledgeNavigationPreservesValidSelection` | **Named:** search, sorted tree children, breadcrumbs, backlinks, requested focus, valid current selection, and Home fallback share one navigation policy and never discard a still-valid page. |
+| V02 | `CodebaseCommitOriginTests.historyScopes`, `.semanticCommitPresentation`, `.truncatedIntegrationHistory` | **Composed:** pre-existing presentation tests distinguish trunk, one Ticket stream, and all activity, retain exact commit membership, and assign semantic delivery labels without leaking unrelated Git topology. A row-named wrapper would duplicate that proof. |
+| V03 | `CodebaseDiffLayoutPreferenceTests.v03FileSelectionAndDiffLayoutResolution`, `.classifiesUnifiedDiffLines` | **Named:** valid changed-file selection survives detail refresh, removed files clear safely, Auto selects unified below 900 points and side-by-side at or above it, explicit choices remain stable, and the persisted preference and unified line semantics are deterministic. |
+| I09 | `SprintReportPresentationTests.i09ReportsExcludeIncompleteWork`, `.latestRange`, `.persistentSelection` | **Named:** empty evidence remains empty, active Sprint work is excluded, only completed Sprint evidence is admitted, and All/latest range and selected-Sprint policies retain the intended accepted history. |
+| I10 | `SprintReportPresentationTests.i10ReportMetricsShareCompletedSprintEvidence`, `.chartTabs`, `.durationScale`, `.countAxisLabels` | **Named:** forecast/context, cycle duration, accepted outcomes, correction rework, delivery blockers, and adopted improvements are projected from one completed-Sprint datum, with deterministic chart tabs and duration/count scales. |
+| S07 | `CodexConnectionPresentationTests.s07UsageWindowsAndRefreshTransitions`, `.dynamicUsageAccessibility`, `.resetDetails` | **Named:** independent usage windows keep their own duration, availability, and reset; limit-reached, refreshing, stale, and accessible summary states remain explicit instead of being conflated. |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |
@@ -861,17 +882,18 @@ Implement P0 journeys feature by feature, in this order:
 
 For each feature, write the state table first and cover every durable intermediate state with interruption and fresh-instance recovery. Apply the binding launched-process rule in `AGENTS.md` and record the row's resulting `Shell` designation here.
 
-### Work packet 4 — P1 primary owner journeys (in progress)
+### Work packet 4 — P1 primary owner journeys (completed with one product gap)
 
-The Backlog and editable Ticket slice B01, B04, B06, B07, B08, B10, and B11 is
-complete in section 3.2. The Sprint planning slice P01, P02, P04, P06, and P07
-is complete in section 3.3. Continue with Chat, Knowledge, Codebase navigation,
-App versions, and Retrospectives as separate coherent packets. Reuse
-presentation-policy tests for branches that do not need full coordinator state.
+All executable Priority 1 slices are recorded in sections 3.2–3.11. S08 remains
+the one explicit product gap: it cannot receive journey coverage until an
+accepted product packet introduces the specified editable readiness profile
+and single readiness authority. No false test substitutes for that feature.
 
-### Work packet 5 — P2 convenience and presentation journeys
+### Work packet 5 — P2 convenience and presentation journeys (completed)
 
-Cover shortcuts, filters, display preferences, report variants, counts, and secondary navigation with policy/presentation tests. Apply the binding launched-process rule in `AGENTS.md`.
+Section 3.12 records the nine policy and presentation rows. None needed a
+launched-process contract because every row remains `Shell = —` and no
+shell-wiring defect was found.
 
 ### Work packet 6 — CI and maintenance ratchet
 

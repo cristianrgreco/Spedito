@@ -1,4 +1,5 @@
 import Foundation
+import SpeditoCore
 import Testing
 
 @testable import SpeditoApp
@@ -40,6 +41,35 @@ struct CodebaseDiffLayoutPreferenceTests {
     #expect(UnifiedDiffLinePresentation(line: "+++ b/File.swift") == .metadata)
     #expect(UnifiedDiffLinePresentation(line: "--- a/File.swift") == .metadata)
     #expect(UnifiedDiffLinePresentation(line: " unchanged") == .context)
+  }
+
+  @Test("[V03] File selection and diff layout resolve from one bounded presentation policy")
+  func v03FileSelectionAndDiffLayoutResolution() throws {
+    let files = [
+      GitChangedFile(status: "M", path: "Sources/Feature.swift"),
+      GitChangedFile(status: "A", path: "Tests/FeatureTests.swift"),
+    ]
+    #expect(
+      CodebaseFileSelection.resolved(
+        currentPath: "Sources/Feature.swift",
+        files: files
+      ) == "Sources/Feature.swift"
+    )
+    #expect(
+      CodebaseFileSelection.resolved(
+        currentPath: "Removed.swift",
+        files: files
+      ) == nil
+    )
+    #expect(CodebaseDiffLayout.automatic.resolved(for: 899) == .unified)
+    #expect(CodebaseDiffLayout.automatic.resolved(for: 900) == .split)
+    #expect(CodebaseDiffLayout.unified.resolved(for: 1_400) == .unified)
+    #expect(CodebaseDiffLayout.split.resolved(for: 500) == .split)
+
+    try withDefaults { defaults in
+      CodebaseDiffLayoutPreference.save(.split, defaults: defaults)
+      #expect(CodebaseDiffLayoutPreference.load(defaults: defaults) == .split)
+    }
   }
 
   private func withDefaults(
