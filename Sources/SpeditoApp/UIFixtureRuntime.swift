@@ -406,7 +406,7 @@
         )
         let createdItem = try await store.createWorkItem(
           productID: product.id,
-          title: "P05 missing estimate",
+          title: "P05 blocked by an unscoped prerequisite",
           acceptanceCriteria: ["The invalid plan remains blocked."],
           dependsOnWorkItemIDs: Set([blocker.id])
         )

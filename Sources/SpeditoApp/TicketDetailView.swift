@@ -408,8 +408,15 @@ struct TicketDetailView: View {
               }
 
               VStack(alignment: .leading, spacing: 7) {
-                Text("Assignee")
-                  .font(.subheadline.weight(.semibold))
+                HStack(spacing: 7) {
+                  Text("Assignee")
+                    .font(.subheadline.weight(.semibold))
+                  if assigneeID == nil {
+                    Label("Required", systemImage: "exclamationmark.circle.fill")
+                      .font(.caption.weight(.semibold))
+                      .foregroundStyle(.orange)
+                  }
+                }
                 Picker("Assignee", selection: $editorState.assigneeID) {
                   Text("Choose assignee")
                     .tag(nil as UUID?)

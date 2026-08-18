@@ -346,7 +346,7 @@ struct BacklogView: View {
       let plan = model.candidateSprintPlan,
       !plan.items.isEmpty
     else { return false }
-    return plan.items.allSatisfy { $0.estimatedTokens > 0 }
+    return model.sprintReadinessIssues.isEmpty
   }
 
   var body: some View {

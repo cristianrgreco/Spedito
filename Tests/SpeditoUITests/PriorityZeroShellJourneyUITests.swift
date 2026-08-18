@@ -314,7 +314,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   }
 
   /// Existing deterministic coverage:
-  /// - `SQLiteStoreTests.p05MissingEstimatesAndInvalidDependenciesBlockSprintStart`
+  /// - `SQLiteStoreTests.p05InvalidDependencyBlocksStart`
   /// - `SprintStartAvailabilityTests.activeSprintBlocksDraftStart`
   /// This launched-process test covers only P05's blocker projection in sprint planning.
   func testP05SprintPlanningShowsStartBlockers() throws {
@@ -326,11 +326,14 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     XCTAssertFalse(start.isEnabled)
     let issues = element(session.app, "sprint.readiness.issues")
     XCTAssertTrue(issues.waitForExistence(timeout: 5))
-    XCTAssertTrue(issues.label.contains("T2 needs an estimate before the sprint can start."))
     XCTAssertTrue(
       issues.label.contains(
         "T2 is blocked by T1, which is not in this sprint, the active sprint, or done."
       )
+    )
+    XCTAssertFalse(
+      issues.label.contains("needs an estimate"),
+      "P05 projected the Spedito-derived forecast as an owner-facing blocker."
     )
   }
 

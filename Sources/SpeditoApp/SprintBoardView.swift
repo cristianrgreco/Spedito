@@ -209,7 +209,7 @@ struct SprintBoardView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("sprint.start")
                 .disabled(
-                  !draftPlan.items.allSatisfy { $0.estimatedTokens > 0 }
+                  draftPlan.items.isEmpty
                     || !model.sprintReadinessIssues.isEmpty
                     || startAvailability.isBlocked
                 )
@@ -472,9 +472,7 @@ struct SprintBoardView: View {
   }
 
   private func isReadyToStart(_ plan: SprintPlan) -> Bool {
-    !plan.items.isEmpty
-      && plan.items.allSatisfy { $0.estimatedTokens > 0 }
-      && model.sprintReadinessIssues.isEmpty
+    !plan.items.isEmpty && model.sprintReadinessIssues.isEmpty
   }
 
   private func updateSprintState(
@@ -724,12 +722,8 @@ private struct SprintBanner: View {
   let onEdit: () -> Void
   let onStart: () -> Void
 
-  private var planningIsComplete: Bool {
-    !plan.items.isEmpty && plan.items.allSatisfy { $0.estimatedTokens > 0 }
-  }
-
   private var sprintIsReady: Bool {
-    planningIsComplete && model.sprintReadinessIssues.isEmpty
+    !plan.items.isEmpty && model.sprintReadinessIssues.isEmpty
   }
 
   private var startAvailability: SprintStartAvailability {
@@ -772,16 +766,7 @@ private struct SprintBanner: View {
 
       Spacer()
 
-      if !planningIsComplete {
-        VStack(alignment: .trailing, spacing: 3) {
-          Text("Sprint planning required")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.orange)
-          Text("Review the scope to create owners and forecasts")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-      } else if !model.sprintReadinessIssues.isEmpty {
+      if !model.sprintReadinessIssues.isEmpty {
         VStack(alignment: .trailing, spacing: 3) {
           Text("\(model.sprintReadinessIssues.count) readiness issue(s)")
             .font(.caption.weight(.semibold))
@@ -802,7 +787,10 @@ private struct SprintBanner: View {
             .lineLimit(1)
         }
       }
-      Button(planningIsComplete ? "Review plan" : "Plan sprint", action: onEdit)
+      Button(
+        model.sprintReadinessIssues.isEmpty ? "Review plan" : "Plan sprint",
+        action: onEdit
+      )
       Button("Start sprint") {
         Task {
           if await model.startSprint() {
@@ -811,11 +799,7 @@ private struct SprintBanner: View {
         }
       }
       .buttonStyle(.borderedProminent)
-      .disabled(
-        !planningIsComplete
-          || !model.sprintReadinessIssues.isEmpty
-          || startAvailability.isBlocked
-      )
+      .disabled(!sprintIsReady || startAvailability.isBlocked)
       .help(startAvailability.explanation ?? "Start the sprint")
     }
     .padding(14)
@@ -833,8 +817,8 @@ private struct SprintBanner: View {
   }
 
   private var planningSummary: String {
-    if !planningIsComplete {
-      return "\(plan.items.count) tickets scoped · planning has not been completed"
+    guard plan.estimatedTokens > 0 else {
+      return "\(plan.items.count) tickets scoped · dependency-led parallelism"
     }
     let tokens =
       plan.estimatedTokens >= 1_000
@@ -1817,16 +1801,13 @@ private struct WorkItemCard: View {
   }
 
   private var planningIssue: String? {
-    guard model.sprintPlan?.sprint.state == .draft, let sprintItem else {
+    guard model.sprintPlan?.sprint.state == .draft, sprintItem != nil else {
       return nil
     }
     if let issue = model.sprintReadinessIssues.first(where: {
       $0.workItemID == item.id
     }) {
       return issue.message
-    }
-    if sprintItem.estimatedTokens <= 0 {
-      return "\(item.key) still needs sprint planning."
     }
     return nil
   }
@@ -2591,10 +2572,8 @@ struct SprintTicketDetailView: View {
   }
 
   private var boardStatusTitle: String {
-    if model.sprintPlan?.sprint.state == .draft, let currentSprintItem {
-      if currentSprintItem.estimatedTokens <= 0
-        || model.sprintReadinessIssues.contains(where: { $0.workItemID == item.id })
-      {
+    if model.sprintPlan?.sprint.state == .draft, currentSprintItem != nil {
+      if model.sprintReadinessIssues.contains(where: { $0.workItemID == item.id }) {
         return "Needs planning"
       }
       return "Ready to pick"

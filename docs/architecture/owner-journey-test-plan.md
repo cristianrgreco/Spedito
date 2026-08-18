@@ -111,7 +111,7 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 | B05 | `TicketRefinementApplicationTests.b05StaleCompletionPreservesNewerDraft` | **Named:** an in-flight stale completion presents the version conflict and preserves the newer owner draft. |
 | B09 | `PlanningDropPolicyTests.b09PartialSprintScopeExplainsMissingRelationship` | **Named:** invalid partial scope names the exact missing prerequisite relationship in the owner-facing refusal. |
 | P03 | `SprintBoardSelectionTests.p03PartialPlanAndDiscardedPickerState` | **Named:** P03 saves an intentionally partial plan, proves unsaved picker state is not durable, discards to the saved assignment set, and reopens the same durable draft. |
-| P05 | `SQLiteStoreTests.p05MissingEstimateAndInvalidDependencyBlockStart`, `PriorityZeroShellJourneyUITests.testP05SprintPlanningShowsStartBlockers` | **Named:** the deterministic journey proves missing-estimate and invalid-dependency blockers; the launched-process contract proves the exact Sprint planning blocker projection. |
+| P05 | `SQLiteStoreTests.p05InvalidDependencyBlocksStart`, `.unestimatedTicketDoesNotBlockSprintStart`, `PriorityZeroShellJourneyUITests.testP05SprintPlanningShowsStartBlockers` | **Named:** the deterministic journey proves the invalid-dependency blocker and that a Spedito-derived forecast is never a blocker; the launched-process contract proves the exact Sprint planning blocker projection. |
 | D01 | `SQLiteStoreTests.sprintExecutionSnapshotIsScoped`, `.sprintStartIsDurableAndIdempotent` | **Composed:** the scoped execution snapshot and one durable idempotent start are directly covered. |
 | D02 | `WorkflowPolicyTests.dependencyAwareRunAdmission`, `.uncappedIndependentRunAdmission`, `TicketDeliveryRuntimeCoordinatorTests.duplicateSchedulingWakesExistingScheduler` | **Composed:** the independent first wave, prerequisite release, and identity-safe scheduler wake are covered at their owning boundaries. |
 | D03 | `TicketAttentionTests.d03ProductSwitchPreservesActiveQuestionRoute` | **Named:** Product switching leaves active delivery running and routes attention back to the exact ticket question. |
@@ -563,7 +563,7 @@ S08 describes a specification contract whose implementation must be confirmed be
 | P02 | P1 | Walk Ticket by Ticket, edit the draft, choose an assignee, ask one team member, and selectively apply a version-safe proposal. | J | — |
 | P03 | P0 | Save a partial plan to the draft board, or close with Discard changes and restore the last saved draft without leaking picker state into Backlog. | J | — |
 | P04 | P1 | Review dependency order, forecast, remaining usage, and owner acceptance load in the planning summary before saving. | P | — |
-| P05 | P0 | Block Start sprint for unassigned work, missing estimates, readiness failures, invalid dependencies, or another active/paused sprint, with the exact owner-facing reason. | J | Y |
+| P05 | P0 | Block Start sprint for unassigned work, readiness failures, invalid dependencies, or another active/paused sprint, with the exact owner-facing reason. Spedito derives the token forecast itself, so an unstamped forecast is never a blocker. | J | Y |
 | P06 | P1 | Save a plan and lazily generate one bounded goal; starting does not wait, stale generation cannot overwrite changed scope, and failure leaves delivery usable. | J+P | — |
 | P07 | P1 | Relaunch a saved draft plan and restore the valid selected planning/board context without resurrecting unsaved changes. | J | — |
 

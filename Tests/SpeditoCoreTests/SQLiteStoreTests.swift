@@ -1752,9 +1752,11 @@ struct SQLiteStoreTests {
   /// - `SprintStartAvailabilityTests.activeSprintBlocksDraftStart`
   /// - `SprintStartAvailabilityTests.pausedSprintBlocksDraftStart`
   /// - `SQLiteStoreTests.sprintReadinessBlocksStart`
-  /// This test covers only P05's combined missing-estimate and invalid-dependency blockers.
-  @Test("P05 missing estimates and invalid dependencies block sprint start")
-  func p05MissingEstimateAndInvalidDependencyBlockStart() async throws {
+  /// This test covers only P05's invalid-dependency blocker, and proves that an
+  /// unestimated Ticket is not itself a blocker: the forecast is produced by
+  /// Spedito, so the owner can never be asked to supply it.
+  @Test("P05 invalid dependencies block sprint start but missing estimates do not")
+  func p05InvalidDependencyBlocksStart() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
     let store = try SQLiteStore(url: fixture.databaseURL)
@@ -1800,20 +1802,53 @@ struct SQLiteStoreTests {
     let issues = try await store.sprintReadinessIssues(sprintID: draft.sprint.id)
 
     #expect(
-      issues.map(\.message).contains(
-        "\(dependent.key) needs an estimate before the sprint can start."
-      )
-    )
-    #expect(
-      issues.map(\.message).contains(
+      issues.map(\.message) == [
         "\(dependent.key) is blocked by \(prerequisite.key), which is not in this sprint, the active sprint, or done."
-      )
+      ]
     )
     await #expect(throws: SprintPlanningError.self) {
       _ = try await store.startSprint(id: draft.sprint.id)
     }
     #expect(try await store.fetchAgentRuns(productID: product.id).isEmpty)
     #expect(try await store.fetchCurrentSprint(productID: product.id)?.sprint.state == .draft)
+    await store.close()
+  }
+
+  /// Regression guard: the sprint forecast is a projection Spedito derives from
+  /// the Ticket, never owner-supplied input, so an unstamped forecast must not
+  /// surface as a readiness defect or hold the sprint back.
+  @Test("An unestimated ticket is ready and can start its sprint")
+  func unestimatedTicketDoesNotBlockSprintStart() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Unestimated sprint")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver without a stamped forecast"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Start without a stamped forecast",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 0
+        )
+      ]
+    )
+
+    #expect(try await store.sprintReadinessIssues(sprintID: draft.sprint.id).isEmpty)
+
+    let started = try await store.startSprint(id: draft.sprint.id)
+
+    #expect(started.sprint.state == .active)
+    #expect(started.estimatedTokens == 0)
     await store.close()
   }
 
