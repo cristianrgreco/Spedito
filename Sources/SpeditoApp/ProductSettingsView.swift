@@ -6,6 +6,7 @@ struct ProductContextView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var isPresented: Bool
   @State private var name = ""
+  @State private var isSaving = false
   @State private var isRevokingSavedAccess = false
   @State private var showingRevokeAllConfirmation = false
   @State private var pendingSavedAccessRevocation: AgentSavedAccessRevocationPlan?
@@ -122,7 +123,7 @@ struct ProductContextView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
-            .disabled(isArchiving)
+            .disabled(isArchiving || isSaving)
           }
         }
         .padding(24)
@@ -131,15 +132,18 @@ struct ProductContextView: View {
       Divider()
       HStack {
         Spacer()
-        Button("Cancel") { isPresented = false }
-        Button("Save") {
-          model.updateProductDetails(name: name)
-          isPresented = false
+        Button("Cancel") {
+          finishNameEdit(.cancel)
+        }
+        .disabled(isSaving)
+        Button(isSaving ? "Saving..." : "Save") {
+          finishNameEdit(.save)
         }
         .buttonStyle(.borderedProminent)
         .disabled(
           name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || isArchiving
+            || isSaving
         )
       }
       .padding(20)
@@ -173,13 +177,32 @@ struct ProductContextView: View {
       titleVisibility: .visible
     ) {
       Button("Archive product", role: .destructive) {
-        archiveProduct()
+        archiveProduct(confirmed: true)
       }
       Button("Cancel", role: .cancel) {}
     } message: {
       Text(
         "Active delivery will be safely suspended. Nothing is deleted, and you can restore the product later from products."
       )
+    }
+  }
+
+  private func finishNameEdit(_ action: ProductNameEditAction) {
+    switch ProductNameEditPolicy.resolve(draftName: name, action: action) {
+    case .cancel:
+      isPresented = false
+    case .invalid:
+      return
+    case .save(let committedName):
+      guard !isSaving else { return }
+      isSaving = true
+      Task {
+        let didSave = await model.updateProductDetails(name: committedName)
+        isSaving = false
+        if didSave {
+          isPresented = false
+        }
+      }
     }
   }
 
@@ -203,8 +226,14 @@ struct ProductContextView: View {
     }
   }
 
-  private func archiveProduct() {
-    guard !isArchiving else { return }
+  private func archiveProduct(confirmed: Bool) {
+    guard
+      DestructiveProductSettingConfirmationPolicy.command(
+        .archiveProduct,
+        confirmed: confirmed
+      ) != nil,
+      !isArchiving
+    else { return }
     isArchiving = true
     Task {
       let archived = await model.archiveSelectedProduct()
@@ -704,10 +733,10 @@ private struct AddPersonaView: View {
               .labelsHidden()
               .pickerStyle(.menu)
               .onChange(of: selectedModel) {
-                let efforts = effortOptions.map(\.id)
-                if !efforts.contains(effort) {
-                  effort = selectedModelOption?.defaultReasoningEffort ?? efforts.first ?? "medium"
-                }
+                effort = CustomTeamMemberRuntimePolicy.compatibleEffort(
+                  requestedEffort: effort,
+                  model: selectedModelOption
+                )
               }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -784,11 +813,10 @@ private struct AddPersonaView: View {
       model.codexModels.contains { $0.model == template.model }
       ? template.model
       : model.codexModels.first(where: \.isDefault)?.model ?? template.model
-    let supported = selectedModelOption?.supportedReasoningEfforts.map(\.id) ?? []
-    effort =
-      supported.contains(template.effort)
-      ? template.effort
-      : selectedModelOption?.defaultReasoningEffort ?? template.effort
+    effort = CustomTeamMemberRuntimePolicy.compatibleEffort(
+      requestedEffort: template.effort,
+      model: selectedModelOption
+    )
     instructions = template.instructions
   }
 }

@@ -401,6 +401,38 @@ and recovery contracts are deterministic without a launched process.
 | Actions decided | Accept or dismiss individually or in a valid bulk | Decision status; accepted Backlog Ticket link or verified Ways of working revision | Resolved actions with original attribution and destination outcome | Review remaining actions or conclude | Partial interruption remains visible as unresolved proposals; retry decides only those still proposed |
 | Retrospective concluded | Conclude after all proposals are resolved | One conclusion timestamp and activity event on the completed Sprint | Historical concluded retrospective | Inspect history | Fresh SQLite and application instances preserve the exact conclusion and prohibit later mutation |
 
+### 3.11 Priority 1 work packet 4 — Product settings, Team settings, and Codex
+
+This slice closes S01, S03, S05, and S06 without introducing a second Product,
+team-member, repository, or Codex runtime authority. Product names, archives,
+team members, and repository history remain durable in the Product store;
+Codex installation choices remain explicit local preferences. `AppModel`
+composes those commands and bounded presentation policies. All four rows remain
+`Shell = —`: command, persistence, presentation, and fresh-instance behavior
+are deterministic without launched-process wiring.
+
+S08 remains blocked on a product decision, not a missing test. No editable
+definition-of-ready or definition-of-done profile exists in `Sources`, and
+implementing that shared authority would be a separate product feature rather
+than journey-test coverage. The inventory contract remains unchanged until the
+Product owner accepts that feature packet.
+
+| Row | Executable evidence | Coverage |
+| --- | --- | --- |
+| S01 | `SettingsJourneyTests.s01ProductRenameSaveAndCancel`, `SQLiteStoreTests.durableWorkflow` | **Named:** cancellation resolves without a mutation command; Save trims and persists the Product name before dismissing, updates the bounded Product collection used by navigation and notification presentation, and a fresh registry recovers the same name. |
+| S03 | `SettingsJourneyTests.s03DestructiveSettingsPreserveLocalHistory`, `RemoteRepositoryAppModelTests.r12ObservedTargetChoice`, `SQLiteStoreTests.productArchiveAndRestorePreserveHistory` | **Named:** every Product archive, GitHub setup cancellation, disconnect, and account sign-out command passes through an explicit confirmation policy; rejection yields no command. Archival preserves the exact Git revision, Ticket, and work log, while the existing remote command proof disconnects without changing the selected repository or local history. |
+| S05 | `SettingsJourneyTests.s05CustomTeamMemberRuntimeAndRemoval`, `SQLiteStoreTests.customPersonas` | **Named:** blank and templated creation share one model/effort compatibility policy that retains supported effort and falls back to the selected model default; the resulting governed custom member persists, built-in removal fails closed, and only the custom member can be archived. |
+| S06 | `SettingsJourneyTests.s06CodexInstallationLifecycle`, `CodexInstallationTests.discovery`, `.preferencesRoundTrip`, `CodexConnectionPresentationTests.retryAvailability` | **Named:** discovery orders and deduplicates official, included, and custom installations; AppModel explicitly selects and removes a persisted custom installation, the shared gate rejects changes during active work or shutdown, and retry re-checks an incompatible runtime while preserving an actionable failure state. |
+| S08 | — | **Blocked on product:** the specified editable definition-of-ready and definition-of-done profile and its single readiness authority do not exist. A deterministic journey cannot be written until the Product owner accepts that feature as a separate work packet. |
+
+| State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
+| --- | --- | --- | --- | --- | --- |
+| Product name editing | Open Product settings | Existing Product name in SQLite; draft text is presentation state | Editable name with Save and Cancel | Save or cancel | Cancel discards the draft; Save waits for the durable update and leaves the sheet open on failure |
+| Destructive setting requested | Choose archive, disconnect, cancel setup, or sign out | No mutation before confirmation | Exact destructive consequence and preservation promise | Confirm or cancel | Cancel emits no command; confirmed operations retain local repositories and audit history |
+| Custom team member editing | Start blank or choose a template | Existing team remains authoritative until creation | Governed capability, compatible model and effort, and optional instructions | Add or cancel | Unsupported effort resolves to the selected model default; only a persisted non-built-in member can later be removed |
+| Codex installation selected | Choose an official, included, or custom installation | Custom catalog and selected identifier in local preferences | Selected runtime and connected, incompatible, or unavailable state | Add, select, remove, or retry when no work is active | Retry re-resolves the selected executable; removing it selects the next discovered runtime or none |
+| Readiness profile unavailable | Open the specified S08 journey | No profile authority exists | No implemented editor | Accept a separate product feature packet | Remains an explicit specification gap rather than false executable coverage |
+
 ## 4. Test taxonomy
 
 | Code | Proof type | Contract |

@@ -212,6 +212,64 @@ struct ConversationRecipientPolicy {
       ?? profiles.first
   }
 }
+enum ProductNameEditAction: Equatable {
+  case save
+  case cancel
+}
+
+enum ProductNameEditResolution: Equatable {
+  case save(String)
+  case cancel
+  case invalid
+}
+
+struct ProductNameEditPolicy {
+  static func resolve(
+    draftName: String,
+    action: ProductNameEditAction
+  ) -> ProductNameEditResolution {
+    guard action == .save else { return .cancel }
+    let trimmedName = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmedName.isEmpty ? .invalid : .save(trimmedName)
+  }
+}
+
+struct CustomTeamMemberRuntimePolicy {
+  static func compatibleEffort(
+    requestedEffort: String,
+    model: CodexModelOption?
+  ) -> String {
+    guard let model else { return requestedEffort }
+    let supportedEfforts = model.supportedReasoningEfforts.map(\.id)
+    return supportedEfforts.contains(requestedEffort)
+      ? requestedEffort
+      : model.defaultReasoningEffort
+  }
+}
+
+struct CodexInstallationChangePolicy {
+  static func isAllowed(
+    isShuttingDown: Bool,
+    hasActiveWork: Bool
+  ) -> Bool {
+    !isShuttingDown && !hasActiveWork
+  }
+}
+enum DestructiveProductSetting: Equatable {
+  case archiveProduct
+  case cancelGitHubSetup
+  case disconnectGitHub
+  case signOutGitHub
+}
+
+struct DestructiveProductSettingConfirmationPolicy {
+  static func command(
+    _ setting: DestructiveProductSetting,
+    confirmed: Bool
+  ) -> DestructiveProductSetting? {
+    confirmed ? setting : nil
+  }
+}
 
 struct ProductConversationThreadPresentation {
   static func active(

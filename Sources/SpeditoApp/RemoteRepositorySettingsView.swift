@@ -122,6 +122,11 @@ struct GitHubRepositorySettingsSection: View {
       titleVisibility: .visible
     ) {
       Button(productConnectionActionTitle, role: .destructive) {
+        let setting: DestructiveProductSetting =
+          isSettingUpGitHubConnection ? .cancelGitHubSetup : .disconnectGitHub
+        guard
+          DestructiveProductSettingConfirmationPolicy.command(setting, confirmed: true) != nil
+        else { return }
         Task {
           if isSettingUpGitHubConnection {
             await model.cancelGitHubConnection(productID: product.id)
@@ -144,7 +149,13 @@ struct GitHubRepositorySettingsSection: View {
       titleVisibility: .visible
     ) {
       Button("Sign out", role: .destructive) {
-        guard let accountID = state?.connection?.accountID else { return }
+        guard
+          DestructiveProductSettingConfirmationPolicy.command(
+            .signOutGitHub,
+            confirmed: true
+          ) != nil,
+          let accountID = state?.connection?.accountID
+        else { return }
         Task {
           await model.signOutGitHub(accountID: accountID, productID: product.id)
         }

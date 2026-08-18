@@ -35,8 +35,6 @@ enum CodexInstallationSelectionError: Error, LocalizedError {
   }
 }
 
-
-
 enum ProductExecutionLifecycleEvent: Equatable {
   case productSelectionChanged
   case productArchived(UUID)
@@ -63,7 +61,6 @@ struct ProductExecutionLifecyclePolicy {
     }
   }
 }
-
 
 struct KnowledgePageReadState: Equatable {
   private(set) var productID: UUID?
@@ -814,6 +811,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     store: SQLiteStore?,
     selectedProductID: UUID? = nil,
     codexTransportFactory: @escaping CodexTransportFactory = makeProductionCodexTransport,
+    codexInstallationPreferences: CodexInstallationPreferences = CodexInstallationPreferences(),
     ownerNotificationSoundPlayer: any OwnerNotificationSoundPlaying =
       BundledOwnerNotificationSoundPlayer(),
     ownerNotificationSystemNotifier: any OwnerNotificationSystemNotifying =
@@ -822,7 +820,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       service: nil
     )
   ) {
-    codexInstallationPreferences = CodexInstallationPreferences()
+    self.codexInstallationPreferences = codexInstallationPreferences
     self.codexTransportFactory = codexTransportFactory
     gitWorkspaceManager = GitWorkspaceManager()
     repositoryImportActivator = nil
@@ -840,6 +838,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     storeRegistry: ProductStoreRegistry,
     selectedProductID: UUID? = nil,
     codexTransportFactory: @escaping CodexTransportFactory = makeProductionCodexTransport,
+    codexInstallationPreferences: CodexInstallationPreferences = CodexInstallationPreferences(),
     ownerNotificationSoundPlayer: any OwnerNotificationSoundPlaying =
       BundledOwnerNotificationSoundPlayer(),
     ownerNotificationSystemNotifier: any OwnerNotificationSystemNotifying =
@@ -849,7 +848,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     ),
     repositoryImportActivator: (any RepositoryImportActivating)? = nil
   ) {
-    codexInstallationPreferences = CodexInstallationPreferences()
+    self.codexInstallationPreferences = codexInstallationPreferences
     self.codexTransportFactory = codexTransportFactory
     let gitWorkspaceManager = GitWorkspaceManager()
     self.gitWorkspaceManager = gitWorkspaceManager
@@ -1418,17 +1417,21 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   var canChangeCodexInstallation: Bool {
-    !isShuttingDown
-      && !repositoryKnowledgeCoordinator.hasActiveOperations
-      && !epicPlanningWorkflowCoordinator.isBusy
-      && !retrospectiveSynthesisRuntime.isBusy
-      && !ticketDeliveryRuntimeCoordinator.isBusy
-      && !productConversationFeature.isBusy
-      && !sprintPlanningWorkflowCoordinator.isBusy
-      && !planningConversationWorkflowCoordinator.isBusy
-      && !demoSessions.contains {
+    let hasActiveWork =
+      repositoryKnowledgeCoordinator.hasActiveOperations
+      || epicPlanningWorkflowCoordinator.isBusy
+      || retrospectiveSynthesisRuntime.isBusy
+      || ticketDeliveryRuntimeCoordinator.isBusy
+      || productConversationFeature.isBusy
+      || sprintPlanningWorkflowCoordinator.isBusy
+      || planningConversationWorkflowCoordinator.isBusy
+      || demoSessions.contains {
         $0.status == .preparing || $0.status == .starting || $0.status == .ready
       }
+    return CodexInstallationChangePolicy.isAllowed(
+      isShuttingDown: isShuttingDown,
+      hasActiveWork: hasActiveWork
+    )
   }
 
   var canAutosuggestTickets: Bool {
@@ -2368,7 +2371,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     )
   }
 
-
   func transition(_ workItem: WorkItem, to state: WorkItemState) {
     guard let store = store(for: workItem.productID) else { return }
     transientOwnerCommandRuntime.start(productID: workItem.productID) { [self] in
@@ -2625,7 +2627,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-
   func proposeRetrospectiveAction(
     productID: UUID,
     sprintID: UUID,
@@ -2708,7 +2709,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         .filter { $0.actionNoteID == actionNoteID }
         .map(\.sourceNoteID)
     )
-    return retrospectiveNotes
+    return
+      retrospectiveNotes
       .filter { sourceIDs.contains($0.id) }
       .sorted {
         if $0.createdAt == $1.createdAt {
@@ -3414,7 +3416,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     sprintPlanningWorkflowCoordinator.canEditCandidateSprint
   }
 
-
   func updateProfile(
     _ profile: AgentProfile,
     model: String? = nil,
@@ -3466,18 +3467,18 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  func updateProductDetails(name: String) {
-    guard let store, let productID = selectedProductID else { return }
-    transientOwnerCommandRuntime.start(productID: productID) { [self] in
-      do {
-        let updatedProduct = try await store.updateProductDetails(
-          productID: productID,
-          name: name
-        )
-        replaceProductSnapshot(updatedProduct)
-      } catch {
-        errorMessage = error.localizedDescription
-      }
+  func updateProductDetails(name: String) async -> Bool {
+    guard let store, let productID = selectedProductID else { return false }
+    do {
+      let updatedProduct = try await store.updateProductDetails(
+        productID: productID,
+        name: name
+      )
+      replaceProductSnapshot(updatedProduct)
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
     }
   }
 
@@ -3714,7 +3715,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
     return startedIntegration ? .continueImmediately : .waitForWake
   }
-
 
   func reloadSelectedProductIfCurrent(productID: UUID) async {
     guard selectedProductID == productID else {
@@ -4264,7 +4264,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     retrospectiveSyntheses.sort { $0.createdAt < $1.createdAt }
   }
 
-
   private func inheritedAgentInstructions(
     for product: Product,
     includesMandatoryKnowledge: Bool = true,
@@ -4542,7 +4541,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await synchronizeDeliveryExecutionConstraints()
     }
   }
-
 
   private func stopCodexUsageMonitoring() {
     codexConnectionRuntime.stopNow(.usageMonitor)
