@@ -5435,7 +5435,7 @@ enum SprintTicketWorkLogTimeline {
       }
       return $0.createdAt < $1.createdAt
     }
-    return
+    var submissions: [SprintTicketDemoLogItem] =
       events
       .filter(isDemoSubmission)
       .sorted {
@@ -5452,6 +5452,24 @@ enum SprintTicketWorkLogTimeline {
         else { return nil }
         return SprintTicketDemoLogItem(event: event, candidate: candidate)
       }
+
+    guard
+      let latestCandidate = orderedCandidates.last,
+      latestCandidate.status == .readyForDemo,
+      !submissions.contains(where: { $0.candidate.id == latestCandidate.id }),
+      let openAcceptanceEvent = submissions.last?.event
+    else {
+      return submissions
+    }
+
+    submissions.removeAll { $0.event.id == openAcceptanceEvent.id }
+    submissions.append(
+      SprintTicketDemoLogItem(
+        event: openAcceptanceEvent,
+        candidate: latestCandidate
+      )
+    )
+    return submissions
   }
 
   private static func isRepresentedByPermissionRequest(

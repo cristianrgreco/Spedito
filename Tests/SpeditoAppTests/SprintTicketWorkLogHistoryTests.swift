@@ -764,6 +764,51 @@ struct SprintTicketWorkLogHistoryTests {
     #expect(displayedEvents.map(\.id) == [nonDemo.id])
   }
 
+  @Test("A retried ready candidate uses the open acceptance entry")
+  func retriedReadyCandidateUsesOpenAcceptanceEntry() {
+    let productID = UUID()
+    let workItemID = UUID()
+    let sprintID = UUID()
+    let sprintItemID = UUID()
+    let base = Date(timeIntervalSince1970: 2_500)
+    let failedCandidate = candidate(
+      version: 1,
+      status: .failed,
+      createdAt: base.addingTimeInterval(10),
+      productID: productID,
+      workItemID: workItemID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID
+    )
+    let readyCandidate = candidate(
+      version: 2,
+      status: .readyForDemo,
+      createdAt: base.addingTimeInterval(30),
+      productID: productID,
+      workItemID: workItemID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID
+    )
+    let acceptance = ActivityEvent(
+      sequence: 1,
+      productID: productID,
+      workItemID: workItemID,
+      kind: "work_item.transitioned",
+      actor: "Tech lead",
+      detail: "verifying -> acceptance: Review passed",
+      createdAt: base.addingTimeInterval(20)
+    )
+
+    let submissions = SprintTicketWorkLogTimeline.demoSubmissions(
+      events: [acceptance],
+      candidates: [readyCandidate, failedCandidate]
+    )
+
+    #expect(submissions.count == 1)
+    #expect(submissions.first?.event.id == acceptance.id)
+    #expect(submissions.first?.candidate.id == readyCandidate.id)
+  }
+
   @Test("Ready for demo comments prefer the assignee, recent participant, then tech lead")
   func readyForDemoCommentRouting() throws {
     let productID = UUID()
@@ -1114,6 +1159,7 @@ struct SprintTicketWorkLogHistoryTests {
 
   private func candidate(
     version: Int,
+    status: CandidateRevisionStatus = .queuedForIntegration,
     createdAt: Date,
     productID: UUID,
     workItemID: UUID,
@@ -1131,6 +1177,7 @@ struct SprintTicketWorkLogHistoryTests {
       baseSHA: "base-\(version)",
       headSHA: "head-\(version)",
       worktreePath: "/tmp/ticket-\(version)",
+      status: status,
       commitCount: 1,
       executionResultJSON: "{}",
       createdAt: createdAt,

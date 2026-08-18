@@ -422,6 +422,26 @@ public final class TicketDeliveryWorkflowCoordinator {
     await delegate?.deliveryStopDemoSession(candidate, removesPreview: removesPreview)
   }
 
+  /// A review failure may land long after the candidate moved on, so the teardown reads
+  /// the current row first. Only a candidate still awaiting this review belongs to the
+  /// failure; one that already reached a demo, promotion, or acceptance was advanced by
+  /// another task and must keep its state, worktree, and knowledge proposals.
+  private func candidateAwaitingReviewOutcome(
+    id: UUID,
+    productID: UUID
+  ) async -> CandidateRevision? {
+    guard
+      let store = store(for: productID),
+      let current = try? await store.fetchCandidateRevision(id: id)
+    else { return nil }
+    switch current.status {
+    case .queuedForReview, .reviewing, .queuedForIntegration, .integrating, .resolvingConflict:
+      return current
+    case .changesRequested, .readyForDemo, .promoting, .accepted, .superseded, .failed:
+      return nil
+    }
+  }
+
 
   @discardableResult
   public func updateAgentRun(
@@ -1726,6 +1746,19 @@ public final class TicketDeliveryWorkflowCoordinator {
         return
       }
 
+      // The candidate may have been carried through review by another task while this
+      // continuation was still waiting. Failing it then would discard a prepared demo,
+      // so leave the applied outcome untouched and drop this stale failure.
+      guard
+        let currentCandidate = await candidateAwaitingReviewOutcome(
+          id: candidate.id,
+          productID: product.id
+        )
+      else {
+        await reloadSelectedProductIfCurrent(productID: product.id)
+        return
+      }
+
       _ = try? await updateAgentRun(
         id: reviewRun.id,
         status: .failed,
@@ -1740,7 +1773,7 @@ public final class TicketDeliveryWorkflowCoordinator {
         candidateRevisionID: candidate.id,
         status: .superseded
       )
-      if let integrationPath = candidate.integrationWorktreePath {
+      if let integrationPath = currentCandidate.integrationWorktreePath {
         try? await gitWorkspaceManager.removeWorktree(
           repositoryURL: productWorkspaceURL(productID: product.id),
           worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
@@ -2017,6 +2050,24 @@ public final class TicketDeliveryWorkflowCoordinator {
         await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
+      // The candidate may have been carried through review by another task while this
+      // review was still waiting. Tearing it down then would stop a prepared demo and
+      // fail an accepted candidate, so drop this stale failure instead.
+      guard
+        let currentCandidate = await candidateAwaitingReviewOutcome(
+          id: candidate.id,
+          productID: product.id
+        )
+      else {
+        if let activeReviewRunID {
+          stopLiveActivityMonitoring(runID: activeReviewRunID)
+          ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: activeReviewRunID)
+        }
+        stopLiveActivityMonitoring(runID: implementationRun.id)
+        ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: implementationRun.id)
+        await reloadSelectedProductIfCurrent(productID: product.id)
+        return
+      }
       await stopDemoSession(candidate, removesPreview: true)
       if let activeReviewRunID {
         stopLiveActivityMonitoring(runID: activeReviewRunID)
@@ -2038,9 +2089,7 @@ public final class TicketDeliveryWorkflowCoordinator {
         candidateRevisionID: candidate.id,
         status: .superseded
       )
-      if let failedCandidate = try? await store.fetchCandidateRevision(id: candidate.id),
-        let integrationPath = failedCandidate.integrationWorktreePath
-      {
+      if let integrationPath = currentCandidate.integrationWorktreePath {
         try? await gitWorkspaceManager.removeWorktree(
           repositoryURL: productWorkspaceURL(productID: product.id),
           worktreeURL: URL(fileURLWithPath: integrationPath, isDirectory: true)
@@ -2431,8 +2480,16 @@ public final class TicketDeliveryWorkflowCoordinator {
         }
         .sorted { $0.createdAt < $1.createdAt }
       for reviewingCandidate in reviewingCandidates {
+        // A candidate reaches .reviewing from inside integrateCandidateBeforeReview,
+        // which owns the whole integrate → review → apply chain under the integration
+        // task. That in-flight review is not registered as a review task, so resuming
+        // on .reviewing alone would start a second review on the same Codex thread.
+        // The in-memory registry is empty after a relaunch, so orphan recovery still runs.
         guard
           !ticketDeliveryRuntimeCoordinator.isReviewInProgress(
+            candidateID: reviewingCandidate.id
+          ),
+          !ticketDeliveryRuntimeCoordinator.isIntegrationInProgress(
             candidateID: reviewingCandidate.id
           )
         else { continue }
