@@ -279,6 +279,7 @@ struct SprintBoardView: View {
                 value: boardPositionSignature(itemIDs: displayedItemIDs)
               )
             }
+            .accessibilityIdentifier("sprint.board.columns")
             .frame(maxHeight: .infinity)
           }
         }

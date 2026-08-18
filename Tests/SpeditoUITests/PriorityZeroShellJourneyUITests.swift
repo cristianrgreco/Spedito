@@ -208,7 +208,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     let editor = session.app.textViews.firstMatch
     XCTAssertTrue(editor.waitForExistence(timeout: 5))
     editor.click()
-    editor.typeText("Confirm the empty state during the demo.")
+    editor.typeText("Demo note.")
     let send = element(session.app, "sprint.ticket.comment.send")
     XCTAssertTrue(send.waitForExistence(timeout: 5))
     XCTAssertTrue(send.isEnabled)
@@ -454,6 +454,14 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     element(session.app, "nav.sprint").click()
     let ticket = element(session.app, "sprint.ticket.\(workItemID.uuidString)")
     XCTAssertTrue(ticket.waitForExistence(timeout: 10))
+    if !ticket.isHittable {
+      let board = element(session.app, "sprint.board.columns")
+      XCTAssertTrue(board.waitForExistence(timeout: 5))
+      board.scroll(byDeltaX: 320, deltaY: 0)
+      if !ticket.isHittable {
+        board.scroll(byDeltaX: -640, deltaY: 0)
+      }
+    }
     XCTAssertTrue(ticket.isHittable, ticket.debugDescription)
     ticket.press(forDuration: 0.1)
     let openedSignalURL = session.rootURL.appendingPathComponent(
