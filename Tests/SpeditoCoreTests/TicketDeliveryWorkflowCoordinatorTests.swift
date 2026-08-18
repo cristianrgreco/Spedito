@@ -1401,6 +1401,170 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  @Test("A reviewing candidate held by its integration task is not reviewed a second time")
+  func reviewingCandidateUnderIntegrationIsNotResumed() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-review-race-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let productRepository = root.appendingPathComponent("product", isDirectory: true)
+    let reviewedSHA = try await gitWorkspaceManager.ensureRepository(at: productRepository)
+
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Review race authority")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Review exactly once",
+      acceptanceCriteria: ["One candidate receives one tech lead review."]
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refined"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Review one candidate once",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id)
+        .first(where: { $0.workItemID == workItem.id })
+    )
+    let integrationWorkspace = root.appendingPathComponent("integration", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: integrationWorkspace,
+      withIntermediateDirectories: true
+    )
+
+    // integrateCandidateBeforeReview leaves the candidate in .reviewing for the whole
+    // review it performs itself, while holding only the integration task.
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: "ticket/T1",
+        baseSHA: reviewedSHA,
+        headSHA: reviewedSHA,
+        integratedSHA: reviewedSHA,
+        worktreePath: implementationRun.worktreePath ?? root.path,
+        integrationWorktreePath: integrationWorkspace.path,
+        status: .reviewing,
+        commitCount: 1,
+        executionResultJSON: "{}"
+      )
+    )
+    _ = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        profileID: techLead.id,
+        status: .running,
+        codexThreadID: "thread-review-race",
+        worktreePath: integrationWorkspace.path,
+        createdAt: candidate.updatedAt.addingTimeInterval(1),
+        updatedAt: candidate.updatedAt.addingTimeInterval(1)
+      )
+    )
+
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/review-race"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        )
+      ],
+      inboundMessages: []
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: try await store.fetchAgentRuns(productID: product.id)
+    )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let context = try #require(await coordinator.context(productID: product.id))
+
+    let (holdStream, holdContinuation) = AsyncStream<Void>.makeStream()
+    #expect(
+      runtimeCoordinator.startIntegration(
+        candidateID: candidate.id,
+        productID: product.id
+      ) {
+        for await _ in holdStream {}
+      }
+    )
+
+    // The in-flight integration owns this candidate's review, so the sweeper must skip it.
+    let startedWhileIntegrating = await coordinator.processIntegrationCandidates(
+      context: context
+    )
+    #expect(startedWhileIntegrating == false)
+    #expect(runtimeCoordinator.isReviewInProgress(candidateID: candidate.id) == false)
+
+    // Once nothing owns the candidate, the same sweep still recovers an orphaned review,
+    // which is what this loop exists to do after a relaunch.
+    holdContinuation.finish()
+    while runtimeCoordinator.isIntegrationInProgress(candidateID: candidate.id) {
+      await Task.yield()
+    }
+    let startedAfterIntegration = await coordinator.processIntegrationCandidates(
+      context: context
+    )
+    #expect(startedAfterIntegration)
+
+    await runtimeCoordinator.cancel(productID: product.id)
+    await store.close()
+  }
+
   @MainActor
   private func makeRecoveryHarness(workspaceExists: Bool) async throws -> RecoveryHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
