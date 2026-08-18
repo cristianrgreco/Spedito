@@ -205,10 +205,10 @@ struct CodebaseView: View {
   private var commitTimeline: some View {
     VStack(spacing: 0) {
       if commits.isEmpty {
-        ContentUnavailableView(
-          emptyHistoryTitle,
+        CodebaseColumnPlaceholder(
+          title: emptyHistoryTitle,
           systemImage: "point.3.connected.trianglepath.dotted",
-          description: Text(emptyHistoryDescription)
+          description: emptyHistoryDescription
         )
       } else {
         ScrollView {
@@ -313,6 +313,7 @@ struct CodebaseView: View {
         systemImage: "doc.text.magnifyingglass",
         description: Text("Choose a commit to inspect its files and coloured diff.")
       )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
 
@@ -324,6 +325,7 @@ struct CodebaseView: View {
         systemImage: "exclamationmark.triangle",
         description: Text(detailErrorMessage)
       )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
       ProgressView(title)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1071,6 +1073,30 @@ private struct CodebaseCommitRow: View {
   }
 }
 
+/// Centred empty state sized for the codebase view's narrow side columns, where
+/// `ContentUnavailableView`'s full-size layout does not fit.
+private struct CodebaseColumnPlaceholder: View {
+  let title: String
+  let systemImage: String
+  let description: String
+
+  var body: some View {
+    VStack(spacing: 8) {
+      Image(systemName: systemImage)
+        .font(.title2)
+        .foregroundStyle(.tertiary)
+      Text(title)
+        .font(.callout.weight(.semibold))
+      Text(description)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+    .multilineTextAlignment(.center)
+    .padding(.horizontal, 14)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
 private struct CodebaseFileNavigator: View {
   let files: [GitChangedFile]
   let isLoading: Bool
@@ -1079,40 +1105,13 @@ private struct CodebaseFileNavigator: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack {
-        Text("Files")
-          .font(.headline)
-        Text(files.count.formatted())
-          .font(.caption.monospacedDigit())
-          .foregroundStyle(.secondary)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 3)
-          .background(.quaternary, in: Capsule())
-        Spacer()
-      }
-      .padding(.horizontal, 13)
-      .frame(height: 50)
-
-      Divider()
-
-      if files.isEmpty && isLoading {
-        Text("Loading files…")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-      } else if files.isEmpty, let errorMessage {
-        ContentUnavailableView(
-          "Files unavailable",
-          systemImage: "exclamationmark.triangle",
-          description: Text(errorMessage)
-        )
-      } else if files.isEmpty {
-        ContentUnavailableView(
-          "No files",
-          systemImage: "doc",
-          description: Text("Choose a commit or branch with file changes.")
-        )
+      if files.isEmpty {
+        emptyState
       } else {
+        header
+
+        Divider()
+
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 2) {
             Button {
@@ -1143,6 +1142,44 @@ private struct CodebaseFileNavigator: View {
       }
     }
     .background(.quaternary.opacity(0.08))
+  }
+
+  private var header: some View {
+    HStack {
+      Text("Files")
+        .font(.headline)
+      Text(files.count.formatted())
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(.quaternary, in: Capsule())
+      Spacer()
+    }
+    .padding(.horizontal, 13)
+    .frame(height: 50)
+  }
+
+  @ViewBuilder
+  private var emptyState: some View {
+    if isLoading {
+      Text("Loading files…")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else if let errorMessage {
+      CodebaseColumnPlaceholder(
+        title: "Files unavailable",
+        systemImage: "exclamationmark.triangle",
+        description: errorMessage
+      )
+    } else {
+      CodebaseColumnPlaceholder(
+        title: "No files",
+        systemImage: "doc",
+        description: "Choose a commit or branch with file changes."
+      )
+    }
   }
 }
 
@@ -1497,6 +1534,8 @@ private struct CodebaseDiffViewer: View {
         systemImage: "doc",
         description: Text(emptyDescription)
       )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(Color(nsColor: .textBackgroundColor))
     } else {
       VStack(spacing: 0) {
         HStack {

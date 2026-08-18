@@ -1,6 +1,56 @@
 import SpeditoCore
 import SwiftUI
 
+/// Count pill shown next to a sidebar row.
+private struct SidebarCountBadge: View {
+  /// Whether the count belongs to the row it sits on.
+  enum Emphasis {
+    /// Work waiting on this row. Every such badge shares the accent capsule so
+    /// they read down the sidebar as one column of things to attend to. A
+    /// selected row already paints its background with the accent colour, so
+    /// the badge inverts there to stay legible.
+    case attention
+    /// Work waiting somewhere this row leads to rather than on the row itself.
+    /// It stays quiet so it does not join the accent column and claim
+    /// attention for the current product.
+    case elsewhere
+  }
+
+  let count: Int
+  var emphasis: Emphasis = .attention
+  var isSelected = false
+  let accessibilityLabel: String
+
+  var body: some View {
+    Text(count.formatted())
+      .font(.caption2.monospacedDigit().weight(emphasis == .attention ? .bold : .semibold))
+      .foregroundStyle(foreground)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 2)
+      .background(background, in: Capsule())
+      .overlay {
+        if emphasis == .elsewhere {
+          Capsule().strokeBorder(Color(nsColor: .separatorColor))
+        }
+      }
+      .accessibilityLabel(accessibilityLabel)
+  }
+
+  private var foreground: Color {
+    switch emphasis {
+    case .attention: isSelected ? Color.accentColor : .white
+    case .elsewhere: Color(nsColor: .secondaryLabelColor)
+    }
+  }
+
+  private var background: Color {
+    switch emphasis {
+    case .attention: isSelected ? Color.white : .accentColor
+    case .elsewhere: Color(nsColor: .quaternaryLabelColor)
+    }
+  }
+}
+
 struct TeamSidebar: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selection: WorkspaceDestination
@@ -41,15 +91,6 @@ struct TeamSidebar: View {
   private var backlogNotificationCount: Int {
     guard let productID = model.selectedProductID else { return 0 }
     return model.backlogOwnerNotificationCount(productID: productID)
-  }
-
-  private var backlogHasUnresolvedInput: Bool {
-    guard let productID = model.selectedProductID else { return false }
-    return model.ownerNotificationsByProductID[productID, default: []].contains {
-      [.ticket, .epic].contains($0.target.kind)
-        && $0.kind.requiresAction
-        && $0.resolvedAt == nil
-    }
   }
 
   private var unreadChatThreadCount: Int {
@@ -263,17 +304,13 @@ struct TeamSidebar: View {
                   }
                   Spacer()
                   if otherProductAttentionCount > 0 {
-                    Text(otherProductAttentionCount.formatted())
-                      .font(.caption2.monospacedDigit().weight(.bold))
-                      .foregroundStyle(.white)
-                      .padding(.horizontal, 7)
-                      .padding(.vertical, 2)
-                      .background(Color.accentColor, in: Capsule())
-                      .accessibilityLabel(
-                        "\(otherProductAttentionCount) "
-                          + (otherProductAttentionCount == 1 ? "item needs" : "items need")
-                          + " your attention in other products"
-                      )
+                    SidebarCountBadge(
+                      count: otherProductAttentionCount,
+                      emphasis: .elsewhere,
+                      accessibilityLabel: "\(otherProductAttentionCount) "
+                        + (otherProductAttentionCount == 1 ? "item needs" : "items need")
+                        + " your attention in other products"
+                    )
                   }
                   Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.semibold))
@@ -331,20 +368,13 @@ struct TeamSidebar: View {
             Label("Backlog", systemImage: "list.bullet.rectangle")
             Spacer()
             if backlogNotificationCount > 0 {
-              Text(backlogNotificationCount.formatted())
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(
-                  backlogHasUnresolvedInput ? Color.orange : Color.purple,
-                  in: Capsule()
-                )
-                .accessibilityLabel(
-                  "\(backlogNotificationCount) backlog "
-                    + (backlogNotificationCount == 1 ? "item needs" : "items need")
-                    + " your attention"
-                )
+              SidebarCountBadge(
+                count: backlogNotificationCount,
+                isSelected: selection == .backlog,
+                accessibilityLabel: "\(backlogNotificationCount) backlog "
+                  + (backlogNotificationCount == 1 ? "item needs" : "items need")
+                  + " your attention"
+              )
             }
           }
           .accessibilityElement(children: .combine)
@@ -355,15 +385,12 @@ struct TeamSidebar: View {
             Label("Sprint board", systemImage: "rectangle.3.group")
             Spacer()
             if sprintAttentionCount > 0 {
-              Text(sprintAttentionCount.formatted())
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(Color.accentColor, in: Capsule())
-                .accessibilityLabel(
+              SidebarCountBadge(
+                count: sprintAttentionCount,
+                isSelected: selection == .sprint,
+                accessibilityLabel:
                   "\(sprintAttentionCount) sprint ticket\(sprintAttentionCount == 1 ? "" : "s") need your input"
-                )
+              )
             }
           }
           .tag(WorkspaceDestination.sprint)
@@ -378,20 +405,12 @@ struct TeamSidebar: View {
             Label("Retrospectives", systemImage: "arrow.triangle.2.circlepath")
             Spacer()
             if pendingRetrospectiveCount > 0 {
-              Text(pendingRetrospectiveCount.formatted())
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(
-                  selection == .retrospectives ? Color.accentColor : .white
-                )
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(
-                  selection == .retrospectives ? Color.white : Color.accentColor,
-                  in: Capsule()
-                )
-                .accessibilityLabel(
+              SidebarCountBadge(
+                count: pendingRetrospectiveCount,
+                isSelected: selection == .retrospectives,
+                accessibilityLabel:
                   "\(pendingRetrospectiveCount) retrospective\(pendingRetrospectiveCount == 1 ? "" : "s") to conclude"
-                )
+              )
             }
           }
           .tag(WorkspaceDestination.retrospectives)
@@ -414,16 +433,12 @@ struct TeamSidebar: View {
             Label("Chat", systemImage: "bubble.left.and.bubble.right")
             Spacer()
             if unreadChatThreadCount > 0 {
-              Text(unreadChatThreadCount.formatted())
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(Color.purple, in: Capsule())
-                .accessibilityLabel(
-                  "\(unreadChatThreadCount) unread Chat "
-                    + (unreadChatThreadCount == 1 ? "thread" : "threads")
-                )
+              SidebarCountBadge(
+                count: unreadChatThreadCount,
+                isSelected: selection == .conversation,
+                accessibilityLabel: "\(unreadChatThreadCount) unread Chat "
+                  + (unreadChatThreadCount == 1 ? "thread" : "threads")
+              )
             }
           }
           .tag(WorkspaceDestination.conversation)

@@ -220,8 +220,10 @@ struct SprintPlanningView: View {
         }
         Spacer()
         if !scopedItems.isEmpty {
-          Button("Review tickets with team") {
+          Button {
             isShowingTicketReview = true
+          } label: {
+            Label("Review tickets with team", systemImage: "wand.and.stars")
           }
           .buttonStyle(.borderedProminent)
           .tint(.purple)
@@ -726,6 +728,19 @@ private struct SprintPlanningTicketReviewView: View {
       && !model.isPlanningMessageRunning
   }
 
+  private var hasUnsavedChanges: Bool {
+    hasDirtyTicketDrafts
+      || !pendingProposals.isEmpty
+      || hasReassignedImplementers
+  }
+
+  private var hasReassignedImplementers: Bool {
+    guard let plan = model.candidateSprintPlan else { return false }
+    return plan.items.contains { sprintItem in
+      selections[sprintItem.workItemID]?.implementerID != sprintItem.implementerProfileID
+    }
+  }
+
   private var hasDirtyTicketDrafts: Bool {
     readyItems.contains { item in
       guard let draft = ticketDrafts[item.id] else { return false }
@@ -784,8 +799,13 @@ private struct SprintPlanningTicketReviewView: View {
           .font(.callout.monospacedDigit())
           .foregroundStyle(.secondary)
         Spacer()
-        Button("Discard changes") { isPresented = false }
-          .disabled(model.isPlanningMessageRunning)
+        if hasUnsavedChanges {
+          Button("Discard changes", role: .destructive) { isPresented = false }
+            .disabled(model.isPlanningMessageRunning)
+        } else {
+          Button("Cancel") { isPresented = false }
+            .disabled(model.isPlanningMessageRunning)
+        }
         if showingSummary {
           Button("Back") { showingSummary = false }
           Button("Save") {
