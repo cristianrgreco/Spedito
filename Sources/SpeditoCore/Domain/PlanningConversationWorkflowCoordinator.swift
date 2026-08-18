@@ -867,8 +867,7 @@ public final class PlanningConversationWorkflowCoordinator {
       dependsOnWorkItemIDs: existingDependencyIDs.union(suggestedDependencyIDs),
       expectedVersion: proposal.baseVersion
     )
-    let currentPlan = try await store.fetchCurrentSprint(productID: item.productID)
-    let draftPlan = currentPlan?.sprint.state == .draft ? currentPlan : nil
+    let draftPlan = try await store.fetchDraftSprint(productID: item.productID)
     let draftItem = draftPlan?.items.first { $0.workItemID == item.id }
     if updated.ownerProfileID == nil,
       draftItem?.implementerProfileID == nil,

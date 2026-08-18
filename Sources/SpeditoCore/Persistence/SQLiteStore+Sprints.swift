@@ -172,6 +172,18 @@ extension SQLiteStore {
     return SprintPlan(sprint: sprint, items: try fetchSprintItems(sprintID: sprint.id))
   }
 
+  /// The sprint currently being planned, if any.
+  ///
+  /// `fetchCurrentSprint` prefers an active or paused sprint, so it cannot
+  /// answer questions about the draft that is being planned alongside a sprint
+  /// already in progress. Draft-scoped mutations must resolve the sprint here.
+  public func fetchDraftSprint(productID: UUID) throws -> SprintPlan? {
+    guard let sprint = try fetchSprint(productID: productID, state: .draft) else {
+      return nil
+    }
+    return SprintPlan(sprint: sprint, items: try fetchSprintItems(sprintID: sprint.id))
+  }
+
   public func fetchSprintHistory(productID: UUID) throws -> [SprintPlan] {
     let sprints = try withStatement(
       """

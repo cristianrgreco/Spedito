@@ -871,8 +871,7 @@ public final class SprintPlanningWorkflowCoordinator {
   ) async -> Bool {
     guard let store = storeProvider(productID) else { return false }
     guard
-      let plan = try? await store.fetchCurrentSprint(productID: productID),
-      plan.sprint.state == .draft,
+      let plan = try? await store.fetchDraftSprint(productID: productID),
       plan.items.contains(where: { $0.workItemID == workItemID })
     else { return false }
     if let profileID {

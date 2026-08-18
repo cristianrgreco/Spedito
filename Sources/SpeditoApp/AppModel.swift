@@ -3601,8 +3601,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   ) async -> Bool {
     guard let store = store(for: productID) else { return false }
     do {
-      if let draft = try await store.fetchCurrentSprint(productID: productID),
-        draft.sprint.state == .draft,
+      if let draft = try await store.fetchDraftSprint(productID: productID),
         draft.items.contains(where: { $0.workItemID == workItemID })
       {
         return await reassignDraftTicket(

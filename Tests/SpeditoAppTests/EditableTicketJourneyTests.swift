@@ -335,6 +335,80 @@ struct EditableTicketJourneyTests {
     await reopened.close()
   }
 
+  /// Regression guard: `fetchCurrentSprint` prefers an active or paused sprint, so
+  /// resolving the draft through it silently dropped the sprint-item write while a
+  /// sprint was running. The Ticket then showed an assignee the Sprint table could
+  /// never see, and the readiness blocker could not be cleared from the editor.
+  @Test("Assigning a Ticket reaches the draft sprint while another sprint is active")
+  @MainActor
+  func draftSprintAssignmentSurvivesAnActiveSprint() async throws {
+    let fixture = try DatabaseFixture(name: "DraftAssignment")
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Parallel sprints")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let delivered = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver the active sprint ticket",
+      acceptanceCriteria: ["The active outcome is visible"]
+    )
+    let activeDraft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Deliver the current sprint",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: delivered.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: activeDraft.sprint.id)
+    let planned = try await store.createWorkItem(
+      productID: product.id,
+      title: "Plan the next sprint ticket",
+      acceptanceCriteria: ["The planned outcome is visible"]
+    )
+    let nextDraft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Plan the next sprint",
+      tokenBudgetLimit: nil,
+      items: [SprintDraftItemInput(workItemID: planned.id, estimatedTokens: 0)]
+    )
+    let blockedIssues = try await store.sprintReadinessIssues(
+      sprintID: nextDraft.sprint.id
+    )
+    #expect(active.sprint.state == .active)
+    #expect(nextDraft.sprint.id != active.sprint.id)
+    #expect(blockedIssues.map(\.id) == ["\(planned.id).implementer"])
+
+    let model = AppModel(store: store, selectedProductID: product.id)
+    await model.reloadSelectedProduct()
+
+    #expect(
+      await model.assignTicketOwner(
+        productID: product.id,
+        workItemID: planned.id,
+        to: implementer.id
+      )
+    )
+
+    let savedDraft = try #require(await store.fetchDraftSprint(productID: product.id))
+    let savedItem = try #require(savedDraft.items.first { $0.workItemID == planned.id })
+    #expect(savedDraft.sprint.id == nextDraft.sprint.id)
+    #expect(savedItem.implementerProfileID == implementer.id)
+    #expect(try await store.sprintReadinessIssues(sprintID: nextDraft.sprint.id).isEmpty)
+    #expect(model.sprintReadinessIssues.isEmpty)
+    let runningSprint = try #require(await store.fetchCurrentSprint(productID: product.id))
+    #expect(runningSprint.sprint.id == active.sprint.id)
+    #expect(runningSprint.items.allSatisfy { $0.implementerProfileID == implementer.id })
+
+    await model.shutdown()
+    await store.close()
+  }
+
   /// Existing evidence:
   /// - `EpicPlanningPresentationTests.ticketDetailsResolveEpic`
   /// - `EpicPlanningPresentationTests.relationshipLinksResolveRelatedTicket`
