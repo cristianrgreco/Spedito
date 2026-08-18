@@ -385,14 +385,9 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
     )
     XCTAssertTrue(open.waitForExistence(timeout: 10))
     open.click()
-    XCTAssertTrue(
-      element(session.app, "ticket.detail.\(workItemID.uuidString)")
-        .waitForExistence(timeout: 5)
-    )
-    XCTAssertTrue(
-      element(session.app, "ticket.detail.mode.editable")
-        .waitForExistence(timeout: 5)
-    )
+    let detail = element(session.app, "ticket.detail.\(workItemID.uuidString)")
+    XCTAssertTrue(detail.waitForExistence(timeout: 5))
+    XCTAssertEqual(detail.value as? String, "Editable")
   }
 
   /// Existing deterministic coverage:

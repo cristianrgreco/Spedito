@@ -1346,6 +1346,7 @@ private struct CodebaseCommitDetailView: View {
             }
             .buttonStyle(.bordered)
             .help("Open \(ticket.key) in the sprint board")
+            .accessibilityIdentifier("codebase.commit.open-ticket.\(ticket.id.uuidString)")
           }
         }
 

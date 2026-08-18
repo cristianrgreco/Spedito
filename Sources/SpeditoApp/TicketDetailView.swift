@@ -348,7 +348,6 @@ struct TicketDetailView: View {
         }
         Text("Ticket details")
           .font(.title2.bold())
-          .accessibilityIdentifier("ticket.detail.mode.editable")
         Spacer()
         Button("Close") { dismiss() }
       }
@@ -501,6 +500,7 @@ struct TicketDetailView: View {
     }
     .frame(width: detailSize.width, height: detailSize.height)
     .accessibilityIdentifier("ticket.detail.\(item?.id.uuidString ?? "new")")
+    .accessibilityValue("Editable")
     .background(InitialFocusClearer())
     .task {
       await model.setOwnerNotificationTargetVisible(

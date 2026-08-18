@@ -403,8 +403,10 @@ struct TeamSidebar: View {
         Section("Knowledge") {
           Label("Product", systemImage: "books.vertical")
             .tag(WorkspaceDestination.knowledge)
+            .accessibilityIdentifier("nav.knowledge")
           Label("Codebase", systemImage: "chevron.left.forwardslash.chevron.right")
             .tag(WorkspaceDestination.codebase)
+            .accessibilityIdentifier("nav.codebase")
         }
 
         Section("Team") {
