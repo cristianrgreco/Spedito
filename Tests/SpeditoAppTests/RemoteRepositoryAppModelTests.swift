@@ -1425,10 +1425,7 @@ struct RemoteRepositoryAppModelTests {
     let resumedItem = try #require(
       try await store.fetchWorkItems(productID: product.id).first { $0.id == item.id }
     )
-    let resumedRun = try #require(
-      try await store.fetchAgentRuns(productID: product.id)
-        .first { $0.id == implementationRun.id }
-    )
+    let runActivity = try await store.fetchActivity(workItemID: item.id)
     let resumedPublication = try #require(
       model.remoteRepositorySnapshot(for: product.id).repositoryState.publication
     )
@@ -1436,8 +1433,13 @@ struct RemoteRepositoryAppModelTests {
     #expect(!syncedPublicationIDs.isEmpty)
     #expect(Set(syncedPublicationIDs) == [publication.id])
     #expect(resumedItem.state == .running)
-    #expect(resumedRun.status == .queued)
-    #expect(resumedRun.codexThreadID == "thread-d13-implementation")
+    #expect(
+      runActivity.contains {
+        $0.kind == "agent_run.queued"
+          && $0.actor == "GitHub reviewer"
+          && $0.detail == "Review feedback received; work queued to resume"
+      }
+    )
     #expect(resumedPublication.id == publication.id)
     #expect(resumedPublication.publicationBranch == publication.publicationBranch)
 
