@@ -913,11 +913,21 @@ public final class TicketDeliveryWorkflowCoordinator {
     workspaceURL: URL,
     canonicalKnowledgePages: [KnowledgePage]
   ) async throws -> (result: TicketExecutionResult, deliveryKind: CandidateDeliveryKind) {
+    guard let validationStore = store(for: productID) else {
+      throw PersistenceError.recordNotFound("knowledge destinations for agent run \(runID)")
+    }
+    let writableKnowledgePageIDs = Set(
+      try await validationStore.fetchAgentRunKnowledgeDestinations(productID: productID)
+        .lazy
+        .filter { $0.runID == runID }
+        .map(\.pageID)
+    )
     do {
       let result = try CodexTicketExecutor.decode(response)
       try CodexTicketExecutor.validateKnowledgePageProposals(
         in: result,
-        canonicalPages: canonicalKnowledgePages
+        canonicalPages: canonicalKnowledgePages,
+        writablePageIDs: writableKnowledgePageIDs
       )
       try CodexTicketExecutor.validateFollowUpTicketProposals(
         in: result,
@@ -967,7 +977,8 @@ public final class TicketDeliveryWorkflowCoordinator {
         let repairedResult = try CodexTicketExecutor.decode(repairedResponse)
         try CodexTicketExecutor.validateKnowledgePageProposals(
           in: repairedResult,
-          canonicalPages: canonicalKnowledgePages
+          canonicalPages: canonicalKnowledgePages,
+          writablePageIDs: writableKnowledgePageIDs
         )
         try CodexTicketExecutor.validateFollowUpTicketProposals(
           in: repairedResult,

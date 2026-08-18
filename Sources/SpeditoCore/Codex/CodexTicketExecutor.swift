@@ -896,26 +896,48 @@ public enum CodexTicketExecutor {
 
   public static func validateKnowledgePageProposals(
     in result: TicketExecutionResult,
-    canonicalPages: [KnowledgePage]
+    canonicalPages: [KnowledgePage],
+    writablePageIDs: Set<UUID>
   ) throws {
     let pagesByID = Dictionary(
       uniqueKeysWithValues: canonicalPages.map { ($0.id, $0) }
     )
-    for proposal in result.knowledgePageProposals
-    where proposal.operation == .update {
-      guard
-        let targetPageID = proposal.targetPageID,
-        let targetPage = pagesByID[targetPageID]
-      else {
-        throw TicketExecutionGenerationError.invalidResponse(
-          "A canonical-page update referenced a page that does not exist."
-        )
-      }
-      guard proposal.title == targetPage.title else {
-        throw TicketExecutionGenerationError.invalidResponse(
-          "A canonical-page update must keep the existing page title “\(targetPage.title)”. "
-            + "Use that leaf title exactly, not its breadcrumb path."
-        )
+    for proposal in result.knowledgePageProposals {
+      switch proposal.operation {
+      case .update:
+        guard
+          let targetPageID = proposal.targetPageID,
+          let targetPage = pagesByID[targetPageID]
+        else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "A canonical-page update referenced a page that does not exist."
+          )
+        }
+        guard targetPage.kind == .page, writablePageIDs.contains(targetPageID) else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "A canonical-page update referenced a page that was not writable for this run."
+          )
+        }
+        guard proposal.title == targetPage.title else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "A canonical-page update must keep the existing page title “\(targetPage.title)”. "
+              + "Use that leaf title exactly, not its breadcrumb path."
+          )
+        }
+      case .create:
+        guard
+          let parentPageID = proposal.parentPageID,
+          let parentPage = pagesByID[parentPageID]
+        else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "A canonical-page creation referenced a section that does not exist."
+          )
+        }
+        guard parentPage.kind == .section, writablePageIDs.contains(parentPageID) else {
+          throw TicketExecutionGenerationError.invalidResponse(
+            "A canonical-page creation referenced a section that was not writable for this run."
+          )
+        }
       }
     }
   }
