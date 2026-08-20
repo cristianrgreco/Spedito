@@ -55,6 +55,11 @@ and launch is where owner-visible delivery most often breaks.
 | `script-log-summary` | `commandOutput` | non-visual delivery outcome |
 | `library-csv` | `artifact` | review-only delivery, test evidence |
 | `vague-dashboard` | `browser` | must ask a consequential product question |
+| `import-repository` | `artifact` | repository import, knowledge analysis, delivery into existing history |
+
+`import-repository` has no default repository: set `SPEDITO_PILOT_REPO` to one
+you would genuinely import. Guessing a third-party repository would clone
+something the product owner never chose.
 
 ## What counts as a finding
 

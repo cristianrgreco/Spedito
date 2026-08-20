@@ -100,6 +100,20 @@ enum PilotBriefCatalog {
       expectsNetworkPermission: false,
       midSprintFollowUp: nil
     ),
+    // Read-only import of a repository the product owner nominates. There is no
+    // default: guessing a third-party repository would clone something the owner
+    // never chose.
+    PilotBrief(
+      id: "import-repository",
+      productName: "Imported product",
+      outcome: "Add a short readme section explaining how to run this locally.",
+      source: .publicRepository(
+        ProcessInfo.processInfo.environment["SPEDITO_PILOT_REPO"] ?? ""
+      ),
+      expectedDemoKind: .artifact,
+      expectsNetworkPermission: false,
+      midSprintFollowUp: nil
+    ),
     PilotBrief(
       id: "vague-dashboard",
       productName: "Team dashboard",

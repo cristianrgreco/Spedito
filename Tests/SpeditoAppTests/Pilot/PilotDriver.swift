@@ -118,6 +118,11 @@ final class PilotDriver {
     case .blank:
       request = .blank(name: brief.productName)
     case .publicRepository(let url):
+      guard !url.isEmpty else {
+        throw PilotError.invalidBrief(
+          "The import brief needs a repository. Set SPEDITO_PILOT_REPO."
+        )
+      }
       let source = try PublicGitRepositoryURL(url)
       request = .importRepository(name: brief.productName, source: source)
     }
