@@ -6,3 +6,5 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 .vscode/
+
+.pilot-runs/
