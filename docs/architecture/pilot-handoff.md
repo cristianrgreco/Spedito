@@ -21,19 +21,33 @@ assume the tree is clean just because this one left it that way.
 
 ## Where the loop is
 
-Eight live runs, all on the `static-converter` brief. Run 8 is the first whose
-observations can be trusted: until it, the harness went blind at the mid-run
-relaunch and reported a frozen board as a stalled sprint.
+Nine live runs, all on the `static-converter` brief.
 
-**No run has reached a demo yet.** Run 8 got as far as two reviewed candidates
-with changes requested, then lost the rest of its budget to a delivery recovery
-loop, which is now fixed. Everything downstream of delivery — demo launch,
-acceptance, retrospectives, app versions — is still unexercised.
+**Run 9 completed a ticket end to end and filed no findings.** T1 went plan ->
+sprint -> delivery -> tech lead review -> demo -> acceptance -> released, T2
+started as soon as its prerequisite released, and the demo session opened and
+stopped cleanly. That is the first time any run has got past delivery, and it
+took both the harness fix and the recovery fix to see it.
+
+Run 9 also paused for thirty minutes mid-review. That was the product owner's
+internet connection dropping, not a defect: the review completed on its own once
+the connection returned. Worth knowing because the harness cannot currently tell
+the difference, which is the open gap below.
+
+Still unexercised: retrospectives, app versions, and every brief other than
+`static-converter`.
 
 ### Fixed and proven
 
 Two things, one in Spedito and one in the harness. Read both: the second is why
 the previous handoff's blocker was wrong.
+
+**Evidence capture dropped the write-ahead log.** Run 9's evidence database was
+4KB with no schema in it, because `captureEvidence` copied `product.sqlite`
+without the log SQLite keeps recent commits in. Earlier runs looked fine only
+because their logs happened to have been checkpointed. The scratch root is
+deleted at the end of a run, so run 9's data is gone and only its journal
+survives. Fixed and covered by `capturedEvidenceContainsCommittedRows`.
 
 **Delivery recovery requeued its own live runs.** `recoverDelivery` adopts runs
 the database still calls running, on the assumption a process stopped and
@@ -156,6 +170,23 @@ stop macOS from reporting a sandboxed child process's crash, and deciding what
 the owner should see instead is a product question, not a defect with an obvious
 fix. It stays a report.
 
+## The open gap
+
+**A hung run is invisible to the harness.** For thirty minutes of run 9, T1 sat
+in `verifying` with a `reviewing` candidate and a running agent, and the pilot
+filed nothing. Neither invariant covers it: `stalledRuns` only looks at queued
+runs, and `deadEnds` skips any ticket that offers an action, which T1 did
+because a running run offers **Stop**.
+
+In run 9 the cause was a dropped connection and the review finished by itself,
+so nothing was wrong. But a turn that dies quietly looks exactly the same, and
+the owner would sit in front of a ticket in review indefinitely with no
+explanation and **Stop** as their only option. The harness should notice a run
+that has been running with no new activity for longer than some tolerance, and
+report it separately from a queued stall so the two are not confused.
+
+Doing this needs `AgentRun.lastActivityAt`, which the board already carries.
+
 ## Running it
 
 ```sh
@@ -228,7 +259,7 @@ git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
 
-Currently 609 tests pass, ratchets match all six baselines, diff is clean. The
+Currently 610 tests pass, ratchets match all six baselines, diff is clean. The
 pilot run itself is gated behind `SPEDITO_PILOT=1` and does not run in
 `swift test`, but the harness's own deterministic tests do and must stay that
 way: `PilotSupervisionTests` is the reason a relaunch defect cannot silently
@@ -252,18 +283,18 @@ effects that escape the sandbox into their session, and say so promptly.
 
 ## Suggested next steps
 
-1. Run `static-converter` again. Run 8 lost its budget to the recovery loop
-   before reaching a demo; with that fixed, a demo is the next thing nobody has
-   ever seen. Budget 1800s is enough to reach delivery but was not enough to
-   finish it, so consider 2400s.
-2. Once a run genuinely reaches a demo, run the native macOS, script, and
-   library briefs. The owner asked for varied products; only static web has been
-   exercised.
+1. Add the hung-run invariant described above. Run 9 proved the harness cannot
+   see thirty minutes of nothing happening, and every later brief depends on it.
+2. Run the native macOS, script, and library briefs. Delivery now reaches a demo,
+   so the demo kinds that have never been exercised are the obvious next target.
+   `static-converter` has been run nine times; it has little left to say.
 3. Make the relaunch a genuinely cold start. `simulateRelaunch` reuses the
    `ProductStoreRegistry`, so the same SQLite connections survive a quit that
-   should have closed them. This is the least faithful part of the harness and
-   is now the most likely source of a wrong post-relaunch conclusion.
+   should have closed them. This is the least faithful part of the harness.
 4. Mine real Codex replies from `evidence/codex-threads/` into
    `ScriptedCodexTransport` fixtures. The existing suite's fixtures are
    hand-written happy paths, and replacing them with real agent output is the
    durable fix for regressions recurring.
+
+Set `SPEDITO_PILOT_KEEP=1` when a run is expected to be interesting. The scratch
+root is deleted otherwise, and run 9 showed what that costs.

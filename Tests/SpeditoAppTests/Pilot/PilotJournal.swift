@@ -141,12 +141,23 @@ final class PilotJournal: @unchecked Sendable {
           .appendingPathComponent(".spedito", isDirectory: true)
           .appendingPathComponent("product.sqlite")
         guard FileManager.default.fileExists(atPath: database.path) else { continue }
-        try? FileManager.default.copyItem(
-          at: database,
-          to: evidenceURL.appendingPathComponent(
-            "\(workspace.lastPathComponent)-product.sqlite"
-          )
+        let destination = evidenceURL.appendingPathComponent(
+          "\(workspace.lastPathComponent)-product.sqlite"
         )
+        try? FileManager.default.copyItem(at: database, to: destination)
+        // SQLite keeps recent commits in the write-ahead log until something
+        // checkpoints them, so the database file alone holds whatever was last
+        // checkpointed. Run 9 captured a 4KB file with no schema in it, and it
+        // was the first run ever to reach a demo. Copying the log beside it lets
+        // the evidence database replay everything the run committed.
+        for suffix in ["-wal", "-shm"] {
+          let sidecar = URL(fileURLWithPath: database.path + suffix)
+          guard FileManager.default.fileExists(atPath: sidecar.path) else { continue }
+          try? FileManager.default.copyItem(
+            at: sidecar,
+            to: URL(fileURLWithPath: destination.path + suffix)
+          )
+        }
       }
     }
 

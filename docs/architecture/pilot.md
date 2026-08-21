@@ -85,9 +85,15 @@ Each run writes `.pilot-runs/<timestamp>-<brief>/`:
 ```
 journal.jsonl              every owner command, observation, and finding
 findings.md                the triage report
-evidence/*.sqlite          the product database as the run left it
+evidence/*.sqlite          the product database as the run left it, with its
+                           write-ahead log beside it
 evidence/codex-threads/    the rollout for every thread the run touched
 ```
+
+The write-ahead log is copied with the database on purpose. SQLite keeps recent
+commits there until something checkpoints them, so copying the database file
+alone captures whatever was last checkpointed, which for one run was an empty
+file. `PilotSupervisionTests.capturedEvidenceContainsCommittedRows` holds this.
 
 The journal is appended synchronously, so an interrupted or hung run still
 leaves a readable trail.
@@ -198,6 +204,27 @@ This is the defect the previous handoff was reaching for when it named delivery
 admission and the scheduler. It could not be seen until the harness stopped
 reporting on an application it had closed, and the mechanism is nothing like
 what was hypothesised.
+
+### The first successful run left no evidence (run 9, 21 August 2026)
+
+Run 9 completed a whole ticket — plan, sprint, delivery, tech lead review, demo,
+acceptance, released — and filed no findings. Its evidence database was 4KB with
+no schema in it.
+
+`captureEvidence` copied `product.sqlite` and nothing else. Everything the run
+committed was still in the write-ahead log, which is where SQLite keeps recent
+commits until a checkpoint moves them. Earlier runs happened to capture usable
+databases because their logs had been checkpointed by then, so this looked
+reliable until the run that mattered most.
+
+Fixed by copying the log and shared-memory files beside the database, so the
+evidence database replays what the run committed. Covered by
+`capturedEvidenceContainsCommittedRows`, verified to fail without the fix by
+reproducing the empty database exactly.
+
+A run's own bundle is the only durable record: the scratch root is deleted when
+the run ends unless `SPEDITO_PILOT_KEEP=1` is set. Run 9's data is gone, and only
+its journal survives.
 
 ## Cost and safety
 

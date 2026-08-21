@@ -55,6 +55,35 @@ struct PilotSupervisionTests {
     #expect(after.outcome == .keepWatching)
   }
 
+  /// Run 9 was the first pilot run to reach a demo and accept a ticket, and its
+  /// evidence database was 4KB with no schema in it. The capture copied only the
+  /// database file, and everything the run committed was still in the
+  /// write-ahead log.
+  @Test("Captured evidence contains what the run committed")
+  func capturedEvidenceContainsCommittedRows() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+
+    // Capture while the databases are still open, which is when a live run does
+    // it: the driver has just finished and the application is still up.
+    fixture.journal.captureEvidence(
+      productWorkspacesRootURL: fixture.workspacesURL,
+      codexThreadIDs: []
+    )
+
+    let captured = fixture.journal.bundleURL
+      .appendingPathComponent("evidence", isDirectory: true)
+      .appendingPathComponent("\(fixture.productID.uuidString)-product.sqlite")
+    #expect(FileManager.default.fileExists(atPath: captured.path))
+
+    let reopened = try SQLiteStore(url: captured)
+    let items = try await reopened.fetchWorkItems(productID: fixture.productID)
+    #expect(items.map(\.id) == [fixture.workItemID])
+    let runs = try await reopened.fetchAgentRuns(productID: fixture.productID)
+    #expect(runs.map(\.id) == [fixture.runID])
+    await reopened.close()
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
@@ -108,6 +137,7 @@ private enum PilotSupervisionFixtureError: Error {
 @MainActor
 private struct PilotSupervisionFixture {
   let directoryURL: URL
+  let workspacesURL: URL
   let registry: ProductStoreRegistry
   let store: SQLiteStore
   let workspace: PilotWorkspace
@@ -122,7 +152,7 @@ private struct PilotSupervisionFixture {
       "spedito-pilot-supervision-\(UUID())",
       isDirectory: true
     )
-    let workspacesURL = directoryURL.appendingPathComponent(
+    workspacesURL = directoryURL.appendingPathComponent(
       "Product Workspaces",
       isDirectory: true
     )
