@@ -269,7 +269,7 @@ final class PilotDriver {
     let ticketsBefore = model.workItems.count
     journal.record(.ownerCommand, "Ask for something else mid-sprint: \(followUp)")
 
-    guard await model.createEpicAndPlan(outcome: followUp) != nil else {
+    guard let followUpEpic = await model.createEpicAndPlan(outcome: followUp) else {
       fileOnce(
         PilotJournal.Finding(
           category: .functional,
@@ -288,10 +288,63 @@ final class PilotDriver {
       return
     }
 
-    let suggested = await waitUntil("suggested tickets for the follow-up") { model in
-      model.suggestionBatches.contains { batch in
-        batch.suggestions.contains { $0.status == .proposed }
+    // The analyst asks about a new request just as it does for the first one,
+    // and every wait here is bounded. This runs inside the supervision loop, so
+    // an unbounded wait would stop the owner watching delivery at all — which is
+    // exactly what it did the first time this ran live.
+    var suggested = false
+    var rounds = 0
+    while rounds < 4, Date() < deadline {
+      let progressed = await waitUntil(
+        "the follow-up plan",
+        limit: .seconds(90)
+      ) { model in
+        let conversation = model.epicPlanningFeature.snapshot.conversation
+        if let conversation, conversation.epicID == followUpEpic.id,
+          !conversation.questions.isEmpty || conversation.errorMessage != nil
+        {
+          return true
+        }
+        return model.suggestionBatches.contains { batch in
+          batch.suggestions.contains { $0.status == .proposed }
+        }
       }
+      guard progressed, let model = self.model else { break }
+      if model.suggestionBatches.contains(where: { batch in
+        batch.suggestions.contains { $0.status == .proposed }
+      }) {
+        suggested = true
+        break
+      }
+      let conversation = model.epicPlanningFeature.snapshot.conversation
+      if let failure = conversation?.errorMessage {
+        fileOnce(
+          PilotJournal.Finding(
+            category: .functional,
+            title: "Planning a request made during a sprint failed",
+            evidence: failure,
+            locationHint: "Sources/SpeditoCore/Domain/EpicPlanningWorkflowCoordinator.swift",
+            at: Date()
+          )
+        )
+        return
+      }
+      guard let questions = conversation?.questions, !questions.isEmpty else { break }
+      let reply = owner.answers(to: questions)
+      journal.record(
+        .ownerCommand,
+        "Answer \(questions.count) question(s) about the mid-sprint request",
+        detail: zip(questions.map(\.prompt), reply.answers)
+          .map { "\($0): \($1)" }
+          .joined(separator: "\n")
+      )
+      model.epicPlanningWorkflowCoordinator.continueEpicPlanning(
+        followUpEpic,
+        answers: reply.answers,
+        answeredQuestions: reply.answered
+      )
+      rounds += 1
+      await settle(for: .seconds(2))
     }
     guard suggested, let model = self.model, let batch = model.suggestionBatches.last
     else {
