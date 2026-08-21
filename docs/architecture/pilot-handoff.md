@@ -71,7 +71,17 @@ recovery requeues, against 64 in run 10.
 exactly. It never explained T2 in either run, because no owner decision was
 involved — which is what led to the fix below.
 
-## The resume-after-review hang — found and fixed
+## The resume-after-review hang — two causes, both fixed
+
+**The changes-requested path had no test coverage at all**, which is why two
+separate defects lived in it and why every run that reached a tech lead review
+requesting changes stopped there. `failedRevisionReachesTheProductOwner` is the
+first test to drive it.
+
+### Cause one: the revision was discarded (`ab4a244`, confirmed live)
+
+**Confirmed working in run 15**, whose T1 recorded candidates **v1 → v2 → v3**
+and was released. Before the fix v2 could not exist.
 
 **Cause found and fixed in `ab4a244`.** Three delivery turns across runs 12, 13
 and 14 finished their work and were never recorded. Every one was the turn that
@@ -97,6 +107,23 @@ attempt and must keep its identity. Covered by
 `resumedDeliverySettlesANewCandidateVersion`, verified to fail without the fix by
 reproducing the mechanism exactly: the resumed run reports version 1 and hands
 back the rejected candidate.
+
+### Cause two: a revision that never validates was dropped (`c3b35d2`)
+
+Run 15 proved cause one and exposed cause two in the same run. Its T2 returned
+three results that would not validate, exhausted the repair attempts, and
+stopped dead in the same owner-visible way.
+
+The revision runs inside the review flow, and that flow's failure handler drops
+any failure whose candidate has stopped awaiting a review outcome — deliberately,
+because another task may have carried the candidate through and tearing it down
+then would fail an accepted candidate. But **requesting changes is itself what
+moves the candidate on**, so a revision failure always looked stale and was
+always discarded, leaving the run `running` with nothing to move it.
+
+A failed revision now leaves the run `awaitingOwner` with a comment saying what
+stopped and how to retry, which is what the review flow already does for its own
+failures.
 
 ### A correction worth reading before you trust anything else here
 
