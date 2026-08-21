@@ -216,9 +216,14 @@ final class PilotDriver {
     }
 
     model.prepareRetrospectiveSynthesisIfNeeded(sprintID: sprintID)
+    // Wait for the synthesis to settle, not merely to exist. A sprint will not
+    // conclude its retrospective while its actions are still being prepared,
+    // and it says so; concluding early is the owner pressing a button before the
+    // screen is ready, not a defect to report.
     let arrived = await waitUntil("the sprint retrospective", limit: .seconds(300)) { model in
-      model.retrospectiveSyntheses.contains { $0.sprintID == sprintID }
-        || model.retrospectiveNotes.contains { $0.sprintID == sprintID }
+      model.retrospectiveSyntheses
+        .first { $0.sprintID == sprintID }?
+        .status.isResolved == true
     }
     guard arrived, let model = self.model else {
       fileOnce(
@@ -256,7 +261,20 @@ final class PilotDriver {
         PilotJournal.Finding(
           category: .deadEnd,
           title: "The owner could not conclude the sprint retrospective",
-          evidence: model.errorMessage ?? "No reason given.",
+          evidence: """
+            \(model.errorMessage ?? "No reason given.")
+
+            Synthesis: \(
+              model.retrospectiveSyntheses
+                .first { $0.sprintID == sprintID }?
+                .status.rawValue ?? "none"
+            )
+            Unresolved actions: \(
+              model.retrospectiveNotes
+                .filter { $0.sprintID == sprintID && $0.actionStatus == .proposed }
+                .count
+            )
+            """,
           locationHint: "Sources/SpeditoApp/RetrospectivesView.swift",
           at: Date()
         )
