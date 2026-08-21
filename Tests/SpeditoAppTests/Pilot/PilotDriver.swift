@@ -667,7 +667,13 @@ final class PilotDriver {
     for candidate in model.candidateRevisions where candidate.status == .readyForDemo {
       let alreadyRunning = model.demoSessions.contains { $0.status.isActive }
       guard !alreadyRunning else { continue }
-      journal.record(.ownerCommand, "Open the demo for \(candidate.branchName)")
+      let offered = demoKind(of: candidate)
+      journal.record(
+        .ownerCommand,
+        "Open the demo for \(candidate.branchName)",
+        detail: "Demo kind: \(offered?.rawValue ?? "none declared"), "
+          + "expected \(brief.expectedDemoKind.rawValue)"
+      )
       let launched = await model.launchDemo(for: candidate)
       if !launched {
         fileOnce(
@@ -687,6 +693,19 @@ final class PilotDriver {
         )
       }
     }
+  }
+
+  /// The presentation the candidate declares, which is what the owner is about
+  /// to be shown.
+  ///
+  /// The brief catalog is organised by `DemoPresentationKind`, because demo
+  /// preparation is where owner-visible delivery most often breaks. Until now a
+  /// run's evidence never recorded which kind it actually reached, so "this
+  /// brief exercises `macApplication`" was an intention rather than a fact. A
+  /// mismatch is recorded, not filed: the agent may reasonably choose a
+  /// different presentation, and this loop has paid for noisy findings before.
+  private func demoKind(of candidate: CandidateRevision) -> DemoPresentationKind? {
+    try? CodexTicketExecutor.decode(candidate.executionResultJSON).demo?.presentation.kind
   }
 
   private func acceptFinishedWork() async {
