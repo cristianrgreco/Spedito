@@ -135,8 +135,7 @@ enum PilotSnapshotRenderer {
           for: item,
           run: run,
           candidate: candidate,
-          needsInput: needsInput,
-          model: model
+          needsInput: needsInput
         )
       )
     }
@@ -189,12 +188,18 @@ enum PilotSnapshotRenderer {
 
   /// Mirrors the affordances the sprint board and ticket detail actually offer.
   /// A ticket with no actions and no running agent is a dead end.
-  private static func availableActions(
+  /// What the owner can do with this ticket right now.
+  ///
+  /// Deduplicated, because a candidate that is ready for demo and a ticket in
+  /// acceptance both offer Accept, and a live run rendered
+  /// `actions=[Open demo, Accept, Accept]`. Spedito shows one button; a board
+  /// line that shows two invites a finding against a defect that does not
+  /// exist, which is how this loop has lost whole sessions before.
+  static func availableActions(
     for item: WorkItem,
     run: AgentRun?,
     candidate: CandidateRevision?,
-    needsInput: Bool,
-    model: AppModel
+    needsInput: Bool
   ) -> [String] {
     var actions: [String] = []
     if needsInput { actions.append("Answer") }
@@ -216,7 +221,8 @@ enum PilotSnapshotRenderer {
     default:
       break
     }
-    return actions
+    var seen: Set<String> = []
+    return actions.filter { seen.insert($0).inserted }
   }
 
   static func describe(_ snapshot: PilotSnapshot) -> String {

@@ -286,6 +286,42 @@ struct PilotSupervisionTests {
     )
   }
 
+  /// A live run rendered `actions=[Open demo, Accept, Accept]`, because a
+  /// candidate that is ready for demo and a ticket sitting in acceptance each
+  /// contribute Accept. Spedito shows one button. A board line that shows two
+  /// invites a finding against a defect that does not exist.
+  @Test("A ticket offering Accept from two rules shows it once")
+  func availableActionsAreNotDuplicated() {
+    let item = WorkItem(
+      productID: UUID(),
+      key: "T1",
+      title: "Establish the native Mac app delivery setup",
+      state: .acceptance
+    )
+    let candidate = CandidateRevision(
+      productID: item.productID,
+      sprintID: UUID(),
+      sprintItemID: UUID(),
+      workItemID: item.id,
+      implementationRunID: UUID(),
+      version: 1,
+      branchName: "ticket/T1",
+      baseSHA: "base",
+      headSHA: "head",
+      worktreePath: "/tmp/ticket-T1",
+      status: .readyForDemo,
+      commitCount: 1,
+      executionResultJSON: "{}"
+    )
+    let actions = PilotSnapshotRenderer.availableActions(
+      for: item,
+      run: nil,
+      candidate: candidate,
+      needsInput: false
+    )
+    #expect(actions == ["Open demo", "Accept"])
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
