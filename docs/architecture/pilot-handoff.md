@@ -218,8 +218,10 @@ effects that escape the sandbox into their session, and say so promptly.
    library briefs. The owner asked for varied products; only static web has been
    exercised.
 3. Write up the Chrome and permission-wording findings as their own packet.
-   These are the only two findings from runs 1 to 7 that the relaunch defect
-   does not touch, because both were observed before the relaunch.
+   The relaunch defect does not touch these, even though both were seen after
+   the relaunch: they arrived through `drainPermissionRequests` and the shared
+   notification recorder, and every owner-reaction path reads the application
+   that is open now. Only the reporting paths were blind.
 4. Mine real Codex replies from `evidence/codex-threads/` into
    `ScriptedCodexTransport` fixtures. The existing suite's fixtures are
    hand-written happy paths, and replacing them with real agent output is the
