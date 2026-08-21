@@ -52,10 +52,15 @@ briefs. `vague-dashboard` is running now.
 
 ## What to do first
 
-1. **Keep running briefs.** Delivery is no longer the blocker. `static-weather`
-   is running as this was written; `native-timer` and `import-repository` remain.
-   `import-repository` needs a repository the product owner nominates — do not
-   guess one.
+1. **Keep running briefs.** Delivery is no longer the blocker.
+
+2. **`import-repository` needs the product owner, and cannot be worked around.**
+   `PublicGitRepositoryURL` accepts only a public `https` host and explicitly
+   rejects localhost and private addresses, which is the right boundary. So a
+   locally created fixture repository cannot stand in for one, and guessing a
+   third-party repository would clone something the owner never chose. Ask them
+   for one and set `SPEDITO_PILOT_REPO`. Until then R01–R07 stay unexercised,
+   and that is a limit of the harness, not a defect.
 2. **Run the briefs nobody has run:** `script-log-summary`, `library-csv`,
    `web-reading-list`, `vague-dashboard`, `static-weather`, `native-timer`. Each
    exercises a `DemoPresentationKind` or a feature never reached, and the product
