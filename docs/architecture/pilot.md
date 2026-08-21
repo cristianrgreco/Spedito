@@ -169,6 +169,36 @@ so there is one place the observed application can change. Covered by
 `PilotSupervisionTests`, verified to fail with the binding restored: the board
 reports `queued` while the database says `running`.
 
+### Delivery recovery requeued its own live runs (run 8, 21 August 2026)
+
+The first run whose post-relaunch observations were trustworthy reached two
+reviewed candidates with changes requested, then stopped progressing for the
+last eight minutes of its budget. Its database records 46 `agent_run.queued`
+events in that window, two at a time, roughly every 12 to 25 seconds, each one
+reading "Interrupted work queued to resume from the existing workspace".
+
+`recoverDelivery` adopts every run the database still calls running, on the
+assumption a process stopped and orphaned them. It is invoked from
+`prepareScheduler`, which the runtime coordinator calls every time a scheduler
+task is created, not only at launch. Schedulers are created and retired
+constantly during delivery, so recovery kept requeuing runs the same process was
+executing: the drain restarted each one, and the next scheduler requeued it.
+
+Both recovery passes were affected. The requeuing pass interrupted live work;
+the earlier pass resumed the run's Codex thread and could reprocess a completed
+result while its turn was still running.
+
+Fixed by skipping runs `TicketDeliveryRuntimeCoordinator.executingRunIDs`
+reports — an implementation task this process owns, or a live Codex turn it
+registered. A genuine relaunch is unaffected because a fresh runtime coordinator
+owns nothing, which `[D04]` already proves. Covered by
+`recoveryDoesNotRequeueItsOwnLiveRun`, verified to fail without the fix.
+
+This is the defect the previous handoff was reaching for when it named delivery
+admission and the scheduler. It could not be seen until the harness stopped
+reporting on an application it had closed, and the mechanism is nothing like
+what was hypothesised.
+
 ## Cost and safety
 
 - Runs consume real Codex usage under the owner's own authentication. Budget is

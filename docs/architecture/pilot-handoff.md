@@ -1,42 +1,64 @@
 # Pilot loop handoff
 
 - **Date:** 21 August 2026
-- **Branch:** `pilot` (7 commits ahead of `main`)
+- **Branch:** `pilot` (12 commits ahead of `main`)
 - **Harness:** `Tests/SpeditoAppTests/Pilot/`, runner `scripts/pilot.sh`
 - **Design rationale:** `docs/architecture/pilot.md`
 
 Read `docs/architecture/pilot.md` first for why this layer exists. This document
 covers only what a continuing agent needs to pick the loop up.
 
-## Resolve this before anything else
+## The working tree is committed now
 
-Commit `0bd0af6` accidentally contains the product owner's uncommitted
-`AppModel.swift` work: a token-usage refactor introducing `cumulativeUsedTokens`
-around `thread/tokenUsage/updated`. It was swept in by `git add` on a file that
-was already dirty at session start.
+Commit `0bd0af6` swept in the product owner's uncommitted `AppModel.swift` work.
+They have since said the commit is fine and asked for all local changes to be
+committed, which is `775e4bb`. The tree is clean and no history was rewritten.
 
-Nothing is lost and the other 54 dirty files are untouched, but the owner was
-told their work was untouched, which was wrong for that file. They have been
-offered a split into a separate commit and have not yet answered. **Do not
-rewrite that history without their instruction.**
-
-Lesson for the rest of this loop: this repository is worked on with a
-persistently dirty tree. Stage explicit paths, and check `git status` for the
-file first when a production file must change.
+Three fixes on this branch were blocked while it was dirty and are now done, so
+the rule that produced the problem still stands: **stage explicit paths, and
+check `git status` on a file before staging it.** A future session should not
+assume the tree is clean just because this one left it that way.
 
 ## Where the loop is
 
-Seven live runs, all on the `static-converter` brief. Every run reaches a sprint
-and delivers real work. **No run has ever been observed reaching a demo**, so
-everything downstream of delivery — demo launch, acceptance, retrospectives, app
-versions — is still unproven. Note the wording: until the fix below, the harness
-went blind at the relaunch, so it could not have reported a demo even if one
-happened.
+Eight live runs, all on the `static-converter` brief. Run 8 is the first whose
+observations can be trusted: until it, the harness went blind at the mid-run
+relaunch and reported a frozen board as a stalled sprint.
+
+**No run has reached a demo yet.** Run 8 got as far as two reviewed candidates
+with changes requested, then lost the rest of its budget to a delivery recovery
+loop, which is now fixed. Everything downstream of delivery — demo launch,
+acceptance, retrospectives, app versions — is still unexercised.
 
 ### Fixed and proven
 
 Two things, one in Spedito and one in the harness. Read both: the second is why
 the previous handoff's blocker was wrong.
+
+**Delivery recovery requeued its own live runs.** `recoverDelivery` adopts runs
+the database still calls running, on the assumption a process stopped and
+orphaned them. It is invoked from `prepareScheduler`, which runs every time a
+scheduler is created, not only at launch. So while delivery was live it kept
+requeuing runs this process was executing: the drain restarted them, the next
+scheduler requeued them again. Run 8 recorded 46 requeues in eight minutes,
+starting immediately after a tech lead requested changes, after which the sprint
+made no further progress.
+
+Fixed in `TicketDeliveryWorkflowCoordinator.recoverDelivery`, which now skips
+runs `TicketDeliveryRuntimeCoordinator.executingRunIDs` reports. A genuine
+relaunch still recovers everything, because a fresh runtime coordinator owns
+nothing; `[D04]` is the proof of that and still passes. Covered by
+`recoveryDoesNotRequeueItsOwnLiveRun`, verified to fail without the fix.
+
+**Two owner-facing text defects**, both found by run 8 and both fixed with a
+regression test verified to fail first:
+
+- clarification alerts interpolated `epic.title`, which is empty until the plan
+  names the Epic, so the first notification an owner ever receives was titled
+  `" needs your input"`. Both alert sites now use `Epic.displayTitle`.
+- the live permission prompt said `"Network access"` for a scoped request, while
+  the saved grant said `"Restricted network access"`. Both now defer to
+  `AgentPermissionGrantPolicy.isUnrestrictedNetwork`.
 
 **Stale sprint board.** Runs were completing in SQLite while the board showed
 `queued` for twenty minutes. `TicketDeliveryWorkflowCoordinator.updateAgentRun`
@@ -129,25 +151,10 @@ the moment the owner decides, and differently afterwards in the saved grant.
 That is the wrong way round: the broader wording appears where consent is given
 and the narrower one where it is merely recorded.
 
-**Not fixed, deliberately.** `CodexAppServerClient.swift` carries the product
-owner's uncommitted work, and `git add` on that path would sweep it into a
-commit — the exact mistake recorded at the top of this document. Fix it once
-the tree is resolved, or with the owner's agreement on how to stage it.
-
-## Bookkeeping the dirty tree is blocking
-
-Two edits that belong with work on this branch cannot be committed without
-sweeping in the product owner's uncommitted changes, because `git add` stages a
-whole path:
-
-- the `permissionDetail` wording fix described above, in
-  `CodexAppServerClient.swift`; and
-- the journey inventory row E02 in
-  `docs/architecture/owner-journey-test-plan.md`, which should also name
-  `EpicPlanningJourneyTests.clarificationAlertNamesTheEpicBeforeAnalysis`.
-
-Neither is lost; both are recorded here. Do them in the same pass that resolves
-the tree, and check `git status` on a path before staging it.
+The wording half is fixed in `f29f1f4`. The Chrome half is not: Spedito cannot
+stop macOS from reporting a sandboxed child process's crash, and deciding what
+the owner should see instead is a product question, not a defect with an obvious
+fix. It stays a report.
 
 ## Running it
 
@@ -221,7 +228,7 @@ git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
 
-Currently 606 tests pass, ratchets match all six baselines, diff is clean. The
+Currently 609 tests pass, ratchets match all six baselines, diff is clean. The
 pilot run itself is gated behind `SPEDITO_PILOT=1` and does not run in
 `swift test`, but the harness's own deterministic tests do and must stay that
 way: `PilotSupervisionTests` is the reason a relaunch defect cannot silently
@@ -245,17 +252,17 @@ effects that escape the sandbox into their session, and say so promptly.
 
 ## Suggested next steps
 
-1. Run the pilot again on `static-converter` now that the harness can see past
-   the relaunch. This is the first run whose post-relaunch observations mean
-   anything; treat its findings as a first sighting, not a diagnosis.
+1. Run `static-converter` again. Run 8 lost its budget to the recovery loop
+   before reaching a demo; with that fixed, a demo is the next thing nobody has
+   ever seen. Budget 1800s is enough to reach delivery but was not enough to
+   finish it, so consider 2400s.
 2. Once a run genuinely reaches a demo, run the native macOS, script, and
    library briefs. The owner asked for varied products; only static web has been
    exercised.
-3. Write up the Chrome and permission-wording findings as their own packet.
-   The relaunch defect does not touch these, even though both were seen after
-   the relaunch: they arrived through `drainPermissionRequests` and the shared
-   notification recorder, and every owner-reaction path reads the application
-   that is open now. Only the reporting paths were blind.
+3. Make the relaunch a genuinely cold start. `simulateRelaunch` reuses the
+   `ProductStoreRegistry`, so the same SQLite connections survive a quit that
+   should have closed them. This is the least faithful part of the harness and
+   is now the most likely source of a wrong post-relaunch conclusion.
 4. Mine real Codex replies from `evidence/codex-threads/` into
    `ScriptedCodexTransport` fixtures. The existing suite's fixtures are
    hand-written happy paths, and replacing them with real agent output is the
