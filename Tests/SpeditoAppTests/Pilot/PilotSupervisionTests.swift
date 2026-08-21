@@ -515,6 +515,22 @@ struct PilotSupervisionTests {
     #expect(model.workItems.contains { $0.id == laterIdea.id })
     let turn = try #require(await driver.superviseTick(1))
     #expect(turn.outcome == .everyTicketFinished)
+
+    // A finished sprint stops being the current one, so a later turn cannot read
+    // its plan. A live run delivered all three of its tickets and then watched
+    // its remaining budget away, because with the plan gone the watch fell back
+    // to the whole backlog — including the tickets the owner had added
+    // mid-sprint, which this sprint was never going to deliver.
+    _ = try await fixture.store.cancelSprint(id: draft.sprint.id)
+    let reopened = AppModel(
+      storeRegistry: fixture.registry,
+      selectedProductID: fixture.productID
+    )
+    await reopened.reload()
+    #expect(reopened.sprintPlan == nil)
+    driver.adopt(model: reopened)
+    let afterSprintEnded = try #require(await driver.superviseTick(2))
+    #expect(afterSprintEnded.outcome == .everyTicketFinished)
   }
 
   /// The pilot's relaunch carried the `ProductStoreRegistry` across, so the quit

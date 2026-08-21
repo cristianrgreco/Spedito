@@ -25,6 +25,14 @@ final class PilotDriver {
   private(set) var observedThreadIDs: Set<String> = []
   private var didSimulateRelaunch = false
   private var didAskMidSprintFollowUp = false
+  /// The sprint being watched, remembered while its plan is still current.
+  ///
+  /// A finished sprint stops being the current one, so `sprintPlan` goes nil at
+  /// exactly the moment the watch should end. Reading it then makes the run
+  /// track the whole backlog — including tickets the owner added mid-sprint that
+  /// this sprint was never going to deliver — and the watch never ends.
+  private var watchedSprint: (productID: UUID, sprintID: UUID)?
+  private var watchedSprintWorkItemIDs: Set<UUID> = []
   /// Each awaiting run is answered once. Without this the driver re-answers the
   /// same question on every poll.
   private var answeredRunIDs: Set<UUID> = []
@@ -172,13 +180,13 @@ final class PilotDriver {
   /// The owner looks at what the sprint produced, reads the retrospective, keeps
   /// the actions worth keeping, and closes it.
   private func closeOutTheSprint() async {
-    guard let model, let plan = model.sprintPlan else { return }
-    let productID = plan.sprint.productID
-    let sprintID = plan.sprint.id
+    guard let model, let watched = watchedSprint else { return }
+    let productID = watched.productID
+    let sprintID = watched.sprintID
 
     journal.record(
       .observation,
-      "Sprint finished: \(plan.sprint.state.rawValue)",
+      "Sprint finished",
       detail: "\(model.appVersions.count) app version(s) recorded"
     )
 
@@ -213,7 +221,7 @@ final class PilotDriver {
           category: .stalled,
           title: "A finished sprint never produced a retrospective",
           evidence: """
-            Sprint: \(plan.sprint.state.rawValue), \(plan.items.count) item(s)
+            Sprint: \(watchedSprintWorkItemIDs.count) delivered ticket(s)
 
             The owner is meant to learn something from a finished sprint. If
             nothing arrives they have no way to know whether it is coming.
@@ -656,6 +664,10 @@ final class PilotDriver {
     let snapshot = PilotSnapshotRenderer.render(model)
     trackChange(snapshot)
     observe()
+    if let plan = model.sprintPlan {
+      watchedSprint = (plan.sprint.productID, plan.sprint.id)
+      watchedSprintWorkItemIDs.formUnion(plan.items.map(\.workItemID))
+    }
 
     if tick % 6 == 0 {
       journal.record(.snapshot, "Board", detail: PilotSnapshotRenderer.describe(snapshot))
@@ -730,8 +742,7 @@ final class PilotDriver {
     // new mid-sprint puts tickets in the backlog that this sprint was never
     // going to deliver, and waiting for those would burn the whole budget after
     // the sprint had actually finished.
-    let sprintWorkItemIDs = Set(model.sprintPlan?.items.map(\.workItemID) ?? [])
-    let sprintTickets = model.workItems.filter { sprintWorkItemIDs.contains($0.id) }
+    let sprintTickets = model.workItems.filter { watchedSprintWorkItemIDs.contains($0.id) }
     let tracked = sprintTickets.isEmpty ? model.workItems : sprintTickets
     let finished = tracked.allSatisfy { item in
       item.state == .released || item.state == .cancelled
