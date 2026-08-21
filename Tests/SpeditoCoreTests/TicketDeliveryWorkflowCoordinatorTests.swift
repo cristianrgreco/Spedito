@@ -1080,6 +1080,53 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   /// 46 requeues in eight minutes after a tech lead requested changes, each one
   /// interrupting the turn the previous one had just started, until the sprint
   /// stopped progressing at all.
+  /// A scheduler is created and retired constantly while a sprint is live, and
+  /// `prepareScheduler` recovers every time one is created. A live pilot run
+  /// turned that into a loop: recovery requeued the run, the drain restarted it,
+  /// the turn finished, and the next scheduler recovered it again — 64 times in
+  /// eight minutes, each pass also resuming the agent's thread at roughly
+  /// 175,000 input tokens.
+  @Test("Delivery is recovered once per product, not once per scheduler")
+  @MainActor
+  func recoveryRunsOncePerProduct() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+    let adopted = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(adopted.status == .queued)
+
+    // The drain starts the queued run, exactly as it does in a live sprint.
+    let restarted = try await harness.store.updateAgentRun(
+      id: harness.run.id,
+      status: .running
+    )
+    #expect(restarted.status == .running)
+
+    // Every later scheduler prepares again. None of them may adopt live work.
+    for _ in 0..<3 {
+      await harness.coordinator.recoverDelivery(productID: harness.product.id)
+    }
+    let afterLaterSchedulers = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(afterLaterSchedulers.status == .running)
+    #expect(afterLaterSchedulers.updatedAt == restarted.updatedAt)
+
+    // A genuine relaunch builds a new coordinator, which still recovers.
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    await relaunched.recoverDelivery(productID: harness.product.id)
+    #expect(try await harness.store.fetchAgentRun(id: harness.run.id).status == .queued)
+
+    await harness.store.close()
+  }
+
   @Test("Recovery leaves a run this process is executing alone")
   @MainActor
   func recoveryDoesNotRequeueItsOwnLiveRun() async throws {

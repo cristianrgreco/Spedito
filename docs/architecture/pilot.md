@@ -208,6 +208,37 @@ admission and the scheduler. It could not be seen until the harness stopped
 reporting on an application it had closed, and the mechanism is nothing like
 what was hypothesised.
 
+### Recovery looped again, and it cost real money (run 10, 21 August 2026)
+
+The first `native-notes` run reached two reviewed candidates, then both agents
+went quiet for the rest of the budget. `silentRuns`, added hours earlier, caught
+it on its first live run and said to rule out a dropped connection. The Codex
+rollouts ruled it out: both turns completed normally with valid results at
+14:13:40 and 14:13:41, and Spedito recorded neither.
+
+The rollouts also showed what came before. Each thread ran roughly forty turns
+between 14:05 and 14:13, one every twelve seconds, at about 175,000 input tokens
+each. The database holds the matching cause: 64 `agent_run.queued` events reading
+"Interrupted work queued to resume from the existing workspace".
+
+So the recovery loop fixed after run 8 was not gone. The `executingRunIDs` guard
+only helps while a run is executing, and this loop requeued between turns, when
+nothing owned the run and recovery was correct to call it an orphan. Worse, each
+pass also resumed both agent threads to look for a missed result, which is where
+the tokens went: roughly fifteen million input tokens of the product owner's
+usage in eight minutes, for no delivered work.
+
+The real error is that restart recovery ran on every scheduler creation.
+`recoverDelivery` now runs once per product per process, which is what "recovery
+after restart" always meant. A genuine relaunch builds a new coordinator, so it
+recovers exactly when it should. Covered by `recoveryRunsOncePerProduct`,
+verified to fail without the fix.
+
+Two lessons worth keeping. A fix that removes a symptom is not the same as a fix
+that removes its cause, and this one was declared done a run too early. And a
+runaway loop in this system spends the product owner's money, so a finding that
+mentions repeated agent turns deserves a token count before anything else.
+
 ### The first successful run left no evidence (run 9, 21 August 2026)
 
 Run 9 completed a whole ticket — plan, sprint, delivery, tech lead review, demo,

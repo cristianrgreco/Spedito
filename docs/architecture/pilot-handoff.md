@@ -21,26 +21,33 @@ assume the tree is clean just because this one left it that way.
 
 ## Where the loop is
 
-Nine live runs, all on the `static-converter` brief.
+Ten live runs. Run 9 (`static-converter`) completed a ticket end to end and
+filed no findings: plan -> sprint -> delivery -> tech lead review -> demo ->
+acceptance -> released. That remains the only complete journey.
 
-**Run 9 completed a ticket end to end and filed no findings.** T1 went plan ->
-sprint -> delivery -> tech lead review -> demo -> acceptance -> released, T2
-started as soon as its prerequisite released, and the demo session opened and
-stopped cleanly. That is the first time any run has got past delivery, and it
-took both the harness fix and the recovery fix to see it.
+Run 10 was the first `native-notes` run, and the first on any brief other than
+`static-converter`. It reached two reviewed candidates and then lost the rest of
+its budget to a recovery loop that also burned roughly fifteen million input
+tokens of the product owner's Codex usage in eight minutes. That loop is the one
+that was declared fixed after run 8; the fix removed one of its two paths. It is
+now fixed at its cause, and `docs/architecture/pilot.md` has the full account.
 
-Run 9 also paused for thirty minutes mid-review. That was the product owner's
-internet connection dropping, not a defect: the review completed on its own once
-the connection returned. Worth knowing because the harness cannot currently tell
-the difference, which is the open gap below.
-
-Still unexercised: retrospectives, app versions, and every brief other than
-`static-converter`.
+Still unexercised: retrospectives, app versions, and the script, library, and
+browser briefs. No `native-notes` run has reached a demo.
 
 ### Fixed and proven
 
 Two things, one in Spedito and one in the harness. Read both: the second is why
 the previous handoff's blocker was wrong.
+
+**Restart recovery ran on every scheduler creation.** It resumes each run's Codex
+thread and requeues what it cannot account for, and schedulers are created and
+retired constantly during a sprint. Run 8 showed the requeuing half; the guard
+added then only helped while a run was executing, so run 10 looped between
+turns instead and additionally spent roughly fifteen million input tokens
+resuming threads. `recoverDelivery` now runs once per product per process, which
+is what "recovery after restart" always meant. Covered by
+`recoveryRunsOncePerProduct`.
 
 **A hung run was invisible.** For thirty minutes of run 9 a running agent
 reported nothing and the pilot filed nothing: `stalledRuns` only looks at queued
@@ -249,7 +256,7 @@ git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
 
-Currently 611 tests pass, ratchets match all six baselines, diff is clean. The
+Currently 612 tests pass, ratchets match all six baselines, diff is clean. The
 pilot run itself is gated behind `SPEDITO_PILOT=1` and does not run in
 `swift test`, but the harness's own deterministic tests do and must stay that
 way: `PilotSupervisionTests` is the reason a relaunch defect cannot silently
@@ -262,7 +269,10 @@ behaviour proves nothing.
 ## Cost and side effects
 
 Each run consumes real Codex usage under the owner's own authentication, for up
-to its budget in wall clock. Seven runs is roughly three hours. Keep budgets
+to its budget in wall clock. A defect can spend far more than the budget
+suggests: run 10 spent roughly fifteen million input tokens in eight minutes
+through a loop that resumed agent threads. When a finding mentions repeated
+turns, count the tokens in the rollouts before anything else. Seven runs is roughly three hours. Keep budgets
 tight while iterating on the harness, and only lengthen them once a run is
 expected to reach a demo.
 
@@ -273,13 +283,16 @@ effects that escape the sandbox into their session, and say so promptly.
 
 ## Suggested next steps
 
-1. Run the native macOS, script, and library briefs. Delivery now reaches a demo,
+1. Run `native-notes` again. Run 10 never reached a demo, so native launch, app
+   versions, and persistence are all still unproven, and the recovery fix needs
+   a live run to confirm it at its cause rather than at a symptom.
+2. Run the script, library, and browser briefs. Delivery now reaches a demo,
    so the demo kinds that have never been exercised are the obvious next target.
    `static-converter` has been run nine times; it has little left to say.
-2. Make the relaunch a genuinely cold start. `simulateRelaunch` reuses the
+3. Make the relaunch a genuinely cold start. `simulateRelaunch` reuses the
    `ProductStoreRegistry`, so the same SQLite connections survive a quit that
    should have closed them. This is the least faithful part of the harness.
-3. Mine real Codex replies from `evidence/codex-threads/` into
+4. Mine real Codex replies from `evidence/codex-threads/` into
    `ScriptedCodexTransport` fixtures. The existing suite's fixtures are
    hand-written happy paths, and replacing them with real agent output is the
    durable fix for regressions recurring.

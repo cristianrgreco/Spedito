@@ -259,6 +259,10 @@ public final class TicketDeliveryWorkflowCoordinator {
   private var ticketDeliveryRuntimeCoordinator: TicketDeliveryRuntimeCoordinator {
     runtimeCoordinator
   }
+
+  /// Products this process has already adopted delivery for. See
+  /// `recoverDelivery(productID:)`.
+  private var recoveredProductIDs: Set<UUID> = []
   private var sprintWorkRecoveryPolicy: SprintWorkRecoveryPolicy { recoveryPolicy }
 
   private var errorMessage: String? {
@@ -4210,7 +4214,23 @@ public final class TicketDeliveryWorkflowCoordinator {
     return .alreadyRecovered
   }
 
+  /// Adopts delivery a previous process left behind, once per product.
+  ///
+  /// This is restart recovery: it resumes each run's Codex thread to look for a
+  /// result the stopped process never recorded, and requeues what it cannot
+  /// account for. Both are expensive and destructive to repeat. It is invoked
+  /// from `prepareScheduler`, which runs every time a scheduler is created, and
+  /// schedulers are created and retired constantly while a sprint is live.
+  ///
+  /// Left unbounded it becomes a loop that costs real money. A live pilot run
+  /// recorded 64 requeues in eight minutes, each one also resuming two agent
+  /// threads at roughly 175,000 input tokens a time — around fifteen million
+  /// tokens of the product owner's usage, for no delivered work.
+  ///
+  /// A genuine relaunch builds a new coordinator, so its set is empty and
+  /// recovery runs again exactly when it should.
   public func recoverDelivery(productID: UUID) async {
+    guard recoveredProductIDs.insert(productID).inserted else { return }
     guard
       let store = store(for: productID),
       let client = codexClient,
