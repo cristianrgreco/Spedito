@@ -27,6 +27,8 @@ final class PilotDriver {
   /// Each awaiting run is answered once. Without this the driver re-answers the
   /// same question on every poll.
   private var answeredRunIDs: Set<UUID> = []
+  /// How many times the owner has retried each failed run.
+  private var retryAttemptsByRunID: [UUID: Int] = [:]
   /// When each run's on-screen status first disagreed with the database.
   private var divergenceSince: [UUID: Date] = [:]
 
@@ -402,6 +404,7 @@ final class PilotDriver {
     await reportBoardDivergence()
     await drainPermissionRequests()
     await answerTicketQuestions()
+    await retryFailedWork()
     await openOfferedDemos()
     await acceptFinishedWork()
 
@@ -468,6 +471,53 @@ final class PilotDriver {
         allow: decision.allow,
         rememberForProduct: decision.remember
       )
+    }
+  }
+
+  /// Retries delivery that stopped unexpectedly, which is what the board's
+  /// **Retry work** button does. Without this the run sits failed for the rest
+  /// of the budget while the owner is being offered the very action that would
+  /// move it, and everything downstream of that ticket never runs.
+  ///
+  /// Capped per run. An owner would try again once or twice and then stop, and
+  /// an uncapped retry would spend the whole budget on a ticket that cannot
+  /// succeed.
+  private func retryFailedWork() async {
+    guard let model else { return }
+    for item in model.workItems {
+      guard
+        let failed = model.runs
+          .filter({ $0.workItemID == item.id })
+          .max(by: { $0.updatedAt < $1.updatedAt }),
+        failed.status == .failed || failed.status == .interrupted
+      else { continue }
+      let attempts = retryAttemptsByRunID[failed.id, default: 0]
+      guard attempts < 2 else { continue }
+      retryAttemptsByRunID[failed.id] = attempts + 1
+
+      if model.canRetryFailedPostReviewDemo(workItemID: item.id) {
+        journal.record(.ownerCommand, "Retry the demo for \(item.key)")
+        _ = await model.retryFailedPostReviewDemo(workItemID: item.id)
+        await settle(for: .seconds(2))
+        continue
+      }
+
+      let direction = owner.directionAfterFailure(
+        ticketTitle: item.title,
+        lastActivity: failed.lastActivityText
+      )
+      journal.record(
+        .ownerCommand,
+        "Retry work on \(item.key)",
+        detail: "attempt \(attempts + 1)\ndirection: \(direction)"
+      )
+      _ = await model.resumeSprintWork(
+        productID: item.productID,
+        workItemID: item.id,
+        body: direction,
+        answeredQuestions: []
+      )
+      await settle(for: .seconds(2))
     }
   }
 

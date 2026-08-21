@@ -85,4 +85,17 @@ struct PilotOwner {
     }
     return "Use your judgement and keep it simple. \(brief.outcome)"
   }
+
+  /// What the owner says when the board reports that work stopped unexpectedly
+  /// and offers **Retry work**. A product owner cannot diagnose the failure, so
+  /// they restate the outcome and ask for a simpler route to it.
+  func directionAfterFailure(ticketTitle: String, lastActivity: String?) -> String {
+    var direction =
+      "That stopped before it finished. Please pick up \(ticketTitle) again and "
+      + "take the simplest route that does not need anything outside this project."
+    if let lastActivity, !lastActivity.isEmpty {
+      direction += " The last thing I saw was: \(lastActivity)."
+    }
+    return direction
+  }
 }
