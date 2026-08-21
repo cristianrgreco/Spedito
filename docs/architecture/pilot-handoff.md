@@ -138,11 +138,36 @@ the reject path, but it is the same hole.
 Codex's own record says its turn completed normally, so Codex was not blocked
 waiting for a response. Whatever answered it did not clear Spedito's map.
 
-Instrument before fixing. Log the reconciliation error, and log
-`pendingApprovalTurns` for the turn when a wait passes its deadline. That turns
-the next occurrence into an answer instead of another round of inference — this
-loop has now spent three sessions on hypotheses and one afternoon on evidence,
-and only the evidence moved it.
+### Already ruled out, so you do not have to
+
+Two paths leave a permission request unanswered and would fit the symptom. Both
+are **excluded for run 13 by that run's own evidence**: each sets
+`deliveryErrorMessage`, which is `AppModel.errorMessage`, which the pilot renders
+as an `Error banner:` line — and **no board snapshot in run 13 carried one**.
+
+- `TicketDeliveryPermissionWorkflowCoordinator.handleServerRequest`, the `catch`
+  around fetching the run and its durable permission history.
+- `resolveAutomaticPermissionRequest`, its outer `catch`.
+
+Its every other exit was audited and does respond. The one remaining
+no-response exit is the path that deliberately hands the request to the product
+owner and waits for their decision, which is correct.
+
+**One of those two is worth fixing anyway, independent of this hang.** The
+`handleServerRequest` catch returns having sent Codex nothing — its own message
+says "so no response was sent" — while the pending approval it registered stays
+registered. That suspends the turn's only remaining timeout for the life of the
+connection, so the owner gets an error banner *and* a run that says an agent is
+working, forever. Answering Codex on that path costs the agent a capability it
+may need, which is strictly better than a turn nothing can end: a denied agent
+adapts, as run 12's own work log shows.
+
+### Then instrument
+
+Log the reconciliation error, and log `pendingApprovalTurns` for the turn when a
+wait passes its deadline. That turns the next occurrence into an answer instead
+of another round of inference — this loop has now spent three sessions on
+hypotheses and one afternoon on evidence, and only the evidence moved it.
 
 **Do not add an absolute cap as the fix.** The last session considered and
 rejected it for the right reason: a turn genuinely waiting on the product owner
