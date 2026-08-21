@@ -1075,6 +1075,46 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// A scheduler is prepared every time one is created, not only at launch, so
+  /// recovery runs repeatedly while delivery is live. A live pilot run recorded
+  /// 46 requeues in eight minutes after a tech lead requested changes, each one
+  /// interrupting the turn the previous one had just started, until the sprint
+  /// stopped progressing at all.
+  @Test("Recovery leaves a run this process is executing alone")
+  @MainActor
+  func recoveryDoesNotRequeueItsOwnLiveRun() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    let running = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(running.status == .running)
+
+    // Hold an implementation task open for the run, which is what executing it
+    // looks like to the runtime coordinator.
+    let release = AsyncStream<Void>.makeStream()
+    harness.runtimeCoordinator.startImplementation(
+      runID: harness.run.id,
+      productID: harness.product.id
+    ) {
+      var iterator = release.stream.makeAsyncIterator()
+      _ = await iterator.next()
+    }
+    #expect(
+      harness.runtimeCoordinator.executingRunIDs(productID: harness.product.id)
+        .contains(harness.run.id)
+    )
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+
+    let afterRecovery = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(afterRecovery.status == .running)
+    #expect(afterRecovery.updatedAt == running.updatedAt)
+
+    release.continuation.finish()
+    await harness.runtimeCoordinator.cancel(productID: harness.product.id)
+    await harness.store.close()
+  }
+
   @Test("[D05] Stopping delivery supersedes the unaccepted candidate")
   @MainActor
   func stoppedDeliveryPreservesAuditAndReturnsTicketToReady() async throws {
@@ -2073,13 +2113,14 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       rootURL: root,
       runs: [run]
     )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
     let coordinator = TicketDeliveryWorkflowCoordinator(
       delegate: delegate,
       gitWorkspaceManager: gitWorkspaceManager,
-      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
-        prepareScheduler: { _ in },
-        drainScheduler: { _ in .finished }
-      ),
+      runtimeCoordinator: runtimeCoordinator,
       recoveryPolicy: SprintWorkRecoveryPolicy()
     )
     return RecoveryHarness(
@@ -2092,6 +2133,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       client: client,
       delegate: delegate,
       gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
       coordinator: coordinator
     )
   }
@@ -2120,6 +2162,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let client: CodexAppServerClient
     let delegate: CandidateReviewDelegate
     let gitWorkspaceManager: GitWorkspaceManager
+    let runtimeCoordinator: TicketDeliveryRuntimeCoordinator
     let coordinator: TicketDeliveryWorkflowCoordinator
   }
   private func runGit(_ arguments: [String], at directory: URL) throws -> String {

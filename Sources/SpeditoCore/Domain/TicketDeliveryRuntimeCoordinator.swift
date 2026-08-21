@@ -187,6 +187,23 @@ public final class TicketDeliveryRuntimeCoordinator {
     integrationTasks.values.contains { $0.productID == productID }
   }
 
+  /// Runs this process is executing right now, either as an implementation task
+  /// it owns or as a live Codex turn it registered.
+  ///
+  /// Recovery adopts runs the database still calls running, on the assumption a
+  /// process stopped and orphaned them. A run in this set is not an orphan.
+  public func executingRunIDs(productID: UUID? = nil) -> Set<UUID> {
+    var runIDs = Set<UUID>()
+    for (runID, operation) in implementationTasks
+    where productID == nil || operation.productID == productID {
+      runIDs.insert(runID)
+    }
+    for (runID, turn) in activeTurns where productID == nil || turn.productID == productID {
+      runIDs.insert(runID)
+    }
+    return runIDs
+  }
+
   public func isReviewInProgress(candidateID: UUID) -> Bool {
     reviewTasks[candidateID] != nil
   }

@@ -4233,6 +4233,17 @@ public final class TicketDeliveryWorkflowCoordinator {
         .filter { $0.role == .lead }
         .map(\.id)
     )
+    // Recovery adopts runs the database still calls running, on the assumption a
+    // process stopped and orphaned them. A scheduler is prepared every time one
+    // is created, not only at launch, so this runs repeatedly while delivery is
+    // live. Requeuing a run this process is executing interrupts its turn, and
+    // the next scheduler does it again: a live pilot run recorded 46 requeues in
+    // eight minutes after a tech lead requested changes, and the sprint stopped
+    // progressing entirely.
+    let executingRunIDs = ticketDeliveryRuntimeCoordinator.executingRunIDs(
+      productID: productID
+    )
+
     let expiredPermissionRuns = sprintWorkRecoveryPolicy.runsWithExpiredPermissionDecisions(
       runs: runs.filter { $0.productID == productID },
       permissionRequests: permissionRequests.filter { $0.productID == productID }
@@ -4426,6 +4437,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       run.productID == productID
       && (run.status == .running || run.status == .failed)
       && implementerByItemID[run.workItemID] == run.profileID
+      && !executingRunIDs.contains(run.id)
     {
       guard
         let threadID = run.codexThreadID,
@@ -4477,7 +4489,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         // Only a valid durable final response can supersede a stale run state.
       }
     }
-    for run in runs where run.productID == productID && run.status == .running {
+    for run in runs
+    where
+      run.productID == productID
+      && run.status == .running
+      && !executingRunIDs.contains(run.id)
+    {
       guard implementerByItemID[run.workItemID] == run.profileID else {
         let runCandidates = storedCandidates.filter {
           $0.workItemID == run.workItemID
