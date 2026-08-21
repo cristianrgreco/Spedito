@@ -690,8 +690,11 @@ final class PilotDriver {
     poll: Duration = .seconds(3),
     condition: @MainActor (AppModel) -> Bool
   ) async -> Bool {
-    guard let model else { return false }
     while Date() < deadline {
+      // Read the application every pass for the same reason `superviseTick`
+      // does: a relaunch replaces it, and a binding held across passes waits
+      // forever on a board that stopped changing when it was closed.
+      guard let model else { return false }
       if condition(model) { return true }
       observe()
       await settle(for: poll)

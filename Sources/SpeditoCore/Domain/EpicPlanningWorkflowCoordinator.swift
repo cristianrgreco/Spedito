@@ -568,7 +568,7 @@ public final class EpicPlanningWorkflowCoordinator {
           productID: epic.productID,
           kind: .needsInput,
           target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-          title: "\(epic.title) needs your input",
+          title: "\(epic.displayTitle) needs your input",
           body: firstQuestion.prompt,
           createdAt: message.createdAt
         )

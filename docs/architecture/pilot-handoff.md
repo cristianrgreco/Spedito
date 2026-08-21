@@ -98,7 +98,7 @@ observation of demo preparation, demo launch, acceptance, retrospectives, or app
 versions is trustworthy yet, because the harness has never reported that far.
 That needs a fresh run, not more code reading.
 
-### Second finding, not yet written up
+### Chrome crash dialogs and permission wording
 
 The agent implemented a browser readiness check using a headless automation
 kernel driving the owner's installed Google Chrome. Chrome aborted repeatedly
@@ -114,6 +114,40 @@ network scope, with `AgentPermissionGrantPolicy.detailLines`, which can.
 Spedito itself never launches a specific browser. `NSWorkspace.open(url)` uses
 the system default. The Chrome choice was the agent's, because headless
 automation drives Chrome over the DevTools protocol.
+
+The permission-wording half is now pinned to a specific line. Compare the two
+renderers:
+
+- `CodexAppServerClient.permissionDetail` emits `"Network access"` whenever
+  `network.enabled` is true, and has no other network branch.
+- `AgentPermissionGrantPolicy.detailLines` distinguishes `"Network access"` from
+  `"Restricted network access"`, because it keeps the whole network object as
+  the scope and compares it against the unrestricted `{"enabled":true}`.
+
+So a restricted request and a full-internet request are worded identically at
+the moment the owner decides, and differently afterwards in the saved grant.
+That is the wrong way round: the broader wording appears where consent is given
+and the narrower one where it is merely recorded.
+
+**Not fixed, deliberately.** `CodexAppServerClient.swift` carries the product
+owner's uncommitted work, and `git add` on that path would sweep it into a
+commit — the exact mistake recorded at the top of this document. Fix it once
+the tree is resolved, or with the owner's agreement on how to stage it.
+
+## Bookkeeping the dirty tree is blocking
+
+Two edits that belong with work on this branch cannot be committed without
+sweeping in the product owner's uncommitted changes, because `git add` stages a
+whole path:
+
+- the `permissionDetail` wording fix described above, in
+  `CodexAppServerClient.swift`; and
+- the journey inventory row E02 in
+  `docs/architecture/owner-journey-test-plan.md`, which should also name
+  `EpicPlanningJourneyTests.clarificationAlertNamesTheEpicBeforeAnalysis`.
+
+Neither is lost; both are recorded here. Do them in the same pass that resolves
+the tree, and check `git status` on a path before staging it.
 
 ## Running it
 

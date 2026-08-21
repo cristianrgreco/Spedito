@@ -80,6 +80,68 @@ struct EpicPlanningJourneyTests {
     }
   }
 
+  /// The first alert a product owner ever receives comes from clarification,
+  /// before the business analyst has named the Epic. A live pilot run delivered
+  /// three macOS notifications titled " needs your input", because the title
+  /// interpolated the Epic's unset title instead of what the owner asked for.
+  @Test("An Epic still being analysed is named by the outcome the owner asked for")
+  func clarificationAlertNamesTheEpicBeforeAnalysis() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Unnamed Epic alerts")
+    let store = try #require(registry.store(for: product.id))
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-alert")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-alert")])])
+          ),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+
+    let ownerOutcome = "Let product owners recover unsent release notes"
+    let created = try #require(await model.createEpicAndPlan(outcome: ownerOutcome))
+    await transport.waitForRequest("turn/start")
+    let beforeAnalysis = try await store.fetchEpics(productID: product.id)
+      .first { $0.id == created.id }
+    #expect(beforeAnalysis?.title.isEmpty == true)
+
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-alert",
+        turnID: "turn-alert",
+        text: #"{"message":"I need one decision.","questions":[{"prompt":"Where should drafts live?","options":["On this Mac","In the repository"]}],"readyToPlan":false}"#
+      )
+    )
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
+
+    let notification = try #require(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).first
+    )
+    #expect(notification.kind == .needsInput)
+    #expect(notification.target == OwnerNotificationTarget(kind: .epic, id: created.id))
+    #expect(notification.title == "\(ownerOutcome) needs your input")
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   @Test("E02 clarification needs input returns to the exact Epic across Products")
   func e02ClarificationNeedsInputAcrossProducts() async throws {
     let fixture = try EpicPlanningJourneyFixture()

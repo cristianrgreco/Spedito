@@ -751,7 +751,7 @@ public final class PlanningConversationWorkflowCoordinator {
           productID: context.product.id,
           kind: .newReply,
           target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-          title: "\(recipient.name) replied on \(epic.title)",
+          title: "\(recipient.name) replied on \(epic.displayTitle)",
           body: reply.message,
           createdAt: agentMessage.createdAt
         )
