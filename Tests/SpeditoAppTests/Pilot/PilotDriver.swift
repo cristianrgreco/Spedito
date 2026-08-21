@@ -467,6 +467,20 @@ final class PilotDriver {
       )
     }
 
+    for violation in PilotConventions.checkAlertTitles(
+      notificationRecorder.ownerFacingTitles
+    ) {
+      fileOnce(
+        PilotJournal.Finding(
+          category: .convention,
+          title: violation.rule,
+          evidence: "Alert title: \(violation.text)",
+          locationHint: "Sources/SpeditoCore/Domain/EpicPlanningWorkflowCoordinator.swift",
+          at: Date()
+        )
+      )
+    }
+
     for finding in await PilotInvariants.completionHandoffs(model: model) {
       fileOnce(finding)
     }

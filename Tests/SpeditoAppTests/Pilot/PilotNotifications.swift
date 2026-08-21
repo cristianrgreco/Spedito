@@ -34,6 +34,11 @@ final class PilotNotificationRecorder: OwnerNotificationSystemNotifying {
   var ownerFacingText: [String] {
     posted.flatMap { [$0.title, $0.summary] }.filter { !$0.isEmpty }
   }
+
+  /// Titles on their own, because a title carries rules prose does not.
+  var ownerFacingTitles: [String] {
+    posted.map(\.title).filter { !$0.isEmpty }
+  }
 }
 
 /// The alert sound is a real audio side effect on the product owner's Mac. A

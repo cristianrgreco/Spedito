@@ -261,6 +261,31 @@ struct PilotSupervisionTests {
     #expect(PilotConventions.checkFailureText(nil).isEmpty)
   }
 
+  /// The pilot recorded this title as an ordinary observation and filed nothing:
+  /// its convention checks read titles and summaries as one pool of prose, and
+  /// nothing in that pool objected to a full stop in the middle.
+  @Test("An alert title that glues a sentence to a clause is reported")
+  func gluedAlertTitleIsReported() {
+    let live = """
+      A native Mac app for jotting short notes that stay there when I reopen it. \
+      needs your input
+      """
+    let violations = PilotConventions.checkAlertTitles([live])
+    #expect(violations.count == 1)
+    #expect(violations.first?.rule.contains("must read as one phrase") == true)
+
+    // The other titles the same run produced are correct and must stay silent,
+    // including one carrying a version number.
+    #expect(
+      PilotConventions.checkAlertTitles([
+        "T1 needs your input",
+        "Private local notes for Mac plan ready for review",
+        "Codex 0.148.0 is connected",
+        "Ready",
+      ]).isEmpty
+    )
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()

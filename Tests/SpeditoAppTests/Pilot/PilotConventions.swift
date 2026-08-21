@@ -101,6 +101,41 @@ enum PilotConventions {
     return violations
   }
 
+  /// An alert title names the thing that needs attention. A title that finishes
+  /// one sentence and then runs a clause on after it is two fragments glued
+  /// together, which no choice of wording makes correct.
+  ///
+  /// A live run titled the first alert a product owner ever receives "A native
+  /// Mac app for jotting short notes that stay there when I reopen it. needs
+  /// your input". An Epic has no analysed title until the plan arrives, so the
+  /// title falls back to the outcome the owner typed, and an outcome is a
+  /// sentence with a full stop on the end.
+  static func checkAlertTitles(_ titles: [String]) -> [Violation] {
+    titles.compactMap { title in
+      guard hasInternalSentenceBoundary(title) else { return nil }
+      return Violation(
+        rule:
+          "An alert title must read as one phrase, not a finished sentence with a clause "
+          + "appended.",
+        text: title,
+        suggestion: nil
+      )
+    }
+  }
+
+  /// A sentence terminator followed by a lowercase word. Version numbers and
+  /// abbreviations are not matched, because what follows them is not a
+  /// lowercase word starting a new clause.
+  private static func hasInternalSentenceBoundary(_ title: String) -> Bool {
+    let characters = Array(title)
+    guard characters.count > 2 else { return false }
+    for index in 0..<(characters.count - 2) {
+      guard ".!?".contains(characters[index]), characters[index + 1] == " " else { continue }
+      if characters[index + 2].isLowercase { return true }
+    }
+    return false
+  }
+
   private static func checkVocabulary(_ text: String) -> [Violation] {
     let lowered = text.lowercased()
     return bannedVocabulary.compactMap { term, replacement in
