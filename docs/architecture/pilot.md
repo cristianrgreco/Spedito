@@ -105,6 +105,28 @@ The pilot reports rather than fails the build. A real agent occasionally
 produces a legitimate outcome the harness did not anticipate, and a red build
 would train the team to ignore it.
 
+## Findings fixed from live runs
+
+### Stale sprint board (run 3 and 4, 21 August 2026)
+
+The board reported every ticket as queued for ten minutes while the database
+recorded one run completing twice and another actively running. The owner had
+no way to tell that work was progressing.
+
+`TicketDeliveryWorkflowCoordinator.updateAgentRun` notifies the application of
+every run update, but `AppModel.deliveryAgentRunDidUpdate` only refreshed when
+owner attention was involved. `AppModel.runs` is assigned in exactly one place,
+inside `reloadSelectedProduct()`, and no view refetches it, so an ordinary
+queued-to-running transition never reached the board.
+
+Covered by `SprintBoardRunFreshnessTests`, which reproduces all three observed
+symptoms: a started run still shown as queued, a completed run still shown as
+running, and a review run absent from the board entirely.
+
+This raised `app_model_lines` from 5169 to 5175. The fix belongs in `AppModel`
+because that is where the delivery delegate is implemented, and the board
+cannot be a projection of durable state without it.
+
 ## Cost and safety
 
 - Runs consume real Codex usage under the owner's own authentication. Budget is

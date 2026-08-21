@@ -3845,14 +3845,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         else { return }
 
         let now = Date()
-        let contextUsedTokens =
-          notification.method == "thread/tokenUsage/updated"
-          ? notification.params["tokenUsage"]?["last"]?["totalTokens"]?.integerValue.map(Int.init)
-          : nil
-        let contextWindowTokens =
-          notification.method == "thread/tokenUsage/updated"
-          ? notification.params["tokenUsage"]?["modelContextWindow"]?.integerValue.map(Int.init)
-          : nil
+        let tokenUsage = notification.method == "thread/tokenUsage/updated"
+          ? notification.params["tokenUsage"] : nil
+        let contextUsedTokens = tokenUsage?["last"]?["totalTokens"]?.integerValue.map(Int.init)
+        let contextWindowTokens = tokenUsage?["modelContextWindow"]?.integerValue.map(Int.init)
+        let cumulativeUsedTokens = tokenUsage?["total"]?["totalTokens"]?.integerValue.map(Int.init)
         let didCompact =
           notification.method == "item/completed"
           && notification.params["item"]?["type"]?.stringValue == "contextCompaction"
@@ -3865,12 +3862,14 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
             activity: activity,
             contextUsedTokens: contextUsedTokens,
             contextWindowTokens: contextWindowTokens,
+            cumulativeUsedTokens: cumulativeUsedTokens,
             didCompact: didCompact,
             at: now
           )
           lastHeartbeatAt = now
         } else if contextUsedTokens != nil
           || contextWindowTokens != nil
+          || cumulativeUsedTokens != nil
           || didCompact
           || now.timeIntervalSince(lastHeartbeatAt) >= 5
         {
@@ -3878,6 +3877,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
             runID: runID,
             contextUsedTokens: contextUsedTokens,
             contextWindowTokens: contextWindowTokens,
+            cumulativeUsedTokens: cumulativeUsedTokens,
             didCompact: didCompact,
             at: now
           )
@@ -3904,7 +3904,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     runID: UUID,
     activity: CodexLiveActivity? = nil,
     contextUsedTokens: Int? = nil,
-    contextWindowTokens: Int? = nil,
+    contextWindowTokens: Int? = nil, cumulativeUsedTokens: Int? = nil,
     didCompact: Bool = false,
     startsTurn: Bool = false,
     at: Date = Date()
@@ -3925,6 +3925,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         contextUsedTokens: contextUsedTokens,
         contextWindowTokens: contextWindowTokens,
         didCompact: didCompact,
+        cumulativeUsedTokens: cumulativeUsedTokens,
         startsTurn: startsTurn,
         at: at
       )
@@ -5099,6 +5100,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         .first(where: { $0.workItemID == updated.workItemID })
     {
       ownerNotificationCoordinator.present(attention)
+    }
+    // The board projects durable run state, so every status change has to reach
+    // it. Refreshing only for attention transitions left the owner watching
+    // queued tickets while their agents were running and completing work.
+    if previous.status != updated.status {
+      await reloadSelectedProductIfCurrent(productID: updated.productID)
     }
   }
 

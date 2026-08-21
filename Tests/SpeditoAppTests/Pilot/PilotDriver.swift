@@ -578,7 +578,9 @@ final class PilotDriver {
     )
     let now = Date()
     for durable in durableRuns {
-      guard let shown = onScreen[durable.id] else { continue }
+      // A run the board has never heard of is the strongest form of staleness:
+      // the owner is not being shown that this work exists at all.
+      let shown = onScreen[durable.id]
       guard shown != durable.status else {
         divergenceSince[durable.id] = nil
         continue
@@ -593,7 +595,7 @@ final class PilotDriver {
           title: "The board keeps showing a stale status for \(item?.key ?? "a ticket")",
           evidence: """
             Ticket: \(item?.key ?? "unknown") \(item?.title ?? "")
-            On screen: \(shown.rawValue)
+            On screen: \(shown?.rawValue ?? "not shown at all")
             In the database: \(durable.status.rawValue)
             Disagreeing for: \(Int(now.timeIntervalSince(since)))s
 
