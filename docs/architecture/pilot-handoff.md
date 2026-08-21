@@ -125,49 +125,30 @@ A failed revision now leaves the run `awaitingOwner` with a comment saying what
 stopped and how to retry, which is what the review flow already does for its own
 failures.
 
-### Cause three: still open, and it is not the wait
+### Cause three: the same defect on the demo-correction path (`5fd10d7`)
 
-Run 17 hit a third mode in the same path. Its T2 ran a revision turn and one
-validation-repair turn, both completed in Codex at 20:51:01Z, and Spedito
-recorded nothing after. No v2 candidate, no error banner, run `running` for the
-rest of the sprint.
+Run 17 hung the same way again, and its evidence named a path that had not been
+fixed. Its tech lead **approved** the candidate; the managed demo then failed
+verification, which queues a correction for the implementer. That is a second
+delivery attempt exactly like a requested change, and it left the settlement
+identity in place — so the correction was discarded, same as cause one.
 
-**Everything that could bound that wait was ruled out from the run's own
-database**, so do not start where the last two attempts did:
+The two are now one durable operation. `requestCandidateChanges` marks the
+candidate and releases the run's identity in a single transaction, because they
+are a single decision: this candidate is superseded, so whatever the run
+delivers next is a new version. Both call sites use it and a third cannot forget
+the half that matters.
 
-- Not the settlement identity: T2 never reached settlement, and its
-  `candidate_revisions` has only v1.
-- Not a failed revision: `c3b35d2` was in this binary and would have left the run
-  `awaitingOwner`.
-- Not a suspended inactivity timer: both of T2's permission requests are
-  `allowed`, so `ownerDecisionIsOutstanding` returns false and the countdown is
-  free to run. It was watched to 1108 seconds against a 900-second window and
-  never fired.
-- Not a silent agent: the rollout shows both turns completing normally.
+**Two hypotheses were wrong on the way here and both cost time.** The inactivity
+timer and the turn wait were investigated at length and neither was involved.
+The thing that named the path was three rows of `activity_events` — "Demo
+verification failed; correction queued" — which had been available from the
+first minute.
 
-**A timer that cannot fire suggests nothing is running it.** The strongest
-remaining hypothesis is that the delivery task was cancelled or dropped while the
-revision was in flight, leaving the run `running` with no owner. The review
-flow's own cancellation path sets the *review* run to `interrupted` and returns
-without touching the implementation run, which would produce exactly this.
-
-One concrete lead worth checking first, because it is documented in the code
-already: `AppModel.monitorLiveActivity` routes telemetry by **thread** and says
-why — "some App Server versions return a provisional turn id from `turn/start`
-and use a different durable id in notifications". `waitForFinalAgentMessage`
-still matches notifications on **turn id**. If that mismatch is real here, the
-wait is deaf to its own turn.
-
-**The fix that would close this whole class**, including causes not yet found: a
-run that is durably `running` while no live task owns it is orphaned, and
-Spedito already knows both halves — the row and
-`TicketDeliveryRuntimeCoordinator.executingRunIDs`. The pilot detects it in ten
-minutes from durable state alone. **Read the run 10 entry in
-`docs/architecture/pilot.md` before writing a line of it**: the last thing that
-requeued runs it thought were orphaned spent roughly fifteen million input
-tokens in eight minutes. The guard has to be that nothing requeues a run this
-process is executing, and that a genuine orphan surfaces to the owner rather than
-restarting itself.
+**A live database copy nearly produced a fourth wrong conclusion.** Copied
+mid-write, it suggested the tech lead fix had not run; the properly captured
+bundle showed the tech lead had never been involved. The trap below is not
+theoretical.
 
 ### A correction worth reading before you trust anything else here
 
