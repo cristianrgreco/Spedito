@@ -565,7 +565,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     turnID: String,
     timeout: Duration = .seconds(60),
     reconciliationInterval: Duration = .seconds(2),
-    totalTimeout: Duration? = nil
+    totalTimeout: Duration? = nil,
+    ownerDecisionIsOutstanding: (@Sendable () async -> Bool)? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let messages = subscribeToInboundMessages(replayRecent: true)
@@ -676,7 +677,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               remaining = inactivityWindow
               continue
             }
-            if !(await isAwaitingApproval(threadID: threadID, turnID: turnID)) {
+            if !(await suspendsInactivity(
+              threadID: threadID,
+              turnID: turnID,
+              ownerDecisionIsOutstanding: ownerDecisionIsOutstanding
+            )) {
               remaining -= slice
             }
           }
@@ -1165,6 +1170,29 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
 
   private func isAwaitingApproval(threadID: String, turnID: String) -> Bool {
     !(pendingApprovalTurns["\(threadID)|\(turnID)"] ?? []).isEmpty
+  }
+
+  /// Whether this turn may keep its inactivity timeout suspended.
+  ///
+  /// `pendingApprovalTurns` is transient operation state: it is this process's
+  /// record that a decision was asked for. Whether the product owner actually
+  /// owes one is durable domain state, and durable state is the authority.
+  ///
+  /// Two live runs proved why that distinction has to be enforced here rather
+  /// than assumed. Their turns finished, every permission request in their
+  /// database had reached a terminal status, and the board still reported a
+  /// working agent for the rest of the run — because a leaked entry in this map
+  /// suspended the only timeout that could have ended the wait. Suspension is
+  /// unbounded by design, since an owner may genuinely take an hour, so the
+  /// thing that grants it must be the thing that can be checked.
+  private func suspendsInactivity(
+    threadID: String,
+    turnID: String,
+    ownerDecisionIsOutstanding: (@Sendable () async -> Bool)?
+  ) async -> Bool {
+    guard isAwaitingApproval(threadID: threadID, turnID: turnID) else { return false }
+    guard let ownerDecisionIsOutstanding else { return true }
+    return await ownerDecisionIsOutstanding()
   }
 
   private func removePendingApproval(_ request: CodexServerRequest) {

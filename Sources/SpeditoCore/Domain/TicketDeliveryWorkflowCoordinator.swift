@@ -504,6 +504,36 @@ public final class TicketDeliveryWorkflowCoordinator {
   }
 
 
+  /// Confirms with the database that the product owner really owes a decision
+  /// on this run before a turn suspends its inactivity timeout.
+  ///
+  /// The Codex client keeps its own record of approvals it has asked for, and
+  /// that record is transient operation state. Whether the owner owes an answer
+  /// is durable domain state, and a turn waiting indefinitely is a serious
+  /// enough consequence that it must rest on the durable answer.
+  ///
+  /// Two live runs hung this way. Their turns had finished, every permission
+  /// request in their database had reached a terminal status, and the board
+  /// reported a working agent for the remaining fifty minutes of the run.
+  ///
+  /// A failed read keeps the suspension. A turn that genuinely awaits the owner
+  /// must not be cut short because the database was briefly unreadable, and a
+  /// database that stays unreadable is a larger failure than this one.
+  private nonisolated func ownerDecisionIsOutstanding(
+    runID: UUID,
+    productID: UUID,
+    store: SQLiteStore
+  ) -> @Sendable () async -> Bool {
+    {
+      guard
+        let requests = try? await store.fetchAgentPermissionRequests(productID: productID)
+      else { return true }
+      return requests.contains {
+        $0.agentRunID == runID && $0.status.needsOwnerDecision
+      }
+    }
+  }
+
   @discardableResult
   public func updateAgentRun(
     id: UUID,
@@ -853,7 +883,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: activeThreadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: run.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: run.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: run.id)
@@ -1039,7 +1074,12 @@ public final class TicketDeliveryWorkflowCoordinator {
           responseToValidate = try await client.waitForFinalAgentMessage(
             threadID: threadID,
             turnID: repairTurnID,
-            timeout: .seconds(900)
+            timeout: .seconds(900),
+            ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+              runID: runID,
+              productID: productID,
+              store: validationStore
+            )
           )
           stopLiveActivityMonitoring(runID: runID)
           ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
@@ -1729,7 +1769,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(600)
+        timeout: .seconds(600),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: reviewRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: reviewRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -1770,7 +1815,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         let repairedResponse = try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: repairTurnID,
-          timeout: .seconds(180)
+          timeout: .seconds(180),
+          ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+            runID: reviewRun.id,
+            productID: product.id,
+            store: store
+          )
         )
         stopLiveActivityMonitoring(runID: reviewRun.id)
         ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -2030,7 +2080,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(600)
+        timeout: .seconds(600),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: reviewRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: reviewRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -2070,7 +2125,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         let repairedResponse = try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: repairTurnID,
-          timeout: .seconds(180)
+          timeout: .seconds(180),
+          ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+            runID: reviewRun.id,
+            productID: product.id,
+            store: store
+          )
         )
         stopLiveActivityMonitoring(runID: reviewRun.id)
         ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -2495,7 +2555,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let revisionResponse = try await client.waitForFinalAgentMessage(
         threadID: revisionThreadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: implementationRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: implementationRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: implementationRun.id)
@@ -3188,7 +3253,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: resolutionRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: resolutionRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: resolutionRun.id)

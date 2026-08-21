@@ -1239,6 +1239,59 @@ struct CodexAdapterTests {
     #expect(ContinuousClock.now - started < .seconds(10))
   }
 
+  /// Two live runs hung exactly this way. Their turns had finished, every
+  /// permission request in the product database had reached a terminal status,
+  /// and the board reported a working agent for the remaining fifty minutes of
+  /// the run — because an entry in the client's own pending-approval map
+  /// suspended the only timeout that could have ended the wait.
+  ///
+  /// The client's map is transient operation state. Whether the product owner
+  /// owes a decision is durable domain state, and an unbounded wait has to rest
+  /// on the durable answer.
+  @Test("A pending approval the database does not know about cannot suspend a turn forever")
+  func staleApprovalFlagDoesNotSuspendTheTurn() async throws {
+    func waitWithOwnerDecision(outstanding: Bool) async -> Duration {
+      let transport = ApprovalTransport()
+      let client = CodexAppServerClient(transport: transport)
+      _ = try? await client.connect()
+      let messages = await client.inboundMessages(replayRecent: false)
+      await transport.send(
+        CodexServerRequest(
+          id: .integer(11),
+          method: "item/permissions/requestApproval",
+          params: .object([
+            "threadId": .string("thread-stale"),
+            "turnId": .string("turn-stale"),
+            "permissions": .object(["network": .object(["enabled": .bool(true)])]),
+          ])
+        )
+      )
+      // Routing the request is what registers it, and nothing ever resolves it.
+      _ = await messages.first {
+        if case .request = $0 { return true } else { return false }
+      }
+
+      let started = ContinuousClock.now
+      _ = try? await client.waitForFinalAgentMessage(
+        threadID: "thread-stale",
+        turnID: "turn-stale",
+        timeout: .seconds(1),
+        reconciliationInterval: .seconds(30),
+        totalTimeout: .seconds(6),
+        ownerDecisionIsOutstanding: { outstanding }
+      )
+      return ContinuousClock.now - started
+    }
+
+    // Nothing in the database is waiting on the owner, so the turn's inactivity
+    // window applies and the wait ends by itself instead of hanging.
+    #expect(await waitWithOwnerDecision(outstanding: false) < .seconds(4))
+
+    // And a turn the owner really does owe an answer on still waits. Cutting
+    // that short would fail runs that are behaving correctly.
+    #expect(await waitWithOwnerDecision(outstanding: true) > .seconds(4))
+  }
+
   @Test("App Server approval requests can be allowed or denied through the client")
   func interactiveApprovalResponse() async throws {
     let transport = ApprovalTransport()
