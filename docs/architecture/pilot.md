@@ -127,6 +127,48 @@ This raised `app_model_lines` from 5169 to 5175. The fix belongs in `AppModel`
 because that is where the delivery delegate is implemented, and the board
 cannot be a projection of durable state without it.
 
+### The harness watched an application it had already closed (run 7, 21 August 2026)
+
+Runs 5 to 7 all reported the same picture: a sprint that reaches delivery and
+then freezes, every ticket queued with no available action, for the rest of the
+budget. Run 7 was diagnosed as an admission or scheduler defect and written up
+as the loop's open blocker.
+
+The durable evidence says the opposite. In run 7's database, delivery ran
+continuously from 10:44 to 10:52: two candidates, two tech lead reviews, review
+feedback recorded, and both implementation runs resumed and running at the point
+the budget expired. Nothing stalled.
+
+`superviseDelivery` bound `model` once, before its loop. `simulateRelaunch`
+replaces `model` mid-run, so from the relaunch onwards every observation —
+the board snapshot, `PilotInvariants`, and the "every ticket finished" check —
+read the application that had just been shut down. That board froze at
+shutdown, where `suspendSprintExecution` had correctly queued both runs, so it
+showed three queued runs forever.
+
+The owner reactions were unaffected, because each reads `model` when it runs:
+permission requests were answered and delivery kept moving. Only the reporting
+was blind, which is why the harness produced confident findings about a sprint
+that was working.
+
+`reportBoardDivergence` exists to catch exactly this and stayed silent for the
+same reason in reverse: it reads `model` freshly, so it compared the reopened
+application against the database, found them in agreement, and said nothing.
+
+Two consequences worth keeping in mind:
+
+- every finding filed after a relaunch in runs 5 to 7 is void, including the
+  delivery stall the previous handoff named as the blocker; and
+- no run has ever reported reaching a demo because the completion check also
+  read the closed application. The relaunch fires early, at tick 11, so this
+  affected the whole of delivery in every run.
+
+Fixed by extracting `superviseTick`, which reads `model` at the start of every
+turn, and routing both opening and reopening through `adopt(model:registry:)`
+so there is one place the observed application can change. Covered by
+`PilotSupervisionTests`, verified to fail with the binding restored: the board
+reports `queued` while the database says `running`.
+
 ## Cost and safety
 
 - Runs consume real Codex usage under the owner's own authentication. Budget is

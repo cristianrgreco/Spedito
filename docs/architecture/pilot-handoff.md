@@ -27,11 +27,16 @@ file first when a production file must change.
 ## Where the loop is
 
 Seven live runs, all on the `static-converter` brief. Every run reaches a sprint
-and then stalls. **No run has ever reached a demo**, so everything downstream of
-delivery — demo launch, acceptance, retrospectives, app versions — is still
-completely unexercised.
+and delivers real work. **No run has ever been observed reaching a demo**, so
+everything downstream of delivery — demo launch, acceptance, retrospectives, app
+versions — is still unproven. Note the wording: until the fix below, the harness
+went blind at the relaunch, so it could not have reported a demo even if one
+happened.
 
 ### Fixed and proven
+
+Two things, one in Spedito and one in the harness. Read both: the second is why
+the previous handoff's blocker was wrong.
 
 **Stale sprint board.** Runs were completing in SQLite while the board showed
 `queued` for twenty minutes. `TicketDeliveryWorkflowCoordinator.updateAgentRun`
@@ -44,45 +49,54 @@ Fixed in `AppModel.swift`. Covered by `SprintBoardRunFreshnessTests`, verified t
 fail without the fix. Raised `app_model_lines` 5169 to 5175 with the reason
 recorded in `docs/architecture/pilot.md`.
 
-### The open blocker
+### The blocker named by the previous handoff does not exist
 
-Delivery stops partway through every sprint. Tickets are left presented as
-running, with no available action, indefinitely. The harness self-diagnoses it;
-run 7's finding reads:
+The previous handoff called delivery stalling partway through every sprint the
+open blocker, with `SprintRunAdmission`, `executeImplementationRun`, and the
+scheduler as the remaining suspects. That was wrong, and the durable evidence in
+run 7's own bundle says so.
+
+`agent_runs` and `activity_events` in
+`.pilot-runs/2026-08-21-104247-static-converter/evidence/` record continuous
+delivery while the harness was reporting a frozen board:
 
 ```
-Sprint: active, 3 planned item(s)
-No prerequisites, so nothing upstream is holding it.
-Delivery considers this run eligible, so something after admission is not starting it.
-Eligible runs right now: 2
-Last thing this run reported: Implementing headless browser readiness check
-Permission requests for this run: policy_denied
+10:44:05  both implementation runs picked up, tickets queued -> running
+10:45:46  the pilot quits and reopens; shutdown queues both runs, correctly
+10:47:31  T2 candidate v1 captured, running -> integrating
+10:47:32  T2 tech lead review starts
+10:48:47  T2 review returns changes; implementation resumes
+10:50:28  T1 candidate v1 captured
+10:52:05  T1 review returns changes; implementation resumes, turn live
 ```
 
-Established facts, not hypotheses:
+Nothing stalled. The harness's `superviseDelivery` bound `model` once before its
+loop, and `simulateRelaunch` replaces it, so every observation after the
+relaunch read the application that had just been closed. Its board froze at
+shutdown with all three runs queued. Full write-up in `docs/architecture/pilot.md`.
 
-- the sprint is **active**, so shutdown is not leaving it paused;
-- nothing is waiting on prerequisites;
-- `SprintRunAdmission` considers the runs **eligible**;
-- nothing starts them, for ten minutes or more;
-- the run's only permission request ended `policy_denied`, meaning Spedito's
-  least-privilege policy refused it automatically rather than the owner.
+**Treat every post-relaunch finding from runs 5 to 7 as void.** The relaunch
+fires at tick 11, roughly one hundred seconds into supervision, so in practice
+that is the whole of delivery in each of those runs. This also explains "no run
+has ever reached a demo": the completion check read the same closed application,
+so a finished sprint could not be observed even if it happened.
 
-The untested step is why an admissible queued run is never started. Two
-candidates remain: the guard at the top of
-`TicketDeliveryWorkflowCoordinator.executeImplementationRun`, which requires the
-run's profile to be present in the loaded context, and the scheduler not
-draining after `deliveryScheduleSprintExecution` wakes it.
+Fixed on this branch: `superviseTick` reads `model` at the start of every turn,
+and `adopt(model:registry:)` is the one place the observed application changes.
+`PilotSupervisionTests` covers it and was verified to fail with the binding
+restored.
 
-Hypotheses already **eliminated** by evidence, so do not spend time on them:
+The three eliminated hypotheses from the previous session stand, and the
+following are now eliminated too, because delivery was never stuck:
 
-- the delivery capacity or rate-limit constraint — no execution constraint is
-  ever persisted;
-- `shutdown()` leaving the sprint paused — the sprint is active;
-- `resumesAfterDecision` re-queueing recovered permission requests — that path
-  needs `request.status == .interrupted`, and the observed requests were live;
-- the board being stale — the in-process divergence check is now silent, so the
-  board agrees with the database.
+- `SprintRunAdmission` refusing eligible runs;
+- the guard at the top of `executeImplementationRun`; and
+- the scheduler failing to drain after `deliveryScheduleSprintExecution`.
+
+What remains genuinely unknown is what a run does *after* delivery: no
+observation of demo preparation, demo launch, acceptance, retrospectives, or app
+versions is trustworthy yet, because the harness has never reported that far.
+That needs a fresh run, not more code reading.
 
 ### Second finding, not yet written up
 
@@ -137,11 +151,18 @@ immediately. Prefer adding a diagnostic to the pilot over adding an accessor to
 `AppModel` but reuses the `ProductStoreRegistry`, so it is not a genuinely cold
 start. Rule this out before attributing any post-relaunch finding to Spedito.
 
-**Four of the defects found so far were the harness's own**, not Spedito's:
+**Five of the defects found so far were the harness's own**, not Spedito's:
 posting real user notifications from an unbundled process, replying to a ticket
 without resuming it, refusing localhost demo servers as if they were internet
-access, and a divergence check that skipped runs the board had never seen. Treat
-a first finding as suspect until the mechanism is understood.
+access, a divergence check that skipped runs the board had never seen, and
+reporting on an application the harness had already closed. Treat a first
+finding as suspect until the mechanism is understood.
+
+The last of those cost a whole session and produced a confident handoff naming
+the wrong blocker. Before believing any finding, check it against the run's own
+database: `.pilot-runs/<run>/evidence/*.sqlite` is safe to query with `sqlite3`
+once the run has finished, and `activity_events` is the clearest record of what
+actually happened, in order.
 
 ## Scope of autonomous fixes
 
@@ -166,8 +187,11 @@ git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
 
-Currently 603 tests pass, ratchets match all six baselines, diff is clean. The
-pilot is gated behind `SPEDITO_PILOT=1` and does not run in `swift test`.
+Currently 606 tests pass, ratchets match all six baselines, diff is clean. The
+pilot run itself is gated behind `SPEDITO_PILOT=1` and does not run in
+`swift test`, but the harness's own deterministic tests do and must stay that
+way: `PilotSupervisionTests` is the reason a relaunch defect cannot silently
+return.
 
 A regression test must be verified to **fail without its fix**. Disable the fix,
 watch the test fail, restore it. A test written against an already-fixed
@@ -187,11 +211,15 @@ effects that escape the sandbox into their session, and say so promptly.
 
 ## Suggested next steps
 
-1. Confirm the delivery stall and fix it. It blocks every brief, so breadth is
-   not worth attempting until a run can reach a demo.
-2. Once a demo is reached, run the native macOS, script, and library briefs. The
-   owner asked for varied products; only static web has been exercised.
+1. Run the pilot again on `static-converter` now that the harness can see past
+   the relaunch. This is the first run whose post-relaunch observations mean
+   anything; treat its findings as a first sighting, not a diagnosis.
+2. Once a run genuinely reaches a demo, run the native macOS, script, and
+   library briefs. The owner asked for varied products; only static web has been
+   exercised.
 3. Write up the Chrome and permission-wording findings as their own packet.
+   These are the only two findings from runs 1 to 7 that the relaunch defect
+   does not touch, because both were observed before the relaunch.
 4. Mine real Codex replies from `evidence/codex-threads/` into
    `ScriptedCodexTransport` fixtures. The existing suite's fixtures are
    hand-written happy paths, and replacing them with real agent output is the

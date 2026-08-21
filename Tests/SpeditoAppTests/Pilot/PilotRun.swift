@@ -101,6 +101,25 @@ struct PilotWorkspace {
     )
   }
 
+  /// A scratch root chosen by the caller, for deterministic tests of the
+  /// harness itself. A live run always uses the environment-driven initializer.
+  init(rootURL: URL, runsURL: URL) throws {
+    self.rootURL = rootURL
+    self.runsURL = runsURL
+    productWorkspacesURL = rootURL.appendingPathComponent(
+      "Product Workspaces",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: productWorkspacesURL,
+      withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+      at: runsURL,
+      withIntermediateDirectories: true
+    )
+  }
+
   func remove() {
     guard ProcessInfo.processInfo.environment["SPEDITO_PILOT_KEEP"] != "1" else { return }
     try? FileManager.default.removeItem(at: rootURL)

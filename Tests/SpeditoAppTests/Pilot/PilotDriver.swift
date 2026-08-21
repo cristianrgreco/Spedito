@@ -53,13 +53,12 @@ final class PilotDriver {
     let registry = try ProductStoreRegistry(
       productWorkspacesRootURL: workspace.productWorkspacesURL
     )
-    self.registry = registry
     let model = AppModel(
       storeRegistry: registry,
       ownerNotificationSoundPlayer: soundPlayer,
       ownerNotificationSystemNotifier: notificationRecorder
     )
-    self.model = model
+    adopt(model: model, registry: registry)
     journal.record(.ownerCommand, "Open Spedito")
     await model.load()
     observe()
@@ -75,6 +74,14 @@ final class PilotDriver {
       )
       throw PilotError.notConnected
     }
+  }
+
+  /// Installs the application every later turn watches. Opening and reopening
+  /// both go through here, so there is exactly one place where the model an
+  /// observation reads can change.
+  func adopt(model: AppModel, registry: ProductStoreRegistry? = nil) {
+    self.model = model
+    if let registry { self.registry = registry }
   }
 
   /// Quits and reopens on the same durable root. Every durable intermediate
@@ -93,7 +100,7 @@ final class PilotDriver {
       ownerNotificationSoundPlayer: soundPlayer,
       ownerNotificationSystemNotifier: notificationRecorder
     )
-    model = reopened
+    adopt(model: reopened)
     await reopened.load()
     observe()
 
@@ -341,71 +348,104 @@ final class PilotDriver {
     }
   }
 
+  /// The outcome of one turn of watching the board.
+  enum SupervisionOutcome: Equatable {
+    case keepWatching
+    /// The application was replaced, so the next turn should look straight away.
+    case reopened
+    case everyTicketFinished
+  }
+
+  /// What one turn of watching saw and decided.
+  struct SupervisionTurn {
+    let board: PilotSnapshot
+    let outcome: SupervisionOutcome
+  }
+
   /// Watches delivery the way an owner watches the board: answering what is
   /// asked, opening demos when offered, accepting finished work.
   private func superviseDelivery() async throws {
-    guard let model else { throw PilotError.notConnected }
+    guard model != nil else { throw PilotError.notConnected }
     var tick = 0
     while Date() < deadline {
       tick += 1
-      let snapshot = PilotSnapshotRenderer.render(model)
-      trackChange(snapshot)
-      observe()
-
-      if tick % 6 == 0 {
-        journal.record(.snapshot, "Board", detail: PilotSnapshotRenderer.describe(snapshot))
-      }
-
-      await reportBoardDivergence()
-      await drainPermissionRequests()
-      await answerTicketQuestions()
-      await openOfferedDemos()
-      await acceptFinishedWork()
-
-      for violation in PilotConventions.check(
-        ownerFacingText: notificationRecorder.ownerFacingText
-      ) {
-        fileOnce(
-          PilotJournal.Finding(
-            category: violation.rule.contains("technical evidence")
-              ? .leakedDiagnostic : .convention,
-            title: violation.rule,
-            evidence: "Alert text: \(violation.text)",
-            locationHint: "Sources/SpeditoApp/OwnerNotificationCoordinator.swift",
-            at: Date()
-          )
-        )
-      }
-
-      for finding in PilotInvariants.check(
-        PilotInvariants.Context(
-          snapshot: snapshot,
-          brief: brief,
-          unchangedSince: unchangedSince,
-          anyRunIsRunning: model.runs.contains { $0.status == .running }
-        ),
-        model: model
-      ) {
-        fileOnce(finding)
-      }
-
-      if !didSimulateRelaunch, tick > 10, snapshot.isAgentWorking {
-        didSimulateRelaunch = true
-        await simulateRelaunch()
-        continue
-      }
-
-      let finished = model.workItems.allSatisfy { item in
-        item.state == .released || item.state == .cancelled
-      }
-      if finished, !model.workItems.isEmpty {
+      guard let turn = await superviseTick(tick) else { throw PilotError.notConnected }
+      switch turn.outcome {
+      case .everyTicketFinished:
         journal.record(.observation, "Every ticket finished")
         return
+      case .reopened:
+        continue
+      case .keepWatching:
+        await settle(for: .seconds(10))
       }
-
-      await settle(for: .seconds(10))
     }
     journal.record(.note, "Budget exhausted before delivery finished")
+  }
+
+  /// One turn of watching, starting from whichever application is open now.
+  ///
+  /// Every turn reads `model` again on purpose. A relaunch replaces it, and a
+  /// binding held across turns keeps reporting the closed application's board:
+  /// that board froze at shutdown, so every ticket looks queued and abandoned
+  /// while the reopened application is delivering the sprint normally.
+  func superviseTick(_ tick: Int) async -> SupervisionTurn? {
+    guard let model else { return nil }
+    let snapshot = PilotSnapshotRenderer.render(model)
+    trackChange(snapshot)
+    observe()
+
+    if tick % 6 == 0 {
+      journal.record(.snapshot, "Board", detail: PilotSnapshotRenderer.describe(snapshot))
+    }
+
+    await reportBoardDivergence()
+    await drainPermissionRequests()
+    await answerTicketQuestions()
+    await openOfferedDemos()
+    await acceptFinishedWork()
+
+    for violation in PilotConventions.check(
+      ownerFacingText: notificationRecorder.ownerFacingText
+    ) {
+      fileOnce(
+        PilotJournal.Finding(
+          category: violation.rule.contains("technical evidence")
+            ? .leakedDiagnostic : .convention,
+          title: violation.rule,
+          evidence: "Alert text: \(violation.text)",
+          locationHint: "Sources/SpeditoApp/OwnerNotificationCoordinator.swift",
+          at: Date()
+        )
+      )
+    }
+
+    for finding in PilotInvariants.check(
+      PilotInvariants.Context(
+        snapshot: snapshot,
+        brief: brief,
+        unchangedSince: unchangedSince,
+        anyRunIsRunning: model.runs.contains { $0.status == .running }
+      ),
+      model: model
+    ) {
+      fileOnce(finding)
+    }
+
+    if !didSimulateRelaunch, tick > 10, snapshot.isAgentWorking {
+      didSimulateRelaunch = true
+      await simulateRelaunch()
+      return SupervisionTurn(board: snapshot, outcome: .reopened)
+    }
+
+    let finished = model.workItems.allSatisfy { item in
+      item.state == .released || item.state == .cancelled
+    }
+    if finished, !model.workItems.isEmpty {
+      return SupervisionTurn(board: snapshot, outcome: .everyTicketFinished)
+    }
+
+    return SupervisionTurn(board: snapshot, outcome: .keepWatching)
   }
 
   // MARK: - Owner reactions
