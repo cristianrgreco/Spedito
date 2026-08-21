@@ -149,9 +149,9 @@ as an `Error banner:` line — and **no board snapshot in run 13 carried one**.
   around fetching the run and its durable permission history.
 - `resolveAutomaticPermissionRequest`, its outer `catch`.
 
-Its every other exit was audited and does respond. The one remaining
-no-response exit is the path that deliberately hands the request to the product
-owner and waits for their decision, which is correct.
+Every other exit from `handleServerRequest` was audited and does respond. The
+one remaining no-response exit is the path that deliberately hands the request
+to the product owner and waits for their decision, which is correct.
 
 **One of those two is worth fixing anyway, independent of this hang.** The
 `handleServerRequest` catch returns having sent Codex nothing — its own message
@@ -210,6 +210,16 @@ presentation, and noisy findings have cost this loop real triage time.
 one whose turn ended unnoticed, so the only way to tell was to wait out the
 ten-minute silent-run tolerance — which happened again live this session. Ticket
 lines now carry the run's last activity text and how long it has been quiet.
+
+**A silent-run finding did not say whether the turn had ended** (`f40e24f`).
+That is the only question that matters when the board says an agent is working
+and nothing is happening, Spedito's own state cannot answer it, and the answer
+was in Codex's rollout on disk the whole time. Answering it by hand cost most of
+this session. The finding now carries "Codex says this thread's last turn
+completed at 18:32:52Z", or that it started and has not ended, or that no
+rollout could be read — absence is not evidence of no turn. **Triage the next
+hang from findings.md; the archaeology in the traps below is now the fallback,
+not the first step.**
 
 ## Open, and what is known about each
 
