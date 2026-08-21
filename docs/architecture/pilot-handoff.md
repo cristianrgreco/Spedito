@@ -89,7 +89,10 @@ Run 13's T2 is the cleanest specimen and its evidence is unambiguous:
   another turn, so it is not waiting on new agent work;
 - the Codex app-server process stayed alive throughout;
 - the board still read `run=running` with **Stop** eleven minutes later, and the
-  harness filed its silent-run finding at 18:43:01Z.
+  harness filed its silent-run finding at 18:43:01Z;
+- **and the wait's own 900-second inactivity timeout did not fire.** It was due
+  at 18:47:52Z and was watched past 18:50:03Z with no Codex activity and no
+  board change. This was observed live, not inferred.
 
 So the owner is told an agent is working, indefinitely, after that agent
 finished.
@@ -106,17 +109,40 @@ tasks race:
 3. an inactivity timeout that only decrements when `isAwaitingApproval` is false;
 4. an optional absolute cap, which this caller does not pass.
 
-Two of those should each have ended this on their own, and neither did. The
-reconciliation poller should have found the completed turn within two seconds —
-**its errors are swallowed by a bare `catch` and recorded nowhere**, which is
-the single most valuable thing to change. And the 900-second inactivity timer
-should have fired at 18:47:52Z at the latest; `activity.record()` is called only
-for notifications matching this thread *and* turn, so nothing obvious should
-have kept resetting it.
+**Two independent safety nets both failed, and that is the useful part.**
 
-Establish which of the two failed before proposing a fix. Recording the
-reconciliation error, and whether the inactivity timer ever reached zero, turns
-the next occurrence into an answer instead of another round of inference.
+The reconciliation poller should have found the completed turn within two
+seconds of 18:32:52Z. **Its errors are swallowed by a bare `catch` and recorded
+nowhere**, so there is no evidence of whether it threw every time or kept
+returning nil. Recording that error is the cheapest change with the highest
+information yield.
+
+The inactivity timer was watched past its deadline and never fired. Only two
+things in that loop can stop the countdown: `activity.record()`, which fires
+only for notifications matching this thread *and* turn, or `isAwaitingApproval`
+returning true. **A pending approval registered against this turn and never
+removed is the leading candidate**, and it fits run 12's T2 as well as run 13's.
+
+Worth checking first, because it is structural rather than speculative:
+`routeInboundMessage` registers a pending approval for every
+`item/commandExecution/requestApproval` and `item/permissions/requestApproval`
+it routes. Only `resolveApprovalRequest`, `rejectUnsupportedServerRequest` and
+`disconnect()` ever remove one. **Any path that answers Codex without going
+through those two leaves the turn suspended for the life of the connection**,
+with no owner decision involved and nothing left to time it out. Note also that
+`resolveApprovalRequest`'s `default:` branch throws before its
+`defer { removePendingApproval(request) }` is installed, so an unrecognised
+method leaks an entry — latent today, since callers route unknown methods to
+the reject path, but it is the same hole.
+
+Codex's own record says its turn completed normally, so Codex was not blocked
+waiting for a response. Whatever answered it did not clear Spedito's map.
+
+Instrument before fixing. Log the reconciliation error, and log
+`pendingApprovalTurns` for the turn when a wait passes its deadline. That turns
+the next occurrence into an answer instead of another round of inference — this
+loop has now spent three sessions on hypotheses and one afternoon on evidence,
+and only the evidence moved it.
 
 **Do not add an absolute cap as the fix.** The last session considered and
 rejected it for the right reason: a turn genuinely waiting on the product owner
