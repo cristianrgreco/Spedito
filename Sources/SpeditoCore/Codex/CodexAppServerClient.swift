@@ -1242,8 +1242,16 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
   private nonisolated static func permissionDetail(_ value: JSONValue?) -> String {
     guard let value else { return "Codex requested access outside the ticket workspace." }
     var parts: [String] = []
-    if value["network"]?["enabled"]?.boolValue == true {
-      parts.append("Network access")
+    if let network = value["network"], network["enabled"]?.boolValue == true {
+      // The saved grant already distinguishes these. Wording them identically
+      // here asked the owner to allow full network access when the request was
+      // scoped, which is the wrong way round: the broader wording appeared
+      // where consent is given and the narrower one only where it is recorded.
+      parts.append(
+        AgentPermissionGrantPolicy.isUnrestrictedNetwork(network)
+          ? "Network access"
+          : "Restricted network access"
+      )
     }
     let entries = value["fileSystem"]?["entries"]?.arrayValue ?? []
     for entry in entries.prefix(4) {

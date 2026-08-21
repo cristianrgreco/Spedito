@@ -1151,6 +1151,44 @@ struct CodexAdapterTests {
     #expect(command["timeoutMs"]?.integerValue == 30_000)
   }
 
+  /// A live pilot run asked the product owner to allow "Network access" for a
+  /// capability the agent described as localhost-only. The saved grant already
+  /// distinguished the two, so the broader wording appeared where consent is
+  /// given and the narrower one only where it is recorded.
+  @Test("A scoped network request is not worded as full network access")
+  func scopedNetworkApprovalSaysItIsRestricted() throws {
+    func presentationDetail(network: JSONValue) throws -> String {
+      try CodexAppServerClient.approvalPresentation(
+        for: CodexServerRequest(
+          id: .integer(1),
+          method: "item/permissions/requestApproval",
+          params: .object([
+            "threadId": .string("thread-permissions"),
+            "turnId": .string("turn-permissions"),
+            "permissions": .object(["network": network]),
+          ])
+        )
+      ).detail
+    }
+
+    let unrestricted = JSONValue.object(["enabled": .bool(true)])
+    #expect(try presentationDetail(network: unrestricted) == "Network access")
+    #expect(AgentPermissionGrantPolicy.isUnrestrictedNetwork(unrestricted))
+
+    let loopbackOnly = JSONValue.object([
+      "enabled": .bool(true),
+      "allowedHosts": .array([.string("127.0.0.1")]),
+    ])
+    #expect(try presentationDetail(network: loopbackOnly) == "Restricted network access")
+    #expect(!AgentPermissionGrantPolicy.isUnrestrictedNetwork(loopbackOnly))
+
+    // A refused capability still says nothing about the network.
+    #expect(
+      try presentationDetail(network: .object(["enabled": .bool(false)]))
+        == "Codex requested access outside the ticket workspace."
+    )
+  }
+
   @Test("App Server approval requests can be allowed or denied through the client")
   func interactiveApprovalResponse() async throws {
     let transport = ApprovalTransport()

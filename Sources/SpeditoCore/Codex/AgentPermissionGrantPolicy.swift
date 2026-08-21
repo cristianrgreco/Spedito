@@ -54,6 +54,15 @@ public enum AgentPermissionGrantPolicy {
   private static let unrestrictedNetworkScope = Capabilities.canonicalJSON(
     .object(["enabled": .bool(true)])
   )
+
+  /// Whether a requested network capability is unrestricted rather than scoped.
+  ///
+  /// The live approval prompt and the saved grant have to word this the same
+  /// way. Anything narrower than plain `enabled` carries its own scope, and
+  /// describing it as full network access overstates what the owner is allowing.
+  public static func isUnrestrictedNetwork(_ network: JSONValue) -> Bool {
+    Capabilities.canonicalJSON(network) == unrestrictedNetworkScope
+  }
   private static let prohibitedConfigurationRoots: Set<String> = [
     "/etc",
     "/private/etc",
@@ -339,9 +348,8 @@ public enum AgentPermissionGrantPolicy {
     private var detailLines: [String] {
       var lines: [String] = []
       if !networkScopes.isEmpty {
-        let unrestricted = Self.canonicalJSON(.object(["enabled": .bool(true)]))
         lines.append(
-          networkScopes.contains(unrestricted)
+          networkScopes.contains(AgentPermissionGrantPolicy.unrestrictedNetworkScope)
             ? "Network access"
             : "Restricted network access"
         )
