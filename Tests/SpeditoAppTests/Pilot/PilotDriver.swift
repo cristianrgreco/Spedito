@@ -17,11 +17,16 @@ final class PilotDriver {
 
   private var model: AppModel?
   private var registry: ProductStoreRegistry?
+  private lazy var notificationRecorder = PilotNotificationRecorder(journal: journal)
+  private let soundPlayer = PilotSilentSoundPlayer()
   private var unchangedSince: [String: Date] = [:]
   private var lastTicketFingerprint: [String: String] = [:]
   private var reportedFindings: Set<String> = []
   private(set) var observedThreadIDs: Set<String> = []
   private var didSimulateRelaunch = false
+  /// Each awaiting run is answered once. Without this the driver re-answers the
+  /// same question on every poll.
+  private var answeredRunIDs: Set<UUID> = []
 
   init(brief: PilotBrief, journal: PilotJournal, workspace: PilotWorkspace, deadline: Date) {
     self.brief = brief
@@ -47,7 +52,11 @@ final class PilotDriver {
       productWorkspacesRootURL: workspace.productWorkspacesURL
     )
     self.registry = registry
-    let model = AppModel(storeRegistry: registry)
+    let model = AppModel(
+      storeRegistry: registry,
+      ownerNotificationSoundPlayer: soundPlayer,
+      ownerNotificationSystemNotifier: notificationRecorder
+    )
     self.model = model
     journal.record(.ownerCommand, "Open Spedito")
     await model.load()
@@ -76,7 +85,12 @@ final class PilotDriver {
     let beforeTickets = previous.workItems.count
     await previous.shutdown()
 
-    let reopened = AppModel(storeRegistry: registry, selectedProductID: productID)
+    let reopened = AppModel(
+      storeRegistry: registry,
+      selectedProductID: productID,
+      ownerNotificationSoundPlayer: soundPlayer,
+      ownerNotificationSystemNotifier: notificationRecorder
+    )
     model = reopened
     await reopened.load()
     observe()
@@ -345,6 +359,21 @@ final class PilotDriver {
       await openOfferedDemos()
       await acceptFinishedWork()
 
+      for violation in PilotConventions.check(
+        ownerFacingText: notificationRecorder.ownerFacingText
+      ) {
+        fileOnce(
+          PilotJournal.Finding(
+            category: violation.rule.contains("technical evidence")
+              ? .leakedDiagnostic : .convention,
+            title: violation.rule,
+            evidence: "Alert text: \(violation.text)",
+            locationHint: "Sources/SpeditoApp/OwnerNotificationCoordinator.swift",
+            at: Date()
+          )
+        )
+      }
+
       for finding in PilotInvariants.check(
         PilotInvariants.Context(
           snapshot: snapshot,
@@ -394,29 +423,87 @@ final class PilotDriver {
     }
   }
 
+  /// Answers the agent's question and resumes the run, which is what the ticket
+  /// sheet does. Appending a comment alone records the reply without releasing
+  /// delivery, so the run would sit awaiting the owner forever.
   private func answerTicketQuestions() async {
     guard let model else { return }
     for item in model.workItems {
-      let awaiting = model.runs.contains {
-        $0.workItemID == item.id && $0.status == .awaitingOwner
-      }
-      guard awaiting else { continue }
+      // The board takes the most recently updated awaiting run, not any of them.
+      guard
+        let awaiting = model.runs
+          .filter({ $0.workItemID == item.id && $0.status == .awaitingOwner })
+          .max(by: { $0.updatedAt < $1.updatedAt })
+      else { continue }
+      // A pending permission request is answered by the permission flow instead.
       guard model.pendingPermissionRequest(workItemID: item.id) == nil else { continue }
-      let question = model.runs
-        .first { $0.workItemID == item.id && $0.status == .awaitingOwner }?
-        .lastActivityText ?? "The agent is waiting for me."
-      let reply = owner.replyToTicketQuestion(question)
+      guard !answeredRunIDs.contains(awaiting.id) else { continue }
+      answeredRunIDs.insert(awaiting.id)
+
+      let comments = await model.comments(for: item.id, productID: item.productID)
+      let presented = presentedQuestion(in: comments)
+      let questionText = presented?.question.prompt
+        ?? awaiting.lastActivityText
+        ?? "The agent is waiting for me."
+      let selectedOption = presented?.question.options.first
+      let reply = selectedOption ?? owner.replyToTicketQuestion(questionText)
+      let answered = presented.map { presentation in
+        [
+          TicketAnsweredQuestion(
+            question: TicketRefinementQuestion(
+              prompt: presentation.question.prompt,
+              options: presentation.question.options
+            ),
+            selectedOption: selectedOption,
+            answer: reply
+          )
+        ]
+      } ?? []
+
       journal.record(
         .ownerCommand,
         "Reply on \(item.key)",
-        detail: "asked: \(question)\nreplied: \(reply)"
+        detail: "asked: \(questionText)\nreplied: \(reply)"
       )
-      _ = await model.appendOwnerComment(
-        workItemID: item.id,
+      let resumed = await model.resumeSprintWork(
         productID: item.productID,
-        body: reply
+        workItemID: item.id,
+        body: reply,
+        answeredQuestions: answered
+      )
+      if resumed == nil {
+        fileOnce(
+          PilotJournal.Finding(
+            category: .deadEnd,
+            title: "Answering the agent's question did not resume the ticket",
+            evidence: """
+              Ticket: \(item.key) \(item.title)
+              Asked: \(questionText)
+              Replied: \(reply)
+              Error: \(model.errorMessage ?? "none")
+              """,
+            locationHint: "Sources/SpeditoApp/AppModel.swift",
+            at: Date()
+          )
+        )
+      }
+    }
+  }
+
+  /// The question the ticket sheet would show: the newest agent comment that
+  /// carries a structured question, falling back to a parsed legacy body.
+  private func presentedQuestion(
+    in comments: [TicketComment]
+  ) -> TicketOwnerQuestionPresentation? {
+    let agentComments = comments.filter { $0.authorKind == .agent }
+    if let structured = agentComments.last(where: { $0.ownerQuestion != nil }) {
+      return TicketOwnerQuestion.presentation(
+        in: structured.body,
+        structuredQuestion: structured.ownerQuestion
       )
     }
+    guard let latest = agentComments.last else { return nil }
+    return TicketOwnerQuestion.presentation(in: latest.body, structuredQuestion: nil)
   }
 
   private func openOfferedDemos() async {

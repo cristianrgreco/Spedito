@@ -14,6 +14,11 @@ enum PilotInvariants {
   /// the run calls it a dead end.
   static let deadEndTolerance: TimeInterval = 240
 
+  /// How long a run may stay queued while its sprint is active before the pilot
+  /// treats it as a stall. Admission waits on prerequisites, so this is
+  /// deliberately generous.
+  static let queuedTolerance: TimeInterval = 600
+
   struct Context {
     let snapshot: PilotSnapshot
     let brief: PilotBrief
@@ -28,6 +33,7 @@ enum PilotInvariants {
     findings.append(contentsOf: demoContract(context, model: model))
     findings.append(contentsOf: completionHandoffs(context, model: model))
     findings.append(contentsOf: ticketSequence(model: model))
+    findings.append(contentsOf: stalledRuns(model: model))
     return findings
   }
 
@@ -154,6 +160,36 @@ enum PilotInvariants {
             """,
           locationHint: "Sources/SpeditoCore/Domain/TicketDeliveryWorkflowCoordinator.swift",
           at: Date()
+        )
+      }
+  }
+
+  /// A queued run means Spedito intends to start work. Sitting queued for a long
+  /// time with nothing else running means the owner is watching a board that
+  /// claims to be busy and is not.
+  private static func stalledRuns(model: AppModel) -> [PilotJournal.Finding] {
+    let now = Date()
+    let anyRunning = model.runs.contains { $0.status == .running }
+    guard !anyRunning else { return [] }
+    return model.runs
+      .filter { $0.status == .queued }
+      .filter { now.timeIntervalSince($0.updatedAt) > queuedTolerance }
+      .compactMap { run in
+        guard let item = model.workItems.first(where: { $0.id == run.workItemID })
+        else { return nil }
+        return PilotJournal.Finding(
+          category: .stalled,
+          title: "Ticket \(item.key) has been queued with nothing running",
+          evidence: """
+            Ticket: \(item.key) \(item.title)
+            Ticket state: \(item.state.rawValue)
+            Run queued for: \(Int(now.timeIntervalSince(run.updatedAt)))s
+            Runs in this product: \(model.runs.map(\.status.rawValue).joined(separator: ", "))
+
+            No run is running, so nothing will move this ticket on its own.
+            """,
+          locationHint: "Sources/SpeditoCore/Domain/TicketDeliveryRuntimeCoordinator.swift",
+          at: now
         )
       }
   }
