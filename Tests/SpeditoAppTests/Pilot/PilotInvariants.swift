@@ -254,6 +254,14 @@ enum PilotInvariants {
         : "Delivery does not consider this run eligible."
     )
     lines.append("Eligible runs right now: \(eligible.count)")
+    lines.append("Last thing this run reported: \(run.lastActivityText ?? "nothing")")
+    let requests = model.permissionRequests.filter { $0.agentRunID == run.id }
+    lines.append(
+      requests.isEmpty
+        ? "No permission request was ever raised for this run."
+        : "Permission requests for this run: "
+          + requests.map { "\($0.status.rawValue)" }.joined(separator: ", ")
+    )
     return lines.joined(separator: "\n")
   }
 
