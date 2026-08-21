@@ -881,6 +881,15 @@ proposal is:
   aggregation, or another backend responsibility is justified. This may be a
   separate parallel ticket, but it does not require a permanent backend team member.
 
+For visible interface or interaction work, the business analyst makes the
+primary review medium explicit in the UX designer ticket's acceptance criteria.
+The managed Demo presents a working surface, interactive prototype, or visual
+screen set covering the material states; Markdown may explain the journey and
+decisions but is not the primary deliverable. A self-contained static web
+prototype does not require an established product runtime. Explicitly
+document-first UX outcomes such as copy reviews, service blueprints, and
+accessibility audits may remain document-led.
+
 The **Lead** reviews the resulting delivery against the approved ticket
 contract. Higher-risk work can add a separate Security Auditor or specialist
 review team member without changing the starter team.
@@ -1315,6 +1324,18 @@ Completion creates one of two immutable candidate kinds:
    recipe. Spedito commits the ticket workspace after fast deterministic checks.
    Delivery execution is non-interactive: it builds, tests, and packages GUI
    products but does not open applications or automate the product owner's desktop.
+   The recipe runs the readiness sequence the candidate documents: a build or
+   other preparation step that the README, completion handoff, or Environments
+   knowledge presents as required before the product runs also appears in the
+   recipe, so the managed smoke test exercises the documented claim. A team
+   member may not describe a readiness step or check as verified without having
+   run it, and the tech lead blocks a candidate whose recipe omits a documented
+   preparation step.
+   A self-contained static web prototype identifies a reviewed directory
+   containing `index.html`; it declares no commands or readiness settings.
+   Spedito smoke-tests and serves only that directory on its own loopback server,
+   blocks prototype network connections, and stops the server with the Demo
+   session.
 2. A business analyst research or investigation ticket may complete with no actual
    repository changes. Its completion handoff, reported checks, review instructions,
    and proposed product knowledge are the durable outcome in SQLite. Spedito records
@@ -1448,19 +1469,19 @@ is poor after repeated compaction, Spedito starts a fresh thread with a
 structured handoff while retaining the same ticket workspace. Previous previews
 and feedback remain available in the item history.
 
-The selected product has an **App versions** workspace. It lists any independently
+The selected product has a **Demos** workspace. It lists any independently
 verified imported-source version together with every accepted candidate that has
-a valid browser or macOS app launch recipe, newest first, and selects the latest
-by default. The product owner can open or revisit any listed revision; Spedito
-reconstructs its exact imported or integrated commit and owns its local service
-or application lifecycle. Opening another app version stops the currently
-running version first. Accepted artifacts and command-output results remain
-ticket evidence and never appear as app versions.
+a valid product browser, static web prototype, or macOS app launch recipe, newest
+first, and selects the latest by default. The product owner can open or revisit
+any listed revision; Spedito reconstructs its exact imported or integrated commit
+and owns its local service, prototype server, or application lifecycle. Opening
+another demo stops the currently running version first. Accepted artifacts and
+command-output results remain ticket evidence and never appear as demos.
 
 During repository import, the business analyst may propose a complete typed web
 or macOS app build, run, and relaunch recipe backed by exact source evidence. A
 tech lead must independently approve that recipe before the imported revision
-appears in **App versions**. Import never executes a proposed recipe, parses
+appears in **Demos**. Import never executes a proposed recipe, parses
 product knowledge into a command, or guesses missing commands, arguments, paths,
 readiness checks, or presentation details. Native application preparation runs
 inside the managed demo workspace. Spedito validates the resulting application
@@ -1470,7 +1491,7 @@ otherwise useful analysis returns an invalid launch shape, Spedito asks the same
 business analyst once to correct the structured recipe before continuing. It
 never repairs a recipe by guessing.
 
-If import does not yield an approved recipe, **App versions** states that the
+If import does not yield an approved recipe, the **Demos** workspace states that the
 imported source is not runnable yet and offers **Check imported source**. That
 read-only check analyzes the exact imported revision solely for a launch recipe,
 cannot change Product knowledge, and still requires independent Tech Lead approval.
@@ -2577,6 +2598,15 @@ workspace itself is missing, uncaptured changes are not recoverable;
 Spedito explains that fallback in the work log before preparing a fresh
 isolated workspace.
 
+Before a completed implementation becomes a candidate, Spedito validates its structured result,
+changed-file evidence, knowledge destinations, and managed Demo recipe against the preserved
+workspace. A rejected envelope receives up to two focused correction turns in the same conversation;
+each turn receives the latest validation error and the exact supported Demo shapes, while preserving
+the existing files and successful checks. Static directories containing `index.html` are identified
+as `static_web` prototypes rather than placeholder command or artifact recipes. If the second
+correction is still invalid, the run fails with that exact evidence and **Retry work** continues from
+the same conversation and workspace instead of discarding the implementation.
+
 An interrupted tech lead review remains bound to its exact immutable revision.
 Spedito preserves the review run, conversation, reviewed SHA, and
 detached workspace. The revision is normally the ticket candidate, or the
@@ -2694,7 +2724,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 14. The owner opens a local preview for the same commit, comments with changes
     if needed, sees the item return to active work, and then accepts a later
     preview revision.
-15. The owner opens the product's **App versions** workspace, selects any
+15. The owner opens the product's **Demos** workspace, selects any
     accepted runnable revision, and lets Spedito reconstruct and open it without
     a terminal. Opening another version stops the currently running version.
 16. The system drafts the ticket delivery note, documentation diffs, decisions,

@@ -259,7 +259,7 @@
         )
       case .d14, .v06:
         let product = try await registry.createProduct(
-          name: scenario == .d14 ? "D14 reviewed demo" : "V06 App versions"
+          name: scenario == .d14 ? "D14 reviewed demo" : "V06 Demos"
         )
         let store = try requireStore(registry, productID: product.id)
         let repositorySHA = try await ensureProductRepository(
@@ -771,7 +771,7 @@
       let seeded = try await seedSprint(
         store: store,
         product: product,
-        title: "Deliver reviewed App versions",
+        title: "Deliver reviewed demos",
         active: true
       )
       let run = try await completeSeededRun(store: store, productID: product.id)

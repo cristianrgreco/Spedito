@@ -29,6 +29,8 @@ struct DemoGuidanceTests {
     #expect(instructions.contains("presentation may support several ordered reviewInstructions"))
     #expect(instructions.contains("accepts the app-supplied port"))
     #expect(instructions.contains("documented readiness check"))
+    #expect(instructions.contains("Use static_web for a self-contained interactive prototype"))
+    #expect(instructions.contains("static_web has no preparationCommands"))
   }
 
   @Test("Tech lead guidance rejects developer-oriented or secondary demos")
@@ -55,4 +57,36 @@ struct DemoGuidanceTests {
     #expect(instructions.contains("must not depend on ignored build"))
     #expect(instructions.contains("do not author a competing knowledge change"))
   }
+  @Test("Business analyst contracts and UX delivery make visible experience work visual")
+  func visibleUXContractsRequireVisualReview() {
+    let suggestion = CodexTicketSuggestionGenerator.developerInstructions(
+      productInstructions: "",
+      customInstructions: ""
+    )
+    let refinement = CodexTicketRefinementGenerator.developerInstructions(
+      productInstructions: "",
+      customInstructions: ""
+    )
+    for instructions in [suggestion, refinement] {
+      #expect(instructions.contains("primary review medium"))
+      #expect(instructions.contains("static visual screen set"))
+      #expect(instructions.contains("prose alone is not the primary deliverable"))
+      #expect(instructions.contains("not explicitly document-first outcomes"))
+    }
+
+    let designer = CodexTicketExecutor.developerInstructions(
+      productInstructions: "",
+      customInstructions: "",
+      assignee: AgentProfile(
+        productID: UUID(),
+        name: "UX designer",
+        role: .uxDesigner
+      )
+    )
+    #expect(designer.contains("make a visual result the primary review deliverable"))
+    #expect(designer.contains("self-contained static_web prototype"))
+    #expect(designer.contains("PNG/PDF screen mockups"))
+    #expect(designer.contains("rather than as a substitute for an explicitly visual contract"))
+  }
+
 }

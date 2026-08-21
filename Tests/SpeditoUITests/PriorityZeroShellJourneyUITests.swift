@@ -180,7 +180,7 @@ final class PriorityZeroShellJourneyUITests: XCTestCase {
   /// Existing deterministic coverage:
   /// - `TicketDeliveryWorkflowCoordinatorTests.d14DemoPreparationRetryReusesReviewedCandidate`
   /// - `MacOSDemoLauncherTests.hostFailureDisposition`
-  /// This launched-process test covers only D14's immutable reviewed-candidate selection in App versions.
+  /// This launched-process test covers only D14's immutable reviewed-candidate selection in Demos.
   func testD14DemoRetrySelectsTheReviewedCandidate() throws {
     let session = try launchFixture("d14")
     let reviewedCandidateID = try XCTUnwrap(session.manifest.candidateRevisionIDs.first)

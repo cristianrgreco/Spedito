@@ -45,9 +45,15 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
 
     let proposedGrant: AgentPermissionGrant?
     if intent == .allowProductPendingDelivery {
-      guard let signature = request.productGrantSignature else {
+      guard
+        let signature = request.productGrantSignature,
+        AgentPermissionGrantPolicy.isReusableProductGrant(
+          signature: signature,
+          kind: request.kind
+        )
+      else {
         delegate?.deliveryErrorMessage =
-          "This type of access cannot be saved for future agent runs."
+          "This access is too broad to save for future agent runs. Allow it once or ask the agent to request a narrower scope."
         return
       }
       proposedGrant = AgentPermissionGrant(
@@ -176,6 +182,12 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
         URL(fileURLWithPath: $0)
       }
     )
+    let reusableProductGrantSignature = productGrantSignature.flatMap { signature in
+      AgentPermissionGrantPolicy.isReusableProductGrant(
+        signature: signature,
+        kind: presentation.kind
+      ) ? signature : nil
+    }
     let serverRequestID = Self.serverRequestID(request.id)
     let exactRequest =
       productPermissionRequests
@@ -222,6 +234,39 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
       )
       return
     }
+    if let signature = productGrantSignature,
+      AgentPermissionGrantPolicy.requestsProhibitedConfigurationRoot(
+        productGrantSignature: signature,
+        kind: presentation.kind
+      )
+    {
+      let policyExplanation =
+        "Broad configuration directories cannot be granted to a delivery run. Request only the exact configuration file or runtime directory required by this ticket."
+      let recordedReason =
+        presentation.reason.map {
+          "\(policyExplanation)\n\nAgent rationale: \($0)"
+        } ?? policyExplanation
+      let record =
+        exactRequest
+        ?? permissionRequestRecord(
+          run: run,
+          presentation: presentation,
+          request: request,
+          productGrantSignature: productGrantSignature,
+          reason: recordedReason,
+          status: .policyDenyPendingDelivery
+        )
+      await resolveAutomaticPermissionRequest(
+        record,
+        isPersisted: exactRequest != nil,
+        intent: .policyDenyPendingDelivery,
+        serverRequest: request,
+        store: store,
+        client: client
+      )
+      return
+    }
+
 
     if let exactRequest {
       if let intent = exactRequest.status.replayIntent {
@@ -262,7 +307,7 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
         run: run,
         presentation: presentation,
         request: request,
-        productGrantSignature: productGrantSignature,
+        productGrantSignature: reusableProductGrantSignature,
         reason: presentation.reason,
         status: intent
       )
@@ -293,7 +338,7 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
         run: run,
         presentation: presentation,
         request: request,
-        productGrantSignature: productGrantSignature,
+        productGrantSignature: reusableProductGrantSignature,
         reason: presentation.reason,
         status: .existingAccessPendingDelivery
       )
@@ -319,7 +364,7 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
         run: run,
         presentation: presentation,
         request: request,
-        productGrantSignature: productGrantSignature,
+        productGrantSignature: reusableProductGrantSignature,
         reason: presentation.reason,
         status: .grantAccessPendingDelivery
       )
@@ -338,7 +383,7 @@ public final class TicketDeliveryPermissionWorkflowCoordinator {
       run: run,
       presentation: presentation,
       request: request,
-      productGrantSignature: productGrantSignature,
+      productGrantSignature: reusableProductGrantSignature,
       reason: presentation.reason,
       status: .pending
     )

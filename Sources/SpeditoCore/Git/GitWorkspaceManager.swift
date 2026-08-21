@@ -860,13 +860,30 @@ public actor GitWorkspaceManager {
     ticketKey: String,
     version: Int,
     authorName: String,
-    summary: String? = nil
+    summary: String? = nil,
+    settlementOperationID: UUID? = nil
   ) throws -> GitCandidateSnapshot {
     let branchName = try run(["branch", "--show-current"], at: ticketWorkspaceURL)
     guard branchName.hasPrefix("ticket/") else {
       throw GitWorkspaceError.invalidRepository(
         "\(ticketWorkspaceURL.path) is not on a ticket branch."
       )
+    }
+    let baseSHA: String
+    if let settlementOperationID {
+      let settlementRef =
+        "refs/spedito/delivery-settlements/\(settlementOperationID.uuidString.lowercased())"
+      if let persistedBase = try? run(["rev-parse", "--verify", settlementRef], at: ticketWorkspaceURL)
+      {
+        baseSHA = persistedBase
+      } else {
+        let currentHead = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+        baseSHA = try run(["merge-base", "trunk", currentHead], at: ticketWorkspaceURL)
+        _ = try run(["update-ref", settlementRef, baseSHA], at: ticketWorkspaceURL)
+      }
+    } else {
+      let currentHead = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+      baseSHA = try run(["merge-base", "trunk", currentHead], at: ticketWorkspaceURL)
     }
     _ = try run(["add", "-A"], at: ticketWorkspaceURL)
     let trimmedSummary = summary?
@@ -879,15 +896,15 @@ public actor GitWorkspaceManager {
       } else {
         "\(ticketKey.uppercased()): candidate v\(version)"
       }
-    _ = try run(
-      [
-        "commit", "--no-gpg-sign", "--allow-empty", "-m", message,
-      ],
-      at: ticketWorkspaceURL,
-      authorName: authorName
-    )
+    let stagedChanges = try run(["diff", "--cached", "--name-only"], at: ticketWorkspaceURL)
+    if !stagedChanges.isEmpty {
+      _ = try run(
+        ["commit", "--no-gpg-sign", "-m", message],
+        at: ticketWorkspaceURL,
+        authorName: authorName
+      )
+    }
     let headSHA = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
-    let baseSHA = try run(["merge-base", "trunk", headSHA], at: ticketWorkspaceURL)
     let commitCountText = try run(
       ["rev-list", "--count", "\(baseSHA)..\(headSHA)"],
       at: ticketWorkspaceURL

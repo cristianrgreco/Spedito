@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 2
+  static let version: Int32 = 3
 
   static let sql = """
     CREATE TABLE products (
@@ -238,7 +238,10 @@ enum ProductDatabaseSchema {
         execution_constraint_kind TEXT,
         execution_constraint_observed_at REAL,
         execution_constraint_retry_at REAL,
-        execution_constraint_evidence TEXT
+        execution_constraint_evidence TEXT,
+        settlement_operation_id TEXT,
+        settlement_candidate_version INTEGER,
+        cumulative_used_tokens INTEGER
     );
 
     CREATE TABLE candidate_revisions (
@@ -263,6 +266,8 @@ enum ProductDatabaseSchema {
         updated_at REAL NOT NULL,
         delivery_kind TEXT NOT NULL DEFAULT 'repository_change'
           CHECK (delivery_kind IN ('repository_change', 'local_outcome')),
+        reviewed_head_sha TEXT,
+        review_run_id TEXT REFERENCES agent_runs(id),
         UNIQUE(work_item_id, version)
     );
 
@@ -915,6 +920,8 @@ enum ProductDatabaseSchema {
       WHERE sprint_item_id IS NOT NULL;
     CREATE INDEX idx_candidate_revisions_sprint_status
       ON candidate_revisions(sprint_id, status, created_at);
+    CREATE UNIQUE INDEX idx_candidate_revisions_implementation_version
+      ON candidate_revisions(implementation_run_id, version);
     CREATE INDEX idx_candidate_revisions_work_item
       ON candidate_revisions(work_item_id, version DESC);
     CREATE INDEX idx_demo_sessions_product_status
@@ -952,9 +959,7 @@ enum ProductDatabaseSchema {
     CREATE INDEX idx_agent_permission_grants_product_created
       ON agent_permission_grants(product_id, created_at);
     CREATE UNIQUE INDEX idx_retrospective_note_evidence
-      ON retrospective_notes(
-        sprint_id, work_item_id, profile_id, category, body
-      );
+      ON retrospective_notes(sprint_id, work_item_id, profile_id, category, body);
     CREATE INDEX idx_retrospective_notes_sprint
       ON retrospective_notes(sprint_id, category, created_at);
     CREATE INDEX idx_conversation_threads_product_updated
@@ -1157,7 +1162,7 @@ enum ProductDatabaseSchema {
       JOIN sprints AS sprint ON sprint.id = note.sprint_id
       LEFT JOIN work_items AS item ON item.id = note.work_item_id;
 
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
     """
 
   static let migrationV1ToV2 = """
@@ -1739,6 +1744,17 @@ enum ProductDatabaseSchema {
       JOIN work_items AS item ON item.id = candidate.work_item_id;
 
     PRAGMA user_version = 2;
+    """
+
+  static let migrationV2ToV3 = """
+    ALTER TABLE agent_runs ADD COLUMN settlement_operation_id TEXT;
+    ALTER TABLE agent_runs ADD COLUMN settlement_candidate_version INTEGER;
+    ALTER TABLE agent_runs ADD COLUMN cumulative_used_tokens INTEGER;
+    ALTER TABLE candidate_revisions ADD COLUMN reviewed_head_sha TEXT;
+    ALTER TABLE candidate_revisions ADD COLUMN review_run_id TEXT REFERENCES agent_runs(id);
+    CREATE UNIQUE INDEX idx_candidate_revisions_implementation_version
+      ON candidate_revisions(implementation_run_id, version);
+    PRAGMA user_version = 3;
     """
 
   static let legacyCopyTableOrder = [

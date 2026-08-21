@@ -58,7 +58,7 @@ enum WorkspaceCommand: CaseIterable, Hashable {
     switch self {
     case .backlog: "Backlog"
     case .sprintBoard: "Sprint board"
-    case .app: "App versions"
+    case .app: "Demos"
     case .retrospectives: "Retrospectives"
     case .reports: "Reports"
     case .productKnowledge: "Product knowledge"

@@ -76,6 +76,93 @@ struct MacOSDemoLauncherTests {
     #expect(request.permissionProfile == CodexPermissionProfiles.demo)
   }
 
+  @Test("D14 static web prototype is served, reopened, and stopped without a product runtime")
+  func d14StaticWebPrototypeUsesHostOwnedServer() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let prototype = workspace.appendingPathComponent("prototype", isDirectory: true)
+    try FileManager.default.createDirectory(at: prototype, withIntermediateDirectories: true)
+    try Data(
+      """
+      <!doctype html>
+      <html><body><button id="choose">Choose Manchester</button><script src="app.js"></script></body></html>
+      """.utf8
+    ).write(to: prototype.appendingPathComponent("index.html"))
+    try Data("document.querySelector('#choose').dataset.ready = 'true';".utf8)
+      .write(to: prototype.appendingPathComponent("app.js"))
+
+    let opener = DemoURLOpenerStub()
+    let launcher = MacOSDemoLauncher(urlOpener: opener)
+    let candidateID = UUID()
+    let specification = DemoLaunchSpecification(
+      title: "Forecast interaction prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+
+    let first = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    let firstURL = try #require(opener.openedURLs.first)
+    let session = URLSession(configuration: .ephemeral)
+    defer { session.invalidateAndCancel() }
+    let (pageData, pageResponse) = try await session.data(from: firstURL)
+    let http = try #require(pageResponse as? HTTPURLResponse)
+    #expect(http.statusCode == 200)
+    #expect(String(decoding: pageData, as: UTF8.self).contains("Choose Manchester"))
+    #expect(
+      http.value(forHTTPHeaderField: "Content-Security-Policy")?
+        .contains("connect-src 'none'") == true
+    )
+    let (scriptData, scriptResponse) = try await session.data(
+      from: firstURL.appendingPathComponent("app.js")
+    )
+    #expect((scriptResponse as? HTTPURLResponse)?.statusCode == 200)
+    #expect(String(decoding: scriptData, as: UTF8.self).contains("dataset.ready"))
+
+    let reopened = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    #expect(first.allocatedPort != nil)
+    #expect(reopened.allocatedPort == first.allocatedPort)
+    #expect(opener.openedURLs == [firstURL, firstURL])
+
+    await launcher.stop(candidateID: candidateID)
+  }
+
+  @Test("Static web resources cannot leave the prototype directory")
+  func staticWebResourcesStayInsidePrototype() throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let prototype = workspace.appendingPathComponent("prototype", isDirectory: true)
+    try FileManager.default.createDirectory(at: prototype, withIntermediateDirectories: true)
+    let index = prototype.appendingPathComponent("index.html")
+    try Data("prototype".utf8).write(to: index)
+    let secret = workspace.appendingPathComponent("secret.txt")
+    try Data("secret".utf8).write(to: secret)
+    try FileManager.default.createSymbolicLink(
+      at: prototype.appendingPathComponent("escape.txt"),
+      withDestinationURL: secret
+    )
+
+    #expect(
+      try StaticWebResourcePolicy.resolve(requestTarget: "/", in: prototype) == index
+    )
+    #expect(throws: StaticWebResourcePolicy.Error.self) {
+      try StaticWebResourcePolicy.resolve(
+        requestTarget: "/%2E%2E/secret.txt",
+        in: prototype
+      )
+    }
+    #expect(throws: StaticWebResourcePolicy.Error.self) {
+      try StaticWebResourcePolicy.resolve(requestTarget: "/escape.txt", in: prototype)
+    }
+  }
+
+
   @Test("Homebrew Node can read its approved OpenSSL runtime configuration")
   func homebrewNodeCommandOutput() async throws {
     guard FileManager.default.isExecutableFile(atPath: "/opt/homebrew/bin/node") else {
@@ -549,6 +636,16 @@ private final class DemoApplicationOpenerStub: DemoApplicationOpening {
       throw CocoaError(.executableNotLoadable)
     }
     return applications.removeFirst()
+  }
+}
+
+@MainActor
+private final class DemoURLOpenerStub: DemoURLOpening {
+  private(set) var openedURLs: [URL] = []
+
+  func open(_ url: URL) -> Bool {
+    openedURLs.append(url)
+    return true
   }
 }
 

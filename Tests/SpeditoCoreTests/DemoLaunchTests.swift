@@ -19,6 +19,12 @@ struct DemoLaunchTests {
     )
     try DemoLaunchSpecificationValidator.validate(web)
 
+    let staticWeb = DemoLaunchSpecification(
+      title: "Forecast interaction prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    try DemoLaunchSpecificationValidator.validate(staticWeb)
+
     let app = DemoLaunchSpecification(
       title: "Reviewed app",
       preparationCommands: [
@@ -46,6 +52,74 @@ struct DemoLaunchTests {
       presentation: DemoPresentation(kind: .commandOutput)
     )
     try DemoLaunchSpecificationValidator.validate(output)
+  }
+
+  @Test("Structured demo schema exposes only validator-supported variants")
+  func structuredSchemaMatchesValidator() throws {
+    let variants = try #require(
+      CodexTicketExecutor.demoLaunchSpecificationSchema["anyOf"]?.arrayValue
+    )
+    let kinds = variants.compactMap {
+      $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
+        .arrayValue?.first?.stringValue
+    }
+    #expect(
+      Set(kinds)
+        == Set(DemoPresentationKind.allCases.map(\.rawValue))
+    )
+    #expect(variants.count == DemoPresentationKind.allCases.count)
+    let browserSchema = try #require(
+      variants.first {
+        $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
+          .arrayValue?.first?.stringValue == DemoPresentationKind.browser.rawValue
+      }
+    )
+    #expect(browserSchema["properties"]?["title"]?["minLength"]?.integerValue == 1)
+    #expect(
+      browserSchema["properties"]?["launchCommand"]?["properties"]?["executable"]?[
+        "minLength"
+      ]?.integerValue == 1
+    )
+    let staticWebSchema = try #require(
+      variants.first {
+        $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
+          .arrayValue?.first?.stringValue == DemoPresentationKind.staticWeb.rawValue
+      }
+    )
+    #expect(
+      staticWebSchema["properties"]?["presentation"]?["properties"]?["path"]?[
+        "minLength"
+      ]?.integerValue == 1
+    )
+
+    #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(
+        DemoLaunchSpecification(
+          title: "Command-backed app",
+          launchCommand: DemoCommand(executable: "swift", arguments: ["run"]),
+          presentation: DemoPresentation(kind: .macApplication, path: ".build/App.app")
+        )
+      )
+    }
+    #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(
+        DemoLaunchSpecification(
+          title: "Prepared artifact",
+          preparationCommands: [DemoCommand(executable: "swift", arguments: ["build"])],
+          presentation: DemoPresentation(kind: .artifact, path: "report.pdf")
+        )
+      )
+    }
+    #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(
+        DemoLaunchSpecification(
+          title: "Service result",
+          launchCommand: DemoCommand(executable: "swift", arguments: ["run"]),
+          portEnvironmentVariable: "PORT",
+          presentation: DemoPresentation(kind: .commandOutput)
+        )
+      )
+    }
   }
 
   @Test("Recipes reject shells, escaped paths, and non-loopback browser URLs")
@@ -81,6 +155,24 @@ struct DemoLaunchTests {
             kind: .browser,
             path: "https://example.com"
           )
+        )
+      )
+    }
+
+    #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(
+        DemoLaunchSpecification(
+          title: "Command-backed static prototype",
+          launchCommand: DemoCommand(executable: "python3"),
+          presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+        )
+      )
+    }
+    #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(
+        DemoLaunchSpecification(
+          title: "Escaped static prototype",
+          presentation: DemoPresentation(kind: .staticWeb, path: "../prototype")
         )
       )
     }
@@ -215,7 +307,7 @@ struct DemoLaunchTests {
     )
   }
 
-  @Test("Imported source and accepted App versions share one ordered history")
+  @Test("Imported source and accepted app versions share one ordered history")
   func unifiedAppVersionHistory() throws {
     let accepted = try candidate(
       id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
@@ -242,22 +334,29 @@ struct DemoLaunchTests {
     #expect(versions.map(\.sessionSourceKind) == [.acceptedCandidate, .importedRepository])
   }
 
-  @Test("Accepted browser and macOS app candidates resolve")
+  @Test("Accepted browser, static prototype, and macOS app candidates resolve")
   func acceptedApplicationPresentations() throws {
     let browser = try candidate(demo: browserRecipe())
     let macApplication = try candidate(
       demo: macApplicationRecipe(),
       updatedAt: Date(timeIntervalSince1970: 2)
     )
+    let staticPrototype = try candidate(
+      demo: DemoLaunchSpecification(
+        title: "Interaction prototype",
+        presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+      ),
+      updatedAt: Date(timeIntervalSince1970: 3)
+    )
     let ready = try candidate(
       status: .readyForDemo,
       demo: browserRecipe(),
-      updatedAt: Date(timeIntervalSince1970: 3)
+      updatedAt: Date(timeIntervalSince1970: 4)
     )
     let superseded = try candidate(
       status: .superseded,
       demo: macApplicationRecipe(),
-      updatedAt: Date(timeIntervalSince1970: 4)
+      updatedAt: Date(timeIntervalSince1970: 5)
     )
 
     #expect(AcceptedAppLaunchPolicy.latest(in: [ready]) == nil)
@@ -266,7 +365,9 @@ struct DemoLaunchTests {
       AcceptedAppLaunchPolicy.latest(in: [browser])?.specification.presentation.kind == .browser
     )
     #expect(
-      AcceptedAppLaunchPolicy.latest(in: [browser, macApplication])?.candidate == macApplication
+      AcceptedAppLaunchPolicy.latest(
+        in: [browser, macApplication, staticPrototype]
+      )?.candidate == staticPrototype
     )
   }
 

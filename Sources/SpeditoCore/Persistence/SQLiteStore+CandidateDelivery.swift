@@ -80,6 +80,42 @@ public enum TicketDeliveryRecoveryError: Error, Equatable, LocalizedError, Senda
   }
 }
 
+public struct DeliveryResultSettlementPreparation: Equatable, Sendable {
+  public let operationID: UUID
+  public let candidateVersion: Int
+  public let existingCandidate: CandidateRevision?
+
+  public init(
+    operationID: UUID,
+    candidateVersion: Int,
+    existingCandidate: CandidateRevision?
+  ) {
+    self.operationID = operationID
+    self.candidateVersion = candidateVersion
+    self.existingCandidate = existingCandidate
+  }
+}
+
+public struct CompletedDeliverySettlement: Equatable, Sendable {
+  public let candidate: CandidateRevision
+  public let comment: TicketComment?
+  public let run: AgentRun
+  public let inserted: Bool
+
+  public init(
+    candidate: CandidateRevision,
+    comment: TicketComment?,
+    run: AgentRun,
+    inserted: Bool
+  ) {
+    self.candidate = candidate
+    self.comment = comment
+    self.run = run
+    self.inserted = inserted
+  }
+}
+
+
 extension SQLiteStore {
   public func nextCandidateRevisionVersion(workItemID: UUID) throws -> Int {
     try withStatement(
@@ -98,14 +134,20 @@ extension SQLiteStore {
   public func createCandidateRevision(
     _ candidate: CandidateRevision
   ) throws -> CandidateRevision {
+    try insertCandidateRevision(candidate)
+    return try fetchCandidateRevision(id: candidate.id)
+  }
+
+  func insertCandidateRevision(_ candidate: CandidateRevision) throws {
     try withStatement(
       """
       INSERT INTO candidate_revisions (
           id, product_id, sprint_id, sprint_item_id, work_item_id,
           implementation_run_id, version, branch_name, base_sha, head_sha,
           integrated_sha, worktree_path, integration_worktree_path, status,
-          commit_count, execution_result_json, created_at, updated_at, delivery_kind
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          commit_count, execution_result_json, created_at, updated_at, delivery_kind,
+          reviewed_head_sha, review_run_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(candidate.id.uuidString, to: 1, in: statement)
@@ -127,9 +169,239 @@ extension SQLiteStore {
       try bind(candidate.createdAt.timeIntervalSince1970, to: 17, in: statement)
       try bind(candidate.updatedAt.timeIntervalSince1970, to: 18, in: statement)
       try bind(candidate.deliveryKind.rawValue, to: 19, in: statement)
+      try bindOptionalString(candidate.reviewedHeadSHA, to: 20, in: statement)
+      try bindOptionalUUID(candidate.reviewRunID, to: 21, in: statement)
       try stepDone(statement)
     }
-    return try fetchCandidateRevision(id: candidate.id)
+  }
+
+  public func prepareCompletedDeliverySettlement(
+    runID: UUID,
+    operationID: UUID = UUID()
+  ) throws -> DeliveryResultSettlementPreparation {
+    try transaction {
+      let run = try fetchAgentRun(id: runID)
+      let persisted = try deliverySettlementIdentity(runID: runID)
+      let identity: (operationID: UUID, version: Int)
+
+      switch persisted {
+      case (nil, nil):
+        let version = try nextCandidateRevisionVersion(workItemID: run.workItemID)
+        try withStatement(
+          """
+          UPDATE agent_runs
+          SET settlement_operation_id = ?,
+              settlement_candidate_version = ?,
+              updated_at = ?
+          WHERE id = ?
+            AND settlement_operation_id IS NULL
+            AND settlement_candidate_version IS NULL;
+          """
+        ) { statement in
+          try bind(operationID.uuidString, to: 1, in: statement)
+          try bind(Int64(version), to: 2, in: statement)
+          try bind(Date().timeIntervalSince1970, to: 3, in: statement)
+          try bind(runID.uuidString, to: 4, in: statement)
+          try stepDone(statement)
+        }
+        identity = (operationID, version)
+      case let (.some(persistedOperationID), .some(version)):
+        identity = (persistedOperationID, version)
+      default:
+        throw PersistenceError.corruptData(
+          "Agent run \(runID) has an incomplete delivery settlement identity."
+        )
+      }
+
+      return DeliveryResultSettlementPreparation(
+        operationID: identity.operationID,
+        candidateVersion: identity.version,
+        existingCandidate: try fetchCandidateRevision(
+          implementationRunID: runID,
+          version: identity.version
+        )
+      )
+    }
+  }
+
+  public func settleCompletedDelivery(
+    candidate: CandidateRevision,
+    operationID: UUID,
+    comment: TicketComment,
+    deliveryNoteMarkdown: String,
+    sprint: Sprint,
+    knowledgePageProposals: [KnowledgePageProposal],
+    retrospectiveNotes: [RetrospectiveNote],
+    eventActor: String,
+    eventDetail: String,
+    at date: Date = Date()
+  ) throws -> CompletedDeliverySettlement {
+    try transaction {
+      let run = try fetchAgentRun(id: candidate.implementationRunID)
+      guard
+        run.productID == candidate.productID,
+        run.sprintID == candidate.sprintID,
+        run.sprintItemID == candidate.sprintItemID,
+        run.workItemID == candidate.workItemID
+      else {
+        throw PersistenceError.corruptData(
+          "Delivery settlement candidate does not belong to its implementation run."
+        )
+      }
+
+      let identity = try deliverySettlementIdentity(runID: run.id)
+      guard
+        identity.operationID == operationID,
+        identity.version == candidate.version
+      else {
+        throw PersistenceError.corruptData(
+          "Delivery settlement identity changed before the result could be committed."
+        )
+      }
+
+      if let existing = try fetchCandidateRevision(
+        implementationRunID: run.id,
+        version: candidate.version
+      ) {
+        return CompletedDeliverySettlement(
+          candidate: existing,
+          comment: nil,
+          run: try fetchAgentRun(id: run.id),
+          inserted: false
+        )
+      }
+      guard run.status == .running else {
+        throw PersistenceError.corruptData(
+          "Agent run \(run.id) cannot settle a completed result from \(run.status.rawValue)."
+        )
+      }
+
+      let workItem = try fetchWorkItem(id: candidate.workItemID)
+      let targetState = WorkItemState.integrating
+      try workflowPolicy.validateTransition(from: workItem.state, to: targetState)
+
+      try insertCandidateRevision(candidate)
+      _ = try upsertDeliveryNote(
+        productID: workItem.productID,
+        sprint: sprint,
+        item: workItem,
+        bodyMarkdown: deliveryNoteMarkdown,
+        authorName: comment.authorName
+      )
+      for note in retrospectiveNotes {
+        _ = try insertRetrospectiveNoteIfNeeded(note)
+      }
+      try insertKnowledgePageProposals(knowledgePageProposals)
+      let persistedComment = try appendComment(
+        workItemID: comment.workItemID,
+        authorKind: comment.authorKind,
+        authorName: comment.authorName,
+        body: comment.body,
+        ownerQuestion: comment.ownerQuestion,
+        answeredQuestions: comment.answeredQuestions,
+        authorAvatarURL: comment.authorAvatarURL,
+        externalURL: comment.externalURL,
+        externalID: comment.externalID,
+        githubReviewContext: comment.githubReviewContext,
+        createdAt: comment.createdAt
+      )
+
+      let activeDuration =
+        run.activeDurationSeconds
+        + (run.turnStartedAt.map { max(0, date.timeIntervalSince($0)) } ?? 0)
+      try withStatement(
+        """
+        UPDATE agent_runs
+        SET status = ?,
+            active_duration_seconds = ?,
+            turn_started_at = NULL,
+            execution_constraint_kind = NULL,
+            execution_constraint_observed_at = NULL,
+            execution_constraint_retry_at = NULL,
+            execution_constraint_evidence = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND status = ?
+          AND settlement_operation_id = ?
+          AND settlement_candidate_version = ?;
+        """
+      ) { statement in
+        try bind(AgentRunStatus.completed.rawValue, to: 1, in: statement)
+        try bind(activeDuration, to: 2, in: statement)
+        try bind(date.timeIntervalSince1970, to: 3, in: statement)
+        try bind(run.id.uuidString, to: 4, in: statement)
+        try bind(AgentRunStatus.running.rawValue, to: 5, in: statement)
+        try bind(operationID.uuidString, to: 6, in: statement)
+        try bind(Int64(candidate.version), to: 7, in: statement)
+        try stepDone(statement)
+      }
+
+      try withStatement(
+        "UPDATE work_items SET state = ?, version = ?, updated_at = ? WHERE id = ?;"
+      ) { statement in
+        try bind(targetState.rawValue, to: 1, in: statement)
+        try bind(Int64(workItem.version + 1), to: 2, in: statement)
+        try bind(date.timeIntervalSince1970, to: 3, in: statement)
+        try bind(workItem.id.uuidString, to: 4, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: workItem.productID,
+        workItemID: workItem.id,
+        kind: "work_item.transitioned",
+        actor: eventActor,
+        detail: "\(workItem.state.rawValue) -> \(targetState.rawValue): \(eventDetail)"
+      )
+
+      return CompletedDeliverySettlement(
+        candidate: try fetchCandidateRevision(id: candidate.id),
+        comment: persistedComment,
+        run: try fetchAgentRun(id: run.id),
+        inserted: true
+      )
+    }
+  }
+
+  private func deliverySettlementIdentity(
+    runID: UUID
+  ) throws -> (operationID: UUID?, version: Int?) {
+    try withStatement(
+      """
+      SELECT settlement_operation_id, settlement_candidate_version
+      FROM agent_runs
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(runID.uuidString, to: 1, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw PersistenceError.recordNotFound("Agent run \(runID)")
+      }
+      let operationID = try optionalText(statement, column: 0).flatMap(UUID.init(uuidString:))
+      let version = optionalInt(statement, column: 1)
+      return (operationID, version)
+    }
+  }
+
+  private func fetchCandidateRevision(
+    implementationRunID: UUID,
+    version: Int
+  ) throws -> CandidateRevision? {
+    try withStatement(
+      """
+      SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
+             implementation_run_id, version, branch_name, base_sha, head_sha,
+             integrated_sha, worktree_path, integration_worktree_path, status,
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind,
+             reviewed_head_sha, review_run_id
+      FROM candidate_revisions
+      WHERE implementation_run_id = ? AND version = ?;
+      """
+    ) { statement in
+      try bind(implementationRunID.uuidString, to: 1, in: statement)
+      try bind(Int64(version), to: 2, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      return try decodeCandidateRevision(statement)
+    }
   }
 
   public func fetchCandidateRevisions(productID: UUID) throws -> [CandidateRevision] {
@@ -138,7 +410,8 @@ extension SQLiteStore {
       SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
              implementation_run_id, version, branch_name, base_sha, head_sha,
              integrated_sha, worktree_path, integration_worktree_path, status,
-             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind,
+             reviewed_head_sha, review_run_id
       FROM candidate_revisions
       WHERE product_id = ?
       ORDER BY created_at ASC;
@@ -161,7 +434,8 @@ extension SQLiteStore {
       SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
              implementation_run_id, version, branch_name, base_sha, head_sha,
              integrated_sha, worktree_path, integration_worktree_path, status,
-             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind,
+             reviewed_head_sha, review_run_id
       FROM candidate_revisions
       WHERE sprint_id = ?
       ORDER BY created_at ASC;
@@ -182,7 +456,8 @@ extension SQLiteStore {
       SELECT id, product_id, sprint_id, sprint_item_id, work_item_id,
              implementation_run_id, version, branch_name, base_sha, head_sha,
              integrated_sha, worktree_path, integration_worktree_path, status,
-             commit_count, execution_result_json, created_at, updated_at, delivery_kind
+             commit_count, execution_result_json, created_at, updated_at, delivery_kind,
+             reviewed_head_sha, review_run_id
       FROM candidate_revisions
       WHERE id = ?;
       """
@@ -199,7 +474,9 @@ extension SQLiteStore {
     id: UUID,
     status: CandidateRevisionStatus,
     integratedSHA: String? = nil,
-    integrationWorktreePath: String? = nil
+    integrationWorktreePath: String? = nil,
+    reviewedHeadSHA: String? = nil,
+    reviewRunID: UUID? = nil
   ) throws -> CandidateRevision {
     let now = Date()
     try withStatement(
@@ -208,6 +485,8 @@ extension SQLiteStore {
       SET status = ?,
           integrated_sha = COALESCE(?, integrated_sha),
           integration_worktree_path = COALESCE(?, integration_worktree_path),
+          reviewed_head_sha = COALESCE(?, reviewed_head_sha),
+          review_run_id = COALESCE(?, review_run_id),
           updated_at = ?
       WHERE id = ?;
       """
@@ -215,8 +494,10 @@ extension SQLiteStore {
       try bind(status.rawValue, to: 1, in: statement)
       try bindOptionalString(integratedSHA, to: 2, in: statement)
       try bindOptionalString(integrationWorktreePath, to: 3, in: statement)
-      try bind(now.timeIntervalSince1970, to: 4, in: statement)
-      try bind(id.uuidString, to: 5, in: statement)
+      try bindOptionalString(reviewedHeadSHA, to: 4, in: statement)
+      try bindOptionalUUID(reviewRunID, to: 5, in: statement)
+      try bind(now.timeIntervalSince1970, to: 6, in: statement)
+      try bind(id.uuidString, to: 7, in: statement)
       try stepDone(statement)
     }
     return try fetchCandidateRevision(id: id)

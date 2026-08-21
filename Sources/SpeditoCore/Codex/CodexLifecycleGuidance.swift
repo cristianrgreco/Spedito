@@ -39,6 +39,19 @@ enum CodexLifecycleGuidance {
       """
   }
 
+  static let uxTicketContractGuidance = """
+    For a UX designer ticket about a visible interface or interaction, make the primary review medium
+    explicit in its acceptance criteria. Require the managed Demo to present a working product surface,
+    an interactive prototype, or a static visual screen set covering the named success, empty, loading,
+    failure, accessibility, and responsive states that matter to the outcome. A self-contained interactive
+    prototype may use static_web without an established product runtime; otherwise use a supported browser
+    or macOS app demo, or PNG/PDF visual mockups. Markdown may support the journey, rationale, and handoff,
+    but prose alone is not the primary deliverable. Apply this requirement only to visible experience work,
+    not explicitly document-first outcomes such as copy reviews, service blueprints, or accessibility
+    audits.
+    """
+
+
   static let failedCheckRecovery = """
     When a command or automated check starts but exits unsuccessfully, crashes, traps, or fails
     an assertion, treat it as a failed check. Inspect the exact output, failing assertion, and
@@ -209,6 +222,9 @@ enum CodexLifecycleGuidance {
     script, then use it. Never use a wrapper to hide unrelated operations, evade review, substitute
     an unrelated runtime, or obtain broader access. A service entry point remains in the foreground,
     accepts the app-supplied port, and exposes a documented readiness check.
+    Keep successful validation output concise: use the toolchain's quiet mode when it preserves
+    failures and the final pass/fail summary. Do not print verbose build traces, dependency listings,
+    or repeated success logs into the turn; inspect full output only after a failure requires it.
 
     DEMO AND OWNER REVIEW
 
@@ -228,16 +244,29 @@ enum CodexLifecycleGuidance {
     only when the artefact itself is the delivered outcome or no truthful interactive result exists.
     One presentation may support several ordered reviewInstructions.
 
-    Use browser for a loopback web service, mac_application for a built app, artifact for a
-    workspace-relative reviewable file, and command_output for a bounded demonstration command.
-    preparationCommands are bounded build or generation steps. launchCommand is the foreground
-    service or bounded command-output scenario. Use executable and argument arrays, never a shell,
-    pipeline, redirection, or compound command. Spedito supplies {{PORT}} and the configured
-    port environment variable. Browser readiness and presentation paths begin with "/" and contain
-    no host. Spedito smoke-tests the recipe from a clean detached checkout containing only
-    version-controlled candidate files: ignored dependencies, build output, caches, and state left
-    by earlier implementation checks will not exist. Demo preparation must recreate everything the
-    launch needs and be fully managed so the Demo button runs it on the product owner's behalf.
+    Use static_web for a self-contained interactive prototype in a workspace-relative directory
+    containing index.html. Spedito serves that exact directory on a host-owned loopback server, so
+    static_web has no preparationCommands, launchCommand, port environment variable, or readiness
+    declaration. Use browser for a product-owned loopback web service, mac_application for a built
+    app, artifact for a workspace-relative reviewable file, and command_output for a bounded
+    demonstration command. For browser and command_output, launchCommand is the foreground service
+    or bounded scenario; use executable and argument arrays, never a shell, pipeline, redirection,
+    or compound command. Spedito supplies {{PORT}} and the configured port environment variable to a
+    browser service. Browser readiness and presentation paths begin with "/" and contain no host.
+    Spedito smoke-tests the recipe from a clean detached checkout containing only version-controlled
+    candidate files: ignored dependencies, build output, caches, and state left by earlier
+    implementation checks will not exist. Demo preparation must recreate everything the launch needs
+    and be fully managed so the Demo button runs it on the product owner's behalf.
+
+    The recipe is the executable form of the readiness sequence this candidate documents. Every
+    repository build, generation, or other preparation command that the README, Environments
+    knowledge, or completion handoff presents as required before the product runs must appear in
+    preparationCommands in the documented order, so the managed smoke test proves the same claim
+    the documentation makes. Document a check the product does not need before it runs as a test
+    entry point and report it in tests; do not present it as a readiness step unless the recipe
+    runs it. Do not document a readiness step, build, or check as established or verified unless
+    this delivery ran it successfully in this workspace and reports it in tests; a documented
+    sequence that the recipe does not run is a false operational instruction.
     """
 
   private static let knowledgeDelivery = """
@@ -259,8 +288,9 @@ enum CodexLifecycleGuidance {
 
     If Environments guidance is absent or materially stale and this ticket actually verifies a
     maintained workflow, propose its complete replacement body with commands, working directory,
-    prerequisites, readiness, required capabilities, and limitations. Do not publish an unverified
-    workaround as canonical guidance.
+    prerequisites, readiness, required capabilities, and limitations. When this delivery returns a
+    demo recipe, the page's readiness sequence is the sequence that recipe runs. Do not publish an
+    unverified workaround as canonical guidance.
     """
 
   private static let retrospectiveDelivery = """
@@ -355,7 +385,11 @@ enum CodexLifecycleGuidance {
     document; a UX delivery uses its available prototype. An artifact is appropriate when the
     repository artefact itself is the delivered outcome. Check declared executables, arguments,
     working directory, readiness, and presentation path against version-controlled files and
-    reported evidence only.
+    reported evidence only. Compare the recipe with any readiness sequence the candidate documents
+    in its diff, completion handoff, or proposed Environments knowledge. A build, generation, or
+    other preparation step that the documentation presents as required before the product runs but
+    preparationCommands omit is a materially false operational instruction: the managed smoke test
+    can no longer prove the documented claim, so it blocks even when the recipe alone looks valid.
 
     A repository-free local outcome correctly has no demo recipe. Its product owner review
     instructions must begin from the clearly identified completion handoff and in-app product

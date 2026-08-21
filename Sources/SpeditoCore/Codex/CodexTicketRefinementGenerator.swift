@@ -170,6 +170,8 @@ public enum CodexTicketRefinementGenerator {
     and no more than three focused questions whose answers materially affect scope. Recommend the future
     delivery owner as business analyst for agreed research, UX designer for experience or prototype work,
     or implementer for approved product changes and other general delivery.
+    \(CodexLifecycleGuidance.uxTicketContractGuidance)
+
 
     For a ticket that will build, test, prototype, demo, locally run, or prepare a deployable product,
     inspect verified Environments knowledge and repository-owned manifests, scripts, CI, and documentation.

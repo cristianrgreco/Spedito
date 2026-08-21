@@ -51,13 +51,24 @@ public struct AgentSavedAccessRevocationPlan: Equatable, Sendable {
 
 public enum AgentPermissionGrantPolicy {
   private static let permissionMethod = "item/permissions/requestApproval"
+  private static let unrestrictedNetworkScope = Capabilities.canonicalJSON(
+    .object(["enabled": .bool(true)])
+  )
+  private static let prohibitedConfigurationRoots: Set<String> = [
+    "/etc",
+    "/private/etc",
+    "/opt/homebrew/etc",
+    "/usr/local/etc",
+  ]
 
   public static func covers(
     productGrantSignature signature: String,
     kind: CodexApprovalRequestKind,
     grants: [AgentPermissionGrant]
   ) -> Bool {
-    let activeGrants = grants.filter(\.isActive)
+    let activeGrants = grants.filter {
+      $0.isActive && isReusableProductGrant(signature: $0.signature, kind: $0.kind)
+    }
     if activeGrants.contains(where: { $0.kind == kind && $0.signature == signature }) {
       return true
     }
@@ -78,10 +89,35 @@ public enum AgentPermissionGrantPolicy {
     return saved.covers(requested)
   }
 
+  public static func isReusableProductGrant(
+    signature: String,
+    kind: CodexApprovalRequestKind
+  ) -> Bool {
+    guard kind == .permissions else { return true }
+    guard let capabilities = capabilities(fromSignature: signature) else { return false }
+    return !capabilities.networkScopes.contains(unrestrictedNetworkScope)
+      && !capabilities.fileSystemRules.contains(where: isProhibitedConfigurationRoot)
+  }
+
+  public static func requestsProhibitedConfigurationRoot(
+    productGrantSignature signature: String,
+    kind: CodexApprovalRequestKind
+  ) -> Bool {
+    guard
+      kind == .permissions,
+      let requested = capabilities(fromSignature: signature)
+    else {
+      return false
+    }
+    return requested.fileSystemRules.contains(where: isProhibitedConfigurationRoot)
+  }
+
   public static func canonicalProductGrantValue(
     for permissions: JSONValue
   ) -> JSONValue? {
-    guard let capabilities = capabilities(from: permissions) else { return nil }
+    guard let capabilities = capabilities(from: permissions), !capabilities.isEmpty else {
+      return nil
+    }
     return capabilities.canonicalValue
   }
 
@@ -164,6 +200,7 @@ public enum AgentPermissionGrantPolicy {
     let structured = activeGrants.compactMap { grant -> (AgentPermissionGrant, Capabilities)? in
       guard
         grant.kind == .permissions,
+        isReusableProductGrant(signature: grant.signature, kind: grant.kind),
         let capabilities = capabilities(fromSignature: grant.signature)
       else { return nil }
       return (grant, capabilities)
@@ -215,7 +252,11 @@ public enum AgentPermissionGrantPolicy {
   public static func agentContext(for grants: [AgentPermissionGrant]) -> String {
     let effective =
       grants
-      .filter { $0.isActive && $0.kind == .permissions }
+      .filter {
+        $0.isActive
+          && $0.kind == .permissions
+          && isReusableProductGrant(signature: $0.signature, kind: $0.kind)
+      }
       .compactMap { capabilities(fromSignature: $0.signature) }
       .reduce(into: Capabilities()) { result, capability in
         result.formUnion(capability)
@@ -485,6 +526,17 @@ public enum AgentPermissionGrantPolicy {
       return ("kind:\(kind)", kind)
     }
     return nil
+  }
+
+  private static func isProhibitedConfigurationRoot(_ rule: FileSystemRule) -> Bool {
+    guard rule.access == "read" || rule.access == "write" else { return false }
+    let location = rule.displayLocation
+      .replacingOccurrences(of: #"/\*\*$"#, with: "", options: .regularExpression)
+      .replacingOccurrences(of: #"/\*$"#, with: "", options: .regularExpression)
+    guard location.hasPrefix("/") else { return false }
+    return prohibitedConfigurationRoots.contains(
+      canonicalPath(URL(fileURLWithPath: location))
+    )
   }
 
   private static func canonicalPath(_ url: URL) -> String {

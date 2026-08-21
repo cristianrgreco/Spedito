@@ -2,6 +2,7 @@ import Foundation
 
 public enum DemoPresentationKind: String, Codable, CaseIterable, Sendable {
   case browser
+  case staticWeb = "static_web"
   case macApplication = "mac_application"
   case artifact
   case commandOutput = "command_output"
@@ -9,6 +10,7 @@ public enum DemoPresentationKind: String, Codable, CaseIterable, Sendable {
   public var title: String {
     switch self {
     case .browser: "Web demo"
+    case .staticWeb: "Interactive prototype"
     case .macApplication: "macOS app"
     case .artifact: "Review artifact"
     case .commandOutput: "Demo result"
@@ -120,6 +122,7 @@ public enum AcceptedAppLaunchPolicy {
       let result = try? CodexTicketExecutor.decode(candidate.executionResultJSON),
       let specification = result.demo,
       specification.presentation.kind == .browser
+        || specification.presentation.kind == .staticWeb
         || specification.presentation.kind == .macApplication,
       (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
     else {
@@ -401,10 +404,31 @@ public enum DemoLaunchSpecificationValidator {
         )
       }
       try validateBrowserPath(specification.presentation.path ?? "/")
-    case .macApplication:
-      guard specification.launchCommand == nil else {
+    case .staticWeb:
+      guard
+        specification.preparationCommands.isEmpty,
+        specification.launchCommand == nil,
+        specification.portEnvironmentVariable == nil,
+        specification.readiness == nil
+      else {
         throw DemoLaunchValidationError.invalid(
-          "macOS app demos are opened directly and cannot declare a service command."
+          "a static web prototype is served by Spedito and cannot declare commands, a port, or readiness."
+        )
+      }
+      guard let path = specification.presentation.path else {
+        throw DemoLaunchValidationError.invalid(
+          "the prototype needs a workspace-relative directory containing index.html."
+        )
+      }
+      try validateRelativePath(path, allowsCurrentDirectory: false)
+    case .macApplication:
+      guard
+        specification.launchCommand == nil,
+        specification.portEnvironmentVariable == nil,
+        specification.readiness == nil
+      else {
+        throw DemoLaunchValidationError.invalid(
+          "macOS app demos may build during preparation, but are opened directly without a service command, port, or readiness check."
         )
       }
       guard let path = specification.presentation.path else {
@@ -414,9 +438,14 @@ public enum DemoLaunchSpecificationValidator {
       }
       try validateRelativePath(path, allowsCurrentDirectory: false)
     case .artifact:
-      guard specification.launchCommand == nil else {
+      guard
+        specification.preparationCommands.isEmpty,
+        specification.launchCommand == nil,
+        specification.portEnvironmentVariable == nil,
+        specification.readiness == nil
+      else {
         throw DemoLaunchValidationError.invalid(
-          "artifact demos are opened directly and cannot declare a service command."
+          "review artifacts must already exist and cannot declare commands, a port, or readiness."
         )
       }
       guard let path = specification.presentation.path else {
@@ -435,6 +464,11 @@ public enum DemoLaunchSpecificationValidator {
       guard specification.readiness == nil else {
         throw DemoLaunchValidationError.invalid(
           "a result command exits when complete and cannot declare a readiness check."
+        )
+      }
+      guard specification.portEnvironmentVariable == nil else {
+        throw DemoLaunchValidationError.invalid(
+          "a result command cannot declare a managed service port."
         )
       }
       guard specification.presentation.path == nil else {
@@ -480,7 +514,7 @@ public enum DemoLaunchSpecificationValidator {
     ]
     guard !forbiddenExecutables.contains(executable) else {
       throw DemoLaunchValidationError.invalid(
-        "shell and AppleScript command strings are not accepted."
+        "shell and AppleScript interpreters are not accepted as demo executables; invoke a real executable or executable workspace script directly."
       )
     }
     guard command.arguments.count <= 64 else {

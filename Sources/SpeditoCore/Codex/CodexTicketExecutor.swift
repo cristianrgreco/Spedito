@@ -579,23 +579,33 @@ public enum CodexTicketExecutor {
 
   public static func repairPrompt(validationError: String) -> String {
     """
-    Your previous execution result could not be accepted:
+    Your previous structured execution result was rejected:
     \(validationError)
 
-    Continue the authorised ticket work in the existing workspace. Do not merely rewrite the JSON
-    or describe work you intend to do. Complete the ticket's actual durable outcome, run at least
-    one relevant check, and provide specific product owner review instructions that refer only to
-    evidence that now exists. Research may persist its outcome in the completion handoff and
-    proposed product knowledge without creating a repository file solely as delivery evidence.
-    Product-changing work must still leave its inspectable repository changes and managed demo.
-    If a material product owner decision, credential, secret, or external service prevents completion
-    after handling any required scoped capability, return awaiting_owner instead. A missing
-    sandbox filesystem or network capability is not an unavailable external dependency: use the
-    available `request_permissions` tool rather than asking the product owner to restore, enable,
-    add, or confirm access in an ordinary work log question. For awaiting_owner, return one question
-    and two to four options, empty knowledgePageProposals and followUpTicketProposals, and a null
-    demo. Put any existing workspace evidence needed for the decision in decisionArtifact; do not
-    turn an undecided outcome into a product knowledge proposal. Return only the JSON required by
+    Correct only the rejected result contract against the evidence already present in the existing
+    workspace. Preserve completed work, recorded checks, and the current demo artefacts. Do not
+    reinspect the repository, edit files, or rerun a successful check merely to repair a field,
+    nullable value, enum, or relationship in the result envelope. If the error identifies genuinely
+    missing or invalid workspace evidence, perform only that missing work and its narrow verification.
+    Never invent a check or artefact.
+
+    For a demo recipe error, select the presentation that matches the existing owner-facing evidence;
+    never return a placeholder command or change to an unrelated presentation merely to fill fields.
+    A reviewed workspace directory that already contains index.html and needs no product-owned backend
+    is static_web, not artifact or command_output. Return that recipe in this exact shape, replacing
+    only the title and workspace-relative directory:
+    {"schemaVersion":1,"title":"Interactive prototype","preparationCommands":[],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null,"presentation":{"kind":"static_web","path":"prototype"}}
+    A browser recipe is only for a real product-owned foreground service. Its launch executable must
+    be the real non-shell executable or an executable workspace script; sh, bash, zsh, osascript,
+    pipelines, redirection, compound commands, and empty command fields are invalid.
+
+    Research may persist its outcome in the completion handoff and proposed product knowledge without
+    creating a repository file solely as delivery evidence. Product-changing work must still reference
+    its existing inspectable repository changes and a valid managed demo. If a material product owner
+    decision, credential, secret, or external service prevents completion after scoped capability
+    handling, return awaiting_owner. A missing sandbox capability must use `request_permissions`, not an
+    ordinary owner question. For awaiting_owner, return one question and two to four options, empty
+    knowledgePageProposals and followUpTicketProposals, and a null demo. Return only the JSON required by
     the supplied schema.
     """
   }
@@ -1014,13 +1024,23 @@ public enum CodexTicketExecutor {
         .string("timeoutSeconds"),
       ]),
       "properties": .object([
-        "executable": .object(["type": .string("string")]),
+        "executable": .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string(
+            "One executable path or name. Shells and AppleScript are invalid."
+          ),
+        ]),
         "arguments": .object([
           "type": .string("array"),
           "maxItems": .integer(64),
           "items": .object(["type": .string("string")]),
         ]),
-        "workingDirectory": .object(["type": .string("string")]),
+        "workingDirectory": .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string("A workspace-relative directory."),
+        ]),
         "timeoutSeconds": .object([
           "type": .string("integer"),
           "minimum": .integer(1),
@@ -1028,88 +1048,162 @@ public enum CodexTicketExecutor {
         ]),
       ]),
     ])
-    let nullableString = JSONValue.object([
-      "anyOf": .array([
-        .object(["type": .string("string")]),
-        .object(["type": .string("null")]),
-      ])
+    let string = JSONValue.object([
+      "type": .string("string"),
+      "minLength": .integer(1),
     ])
-    let nullableCommand = JSONValue.object([
-      "anyOf": .array([
-        command,
-        .object(["type": .string("null")]),
-      ])
+    let null = JSONValue.object(["type": .string("null")])
+    let nullableString = JSONValue.object(["anyOf": .array([string, null])])
+    let preparationCommands = JSONValue.object([
+      "type": .string("array"),
+      "maxItems": .integer(6),
+      "items": command,
     ])
-    let readiness = JSONValue.object([
-      "type": .string("object"),
-      "additionalProperties": .bool(false),
-      "required": .array([
-        .string("kind"),
-        .string("path"),
-        .string("timeoutSeconds"),
-      ]),
-      "properties": .object([
-        "kind": .object([
+    let noCommands = JSONValue.object([
+      "type": .string("array"),
+      "maxItems": .integer(0),
+      "items": command,
+    ])
+
+    func readiness(kind: DemoReadinessKind) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([
+          .string("kind"),
+          .string("path"),
+          .string("timeoutSeconds"),
+        ]),
+        "properties": .object([
+          "kind": .object([
+            "type": .string("string"),
+            "enum": .array([.string(kind.rawValue)]),
+          ]),
+          "path": kind == .http ? nullableString : null,
+          "timeoutSeconds": .object([
+            "type": .string("integer"),
+            "minimum": .integer(1),
+            "maximum": .integer(120),
+          ]),
+        ]),
+      ])
+    }
+
+    func presentation(kind: DemoPresentationKind, path: JSONValue) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([.string("kind"), .string("path")]),
+        "properties": .object([
+          "kind": .object([
+            "type": .string("string"),
+            "enum": .array([.string(kind.rawValue)]),
+          ]),
+          "path": path,
+        ]),
+      ])
+    }
+
+    func specification(
+      preparation: JSONValue,
+      launch: JSONValue,
+      port: JSONValue,
+      readiness readinessSchema: JSONValue,
+      presentation presentationSchema: JSONValue
+    ) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([
+          .string("schemaVersion"),
+          .string("title"),
+          .string("preparationCommands"),
+          .string("launchCommand"),
+          .string("portEnvironmentVariable"),
+          .string("readiness"),
+          .string("presentation"),
+        ]),
+        "properties": .object([
+          "schemaVersion": .object([
+            "type": .string("integer"),
+            "enum": .array([.integer(1)]),
+          ]),
+          "title": .object([
+            "type": .string("string"),
+            "minLength": .integer(1),
+          ]),
+          "preparationCommands": preparation,
+          "launchCommand": launch,
+          "portEnvironmentVariable": port,
+          "readiness": readinessSchema,
+          "presentation": presentationSchema,
+        ]),
+      ])
+    }
+
+    let browser = specification(
+      preparation: preparationCommands,
+      launch: command,
+      port: nullableString,
+      readiness: readiness(kind: .http),
+      presentation: presentation(kind: .browser, path: nullableString)
+    )
+    let staticWeb = specification(
+      preparation: noCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .staticWeb,
+        path: .object([
           "type": .string("string"),
-          "enum": .array(DemoReadinessKind.allCases.map { .string($0.rawValue) }),
-        ]),
-        "path": nullableString,
-        "timeoutSeconds": .object([
-          "type": .string("integer"),
-          "minimum": .integer(1),
-          "maximum": .integer(120),
-        ]),
-      ]),
+          "minLength": .integer(1),
+          "description": .string(
+            "Workspace-relative directory containing index.html; Spedito serves it."
+          ),
+        ])
+      )
+    )
+    let macApplication = specification(
+      preparation: preparationCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .macApplication,
+        path: .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string("Workspace-relative .app bundle path."),
+        ])
+      )
+    )
+    let artifact = specification(
+      preparation: noCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .artifact,
+        path: .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string(
+            "Workspace-relative inert text, data, image, or PDF file."
+          ),
+        ])
+      )
+    )
+    let commandOutput = specification(
+      preparation: preparationCommands,
+      launch: command,
+      port: null,
+      readiness: null,
+      presentation: presentation(kind: .commandOutput, path: null)
+    )
+    return .object([
+      "anyOf": .array([browser, staticWeb, macApplication, artifact, commandOutput])
     ])
-    let specification = JSONValue.object([
-      "type": .string("object"),
-      "additionalProperties": .bool(false),
-      "required": .array([
-        .string("schemaVersion"),
-        .string("title"),
-        .string("preparationCommands"),
-        .string("launchCommand"),
-        .string("portEnvironmentVariable"),
-        .string("readiness"),
-        .string("presentation"),
-      ]),
-      "properties": .object([
-        "schemaVersion": .object([
-          "type": .string("integer"),
-          "enum": .array([.integer(1)]),
-        ]),
-        "title": .object(["type": .string("string")]),
-        "preparationCommands": .object([
-          "type": .string("array"),
-          "maxItems": .integer(6),
-          "items": command,
-        ]),
-        "launchCommand": nullableCommand,
-        "portEnvironmentVariable": nullableString,
-        "readiness": .object([
-          "anyOf": .array([
-            readiness,
-            .object(["type": .string("null")]),
-          ])
-        ]),
-        "presentation": .object([
-          "type": .string("object"),
-          "additionalProperties": .bool(false),
-          "required": .array([
-            .string("kind"),
-            .string("path"),
-          ]),
-          "properties": .object([
-            "kind": .object([
-              "type": .string("string"),
-              "enum": .array(DemoPresentationKind.allCases.map { .string($0.rawValue) }),
-            ]),
-            "path": nullableString,
-          ]),
-        ]),
-      ]),
-    ])
-    return specification
   }
 
   private static var nullableDemoLaunchSpecificationSchema: JSONValue {

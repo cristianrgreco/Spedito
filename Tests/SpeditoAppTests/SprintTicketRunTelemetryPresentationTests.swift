@@ -200,6 +200,13 @@ struct SprintTicketRunTelemetryPresentationTests {
     )
     #expect(
       activityTitle(
+        run: run(status: .completed),
+        itemState: .verifying,
+        candidateStatus: .reviewing
+      ) == "Preparing demo"
+    )
+    #expect(
+      activityTitle(
         run: run(status: .awaitingOwner),
         itemState: .running
       ) == "Needs your input"

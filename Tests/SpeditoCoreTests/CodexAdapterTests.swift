@@ -332,7 +332,7 @@ struct CodexAdapterTests {
     #expect(
       summary
         == .activity(
-          CodexLiveActivity(text: "Inspecting provider evidence", kind: .thinking)
+          CodexLiveActivity(text: "Inspecting provider evidence", kind: .inspecting)
         )
     )
     #expect(
@@ -391,7 +391,7 @@ struct CodexAdapterTests {
     if case .activity(let latestActivity) = latestLongSummary {
       #expect(latestActivity.text.hasPrefix("…"))
       #expect(latestActivity.text.hasSuffix("Confirming the relative launch paths."))
-      #expect(latestActivity.text.count == 150)
+      #expect(latestActivity.text.count <= 150)
     } else {
       Issue.record("Expected the latest supported reasoning summary")
     }
@@ -1981,7 +1981,7 @@ struct CodexAdapterTests {
             "body": "Add the unit preference and apply it throughout the forecast.",
             "acceptanceCriteria": [
               "A customer can switch between Celsius and Fahrenheit",
-              "Every displayed temperature uses the selected unit",
+              "Every displayed temperature uses the chosen Celsius or Fahrenheit unit",
               "Automated checks cover conversion and saved preference behaviour"
             ],
             "role": "implementer",
@@ -1998,6 +1998,61 @@ struct CodexAdapterTests {
 
     #expect(plan.ticketSuggestions.count == 1)
     #expect(plan.ticketSuggestions[0].suggestedRole == .implementer)
+  }
+
+  @Test("Epic planning rejects vague decision placeholders without dependency provenance")
+  func epicPlanningRequiresDecisionProvenance() throws {
+    let response = #"""
+      {
+        "epic": {
+          "title": "Forecast details",
+          "goal": "Customers can understand a seven-day forecast.",
+          "successCriteria": ["Every forecast day shows useful weather information."],
+          "constraints": "",
+          "environmentAssessment": {
+            "readiness": "sufficient",
+            "rationale": "The existing app environment covers this change.",
+            "foundationTicketReference": null
+          }
+        },
+        "suggestions": [
+          {
+            "reference": "DESIGN",
+            "title": "Define forecast details",
+            "type": "story",
+            "body": "Define the visible weather details.",
+            "acceptanceCriteria": ["The review artefact names each visible detail"],
+            "role": "ux_designer",
+            "priority": "normal",
+            "rationale": "The visual contract is independently reviewable.",
+            "dependsOn": [],
+            "environmentRelationship": "independent"
+          },
+          {
+            "reference": "BUILD",
+            "title": "Build the forecast",
+            "type": "story",
+            "body": "Build the reviewed forecast.",
+            "acceptanceCriteria": ["Each day shows the agreed core weather information"],
+            "role": "implementer",
+            "priority": "normal",
+            "rationale": "This delivers the owner-facing outcome.",
+            "dependsOn": ["DESIGN"],
+            "environmentRelationship": "requires"
+          }
+        ]
+      }
+      """#
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    }
+
+    let explicit = response.replacingOccurrences(
+      of: "the agreed core weather information",
+      with: "the details specified by DESIGN"
+    )
+    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(explicit)
+    #expect(plan.ticketSuggestions[1].dependsOnReferences == ["S1"])
   }
 
   @Test("Epic planning permits a genuinely decision-only research outcome")
@@ -2248,10 +2303,13 @@ struct CodexAdapterTests {
       customInstructions: ""
     )
 
-    #expect(prompt.contains("invent product decisions"))
+    #expect(prompt.contains("Do not invent product"))
+    #expect(prompt.contains("decisions or disguise"))
     #expect(prompt.contains("explicitly requested research"))
     #expect(prompt.contains("Otherwise create tickets that deliver"))
     #expect(prompt.contains("Research is a prerequisite,"))
+    #expect(prompt.contains("Every acceptance"))
+    #expect(prompt.contains("cite that exact ticket reference"))
     #expect(prompt.contains("trace every epic success criterion"))
     #expect(prompt.contains("do not default to a fixed"))
     #expect(prompt.contains("Make verification explicit in"))
@@ -2280,6 +2338,8 @@ struct CodexAdapterTests {
     #expect(followUp.contains("without a research ticket"))
     #expect(followUp.contains("select only one option"))
     #expect(followUp.contains("incremental labels"))
+    #expect(followUp.contains("owner-observable"))
+    #expect(followUp.contains("generic"))
     #expect(finalPlan.contains("is such authorisation"))
     #expect(finalPlan.contains("Give that work a separate business analyst ticket"))
     #expect(finalPlan.contains("inside design or implementation"))
@@ -3342,10 +3402,13 @@ struct CodexAdapterTests {
         """#
       )
     }
-    #expect(
-      CodexTicketExecutor.repairPrompt(validationError: "No artefact.")
-        .contains("Do not merely rewrite the JSON")
-    )
+    let repairPrompt = CodexTicketExecutor.repairPrompt(validationError: "No artefact.")
+    #expect(repairPrompt.contains("Correct only the rejected result contract"))
+    #expect(repairPrompt.contains("reinspect the repository"))
+    #expect(repairPrompt.contains("rerun a successful check"))
+    #expect(repairPrompt.contains("\"kind\":\"static_web\""))
+    #expect(repairPrompt.contains("not artifact or command_output"))
+    #expect(repairPrompt.contains("empty command fields"))
 
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.decode(

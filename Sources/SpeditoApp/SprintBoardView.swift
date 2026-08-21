@@ -614,7 +614,11 @@ private struct SprintDraftOverview: View {
       return SprintPlanningLine(
         item: item,
         owner: owner,
-        forecast: SprintForecast.estimate(for: item),
+        forecast: SprintForecast.estimate(
+          for: item,
+          historicalRuns: model.runs,
+          workItems: model.workItems
+        ),
         wave: waveByItem[item.id] ?? 1,
         risks: risks
       )
@@ -1359,6 +1363,12 @@ enum SprintTicketActivityPresentation {
             title: "Reviewing",
             symbol: "checkmark.shield.fill",
             tint: .purple
+          )
+        case .completed:
+          return SprintCardActivity(
+            title: "Preparing demo",
+            symbol: "play.rectangle",
+            tint: .blue
           )
         case .failed:
           return SprintCardActivity(
@@ -3312,6 +3322,7 @@ struct SprintTicketDetailView: View {
             if canOpenDemo,
               session?.status == .ready,
               specification?.presentation.kind == .browser
+                || specification?.presentation.kind == .staticWeb
                 || specification?.presentation.kind == .macApplication
             {
               Button("Stop demo") {
@@ -3488,6 +3499,8 @@ struct SprintTicketDetailView: View {
       switch specification.presentation.kind {
       case .browser:
         return "The local web demo is running. Open demo reuses it without starting a duplicate."
+      case .staticWeb:
+        return "The interactive prototype is running on Spedito’s managed local server."
       case .macApplication:
         return "The reviewed macOS app is running in its managed demo session."
       case .artifact:

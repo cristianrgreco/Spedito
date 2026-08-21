@@ -26,6 +26,63 @@ public struct TicketDeliveryEvidencePolicy {
   }
 }
 
+enum TicketDeliveryRecoveryResolutionError: Error, Equatable, LocalizedError, Sendable {
+  case contradictoryRunState
+
+  var errorDescription: String? {
+    switch self {
+    case .contradictoryRunState:
+      "Spedito could not safely reconcile the preserved delivery work with its review candidate. No recovery changes were applied."
+    }
+  }
+}
+
+enum TicketDeliveryRecoveryRunConflictDisposition: Equatable, Sendable {
+  case alreadyRecovered
+  case failure(TicketDeliveryRecoveryResolutionError)
+}
+
+enum TicketDeliveryRecoveryRunConflictPolicy {
+  private static let recoveredCandidateStatuses: Set<CandidateRevisionStatus> = [
+    .queuedForReview,
+    .reviewing,
+    .queuedForIntegration,
+    .integrating,
+    .resolvingConflict,
+    .readyForDemo,
+    .promoting,
+    .accepted,
+  ]
+
+  static func disposition(
+    run: AgentRun,
+    productID: UUID,
+    workItemID: UUID,
+    candidates: [CandidateRevision]
+  ) -> TicketDeliveryRecoveryRunConflictDisposition {
+    guard
+      run.productID == productID,
+      run.workItemID == workItemID,
+      run.status == .completed,
+      candidates.contains(where: { candidate in
+        guard
+          candidate.productID == productID,
+          candidate.workItemID == workItemID,
+          candidate.implementationRunID == run.id,
+          recoveredCandidateStatuses.contains(candidate.status),
+          let result = try? CodexTicketExecutor.decode(candidate.executionResultJSON)
+        else {
+          return false
+        }
+        return result.status == .completed
+      })
+    else {
+      return .failure(.contradictoryRunState)
+    }
+    return .alreadyRecovered
+  }
+}
+
 public struct TicketDeliveryWorkflowContext: Sendable {
   public let product: Product
   public let plan: SprintPlan
@@ -922,80 +979,75 @@ public final class TicketDeliveryWorkflowCoordinator {
         .filter { $0.runID == runID }
         .map(\.pageID)
     )
-    do {
-      let result = try CodexTicketExecutor.decode(response)
-      try CodexTicketExecutor.validateKnowledgePageProposals(
-        in: result,
-        canonicalPages: canonicalKnowledgePages,
-        writablePageIDs: writableKnowledgePageIDs
-      )
-      try CodexTicketExecutor.validateFollowUpTicketProposals(
-        in: result,
-        assignee: assignee
-      )
-      let deliveryKind = try await validateDeliveryEvidence(
-        result,
-        assignee: assignee,
-        workspaceURL: workspaceURL
-      )
-      return (result, deliveryKind)
-    } catch let validationError as TicketExecutionGenerationError {
-      let repairTurnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexTicketExecutor.repairPrompt(
-          validationError: validationError.localizedDescription
-        ),
-        effort: assignee.reasoningEffort,
-        outputSchema: CodexTicketExecutor.outputSchema,
-        runtimeWorkspaceRoots: [
-          workspaceURL,
-          try productDatabaseURL(productID: productID).deletingLastPathComponent(),
-        ]
-      )
-      ticketDeliveryRuntimeCoordinator.registerActiveTurn(
-        runID: runID,
-        productID: productID,
-        threadID: threadID,
-        turnID: repairTurnID
-      )
-      monitorLiveActivity(
-        runID: runID,
-        productID: productID,
-        client: client,
-        threadID: threadID,
-        turnID: repairTurnID,
-        initialText: "Completing the missing delivery evidence…"
-      )
+    let maximumRepairAttempts = 2
+    var responseToValidate = response
+
+    for repairAttempt in 0...maximumRepairAttempts {
       do {
-        let repairedResponse = try await client.waitForFinalAgentMessage(
-          threadID: threadID,
-          turnID: repairTurnID,
-          timeout: .seconds(900)
-        )
-        stopLiveActivityMonitoring(runID: runID)
-        ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
-        let repairedResult = try CodexTicketExecutor.decode(repairedResponse)
+        let result = try CodexTicketExecutor.decode(responseToValidate)
         try CodexTicketExecutor.validateKnowledgePageProposals(
-          in: repairedResult,
+          in: result,
           canonicalPages: canonicalKnowledgePages,
           writablePageIDs: writableKnowledgePageIDs
         )
         try CodexTicketExecutor.validateFollowUpTicketProposals(
-          in: repairedResult,
+          in: result,
           assignee: assignee
         )
         let deliveryKind = try await validateDeliveryEvidence(
-          repairedResult,
+          result,
           assignee: assignee,
           workspaceURL: workspaceURL
         )
-        return (repairedResult, deliveryKind)
-      } catch {
-        stopLiveActivityMonitoring(runID: runID)
-        ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
-        throw error
+        return (result, deliveryKind)
+      } catch let validationError as TicketExecutionGenerationError {
+        guard repairAttempt < maximumRepairAttempts else {
+          throw validationError
+        }
+        let repairTurnID = try await client.startStructuredTurn(
+          threadID: threadID,
+          prompt: CodexTicketExecutor.repairPrompt(
+            validationError: validationError.localizedDescription
+          ),
+          effort: assignee.reasoningEffort,
+          outputSchema: CodexTicketExecutor.outputSchema,
+          runtimeWorkspaceRoots: [
+            workspaceURL,
+            try productDatabaseURL(productID: productID).deletingLastPathComponent(),
+          ]
+        )
+        ticketDeliveryRuntimeCoordinator.registerActiveTurn(
+          runID: runID,
+          productID: productID,
+          threadID: threadID,
+          turnID: repairTurnID
+        )
+        monitorLiveActivity(
+          runID: runID,
+          productID: productID,
+          client: client,
+          threadID: threadID,
+          turnID: repairTurnID,
+          initialText:
+            "Correcting the delivery result (\(repairAttempt + 1) of \(maximumRepairAttempts))…"
+        )
+        do {
+          responseToValidate = try await client.waitForFinalAgentMessage(
+            threadID: threadID,
+            turnID: repairTurnID,
+            timeout: .seconds(900)
+          )
+          stopLiveActivityMonitoring(runID: runID)
+          ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
+        } catch {
+          stopLiveActivityMonitoring(runID: runID)
+          ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
+          throw error
+        }
       }
     }
+
+    preconditionFailure("The bounded delivery-result repair loop did not settle.")
   }
 
   public func validateDeliveryEvidence(
@@ -1101,34 +1153,19 @@ public final class TicketDeliveryWorkflowCoordinator {
     else { return }
     let productID = context.product.id
 
-    _ = try? await store.appendComment(
-      workItemID: item.id,
-      authorKind: .agent,
-      authorName: assignee.name,
-      body: result.workLogComment,
-      ownerQuestion:
-        result.status == .awaitingOwner
-        ? result.question.map {
+    if result.status == .awaitingOwner {
+      _ = try? await store.appendComment(
+        workItemID: item.id,
+        authorKind: .agent,
+        authorName: assignee.name,
+        body: result.workLogComment,
+        ownerQuestion: result.question.map {
           TicketOwnerQuestion(
             prompt: $0,
             options: result.options,
             decisionArtifact: result.decisionArtifact
           )
         }
-        : nil
-    )
-
-    if result.status == .completed {
-      try? await store.saveRetrospectiveNotes(
-        makeRetrospectiveNotes(
-          productID: item.productID,
-          sprintID: plan.sprint.id,
-          workItemID: item.id,
-          profile: assignee,
-          wentWell: result.retrospectiveWentWell,
-          couldImprove: result.retrospectiveCouldImprove,
-          actions: result.retrospectiveActions
-        )
       )
     }
 
@@ -1146,29 +1183,27 @@ public final class TicketDeliveryWorkflowCoordinator {
         guard let worktreePath = run.worktreePath else {
           throw GitWorkspaceError.invalidRepository("The agent run has no ticket workspace.")
         }
+        let settlement = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+        if settlement.existingCandidate != nil {
+          await reloadSelectedProductIfCurrent(productID: productID)
+          return
+        }
+
         let deliveryNote = deliveryNoteMarkdown(
           item: item,
           result: result,
           authorName: assignee.name
         )
-        _ = try await store.upsertDeliveryNote(
-          productID: item.productID,
-          sprint: plan.sprint,
-          item: item,
-          bodyMarkdown: deliveryNote,
-          authorName: assignee.name
-        )
-
-        let version = try await store.nextCandidateRevisionVersion(workItemID: item.id)
         let workspaceURL = URL(fileURLWithPath: worktreePath, isDirectory: true)
         let snapshot =
           if deliveryKind.changesRepository {
             try await gitWorkspaceManager.createCandidate(
               ticketWorkspaceURL: workspaceURL,
               ticketKey: item.key,
-              version: version,
+              version: settlement.candidateVersion,
               authorName: assignee.name,
-              summary: result.summary
+              summary: result.summary,
+              settlementOperationID: settlement.operationID
             )
           } else {
             try await gitWorkspaceManager.snapshotLocalOutcomeCandidate(
@@ -1185,49 +1220,55 @@ public final class TicketDeliveryWorkflowCoordinator {
         guard let sprintItemID else {
           throw PersistenceError.corruptData("Candidate revision has no sprint item.")
         }
-        let candidate = try await store.createCandidateRevision(
-          CandidateRevision(
-            productID: item.productID,
-            sprintID: plan.sprint.id,
-            sprintItemID: sprintItemID,
-            workItemID: item.id,
-            implementationRunID: run.id,
-            version: version,
-            deliveryKind: deliveryKind,
-            branchName: snapshot.branchName,
-            baseSHA: snapshot.baseSHA,
-            headSHA: snapshot.headSHA,
-            worktreePath: worktreePath,
-            commitCount: snapshot.commitCount,
-            executionResultJSON: resultJSON
-          )
+        let candidate = CandidateRevision(
+          productID: item.productID,
+          sprintID: plan.sprint.id,
+          sprintItemID: sprintItemID,
+          workItemID: item.id,
+          implementationRunID: run.id,
+          version: settlement.candidateVersion,
+          deliveryKind: deliveryKind,
+          branchName: snapshot.branchName,
+          baseSHA: snapshot.baseSHA,
+          headSHA: snapshot.headSHA,
+          worktreePath: worktreePath,
+          commitCount: snapshot.commitCount,
+          executionResultJSON: resultJSON
         )
         let proposals = try await makeKnowledgePageProposals(
           drafts: result.knowledgePageProposals,
           candidate: candidate,
           runID: run.id
         )
-        try await store.createKnowledgePageProposals(proposals)
-        let currentState = (try await store.fetchWorkItems(productID: item.productID))
-          .first { $0.id == item.id }?.state
-        if currentState == .running {
-          _ = try await store.transitionWorkItem(
-            id: item.id,
-            to: .integrating,
-            actor: assignee.name,
-            reason: deliveryKind.changesRepository
-              ? "Candidate v\(candidate.version) queued for integration"
-              : "Outcome v\(candidate.version) queued for review"
-          )
-        }
-        _ = try await updateAgentRun(
-          id: run.id,
-          status: .completed,
+        let eventDetail =
+          deliveryKind.changesRepository
+          ? "Candidate v\(candidate.version) queued for integration"
+          : "Outcome v\(candidate.version) queued for review"
+        let completed = try await store.settleCompletedDelivery(
+          candidate: candidate,
+          operationID: settlement.operationID,
+          comment: TicketComment(
+            workItemID: item.id,
+            authorKind: .agent,
+            authorName: assignee.name,
+            body: result.workLogComment
+          ),
+          deliveryNoteMarkdown: deliveryNote,
+          sprint: plan.sprint,
+          knowledgePageProposals: proposals,
+          retrospectiveNotes: makeRetrospectiveNotes(
+            productID: item.productID,
+            sprintID: plan.sprint.id,
+            workItemID: item.id,
+            profile: assignee,
+            wentWell: result.retrospectiveWentWell,
+            couldImprove: result.retrospectiveCouldImprove,
+            actions: result.retrospectiveActions
+          ),
           eventActor: assignee.name,
-          eventDetail: deliveryKind.changesRepository
-            ? "Candidate v\(candidate.version) queued for integration"
-            : "Outcome v\(candidate.version) queued for review"
+          eventDetail: eventDetail
         )
+        await delegate?.deliveryAgentRunDidUpdate(previous: run, updated: completed.run)
         await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
         _ = try? await updateAgentRun(
@@ -2195,6 +2236,13 @@ public final class TicketDeliveryWorkflowCoordinator {
     let repositoryURL = try productWorkspaceURL(productID: product.id)
     switch review.decision {
     case .approved:
+      let currentCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: currentCandidate.status,
+        reviewedHeadSHA: candidate.headSHA,
+        reviewRunID: reviewRun.id
+      )
       try await store.verifyDeliveryNote(workItemID: item.id, authorName: techLead.name)
       try await store.markKnowledgePageProposals(
         candidateRevisionID: candidate.id,
@@ -2790,6 +2838,31 @@ public final class TicketDeliveryWorkflowCoordinator {
       let implementation = try CodexTicketExecutor.decode(
         candidate.executionResultJSON
       )
+      if
+        candidate.reviewedHeadSHA == candidate.headSHA,
+        !remoteIntegration.incorporatedChanges
+      {
+        let reviewerName: String
+        if
+          let reviewRunID = candidate.reviewRunID,
+          let retainedReviewRun = try? await store.fetchAgentRun(id: reviewRunID),
+          let retainedReviewer = context.profiles.first(where: {
+            $0.id == retainedReviewRun.profileID
+          })
+        {
+          reviewerName = retainedReviewer.name
+        } else {
+          reviewerName = "Tech lead"
+        }
+        try await finalizeReviewedIntegration(
+          candidateID: candidate.id,
+          implementation: implementation,
+          implementationRun: implementationRun,
+          workItem: item,
+          reviewerName: reviewerName
+        )
+        return
+      }
       if remoteIntegration.incorporatedChanges, let remoteSHA = remoteIntegration.remoteSHA {
         let message =
           "Integrated verified GitHub changes at \(String(remoteSHA.prefix(8))) into this ticket before final review."
@@ -4083,10 +4156,58 @@ public final class TicketDeliveryWorkflowCoordinator {
         mutations: mutations
       )
       return true
+    } catch TicketDeliveryRecoveryError.staleRun {
+      do {
+        switch try await recoveryRunConflictDisposition(
+          productID: productID,
+          workItemID: workItemID,
+          store: store,
+          mutations: mutations
+        ) {
+        case .alreadyRecovered:
+          return true
+        case .failure(let error):
+          presentExecutionError(error, productID: productID)
+        }
+      } catch {
+        presentExecutionError(error, productID: productID)
+      }
+      return false
     } catch {
       presentExecutionError(error, productID: productID)
       return false
     }
+  }
+
+  private func recoveryRunConflictDisposition(
+    productID: UUID,
+    workItemID: UUID,
+    store: SQLiteStore,
+    mutations: [TicketDeliveryRecoveryMutation]
+  ) async throws -> TicketDeliveryRecoveryRunConflictDisposition {
+    let runIDs = Set(
+      mutations.compactMap { mutation -> UUID? in
+        guard case .updateRun(let id, _, _, _, _) = mutation else { return nil }
+        return id
+      }
+    )
+    guard !runIDs.isEmpty else {
+      return .failure(.contradictoryRunState)
+    }
+    let candidates = try await store.fetchCandidateRevisions(productID: productID)
+    for runID in runIDs {
+      let run = try await store.fetchAgentRun(id: runID)
+      let disposition = TicketDeliveryRecoveryRunConflictPolicy.disposition(
+        run: run,
+        productID: productID,
+        workItemID: workItemID,
+        candidates: candidates
+      )
+      if case .failure = disposition {
+        return disposition
+      }
+    }
+    return .alreadyRecovered
   }
 
   public func recoverDelivery(productID: UUID) async {

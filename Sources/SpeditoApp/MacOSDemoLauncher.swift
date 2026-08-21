@@ -14,6 +14,7 @@ enum DemoLauncherError: Error, LocalizedError {
   case missingPresentation(String)
   case couldNotOpen(String)
   case couldNotAllocatePort
+  case staticWebServerUnavailable(String)
 
   var errorDescription: String? {
     switch self {
@@ -29,6 +30,8 @@ enum DemoLauncherError: Error, LocalizedError {
       "The demo service stopped before it was ready.\(detail.isEmpty ? "" : " \(detail)")"
     case .readinessTimedOut(let detail):
       "The demo service did not become ready in time.\(detail.isEmpty ? "" : " \(detail)")"
+    case .staticWebServerUnavailable(let detail):
+      "Spedito could not serve the interactive prototype.\(detail.isEmpty ? "" : " \(detail)")"
     case .missingPresentation(let path):
       "The reviewed demo file is missing at \(path)."
     case .couldNotOpen(let title):
@@ -57,7 +60,7 @@ enum DemoPreparationFailurePolicy {
       .readinessTimedOut, .missingPresentation:
       .correctCandidate
     case .appServerUnavailable, .managedWorkspaceUnavailable, .couldNotOpen,
-      .couldNotAllocatePort:
+      .couldNotAllocatePort, .staticWebServerUnavailable:
       .retryPreparation
     }
   }
@@ -92,6 +95,11 @@ protocol DemoApplicationOpening {
 }
 
 @MainActor
+protocol DemoURLOpening {
+  func open(_ url: URL) -> Bool
+}
+
+@MainActor
 private final class WorkspaceDemoApplicationOpener: DemoApplicationOpening {
   private let workspace: NSWorkspace
 
@@ -120,10 +128,24 @@ private final class WorkspaceDemoApplicationOpener: DemoApplicationOpening {
 }
 
 @MainActor
+private final class WorkspaceDemoURLOpener: DemoURLOpening {
+  private let workspace: NSWorkspace
+
+  init(workspace: NSWorkspace) {
+    self.workspace = workspace
+  }
+
+  func open(_ url: URL) -> Bool {
+    workspace.open(url)
+  }
+}
+
+@MainActor
 final class MacOSDemoLauncher {
   private struct Runtime {
     let processID: String?
     let application: (any DemoRunningApplication)?
+    let staticWebServer: StaticWebDemoServer?
     let presentationURL: URL?
     let output: String?
     let allocatedPort: Int?
@@ -132,7 +154,7 @@ final class MacOSDemoLauncher {
   private var runtimes: [UUID: Runtime] = [:]
   private var executor: (any CodexManagedCommandExecuting)?
   private let fileManager: FileManager
-  private let workspace: NSWorkspace
+  private let urlOpener: any DemoURLOpening
   private let applicationOpener: any DemoApplicationOpening
   private let urlSession: URLSession
 
@@ -141,11 +163,12 @@ final class MacOSDemoLauncher {
     fileManager: FileManager = .default,
     workspace: NSWorkspace = .shared,
     applicationOpener: (any DemoApplicationOpening)? = nil,
+    urlOpener: (any DemoURLOpening)? = nil,
     urlSession: URLSession? = nil
   ) {
     self.executor = executor
     self.fileManager = fileManager
-    self.workspace = workspace
+    self.urlOpener = urlOpener ?? WorkspaceDemoURLOpener(workspace: workspace)
     self.applicationOpener =
       applicationOpener
       ?? WorkspaceDemoApplicationOpener(workspace: workspace)
@@ -167,14 +190,25 @@ final class MacOSDemoLauncher {
   ) async throws -> String? {
     try DemoLaunchSpecificationValidator.validate(specification)
     await stop(candidateID: candidateID)
-    try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
-    try await runPreparation(
-      specification.preparationCommands,
-      workspaceURL: workspaceURL
-    )
+    if specification.presentation.kind != .staticWeb {
+      try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
+      try await runPreparation(
+        specification.preparationCommands,
+        workspaceURL: workspaceURL
+      )
+    }
     switch specification.presentation.kind {
     case .browser:
       let runtime = try await startBrowserService(
+        specification: specification,
+        workspaceURL: workspaceURL,
+        opensBrowser: false
+      )
+      runtimes[candidateID] = runtime
+      await stop(candidateID: candidateID)
+      return nil
+    case .staticWeb:
+      let runtime = try await startStaticWebPrototype(
         specification: specification,
         workspaceURL: workspaceURL,
         opensBrowser: false
@@ -212,7 +246,7 @@ final class MacOSDemoLauncher {
       if let processID = existing.processID {
         if await isRunning(processID: processID) {
           if let presentationURL = existing.presentationURL {
-            _ = workspace.open(presentationURL)
+            _ = urlOpener.open(presentationURL)
           }
           return DemoLaunchOutcome(
             output: existing.output,
@@ -232,7 +266,7 @@ final class MacOSDemoLauncher {
         runtimes.removeValue(forKey: candidateID)
       } else {
         if let presentationURL = existing.presentationURL {
-          _ = workspace.open(presentationURL)
+          _ = urlOpener.open(presentationURL)
         }
         return DemoLaunchOutcome(
           output: existing.output,
@@ -241,15 +275,25 @@ final class MacOSDemoLauncher {
       }
     }
 
-    try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
-    try await runPreparation(
-      specification.preparationCommands,
-      workspaceURL: workspaceURL
-    )
+    if specification.presentation.kind != .staticWeb {
+      try await verifyManagedWorkspaceAccess(workspaceURL: workspaceURL)
+      try await runPreparation(
+        specification.preparationCommands,
+        workspaceURL: workspaceURL
+      )
+    }
 
     switch specification.presentation.kind {
     case .browser:
       let runtime = try await startBrowserService(
+        specification: specification,
+        workspaceURL: workspaceURL,
+        opensBrowser: true
+      )
+      runtimes[candidateID] = runtime
+      return DemoLaunchOutcome(output: nil, allocatedPort: runtime.allocatedPort)
+    case .staticWeb:
+      let runtime = try await startStaticWebPrototype(
         specification: specification,
         workspaceURL: workspaceURL,
         opensBrowser: true
@@ -271,6 +315,7 @@ final class MacOSDemoLauncher {
       runtimes[candidateID] = Runtime(
         processID: nil,
         application: application,
+        staticWebServer: nil,
         presentationURL: nil,
         output: nil,
         allocatedPort: nil
@@ -281,12 +326,13 @@ final class MacOSDemoLauncher {
         specification: specification,
         workspaceURL: workspaceURL
       )
-      guard workspace.open(url) else {
+      guard urlOpener.open(url) else {
         throw DemoLauncherError.couldNotOpen(specification.title)
       }
       runtimes[candidateID] = Runtime(
         processID: nil,
         application: nil,
+        staticWebServer: nil,
         presentationURL: url,
         output: nil,
         allocatedPort: nil
@@ -300,6 +346,7 @@ final class MacOSDemoLauncher {
       runtimes[candidateID] = Runtime(
         processID: nil,
         application: nil,
+        staticWebServer: nil,
         presentationURL: nil,
         output: output,
         allocatedPort: nil
@@ -316,6 +363,7 @@ final class MacOSDemoLauncher {
         try? await Task.sleep(for: .milliseconds(100))
       }
     }
+    runtime.staticWebServer?.stop()
     if runtime.application?.isTerminated == false {
       runtime.application?.terminateForDemo()
     }
@@ -362,17 +410,120 @@ final class MacOSDemoLauncher {
       await executor?.terminateManagedCommand(processID: processID)
       throw DemoLaunchValidationError.invalid("the browser path is invalid.")
     }
-    if opensBrowser, !workspace.open(url) {
+    if opensBrowser, !urlOpener.open(url) {
       await executor?.terminateManagedCommand(processID: processID)
       throw DemoLauncherError.couldNotOpen(specification.title)
     }
     return Runtime(
       processID: processID,
       application: nil,
+      staticWebServer: nil,
       presentationURL: url,
       output: nil,
       allocatedPort: port
     )
+  }
+
+  private func startStaticWebPrototype(
+    specification: DemoLaunchSpecification,
+    workspaceURL: URL,
+    opensBrowser: Bool
+  ) async throws -> Runtime {
+    let rootURL = try staticWebRootURL(
+      specification: specification,
+      workspaceURL: workspaceURL
+    )
+    let server: StaticWebDemoServer
+    do {
+      server = try StaticWebDemoServer(rootURL: rootURL, fileManager: fileManager)
+    } catch {
+      throw DemoLauncherError.staticWebServerUnavailable(error.localizedDescription)
+    }
+    let port: Int
+    do {
+      port = try await server.start()
+    } catch {
+      server.stop()
+      if let launcherError = error as? DemoLauncherError {
+        throw launcherError
+      }
+      throw DemoLauncherError.staticWebServerUnavailable(error.localizedDescription)
+    }
+    guard let url = URL(string: "http://127.0.0.1:\(port)/") else {
+      server.stop()
+      throw DemoLauncherError.staticWebServerUnavailable("The loopback URL is invalid.")
+    }
+    do {
+      try await verifyStaticWebPrototypeReady(at: url)
+    } catch {
+      server.stop()
+      throw error
+    }
+    if opensBrowser, !urlOpener.open(url) {
+      server.stop()
+      throw DemoLauncherError.couldNotOpen(specification.title)
+    }
+    return Runtime(
+      processID: nil,
+      application: nil,
+      staticWebServer: server,
+      presentationURL: url,
+      output: nil,
+      allocatedPort: port
+    )
+  }
+
+  private func staticWebRootURL(
+    specification: DemoLaunchSpecification,
+    workspaceURL: URL
+  ) throws -> URL {
+    guard let path = specification.presentation.path else {
+      throw DemoLaunchValidationError.invalid("the prototype directory is missing.")
+    }
+    let rootURL = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+      path,
+      in: workspaceURL
+    )
+    var isDirectory: ObjCBool = false
+    guard
+      fileManager.fileExists(atPath: rootURL.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      throw DemoLauncherError.missingPresentation(path)
+    }
+    let indexPath = path.hasSuffix("/") ? "\(path)index.html" : "\(path)/index.html"
+    let indexURL = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+      indexPath,
+      in: workspaceURL
+    )
+    let values = try? indexURL.resourceValues(
+      forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    )
+    guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
+      throw DemoLauncherError.missingPresentation(indexPath)
+    }
+    return rootURL
+  }
+
+  private func verifyStaticWebPrototypeReady(at url: URL) async throws {
+    var request = URLRequest(url: url)
+    request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    request.timeoutInterval = 2
+    do {
+      let (_, response) = try await urlSession.data(for: request)
+      guard
+        let http = response as? HTTPURLResponse,
+        (200...299).contains(http.statusCode)
+      else {
+        throw DemoLauncherError.staticWebServerUnavailable(
+          "The prototype did not return a successful response."
+        )
+      }
+    } catch let error as DemoLauncherError {
+      throw error
+    } catch {
+      throw DemoLauncherError.staticWebServerUnavailable(error.localizedDescription)
+    }
   }
 
   private func runPreparation(

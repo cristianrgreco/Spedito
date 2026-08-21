@@ -1044,6 +1044,18 @@ struct SQLiteStoreTests {
     #expect(observed.contextUsedTokens == 12_000)
     #expect(observed.contextWindowTokens == 64_000)
     #expect(observed.compactionCount == 1)
+    let lowerCumulativeSample = try await store.recordAgentRunActivity(
+      id: implementationRun.id,
+      cumulativeUsedTokens: 30_000,
+      at: activityAt
+    )
+    #expect(lowerCumulativeSample.cumulativeUsedTokens == 30_000)
+    let retainedCumulativeSample = try await store.recordAgentRunActivity(
+      id: implementationRun.id,
+      cumulativeUsedTokens: 20_000,
+      at: activityAt
+    )
+    #expect(retainedCumulativeSample.cumulativeUsedTokens == 30_000)
     #expect(observed.activeDuration(at: activityAt.addingTimeInterval(12)) == 12)
     _ = try await store.updateAgentRun(
       id: implementationRun.id,
@@ -3398,7 +3410,18 @@ struct SQLiteStoreTests {
       actionDestination: .backlog
     )
     try await store.saveRetrospectiveNotes([action])
-    try await store.saveRetrospectiveNotes([action])
+    let duplicateEvidence = RetrospectiveNote(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      profileID: implementer.id,
+      authorName: implementer.name,
+      category: .suggestedAction,
+      body: action.body,
+      actionStatus: .proposed,
+      actionDestination: .backlog
+    )
+    try await store.saveRetrospectiveNotes([action, duplicateEvidence])
     #expect(try await store.fetchRetrospectiveNotes(productID: product.id).count == 1)
 
     await #expect(throws: PersistenceError.self) {
@@ -4208,6 +4231,153 @@ struct SQLiteStoreTests {
     grants = try await reopened.fetchAgentPermissionGrants(productID: product.id)
     #expect(grants == [replacement])
     await reopened.close()
+  }
+
+  @Test("Completed delivery settlement is atomic and idempotent")
+  func completedDeliverySettlementIsAtomicAndIdempotent() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Atomic delivery")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Settle one candidate"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Settle delivery once",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    let queuedRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let run = try await store.updateAgentRun(
+      id: queuedRun.id,
+      status: .running,
+      worktreePath: "/tmp/atomic-delivery"
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+
+    let requestedOperationID = UUID()
+    let preparation = try await store.prepareCompletedDeliverySettlement(
+      runID: run.id,
+      operationID: requestedOperationID
+    )
+    let repeatedPreparation = try await store.prepareCompletedDeliverySettlement(
+      runID: run.id,
+      operationID: UUID()
+    )
+    #expect(preparation.operationID == requestedOperationID)
+    #expect(repeatedPreparation.operationID == preparation.operationID)
+    #expect(repeatedPreparation.candidateVersion == preparation.candidateVersion)
+
+    let candidate = CandidateRevision(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      sprintItemID: sprintItem.id,
+      workItemID: item.id,
+      implementationRunID: run.id,
+      version: preparation.candidateVersion,
+      branchName: "ticket/T1",
+      baseSHA: "base",
+      headSHA: "head",
+      worktreePath: "/tmp/atomic-delivery",
+      commitCount: 1,
+      executionResultJSON: "{}"
+    )
+    let invalidProposal = KnowledgePageProposal(
+      productID: product.id,
+      sprintID: active.sprint.id,
+      workItemID: item.id,
+      candidateRevisionID: UUID(),
+      operation: .create,
+      title: "Invalid proposal",
+      proposedBodyMarkdown: "Must roll back.",
+      rationale: "Exercises the foreign-key boundary."
+    )
+    await #expect(throws: Error.self) {
+      try await store.settleCompletedDelivery(
+        candidate: candidate,
+        operationID: preparation.operationID,
+        comment: TicketComment(
+          workItemID: item.id,
+          authorKind: .agent,
+          authorName: implementer.name,
+          body: "Completion handoff"
+        ),
+        deliveryNoteMarkdown: "# Delivery note\n\nSettled once.",
+        sprint: active.sprint,
+        knowledgePageProposals: [invalidProposal],
+        retrospectiveNotes: [],
+        eventActor: implementer.name,
+        eventDetail: "Candidate queued"
+      )
+    }
+    #expect(try await store.fetchCandidateRevisions(productID: product.id).isEmpty)
+    #expect(try await store.fetchAgentRun(id: run.id).status == .running)
+    #expect(try await store.fetchComments(workItemID: item.id).isEmpty)
+
+    let settled = try await store.settleCompletedDelivery(
+      candidate: candidate,
+      operationID: preparation.operationID,
+      comment: TicketComment(
+        workItemID: item.id,
+        authorKind: .agent,
+        authorName: implementer.name,
+        body: "Completion handoff"
+      ),
+      deliveryNoteMarkdown: "# Delivery note\n\nSettled once.",
+      sprint: active.sprint,
+      knowledgePageProposals: [],
+      retrospectiveNotes: [],
+      eventActor: implementer.name,
+      eventDetail: "Candidate queued"
+    )
+    let repeated = try await store.settleCompletedDelivery(
+      candidate: candidate,
+      operationID: preparation.operationID,
+      comment: TicketComment(
+        workItemID: item.id,
+        authorKind: .agent,
+        authorName: implementer.name,
+        body: "Duplicate handoff"
+      ),
+      deliveryNoteMarkdown: "# Delivery note\n\nDuplicate.",
+      sprint: active.sprint,
+      knowledgePageProposals: [],
+      retrospectiveNotes: [],
+      eventActor: implementer.name,
+      eventDetail: "Candidate queued"
+    )
+
+    #expect(settled.inserted)
+    #expect(!repeated.inserted)
+    #expect(try await store.fetchCandidateRevisions(productID: product.id).count == 1)
+    #expect(try await store.fetchComments(workItemID: item.id).map(\.body) == ["Completion handoff"])
+    #expect(try await store.fetchAgentRun(id: run.id).status == .completed)
+    #expect(try await store.fetchWorkItem(id: item.id).state == .integrating)
+    let deliveryNotes = try await store.fetchKnowledgePages(productID: product.id)
+      .filter { $0.sourceWorkItemID == item.id && $0.kind == .deliveryNote }
+    #expect(deliveryNotes.count == 1)
+    #expect(deliveryNotes.first?.bodyMarkdown.contains("Settled once.") == true)
   }
 
   /// Existing partial coverage:

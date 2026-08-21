@@ -153,42 +153,36 @@ struct ProductCreationForm<SecondaryActions: View>: View {
     let catalog = model.repositoryImportSnapshot.catalog
     let choices = catalog.choices
     VStack(alignment: .leading, spacing: 7) {
-      HStack {
-        Text("GitHub repository")
-          .font(.subheadline.weight(.semibold))
-        Spacer()
-        Button("Refresh list") {
-          Task { await model.sendRepositoryImportCommand(.loadAuthorizedRepositories) }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(model.repositoryImportSnapshot.isLoadingAuthorizedRepositories || isCreating)
-      }
-      if model.repositoryImportSnapshot.isLoadingAuthorizedRepositories {
+      Text("GitHub repository")
+        .font(.subheadline.weight(.semibold))
+      if model.repositoryImportSnapshot.isLoadingAuthorizedRepositories, choices.isEmpty {
         ProgressView("Loading repositories...")
           .controlSize(.small)
       } else if !choices.isEmpty {
-        Picker("GitHub repository", selection: $selectedGitHubRepositoryID) {
-          Text("Choose a repository").tag(Int64?.none)
-          ForEach(choices) { choice in
-            Text(
-              choice.repository.fullName
-                + (choice.repository.isPrivate ? " · Private" : "")
-            )
-            .tag(Optional(choice.repository.id))
+        HStack(spacing: 6) {
+          Picker("GitHub repository", selection: $selectedGitHubRepositoryID) {
+            Text("Choose a repository").tag(Int64?.none)
+            ForEach(choices) { choice in
+              Text(
+                choice.repository.fullName
+                  + (choice.repository.isPrivate ? " · Private" : "")
+              )
+              .tag(Optional(choice.repository.id))
+            }
           }
-        }
-        .labelsHidden()
-        .pickerStyle(.menu)
-        .disabled(isCreating)
-        .onChange(of: selectedGitHubRepositoryID) { _, repositoryID in
-          guard
-            let repositoryID,
-            let repository = choices.first(where: { $0.repository.id == repositoryID })?
-              .repository
-          else { return }
-          repositoryLink = repository.canonicalHTTPSURL.absoluteString
-          prefillSuggestedName()
+          .labelsHidden()
+          .pickerStyle(.menu)
+          .disabled(isCreating)
+          .onChange(of: selectedGitHubRepositoryID) { _, repositoryID in
+            guard
+              let repositoryID,
+              let repository = choices.first(where: { $0.repository.id == repositoryID })?
+                .repository
+            else { return }
+            repositoryLink = repository.canonicalHTTPSURL.absoluteString
+            prefillSuggestedName()
+          }
+          refreshRepositoryListControl
         }
         Text(
           "Choose a repository available to the Spedito GitHub App. To add another repository, manage access on GitHub; Spedito refreshes this list when you return."
@@ -229,10 +223,32 @@ struct ProductCreationForm<SecondaryActions: View>: View {
             }
             .buttonStyle(.bordered)
           }
+          refreshRepositoryListControl
         }
         .disabled(isCreating)
       }
     }
+  }
+
+  @ViewBuilder
+  private var refreshRepositoryListControl: some View {
+    Group {
+      if model.repositoryImportSnapshot.isLoadingAuthorizedRepositories {
+        ProgressView()
+          .controlSize(.small)
+      } else {
+        Button {
+          Task { await model.sendRepositoryImportCommand(.loadAuthorizedRepositories) }
+        } label: {
+          Image(systemName: "arrow.clockwise")
+        }
+        .buttonStyle(.bordered)
+        .help("Refresh list")
+        .accessibilityLabel("Refresh list")
+        .disabled(isCreating)
+      }
+    }
+    .frame(width: 30)
   }
 
   private var githubImportDevicePromptPresentation: Binding<Bool> {

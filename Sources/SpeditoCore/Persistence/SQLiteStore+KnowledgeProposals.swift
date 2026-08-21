@@ -6,40 +6,46 @@ extension SQLiteStore {
     _ proposals: [KnowledgePageProposal]
   ) throws {
     try transaction {
-      for proposal in proposals {
-        try withStatement(
-          """
-          INSERT INTO knowledge_page_proposals (
-              id, product_id, sprint_id, work_item_id, candidate_revision_id,
-              operation, target_page_id, parent_page_id, base_page_title,
-              base_page_body_markdown, base_page_updated_at, title,
-              proposed_body_markdown, rationale, status, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-          """
-        ) { statement in
-          try bind(proposal.id.uuidString, to: 1, in: statement)
-          try bind(proposal.productID.uuidString, to: 2, in: statement)
-          try bind(proposal.sprintID.uuidString, to: 3, in: statement)
-          try bind(proposal.workItemID.uuidString, to: 4, in: statement)
-          try bind(proposal.candidateRevisionID.uuidString, to: 5, in: statement)
-          try bind(proposal.operation.rawValue, to: 6, in: statement)
-          try bindOptionalUUID(proposal.targetPageID, to: 7, in: statement)
-          try bindOptionalUUID(proposal.parentPageID, to: 8, in: statement)
-          try bindOptionalString(proposal.basePageTitle, to: 9, in: statement)
-          try bindOptionalString(proposal.basePageBodyMarkdown, to: 10, in: statement)
-          try bindOptionalDate(proposal.basePageUpdatedAt, to: 11, in: statement)
-          try bind(proposal.title, to: 12, in: statement)
-          try bind(
-            KnowledgeMarkdown.normalizedBody(proposal.proposedBodyMarkdown),
-            to: 13,
-            in: statement
-          )
-          try bind(proposal.rationale, to: 14, in: statement)
-          try bind(proposal.status.rawValue, to: 15, in: statement)
-          try bind(proposal.createdAt.timeIntervalSince1970, to: 16, in: statement)
-          try bind(proposal.updatedAt.timeIntervalSince1970, to: 17, in: statement)
-          try stepDone(statement)
-        }
+      try insertKnowledgePageProposals(proposals)
+    }
+  }
+
+  func insertKnowledgePageProposals(
+    _ proposals: [KnowledgePageProposal]
+  ) throws {
+    for proposal in proposals {
+      try withStatement(
+        """
+        INSERT INTO knowledge_page_proposals (
+            id, product_id, sprint_id, work_item_id, candidate_revision_id,
+            operation, target_page_id, parent_page_id, base_page_title,
+            base_page_body_markdown, base_page_updated_at, title,
+            proposed_body_markdown, rationale, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+      ) { statement in
+        try bind(proposal.id.uuidString, to: 1, in: statement)
+        try bind(proposal.productID.uuidString, to: 2, in: statement)
+        try bind(proposal.sprintID.uuidString, to: 3, in: statement)
+        try bind(proposal.workItemID.uuidString, to: 4, in: statement)
+        try bind(proposal.candidateRevisionID.uuidString, to: 5, in: statement)
+        try bind(proposal.operation.rawValue, to: 6, in: statement)
+        try bindOptionalUUID(proposal.targetPageID, to: 7, in: statement)
+        try bindOptionalUUID(proposal.parentPageID, to: 8, in: statement)
+        try bindOptionalString(proposal.basePageTitle, to: 9, in: statement)
+        try bindOptionalString(proposal.basePageBodyMarkdown, to: 10, in: statement)
+        try bindOptionalDate(proposal.basePageUpdatedAt, to: 11, in: statement)
+        try bind(proposal.title, to: 12, in: statement)
+        try bind(
+          KnowledgeMarkdown.normalizedBody(proposal.proposedBodyMarkdown),
+          to: 13,
+          in: statement
+        )
+        try bind(proposal.rationale, to: 14, in: statement)
+        try bind(proposal.status.rawValue, to: 15, in: statement)
+        try bind(proposal.createdAt.timeIntervalSince1970, to: 16, in: statement)
+        try bind(proposal.updatedAt.timeIntervalSince1970, to: 17, in: statement)
+        try stepDone(statement)
       }
     }
   }

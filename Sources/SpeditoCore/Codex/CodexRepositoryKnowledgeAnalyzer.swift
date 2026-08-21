@@ -352,13 +352,15 @@ public enum CodexRepositoryKnowledgeAnalyzer {
         throw RepositoryKnowledgeAnalysisError.invalidResponse("Draft titles must be unique.")
       }
       let evidence = try generatedDraft.evidence.map { item in
-        let value = RepositoryEvidence(
-          path: item.path.precomposedStringWithCanonicalMapping,
-          startLine: item.startLine,
-          endLine: item.endLine
+        try policy.normalized(
+          evidence: RepositoryEvidence(
+            path: item.path.precomposedStringWithCanonicalMapping,
+            startLine: item.startLine,
+            endLine: item.endLine
+          ),
+          snapshotURL: snapshot.url,
+          allowedPaths: allowedPaths
         )
-        try policy.validate(evidence: value, snapshotURL: snapshot.url, allowedPaths: allowedPaths)
-        return value
       }
 
       switch operation {
@@ -479,13 +481,15 @@ public enum CodexRepositoryKnowledgeAnalyzer {
     }
     let allowedPaths = Set(snapshot.allowedPaths)
     let evidence = try generated.evidence.map { item in
-      let value = RepositoryEvidence(
-        path: item.path.precomposedStringWithCanonicalMapping,
-        startLine: item.startLine,
-        endLine: item.endLine
+      try policy.normalized(
+        evidence: RepositoryEvidence(
+          path: item.path.precomposedStringWithCanonicalMapping,
+          startLine: item.startLine,
+          endLine: item.endLine
+        ),
+        snapshotURL: snapshot.url,
+        allowedPaths: allowedPaths
       )
-      try policy.validate(evidence: value, snapshotURL: snapshot.url, allowedPaths: allowedPaths)
-      return value
     }
     try DemoLaunchSpecificationValidator.validate(generated.specification)
     guard
@@ -493,7 +497,7 @@ public enum CodexRepositoryKnowledgeAnalyzer {
         || generated.specification.presentation.kind == .macApplication
     else {
       throw RepositoryKnowledgeAnalysisError.invalidResponse(
-        "Imported App versions must open a browser or macOS app."
+        "Imported app versions must open a browser or macOS app."
       )
     }
     return RepositoryLaunchProposal(

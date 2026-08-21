@@ -193,13 +193,16 @@ public actor SQLiteStore {
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    guard version == 1 else {
+    guard version == 1 || version == 2 else {
       throw unsupportedSchemaError(version: version, url: url)
     }
 
     try execute("BEGIN IMMEDIATE;", database: database)
     do {
-      try execute(ProductDatabaseSchema.migrationV1ToV2, database: database)
+      if version == 1 {
+        try execute(ProductDatabaseSchema.migrationV1ToV2, database: database)
+      }
+      try execute(ProductDatabaseSchema.migrationV2ToV3, database: database)
       let migrated = try integerPragma("user_version", database: database)
       guard migrated == ProductDatabaseSchema.version else {
         throw PersistenceError.corruptData(
@@ -214,8 +217,8 @@ public actor SQLiteStore {
     }
   }
 
-  /// Version 1 is the only schema a released Spedito ever wrote, so anything
-  /// else is either a newer build's database or a pre-release development one.
+  /// Versions 1 and 2 are the released schemas this build can upgrade, so anything
+  /// else below the current version is an unsupported pre-release development schema.
   private static func unsupportedSchemaError(
     version: Int32,
     url: URL
@@ -572,6 +575,8 @@ public actor SQLiteStore {
       worktreePath: try text(statement, column: 11),
       integrationWorktreePath: try optionalText(statement, column: 12),
       status: status,
+      reviewedHeadSHA: try optionalText(statement, column: 19),
+      reviewRunID: try optionalText(statement, column: 20).flatMap(UUID.init(uuidString:)),
       commitCount: Int(sqlite3_column_int64(statement, 14)),
       executionResultJSON: try text(statement, column: 15),
       createdAt: date(statement, column: 16),
@@ -844,9 +849,11 @@ public actor SQLiteStore {
           sprint_id, sprint_item_id, turn_started_at, last_activity_at,
           last_activity_text, last_activity_kind, active_duration_seconds,
           execution_constraint_kind, execution_constraint_observed_at,
-          execution_constraint_retry_at, execution_constraint_evidence
+          execution_constraint_retry_at, execution_constraint_evidence,
+          settlement_operation_id, settlement_candidate_version,
+          cumulative_used_tokens
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?);
+                ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(run.id.uuidString, to: 1, in: statement)
@@ -873,6 +880,9 @@ public actor SQLiteStore {
       try bindOptionalDate(run.executionConstraint?.observedAt, to: 22, in: statement)
       try bindOptionalDate(run.executionConstraint?.retryAt, to: 23, in: statement)
       try bindOptionalString(run.executionConstraint?.technicalEvidence, to: 24, in: statement)
+      try bindOptionalUUID(run.settlementOperationID, to: 25, in: statement)
+      try bindOptionalInt(run.settlementCandidateVersion, to: 26, in: statement)
+      try bindOptionalInt(run.cumulativeUsedTokens, to: 27, in: statement)
       try stepDone(statement)
     }
   }
@@ -1924,25 +1934,24 @@ public actor SQLiteStore {
     return try decoder.decode([String: String].self, from: data)
   }
 
-  func transaction(_ operation: () throws -> Void) throws {
+  func transaction<Value>(_ operation: () throws -> Value) throws -> Value {
     if transactionDepth > 0 {
-      try operation()
-      return
+      return try operation()
     }
 
     try execute("BEGIN IMMEDIATE;")
     transactionDepth = 1
     do {
-      try operation()
+      let value = try operation()
       try execute("COMMIT;")
       transactionDepth = 0
+      return value
     } catch {
       try? execute("ROLLBACK;")
       transactionDepth = 0
       throw error
     }
   }
-
   func readTransaction<Value>(_ operation: () throws -> Value) throws -> Value {
     try execute("BEGIN DEFERRED;")
     do {

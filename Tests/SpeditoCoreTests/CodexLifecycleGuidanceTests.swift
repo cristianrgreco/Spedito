@@ -63,6 +63,64 @@ struct CodexLifecycleGuidanceTests {
     #expect(!instructions.contains("Do not invoke Node"))
   }
 
+  @Test("Documented readiness sequences must be exercised by the smoke-tested demo recipe")
+  func documentedReadinessMatchesDemoRecipe() {
+    let implementer = CodexTicketExecutor.developerInstructions(
+      productInstructions: "",
+      customInstructions: "",
+      assignee: AgentProfile(
+        productID: UUID(),
+        name: "Implementer",
+        role: .implementer
+      )
+    )
+    let analyst = CodexTicketExecutor.developerInstructions(
+      productInstructions: "",
+      customInstructions: "",
+      assignee: AgentProfile(
+        productID: UUID(),
+        name: "Business analyst",
+        role: .businessAnalyst
+      )
+    )
+    let reviewer = CodexTechLeadReviewer.developerInstructions(
+      productInstructions: "",
+      customInstructions: "",
+      reviewer: AgentProfile(
+        productID: UUID(),
+        name: "Tech lead",
+        role: .lead
+      )
+    )
+
+    // The implementer must put every documented preparation step into the recipe Spedito runs
+    // and may not describe a readiness step or check as verified without having run it.
+    #expect(
+      implementer.contains("executable form of the readiness sequence this candidate documents")
+    )
+    #expect(implementer.contains("presents as required before the product runs must appear in"))
+    #expect(implementer.contains("preparationCommands in the documented order"))
+    #expect(implementer.contains("smoke test proves the same claim"))
+    #expect(implementer.contains("do not present it as a readiness step unless the recipe"))
+    #expect(implementer.contains("ran it successfully in this workspace and reports it in tests"))
+    #expect(implementer.contains("recipe does not run is a false operational instruction"))
+    #expect(implementer.contains("readiness sequence is the sequence that recipe runs"))
+
+    // Research delivery shares the knowledge guidance but never returns a recipe, so the
+    // recipe-specific readiness contract must not reach it.
+    #expect(analyst.contains("readiness sequence is the sequence that recipe runs"))
+    #expect(!analyst.contains("executable form of the readiness sequence"))
+
+    // The reviewer treats a documented preparation step missing from the recipe as blocking.
+    #expect(
+      reviewer.contains("Compare the recipe with any readiness sequence the candidate documents")
+    )
+    #expect(
+      reviewer.contains("preparationCommands omit is a materially false operational instruction")
+    )
+    #expect(reviewer.contains("blocks even when the recipe alone looks valid"))
+  }
+
   @Test("Delivery routes blocked network access through the scoped permission tool")
   func deliveryRequestsNetworkPermission() {
     let instructions = CodexTicketExecutor.developerInstructions(
@@ -111,8 +169,8 @@ struct CodexLifecycleGuidanceTests {
       )
     )
     #expect(instructions.contains("does not grant access by itself"))
-    #expect(repair.contains("sandbox filesystem or network capability"))
-    #expect(repair.contains("available `request_permissions` tool"))
+    #expect(repair.contains("missing sandbox capability"))
+    #expect(repair.contains("use `request_permissions`"))
   }
 
   @Test("Empty profile instructions stay empty and role guidance remains internal")

@@ -19,7 +19,9 @@ extension SQLiteStore {
              created_at, updated_at, turn_started_at, last_activity_at,
              last_activity_text, last_activity_kind, active_duration_seconds,
              execution_constraint_kind, execution_constraint_observed_at,
-             execution_constraint_retry_at, execution_constraint_evidence
+             execution_constraint_retry_at, execution_constraint_evidence,
+             settlement_operation_id, settlement_candidate_version,
+             cumulative_used_tokens
       FROM agent_runs
       WHERE \(predicate)
       ORDER BY created_at ASC;
@@ -52,6 +54,7 @@ extension SQLiteStore {
             contextUsedTokens: optionalInt(statement, column: 10),
             contextWindowTokens: optionalInt(statement, column: 11),
             compactionCount: Int(sqlite3_column_int64(statement, 12)),
+            cumulativeUsedTokens: optionalInt(statement, column: 26),
             activeDurationSeconds: sqlite3_column_double(statement, 19),
             turnStartedAt: optionalDate(statement, column: 15),
             lastActivityAt: optionalDate(statement, column: 16),
@@ -65,6 +68,9 @@ extension SQLiteStore {
               retryAtColumn: 22,
               evidenceColumn: 23
             ),
+            settlementOperationID: try optionalText(statement, column: 24)
+              .flatMap(UUID.init(uuidString:)),
+            settlementCandidateVersion: optionalInt(statement, column: 25),
             createdAt: date(statement, column: 13),
             updatedAt: date(statement, column: 14)
           )
@@ -83,7 +89,9 @@ extension SQLiteStore {
              created_at, updated_at, turn_started_at, last_activity_at,
              last_activity_text, last_activity_kind, active_duration_seconds,
              execution_constraint_kind, execution_constraint_observed_at,
-             execution_constraint_retry_at, execution_constraint_evidence
+             execution_constraint_retry_at, execution_constraint_evidence,
+             settlement_operation_id, settlement_candidate_version,
+             cumulative_used_tokens
       FROM agent_runs
       WHERE id = ?;
       """
@@ -115,6 +123,7 @@ extension SQLiteStore {
         contextUsedTokens: optionalInt(statement, column: 10),
         contextWindowTokens: optionalInt(statement, column: 11),
         compactionCount: Int(sqlite3_column_int64(statement, 12)),
+        cumulativeUsedTokens: optionalInt(statement, column: 26),
         activeDurationSeconds: sqlite3_column_double(statement, 19),
         turnStartedAt: optionalDate(statement, column: 15),
         lastActivityAt: optionalDate(statement, column: 16),
@@ -128,6 +137,9 @@ extension SQLiteStore {
           retryAtColumn: 22,
           evidenceColumn: 23
         ),
+        settlementOperationID: try optionalText(statement, column: 24)
+          .flatMap(UUID.init(uuidString:)),
+        settlementCandidateVersion: optionalInt(statement, column: 25),
         createdAt: date(statement, column: 13),
         updatedAt: date(statement, column: 14)
       )
@@ -237,6 +249,7 @@ extension SQLiteStore {
     contextUsedTokens: Int? = nil,
     contextWindowTokens: Int? = nil,
     didCompact: Bool = false,
+    cumulativeUsedTokens: Int? = nil,
     startsTurn: Bool = false,
     at: Date = Date()
   ) throws -> AgentRun {
@@ -259,7 +272,12 @@ extension SQLiteStore {
           last_activity_kind = COALESCE(?, last_activity_kind),
           context_used_tokens = COALESCE(?, context_used_tokens),
           context_window_tokens = COALESCE(?, context_window_tokens),
-          compaction_count = compaction_count + ?
+          compaction_count = compaction_count + ?,
+          cumulative_used_tokens =
+            CASE
+              WHEN ? IS NULL THEN cumulative_used_tokens
+              ELSE MAX(COALESCE(cumulative_used_tokens, 0), ?)
+            END
       WHERE id = ?;
       """
     ) { statement in
@@ -273,7 +291,9 @@ extension SQLiteStore {
       try bindOptionalInt(contextUsedTokens, to: 8, in: statement)
       try bindOptionalInt(contextWindowTokens, to: 9, in: statement)
       try bind(Int64(didCompact ? 1 : 0), to: 10, in: statement)
-      try bind(id.uuidString, to: 11, in: statement)
+      try bindOptionalInt(cumulativeUsedTokens, to: 11, in: statement)
+      try bindOptionalInt(cumulativeUsedTokens, to: 12, in: statement)
+      try bind(id.uuidString, to: 13, in: statement)
       try stepDone(statement)
     }
     return try fetchAgentRun(id: id)

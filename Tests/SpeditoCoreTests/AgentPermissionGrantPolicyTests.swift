@@ -25,8 +25,8 @@ struct AgentPermissionGrantPolicyTests {
     )
   }
 
-  @Test("Restricted network consent fails closed while unrestricted consent covers it")
-  func restrictedNetworkCoverage() throws {
+  @Test("Unrestricted network access cannot be saved across delivery runs")
+  func unrestrictedNetworkIsNotReusable() throws {
     let productID = UUID()
     let restrictedPermissions = JSONValue.object([
       "fileSystem": .null,
@@ -49,6 +49,18 @@ struct AgentPermissionGrantPolicyTests {
     let restrictedRequest = try #require(try productSignature(for: restrictedPermissions))
 
     #expect(
+      !AgentPermissionGrantPolicy.isReusableProductGrant(
+        signature: unrestrictedRequest,
+        kind: .permissions
+      )
+    )
+    #expect(
+      AgentPermissionGrantPolicy.isReusableProductGrant(
+        signature: restrictedRequest,
+        kind: .permissions
+      )
+    )
+    #expect(
       !AgentPermissionGrantPolicy.covers(
         productGrantSignature: unrestrictedRequest,
         kind: .permissions,
@@ -56,7 +68,7 @@ struct AgentPermissionGrantPolicyTests {
       )
     )
     #expect(
-      AgentPermissionGrantPolicy.covers(
+      !AgentPermissionGrantPolicy.covers(
         productGrantSignature: restrictedRequest,
         kind: .permissions,
         grants: [unrestrictedGrant]
@@ -87,8 +99,7 @@ struct AgentPermissionGrantPolicyTests {
         "/opt/homebrew/Cellar",
         "/opt/homebrew/bin",
         "/opt/homebrew/opt",
-      ],
-      includesNetwork: true
+      ]
     )
     let signature = try #require(try productSignature(for: requested))
 
@@ -339,6 +350,55 @@ struct AgentPermissionGrantPolicyTests {
     }
   }
 
+  @Test("Broad configuration roots are denied while exact runtime configuration stays scoped")
+  func broadConfigurationRootsAreRejected() throws {
+    let broad = try #require(
+      try productSignature(for: permissionValue(paths: ["/opt/homebrew/etc"]))
+    )
+    let broadPattern = try #require(
+      try productSignature(
+        for: JSONValue.object([
+          "fileSystem": .object([
+            "entries": .array([
+              .object([
+                "access": .string("read"),
+                "path": .object([
+                  "type": .string("glob_pattern"),
+                  "pattern": .string("/opt/homebrew/etc/**"),
+                ]),
+              ])
+            ])
+          ]),
+          "network": .null,
+        ])
+      )
+    )
+    let exact = try #require(
+      try productSignature(for: permissionValue(paths: ["/opt/homebrew/etc/openssl@3"]))
+    )
+
+    for signature in [broad, broadPattern] {
+      #expect(
+        AgentPermissionGrantPolicy.requestsProhibitedConfigurationRoot(
+          productGrantSignature: signature,
+          kind: .permissions
+        )
+      )
+      #expect(
+        !AgentPermissionGrantPolicy.isReusableProductGrant(
+          signature: signature,
+          kind: .permissions
+        )
+      )
+    }
+    #expect(
+      !AgentPermissionGrantPolicy.requestsProhibitedConfigurationRoot(
+        productGrantSignature: exact,
+        kind: .permissions
+      )
+    )
+  }
+
   @Test("Settings group effective capabilities while preserving exact commands")
   func effectiveAccessGroups() {
     let productID = UUID()
@@ -349,8 +409,7 @@ struct AgentPermissionGrantPolicyTests {
     let overlapping = legacyPermissionGrant(
       productID: productID,
       permissions: permissionValue(
-        paths: ["/opt/homebrew/opt", "/opt/homebrew/etc/openssl@3"],
-        includesNetwork: true
+        paths: ["/opt/homebrew/opt", "/opt/homebrew/etc/openssl@3"]
       )
     )
     let command = AgentPermissionGrant(
@@ -368,21 +427,22 @@ struct AgentPermissionGrantPolicyTests {
     #expect(groups.count == 2)
     #expect(groups[0].kind == .capabilities)
     #expect(Set(groups[0].grantIDs) == [runtime.id, overlapping.id])
-    #expect(groups[0].detail.contains("Network access"))
+    #expect(!groups[0].detail.contains("Network access"))
     #expect(groups[0].detail.components(separatedBy: "/opt/homebrew/opt").count == 2)
     #expect(groups[1].kind == .command)
     #expect(groups[1].detail == command.detail)
   }
 
-  @Test("Delivery guidance explains saved consent without claiming it is active")
+  @Test("Delivery guidance excludes unsafe saved consent")
   func savedAccessAgentContext() {
     let productID = UUID()
-    let grant = legacyPermissionGrant(
+    let runtimeGrant = legacyPermissionGrant(
       productID: productID,
-      permissions: permissionValue(
-        paths: ["/opt/homebrew/bin"],
-        includesNetwork: true
-      )
+      permissions: permissionValue(paths: ["/opt/homebrew/bin"])
+    )
+    let unsafeNetworkGrant = legacyPermissionGrant(
+      productID: productID,
+      permissions: permissionValue(paths: [], includesNetwork: true)
     )
     let instructions = CodexTicketExecutor.developerInstructions(
       productInstructions: "",
@@ -392,14 +452,19 @@ struct AgentPermissionGrantPolicyTests {
         name: "Implementer",
         role: .implementer
       ),
-      savedPermissionGrants: [grant]
+      savedPermissionGrants: [runtimeGrant, unsafeNetworkGrant]
     )
 
     #expect(instructions.contains("SAVED PRODUCT ACCESS"))
-    #expect(instructions.contains("Network access"))
+    #expect(!instructions.contains("- Network access"))
     #expect(instructions.contains("Read /opt/homebrew/bin"))
     #expect(instructions.contains("Saved consent is not active sandbox access"))
     #expect(instructions.contains("request the smallest coherent matching"))
+  }
+
+  @Test("Empty structured request cannot become saved product access")
+  func emptyStructuredPermissionIsNotReusable() throws {
+    #expect(try productSignature(for: .object([:])) == nil)
   }
 
   private func permissionValue(

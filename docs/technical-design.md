@@ -154,18 +154,21 @@ repeat work while the former shared database remains intact as a recovery
 backup. Runtime persistence contains no `schema_migrations` table or historical
 migration chain.
 
-Schema version 2 is the single upgrade a released database can need. It adds
-imported-repository and repository-knowledge provenance, remote repository
-connections, safe synchronization attempts, immutable publication attempts and
-their pull-request snapshots, external comment provenance and GitHub review
-context, a non-null candidate delivery kind, durable owner notifications, and
-durable agent-run execution constraints; it generalizes demo sessions from
-accepted candidates to any launch source; and it clears the placeholder
-draft-sprint goal. Status-specific compare-and-swap updates guard every remote
-transition, and active-operation partial indexes enforce one synchronization,
-one publication, and one repository-knowledge run at a time per Product. The
-migration runs in one immediate transaction with foreign-key enforcement in
-force and the resulting version validated before commit.
+Schema version 2 upgrades the released 0.1.0 database with imported-repository
+and repository-knowledge provenance, remote repository connections, safe
+synchronization attempts, immutable publication attempts and their pull-request
+snapshots, external comment provenance and GitHub review context, a non-null
+candidate delivery kind, durable owner notifications, and durable agent-run
+execution constraints. It generalizes demo sessions from accepted candidates
+to any launch source and clears the placeholder draft-sprint goal. Schema
+version 3 adds durable delivery-settlement operation and candidate-version
+identities, immutable candidate review bindings, and cumulative token usage
+that does not reset with context compaction. Status-specific compare-and-swap
+updates guard every remote transition, and active-operation partial indexes
+enforce one synchronization, one publication, and one repository-knowledge run
+at a time per Product. Each migration runs in one immediate transaction with
+foreign-key enforcement in force and the resulting version validated before
+commit.
 
 Versions the application only ever used before its first release are not
 reproduced. Development databases that carry one of those versions cannot be
@@ -263,6 +266,15 @@ worktree, allocated loopback port, bounded captured output, and recoverable
 failure explanation. The process object itself remains an in-memory operating
 system resource and is never inferred to be alive merely because SQLite says it
 was running.
+
+Before candidate creation, `TicketDeliveryWorkflowCoordinator` validates the structured execution
+result and its Demo recipe against the actual ticket-workspace changes. The model-facing JSON schema
+rejects empty command, title, and presentation-path fields. A validation failure receives at most two
+focused repair turns on the same thread, each constrained by the same schema and the latest exact
+failure. Demo-specific repair guidance distinguishes a Spedito-hosted `static_web` directory from an
+inert artifact, bounded command output, and a product-owned browser service. Repair never discards the
+workspace or repeats successful checks; a second invalid repair settles as a reviewable failed run
+whose existing thread and workspace remain available to **Retry work**.
 
 Every consequential state transition and its audit event are written in one
 transaction. Source, worktrees, previews, screenshots, build outputs, and large
@@ -714,12 +726,33 @@ GitHub to be available.
 ### 6.3 Managed candidate demos
 
 Every newly completed repository-changing delivery includes a typed demo recipe.
-Supported presentations are a loopback browser preview, a workspace-relative macOS
-application bundle, an inert workspace-relative artifact from an explicit
-allowlist, or captured output from a bounded scenario. Recipes contain executable
-and argument arrays, never shell command strings. Working directories,
-applications, and artifacts resolve inside the reviewed checkout, browser URLs
-contain only a path, and Spedito allocates and injects the loopback port.
+Supported presentations are a product-owned loopback browser preview, a
+Spedito-hosted static web prototype, a workspace-relative macOS application
+bundle, an inert workspace-relative artifact from an explicit allowlist, or
+captured output from a bounded scenario. Product browser recipes contain
+executable and argument arrays, never shell command strings. Working directories,
+applications, prototypes, and artifacts resolve inside the reviewed checkout;
+product browser URLs contain only a path, and Spedito allocates and injects their
+loopback port.
+
+A static web recipe names a non-root workspace-relative directory containing
+`index.html` and has no preparation command, launch command, port variable, or
+readiness declaration. Spedito owns its loopback server and lifecycle, serves
+only regular files whose resolved path remains inside that exact directory, caps
+individual resources, disables caching and external connections through response
+policy, smoke-tests the entry page, and stops the server with the demo session.
+It therefore gives a blank Product an interactive prototype path without
+treating a machine runtime as approved product infrastructure.
+
+The recipe is the executable form of the readiness sequence the candidate
+documents in the repository, its completion handoff, or proposed Environments
+knowledge: every documented build, generation, or other preparation step the
+product needs before it runs appears in `preparationCommands` in documented
+order, so the clean-checkout smoke test proves the same claim the documentation
+makes. Delivery guidance forbids documenting a readiness step or check as
+verified unless the run executed it and reported it, and the tech lead treats a
+documented preparation step that the recipe omits as a materially false
+operational instruction that blocks review.
 
 Local outcomes have no demo recipe or demo session. Their **Ready for demo**
 presentation is an in-app review card containing the concise outcome, an
@@ -834,7 +867,7 @@ draft list, Core rejects knowledge mutations for the run, and the same independe
 review and evidence checks apply. Repository prose is never parsed or executed as
 an implicit recipe.
 
-The selected product's **App versions** workspace combines the approved imported
+The selected product's **Demos** workspace combines the approved imported
 browser or macOS app recipe, when present, with every accepted browser or macOS
 app candidate that has a valid schema-versioned recipe. Entries are ordered by
 their publication or acceptance time and the latest is selected by default. Any listed version

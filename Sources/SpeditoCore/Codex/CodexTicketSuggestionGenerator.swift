@@ -18,6 +18,8 @@ public enum CodexTicketSuggestionGenerator {
     the suggestion and not a quota. Roles may repeat for any number of tickets. Use the UX designer for
     experience/prototype work and the generic implementer for approved software changes, whether the
     ticket concerns UI, local logic, or a service.
+    \(CodexLifecycleGuidance.uxTicketContractGuidance)
+
     Propose backend work only when it is actually justified; do not invent it merely because it is a
     familiar architecture layer. The tech lead reviews delivery and dependency decisions. Identify genuine
     dependency edges without serialising work that can proceed with mocks or agreed contracts.
@@ -188,8 +190,11 @@ public enum CodexTicketSuggestionGenerator {
       Previously rejected proposals for this epic:
       \(rejectedScope)
 
-      Use the decisions resolved in the preceding clarification conversation. Do not
-      invent product decisions or disguise an unresolved product owner choice as a backlog ticket.
+      Use the decisions resolved in the preceding clarification conversation. Do not invent product
+      decisions or disguise an unresolved product owner choice as a backlog ticket. Every acceptance
+      criterion must be concrete. If a prerequisite research or design ticket will supply a decision,
+      cite that exact ticket reference in the dependant criterion; never use vague “agreed”, “approved”,
+      “chosen”, or “to be decided” placeholders without that provenance.
       A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
       decision-enabling output. An instruction for the business analyst or team to identify, compare,
@@ -574,6 +579,31 @@ public enum CodexTicketSuggestionGenerator {
           "Every proposed ticket needs a temporary reference."
         )
       }
+      let unresolvedDecisionTerms = [
+        "agreed ", "approved design", "approved approach", "chosen provider", "chosen service",
+        "as decided", "to be decided", "tbd",
+      ]
+      let explicitDependencyReferences = Set(
+        dependencyReferences
+          + dependencyReferences.compactMap { proposalReferenceByGeneratedReference[$0] }
+      )
+      let vagueDecisionCriterion = suggestion.acceptanceCriteria.first { criterion in
+        let normalized = criterion.lowercased()
+        let reliesOnUnresolvedDecision = unresolvedDecisionTerms.contains {
+          normalized.contains($0)
+        }
+        guard reliesOnUnresolvedDecision else { return false }
+        return !explicitDependencyReferences.contains {
+          normalizedReferenceTokens(in: criterion).contains($0)
+        }
+      }
+      guard vagueDecisionCriterion == nil else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A ticket criterion relies on an unresolved product decision without naming "
+            + "the prerequisite ticket that will supply it. Resolve the decision during "
+            + "refinement or cite its exact dependency reference."
+        )
+      }
       return TicketSuggestionDraft(
         reference: proposalReference,
         title: suggestion.title,
@@ -787,6 +817,15 @@ public enum CodexTicketSuggestionGenerator {
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .uppercased()
         .filter { $0.isLetter || $0.isNumber }
+    )
+  }
+
+  private static func normalizedReferenceTokens(in value: String) -> Set<String> {
+    Set(
+      value
+        .uppercased()
+        .split { !$0.isLetter && !$0.isNumber }
+        .map(String.init)
     )
   }
 

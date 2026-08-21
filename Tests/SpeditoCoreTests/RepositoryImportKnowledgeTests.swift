@@ -413,6 +413,105 @@ struct RepositoryImportKnowledgeTests {
     await reopened.close()
   }
 
+  @Test("Analyzer evidence line ranges are bounded to the cited file instead of failing the run")
+  func analyzerEvidenceLineRangesAreBounded() throws {
+    let root = temporaryDirectory(named: "evidence-bounds")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sources = root.appendingPathComponent("src", isDirectory: true)
+    try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+    let shortFile = "export const one = 1\nexport const two = 2\n"
+    try Data(shortFile.utf8).write(to: sources.appendingPathComponent("paths.ts"))
+
+    let productID = UUID()
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: 1,
+      analyzedSHA: String(repeating: "d", count: 40),
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID()
+    )
+    let architecture = KnowledgePage(
+      productID: productID,
+      title: "Architecture",
+      slug: "architecture",
+      bodyMarkdown: "# Architecture\n"
+    )
+    let features = KnowledgePage(
+      productID: productID,
+      title: "Features",
+      slug: "features",
+      kind: .section
+    )
+    let snapshot = RepositoryAnalysisSnapshot(
+      url: root,
+      analyzedSHA: run.analyzedSHA,
+      allowedPaths: ["src/paths.ts"],
+      integrityDigest: "digest"
+    )
+    func response(path: String, startLine: Int, endLine: Int) -> String {
+      """
+      {
+        "summary": "Bounded architecture update",
+        "drafts": [{
+          "operation": "update",
+          "targetPageID": "\(architecture.id.uuidString)",
+          "parentPageID": null,
+          "title": "Architecture",
+          "bodyMarkdown": "# Architecture\\n\\nTwo exported helpers.\\n",
+          "rationale": "The helper module names both exports",
+          "evidence": [{
+            "path": "\(path)",
+            "startLine": \(startLine),
+            "endLine": \(endLine)
+          }]
+        }],
+        "launchProposal": null
+      }
+      """
+    }
+
+    // The file has two lines and a trailing newline, so the numbered excerpt the analyzer was
+    // shown ends at line 3. An overstated end line keeps the draft and narrows the citation.
+    let overstated = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(path: "src/paths.ts", startLine: 1, endLine: 11),
+      run: run,
+      pages: [architecture, features],
+      snapshot: snapshot
+    )
+    #expect(overstated.drafts.count == 1)
+    #expect(
+      overstated.drafts.first?.evidence == [.init(path: "src/paths.ts", startLine: 1, endLine: 3)]
+    )
+
+    // A start line past the end of the file cannot be narrowed to a truthful range, so the
+    // citation degrades to the file itself rather than inventing one.
+    let unreachable = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(path: "src/paths.ts", startLine: 40, endLine: 50),
+      run: run,
+      pages: [architecture, features],
+      snapshot: snapshot
+    )
+    #expect(unreachable.drafts.first?.evidence == [.init(path: "src/paths.ts")])
+
+    // A path outside the sanitized snapshot remains a hard failure.
+    #expect(throws: RepositoryAnalysisSnapshotError.self) {
+      try CodexRepositoryKnowledgeAnalyzer.decode(
+        response(path: "src/absent.ts", startLine: 1, endLine: 2),
+        run: run,
+        pages: [architecture, features],
+        snapshot: snapshot
+      )
+    }
+    #expect(throws: RepositoryAnalysisSnapshotError.self) {
+      try CodexRepositoryKnowledgeAnalyzer.decode(
+        response(path: "src/paths.ts", startLine: 3, endLine: 2),
+        run: run,
+        pages: [architecture, features],
+        snapshot: snapshot
+      )
+    }
+  }
+
   @Test("Analyzer and reviewer reject unknown fields and incomplete independent decisions")
   func strictStructuredResponses() throws {
     let productID = UUID()

@@ -94,6 +94,11 @@ public enum CodexEpicClarificationGenerator {
       Recommend the research option when no choice is already approved and a responsible recommendation
       needs external evidence. Do not offer a vague option such as “let the team choose.”
 
+      Inventory the owner-observable information, interactions, and boundary states implied by the
+      outcome. Ask about any material choice whose omission would leave acceptance criteria referring
+      only to a generic result, an “agreed” detail, or a later design. Do not treat a restatement of the
+      outcome headline as enough detail to plan.
+
       Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified product
       knowledge supplied below, especially verified Environments knowledge. Planning is not source
       investigation. Do not inspect repository files, manifests, scripts, CI, documentation, or Git
@@ -157,9 +162,12 @@ public enum CodexEpicClarificationGenerator {
       resolve its selection. Treat an instruction to identify, compare, recommend, or choose it using
       current external evidence as authorisation for business analyst research. A broad answer such as
       “let the team choose” is ambiguous: ask whether the product owner wants a separate recommendation or
-      explicitly delegates implementation-time selection without one. If the outcome is sufficiently clear
-      to define a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and
-      briefly confirm any authorised research that the plan will include.
+      explicitly delegates implementation-time selection without one. Inventory the owner-observable
+      information, interactions, and boundary states still implied by the outcome. Do not declare
+      readiness while a material choice would leave acceptance criteria referring only to a generic
+      result, an “agreed” detail, or a later design. If the outcome is sufficiently clear to define a
+      coherent epic and delivery backlog, return no questions, set readyToPlan to true, and briefly confirm
+      any authorised research that the plan will include.
 
       Also re-check the accepted ticket contracts and verified Environments knowledge already supplied in
       this conversation. Do not inspect repository files or Git history. If likely executable work is not
@@ -215,9 +223,12 @@ public enum CodexEpicClarificationGenerator {
       external source do not resolve its selection. Treat an instruction to identify, compare, recommend,
       or choose it using current external evidence as authorisation for business analyst research. A broad
       answer such as “let the team choose” is ambiguous: ask whether the product owner wants a separate
-      recommendation or explicitly delegates implementation-time selection without one. If the outcome is
-      sufficiently clear to define a coherent epic and delivery backlog, return no questions, set
-      readyToPlan to true, and briefly confirm any authorised research that the plan will include.
+      recommendation or explicitly delegates implementation-time selection without one. Re-check the
+      owner-observable information, interactions, and boundary states implied by the outcome. Do not
+      declare readiness while a material choice would leave acceptance criteria referring only to a
+      generic result, an “agreed” detail, or a later design. If the outcome is sufficiently clear to define
+      a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and briefly
+      confirm any authorised research that the plan will include.
 
       Re-check the supplied accepted ticket contracts and verified Environments knowledge before declaring
       readiness. Do not inspect repository files or Git history. When likely executable work lacks a

@@ -1458,6 +1458,7 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
   public var ticketBudgetUsed: Double
   public var contextUsedTokens: Int?
   public var contextWindowTokens: Int?
+  public var cumulativeUsedTokens: Int?
   public var compactionCount: Int
   public var activeDurationSeconds: TimeInterval
   public var turnStartedAt: Date?
@@ -1465,6 +1466,8 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
   public var lastActivityText: String?
   public var lastActivityKind: CodexLiveActivityKind?
   public var executionConstraint: AgentRunExecutionConstraint?
+  public var settlementOperationID: UUID?
+  public var settlementCandidateVersion: Int?
   public let createdAt: Date
   public var updatedAt: Date
 
@@ -1482,12 +1485,15 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
     contextUsedTokens: Int? = nil,
     contextWindowTokens: Int? = nil,
     compactionCount: Int = 0,
+    cumulativeUsedTokens: Int? = nil,
     activeDurationSeconds: TimeInterval = 0,
     turnStartedAt: Date? = nil,
     lastActivityAt: Date? = nil,
     lastActivityText: String? = nil,
     lastActivityKind: CodexLiveActivityKind? = nil,
     executionConstraint: AgentRunExecutionConstraint? = nil,
+    settlementOperationID: UUID? = nil,
+    settlementCandidateVersion: Int? = nil,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
   ) {
@@ -1505,11 +1511,14 @@ public struct AgentRun: Identifiable, Codable, Hashable, Sendable {
     self.contextWindowTokens = contextWindowTokens
     self.compactionCount = compactionCount
     self.activeDurationSeconds = activeDurationSeconds
+    self.cumulativeUsedTokens = cumulativeUsedTokens
     self.turnStartedAt = turnStartedAt
     self.lastActivityAt = lastActivityAt
     self.lastActivityText = lastActivityText
     self.lastActivityKind = lastActivityKind
     self.executionConstraint = executionConstraint
+    self.settlementOperationID = settlementOperationID
+    self.settlementCandidateVersion = settlementCandidateVersion
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }
@@ -2126,6 +2135,8 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
   public let worktreePath: String
   public var integrationWorktreePath: String?
   public var status: CandidateRevisionStatus
+  public var reviewedHeadSHA: String?
+  public var reviewRunID: UUID?
   public let commitCount: Int
   public let executionResultJSON: String
   public let createdAt: Date
@@ -2147,6 +2158,8 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
     worktreePath: String,
     integrationWorktreePath: String? = nil,
     status: CandidateRevisionStatus = .queuedForIntegration,
+    reviewedHeadSHA: String? = nil,
+    reviewRunID: UUID? = nil,
     commitCount: Int,
     executionResultJSON: String,
     createdAt: Date = Date(),
@@ -2167,6 +2180,8 @@ public struct CandidateRevision: Identifiable, Codable, Hashable, Sendable {
     self.worktreePath = worktreePath
     self.integrationWorktreePath = integrationWorktreePath
     self.status = status
+    self.reviewedHeadSHA = reviewedHeadSHA
+    self.reviewRunID = reviewRunID
     self.commitCount = commitCount
     self.executionResultJSON = executionResultJSON
     self.createdAt = createdAt

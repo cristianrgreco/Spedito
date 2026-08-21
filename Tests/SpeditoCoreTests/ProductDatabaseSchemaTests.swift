@@ -4,9 +4,9 @@ import Testing
 
 @testable import SpeditoCore
 
-/// Spedito 0.1.0 shipped `PRAGMA user_version = 1`, and a single migration
-/// carries those databases to the current schema. Fresh installs instead run one
-/// declarative schema. These are two independent sources of truth for the same
+/// Spedito 0.1.0 shipped `PRAGMA user_version = 1`, and ordered migrations
+/// carry released databases to the current schema. Fresh installs instead run
+/// one declarative schema. These are two independent sources of truth for the same
 /// shape, so they are compared object by object.
 @Suite("Product database schema", .serialized)
 struct ProductDatabaseSchemaTests {

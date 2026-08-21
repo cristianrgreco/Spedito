@@ -1223,11 +1223,13 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         "additionalPermissions": params["additionalPermissions"] ?? .null,
       ])
     case "item/permissions/requestApproval":
-      let permissions = params["permissions"] ?? .object([:])
-      relevant =
-        AgentPermissionGrantPolicy.canonicalProductGrantValue(
-          for: permissions
-        ) ?? permissions
+      guard
+        let permissions = params["permissions"],
+        let canonical = AgentPermissionGrantPolicy.canonicalProductGrantValue(for: permissions)
+      else {
+        return nil
+      }
+      relevant = canonical
     default:
       return nil
     }
