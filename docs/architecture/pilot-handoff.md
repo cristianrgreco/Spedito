@@ -29,9 +29,10 @@ Still unexercised: retrospectives, app versions, and the `script-log-summary`,
 
 ## What to do first
 
-1. **Confirm the hang fix on a live run.** `83686d8` is unproven in the field.
+1. **Confirm the hang fix on a live run.** `ab4a244` is unproven in the field.
    Watch a ticket through a tech lead review that requests changes — that is the
-   turn all three hangs occurred on.
+   turn all three hangs occurred on, and the first thing to check is that a
+   candidate **v2** appears.
 2. **Run the briefs nobody has run:** `script-log-summary`, `library-csv`,
    `web-reading-list`, `vague-dashboard`, `static-weather`, `native-timer`. Each
    exercises a `DemoPresentationKind` or a feature never reached, and the product
@@ -70,141 +71,62 @@ recovery requeues, against 64 in run 10.
 exactly. It never explained T2 in either run, because no owner decision was
 involved — which is what led to the fix below.
 
-## The resume-after-review hang — diagnosed and fixed
+## The resume-after-review hang — found and fixed
 
-**Fixed in `83686d8`.** Not yet confirmed on a live run; the first run after it
-should be watched through a tech lead review that requests changes.
+**Cause found and fixed in `ab4a244`.** Three delivery turns across runs 12, 13
+and 14 finished their work and were never recorded. Every one was the turn that
+resumes a ticket after the tech lead requests changes; no turn of any other kind
+ever hung.
 
-A turn's wait suspends its inactivity timeout while an approval is outstanding,
-and that suspension is the only thing making the wait unbounded. It was granted
-by `pendingApprovalTurns`, the Codex client's in-memory record of approvals it
-has asked for — transient operation state. Whether the product owner actually
-owes a decision is durable domain state, and **the two disagreed**.
+A run's **settlement identity** — `settlement_operation_id` and
+`settlement_candidate_version` on `agent_runs` — is an idempotency token for one
+delivery attempt. It is what stops a run recovered after a restart from settling
+a second candidate for work it already settled:
+`prepareCompletedDeliverySettlement` hands back the existing candidate so the
+caller returns without settling twice.
 
-Run 12's database holds seven permission requests and every one reached a
-terminal status: allowed, denied, or policy-denied. Run 13's holds exactly one,
-allowed. In both runs nothing was awaiting the owner at the moment the turns
-hung, yet a leaked entry in that map kept the only timeout that could have ended
-the wait suspended, and the board reported a working agent for the rest of the
-run.
+**Nothing released it when a run was resumed to apply review feedback.** That
+resumed run is a new attempt, but it still carried the identity of the candidate
+the tech lead had just rejected. Preparing its settlement found that candidate,
+reported it as already settled, and the caller returned. The revision was
+dropped in silence and the run stayed `running` with nothing left to move it.
 
-Suspension now requires both: the client's flag *and* a durable permission
-request for that run that still needs the owner. Both true and the turn waits
-indefinitely, as it must. Flag without durable backing and the inactivity window
-applies, the wait ends, and the existing recovery path returns the completed
-turn. Covered by `staleApprovalFlagDoesNotSuspendTheTurn`, verified to fail
-without the fix, asserting both directions so a fix that merely deleted the
-suspension would not pass.
+Resuming after requested changes now releases the identity, so the revision
+settles as the next candidate version. Recovery is untouched — it is the same
+attempt and must keep its identity. Covered by
+`resumedDeliverySettlesANewCandidateVersion`, verified to fail without the fix by
+reproducing the mechanism exactly: the resumed run reports version 1 and hands
+back the rejected candidate.
 
-**Which path leaks the entry is still unknown.** This makes the leak survivable
-rather than fatal, which is the right layer for the guarantee — the wait should
-not be able to hang whatever any single caller gets wrong. If you want the root
-cause, the instrumentation notes below still stand.
+### A correction worth reading before you trust anything else here
 
-### The evidence it was diagnosed from
+`83686d8`, committed earlier the same day against this symptom, **is not the
+fix.** It requires durable evidence that the owner owes a decision before a turn
+may suspend its inactivity timeout, on the reasoning that a transient client
+flag was outranking durable state. That reasoning is sound and the guarantee is
+worth keeping — a leaked approval flag would otherwise hang a turn forever — but
+it was built on a wrong diagnosis, and run 14 disproved it in the field: the
+turn hung with the fix in the binary and sailed past its 900-second window
+untouched. **The wait was never what hung.** The result had already come back.
 
-**Three turns hung across runs 12 and 13. All three were the turn that resumes
-a ticket after the tech lead requested changes. No turn of any other kind
-hung.**
+Two lessons, both of which this loop has now learned twice:
 
-| Run | Ticket | Turn completed in Codex | Approval in that turn | Last durable Spedito event |
-| --- | --- | --- | --- | --- |
-| 12 | T1 | 16:39:42Z | yes — one **denied** at 16:35:49Z | 16:35:49Z |
-| 12 | T2 | 16:34:13Z | **none anywhere in its history** | 16:33:38Z |
-| 13 | T2 | 18:32:52Z | **none anywhere in the run but T1's** | ~18:31:46Z |
+- A hypothesis that explains the evidence is not the same as the cause. The
+  approval-flag theory explained every observation available at the time and was
+  still wrong.
+- The thing that finally identified it was not reasoning. It was reading two
+  columns in the database of a finished run.
 
-Run 13's T2 is the cleanest specimen and its evidence is unambiguous:
+### How it was found, in case the next one looks similar
 
-- the revision turn started 18:31:46Z and completed 18:32:52Z with a well-formed
-  structured result (`reviewInstructions`, `followUpTicketProposals`,
-  `knowledgePageProposals`, `tests`);
-- no Codex event of any kind followed it on any thread — Spedito never started
-  another turn, so it is not waiting on new agent work;
-- the Codex app-server process stayed alive throughout;
-- the board still read `run=running` with **Stop** eleven minutes later, and the
-  harness filed its silent-run finding at 18:43:01Z;
-- **and the wait's own 900-second inactivity timeout did not fire.** It was due
-  at 18:47:52Z and was watched past 18:50:03Z with no Codex activity and no
-  board change. This was observed live, not inferred.
-
-So the owner is told an agent is working, indefinitely, after that agent
-finished.
-
-### Where to instrument
-
-`TicketDeliveryWorkflowCoordinator` awaits the revision turn at
-`waitForFinalAgentMessage(threadID:turnID:timeout: .seconds(900))`, with no
-`totalTimeout`. Inside `CodexAppServerClient.waitForFinalAgentMessage` four
-tasks race:
-
-1. the notification stream (primary);
-2. a **2-second reconciliation poller** calling `thread/read`;
-3. an inactivity timeout that only decrements when `isAwaitingApproval` is false;
-4. an optional absolute cap, which this caller does not pass.
-
-**Two independent safety nets both failed, and that is the useful part.**
-
-The reconciliation poller should have found the completed turn within two
-seconds of 18:32:52Z. **Its errors are swallowed by a bare `catch` and recorded
-nowhere**, so there is no evidence of whether it threw every time or kept
-returning nil. Recording that error is the cheapest change with the highest
-information yield.
-
-The inactivity timer was watched past its deadline and never fired. Only two
-things in that loop can stop the countdown: `activity.record()`, which fires
-only for notifications matching this thread *and* turn, or `isAwaitingApproval`
-returning true. **A pending approval registered against this turn and never
-removed is the leading candidate**, and it fits run 12's T2 as well as run 13's.
-
-Worth checking first, because it is structural rather than speculative:
-`routeInboundMessage` registers a pending approval for every
-`item/commandExecution/requestApproval` and `item/permissions/requestApproval`
-it routes. Only `resolveApprovalRequest`, `rejectUnsupportedServerRequest` and
-`disconnect()` ever remove one. **Any path that answers Codex without going
-through those two leaves the turn suspended for the life of the connection**,
-with no owner decision involved and nothing left to time it out. Note also that
-`resolveApprovalRequest`'s `default:` branch throws before its
-`defer { removePendingApproval(request) }` is installed, so an unrecognised
-method leaks an entry — latent today, since callers route unknown methods to
-the reject path, but it is the same hole.
-
-Codex's own record says its turn completed normally, so Codex was not blocked
-waiting for a response. Whatever answered it did not clear Spedito's map.
-
-### Already ruled out, so you do not have to
-
-Two paths leave a permission request unanswered and would fit the symptom. Both
-are **excluded for run 13 by that run's own evidence**: each sets
-`deliveryErrorMessage`, which is `AppModel.errorMessage`, which the pilot renders
-as an `Error banner:` line — and **no board snapshot in run 13 carried one**.
-
-- `TicketDeliveryPermissionWorkflowCoordinator.handleServerRequest`, the `catch`
-  around fetching the run and its durable permission history.
-- `resolveAutomaticPermissionRequest`, its outer `catch`.
-
-Every other exit from `handleServerRequest` was audited and does respond. The
-one remaining no-response exit is the path that deliberately hands the request
-to the product owner and waits for their decision, which is correct.
-
-**One of those two is worth fixing anyway, independent of this hang.** The
-`handleServerRequest` catch returns having sent Codex nothing — its own message
-says "so no response was sent" — while the pending approval it registered stays
-registered. That suspends the turn's only remaining timeout for the life of the
-connection, so the owner gets an error banner *and* a run that says an agent is
-working, forever. Answering Codex on that path costs the agent a capability it
-may need, which is strictly better than a turn nothing can end: a denied agent
-adapts, as run 12's own work log shows.
-
-### Then instrument
-
-Log the reconciliation error, and log `pendingApprovalTurns` for the turn when a
-wait passes its deadline. That turns the next occurrence into an answer instead
-of another round of inference — this loop has now spent three sessions on
-hypotheses and one afternoon on evidence, and only the evidence moved it.
-
-**Do not add an absolute cap as the fix.** The last session considered and
-rejected it for the right reason: a turn genuinely waiting on the product owner
-should wait indefinitely. A cap would hide this defect rather than remove it.
+- The Codex rollouts showed **two back-to-back completed turns** on the hung
+  thread — a revision turn and a validation repair turn — and then nothing. That
+  ruled out the agent and ruled out the wait.
+- `agent_runs` for the hung run had `settlement_operation_id` populated and
+  `settlement_candidate_version = 1`, on a run whose candidate had already been
+  reviewed and rejected. Two columns, and the mechanism was visible.
+- No error banner ever appeared in any run, which is what said the code was
+  returning cleanly rather than failing.
 
 ## Also fixed this session
 
