@@ -60,12 +60,18 @@ struct PilotOwner {
   /// refusal itself is worth observing: delivery must degrade gracefully.
   func decision(for request: AgentPermissionRequest) -> (allow: Bool, remember: Bool) {
     let described = "\(request.title) \(request.detail) \(request.reason ?? "")".lowercased()
-    let asksForNetwork = ["network", "internet", "http", "fetch", "download", "curl"]
+    let mentionsNetwork = ["network", "internet", "http", "fetch", "download", "curl"]
       .contains { described.contains($0) }
-    if asksForNetwork {
-      return (brief.expectsNetworkPermission, false)
-    }
-    return (true, false)
+    guard mentionsNetwork else { return (true, false) }
+
+    // Serving a demo on this Mac is not the same as reaching the internet, and
+    // a product owner who wants to see the page would say yes to it. Only an
+    // externally reaching request is governed by the brief.
+    let isLocalOnly = ["localhost", "127.0.0.1", "local http", "local server", "loopback"]
+      .contains { described.contains($0) }
+    if isLocalOnly { return (true, false) }
+
+    return (brief.expectsNetworkPermission, false)
   }
 
   /// What the owner says when an agent asks a question mid-delivery.

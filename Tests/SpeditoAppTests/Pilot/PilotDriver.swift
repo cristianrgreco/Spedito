@@ -27,6 +27,8 @@ final class PilotDriver {
   /// Each awaiting run is answered once. Without this the driver re-answers the
   /// same question on every poll.
   private var answeredRunIDs: Set<UUID> = []
+  /// When each run's on-screen status first disagreed with the database.
+  private var divergenceSince: [UUID: Date] = [:]
 
   init(brief: PilotBrief, journal: PilotJournal, workspace: PilotWorkspace, deadline: Date) {
     self.brief = brief
@@ -354,6 +356,7 @@ final class PilotDriver {
         journal.record(.snapshot, "Board", detail: PilotSnapshotRenderer.describe(snapshot))
       }
 
+      await reportBoardDivergence()
       await drainPermissionRequests()
       await answerTicketQuestions()
       await openOfferedDemos()
@@ -378,7 +381,8 @@ final class PilotDriver {
         PilotInvariants.Context(
           snapshot: snapshot,
           brief: brief,
-          unchangedSince: unchangedSince
+          unchangedSince: unchangedSince,
+          anyRunIsRunning: model.runs.contains { $0.status == .running }
         ),
         model: model
       ) {
@@ -554,6 +558,53 @@ final class PilotDriver {
         )
       }
       await settle(for: .seconds(2))
+    }
+  }
+
+
+  /// The board is a projection of durable state, so a run's on-screen status
+  /// must agree with the database. A lasting disagreement means the owner is
+  /// reading a stale board: work is moving and the board says it is not.
+  private func reportBoardDivergence() async {
+    guard let model, let productID = model.selectedProductID,
+      let store = model.store(for: productID)
+    else { return }
+    guard let durableRuns = try? await store.fetchAgentRuns(productID: productID) else {
+      return
+    }
+    let onScreen = Dictionary(
+      model.runs.map { ($0.id, $0.status) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    let now = Date()
+    for durable in durableRuns {
+      guard let shown = onScreen[durable.id] else { continue }
+      guard shown != durable.status else {
+        divergenceSince[durable.id] = nil
+        continue
+      }
+      let since = divergenceSince[durable.id] ?? now
+      divergenceSince[durable.id] = since
+      guard now.timeIntervalSince(since) > 60 else { continue }
+      let item = model.workItems.first { $0.id == durable.workItemID }
+      fileOnce(
+        PilotJournal.Finding(
+          category: .functional,
+          title: "The board keeps showing a stale status for \(item?.key ?? "a ticket")",
+          evidence: """
+            Ticket: \(item?.key ?? "unknown") \(item?.title ?? "")
+            On screen: \(shown.rawValue)
+            In the database: \(durable.status.rawValue)
+            Disagreeing for: \(Int(now.timeIntervalSince(since)))s
+
+            Presentation state is a projection of durable state. While these
+            disagree the owner is watching a board that is not telling the truth
+            about what the agent is doing.
+            """,
+          locationHint: "Sources/SpeditoApp/AppModel.swift",
+          at: now
+        )
+      )
     }
   }
 

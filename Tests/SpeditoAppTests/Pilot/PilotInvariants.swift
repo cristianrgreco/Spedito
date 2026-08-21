@@ -24,6 +24,8 @@ enum PilotInvariants {
     let brief: PilotBrief
     /// When each ticket last changed observable state, used for stall detection.
     let unchangedSince: [String: Date]
+    /// True while at least one run is genuinely running somewhere in the product.
+    let anyRunIsRunning: Bool
   }
 
   static func check(_ context: Context, model: AppModel) -> [PilotJournal.Finding] {
@@ -45,9 +47,11 @@ enum PilotInvariants {
     return context.snapshot.tickets.compactMap { ticket in
       guard !terminal.contains(ticket.state) else { return nil }
       guard ticket.availableActions.isEmpty else { return nil }
-      guard ticket.latestRunStatus != .running, ticket.latestRunStatus != .queued else {
-        return nil
-      }
+      guard ticket.latestRunStatus != .running else { return nil }
+      // A queued run only counts as progress while something is actually
+      // running. A board full of queued runs and no running one is frozen,
+      // however busy it claims to be.
+      if ticket.latestRunStatus == .queued, context.anyRunIsRunning { return nil }
       guard let since = context.unchangedSince[ticket.key],
         now.timeIntervalSince(since) > deadEndTolerance
       else { return nil }
