@@ -4233,6 +4233,105 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  /// A tech lead requesting changes resumes the same run for a second delivery
+  /// attempt. Its settlement identity is an idempotency token for one attempt —
+  /// the thing that stops a run recovered after a restart from settling twice —
+  /// and nothing released it, so the resumed run still carried the identity of
+  /// the candidate that had just been rejected. Preparing its settlement then
+  /// reported that candidate as already existing, and the revision was discarded
+  /// without a trace.
+  ///
+  /// Three live runs ended exactly there: the agent finished its revision,
+  /// nothing was recorded, and the board told the product owner an agent was
+  /// still working for the rest of the sprint.
+  @Test("A run resumed after review settles its revision as the next candidate")
+  func resumedDeliverySettlesANewCandidateVersion() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Reviewed delivery")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver, then revise"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Deliver and revise",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    let queuedRun = try #require(try await store.fetchAgentRuns(productID: product.id).first)
+    let run = try await store.updateAgentRun(
+      id: queuedRun.id,
+      status: .running,
+      worktreePath: "/tmp/reviewed-delivery"
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+
+    let first = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    #expect(first.candidateVersion == 1)
+    #expect(first.existingCandidate == nil)
+    _ = try await store.settleCompletedDelivery(
+      candidate: CandidateRevision(
+        productID: product.id,
+        sprintID: active.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: item.id,
+        implementationRunID: run.id,
+        version: first.candidateVersion,
+        branchName: "ticket/\(item.key)",
+        baseSHA: "base",
+        headSHA: "head-v1",
+        worktreePath: "/tmp/reviewed-delivery",
+        commitCount: 1,
+        executionResultJSON: "{}"
+      ),
+      operationID: first.operationID,
+      comment: TicketComment(
+        workItemID: item.id,
+        authorKind: .agent,
+        authorName: implementer.name,
+        body: "First attempt delivered."
+      ),
+      deliveryNoteMarkdown: "First attempt.",
+      sprint: active.sprint,
+      knowledgePageProposals: [],
+      retrospectiveNotes: [],
+      eventActor: implementer.name,
+      eventDetail: "Candidate v1 queued for integration"
+    )
+
+    // Recovering the same attempt must still recognise it, which is what the
+    // identity is for.
+    let recovered = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    #expect(recovered.candidateVersion == 1)
+    #expect(recovered.existingCandidate != nil)
+
+    // The tech lead requests changes, so the run is resumed for a new attempt.
+    try await store.releaseDeliverySettlementIdentity(runID: run.id)
+
+    let revision = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    #expect(revision.candidateVersion == 2)
+    #expect(revision.existingCandidate == nil)
+    #expect(revision.operationID != first.operationID)
+  }
+
   @Test("Completed delivery settlement is atomic and idempotent")
   func completedDeliverySettlementIsAtomicAndIdempotent() async throws {
     let fixture = try DatabaseFixture()

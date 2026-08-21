@@ -224,6 +224,38 @@ extension SQLiteStore {
     }
   }
 
+  /// Releases a run's settlement identity so its next completed delivery
+  /// settles as a new candidate rather than being recognised as one already
+  /// settled.
+  ///
+  /// The identity is an idempotency token for one delivery attempt: it is what
+  /// stops a run that is recovered after a restart from creating a second
+  /// candidate for work it already settled. A run resumed to apply review
+  /// feedback is not that case — it is a new attempt, and its result belongs in
+  /// the next candidate version.
+  ///
+  /// Without this, the resumed run keeps the identity of the candidate the tech
+  /// lead just rejected, so `prepareCompletedDeliverySettlement` reports that
+  /// candidate as already existing and the revision is discarded in silence.
+  /// Three live runs ended that way: the agent finished, nothing was recorded,
+  /// and the board told the product owner an agent was still working for the
+  /// rest of the sprint.
+  public func releaseDeliverySettlementIdentity(runID: UUID) throws {
+    try withStatement(
+      """
+      UPDATE agent_runs
+      SET settlement_operation_id = NULL,
+          settlement_candidate_version = NULL,
+          updated_at = ?
+      WHERE id = ?;
+      """
+    ) { statement in
+      try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+      try bind(runID.uuidString, to: 2, in: statement)
+      try stepDone(statement)
+    }
+  }
+
   public func settleCompletedDelivery(
     candidate: CandidateRevision,
     operationID: UUID,
