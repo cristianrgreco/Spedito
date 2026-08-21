@@ -28,6 +28,9 @@ enum PilotConventions {
     "thread/start",
     "turn/start",
     "sqlite",
+    "execution result",
+    "worktree",
+    "candidate revision",
   ]
 
   struct Violation {
@@ -68,6 +71,32 @@ enum PilotConventions {
           )
         )
       }
+    }
+    return violations
+  }
+
+  /// A failure the owner is shown must be one explanation, not a chain of
+  /// internal errors bolted together.
+  ///
+  /// A live native macOS run showed the banner "The delivery agent returned an
+  /// invalid execution result: The demo could not be prepared safely: browser
+  /// paths must be a loopback URL path beginning with “/”." Three layers of
+  /// implementation detail, ending in a sentence about browsers for a product
+  /// that is a Mac app. The failure contract asks for a stable category, a
+  /// concise owner-facing explanation, and technical evidence kept separate.
+  static func checkFailureText(_ text: String?) -> [Violation] {
+    guard let text, !text.isEmpty else { return [] }
+    var violations = check(ownerFacingText: [text])
+    let chainedClauses = text.components(separatedBy: ": ").count - 1
+    if chainedClauses >= 2 {
+      violations.append(
+        Violation(
+          rule:
+            "An owner-facing failure must be one explanation, not a chain of internal errors.",
+          text: text,
+          suggestion: nil
+        )
+      )
     }
     return violations
   }

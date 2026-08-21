@@ -381,7 +381,7 @@ public enum DemoLaunchSpecificationValidator {
       }
       switch readiness.kind {
       case .http:
-        try validateBrowserPath(readiness.path ?? "/")
+        try validateLoopbackPath(readiness.path ?? "/", describedAs: "readiness paths")
       case .process:
         guard readiness.path == nil else {
           throw DemoLaunchValidationError.invalid(
@@ -403,7 +403,10 @@ public enum DemoLaunchSpecificationValidator {
           "a web demo needs an HTTP readiness check."
         )
       }
-      try validateBrowserPath(specification.presentation.path ?? "/")
+      try validateLoopbackPath(
+        specification.presentation.path ?? "/",
+        describedAs: "browser paths"
+      )
     case .staticWeb:
       guard
         specification.preparationCommands.isEmpty,
@@ -582,7 +585,14 @@ public enum DemoLaunchSpecificationValidator {
     }
   }
 
-  private static func validateBrowserPath(_ path: String) throws {
+  /// Every demo kind may declare an HTTP readiness check, so this is not only
+  /// reached for browser demos. A native Mac app whose readiness path was
+  /// malformed used to tell the product owner about browser paths, which is not
+  /// a sentence that means anything about the product they asked for.
+  private static func validateLoopbackPath(
+    _ path: String,
+    describedAs subject: String
+  ) throws {
     guard
       path.hasPrefix("/"),
       !path.hasPrefix("//"),
@@ -591,13 +601,13 @@ public enum DemoLaunchSpecificationValidator {
       !path.contains("\n")
     else {
       throw DemoLaunchValidationError.invalid(
-        "browser paths must be a loopback URL path beginning with “/”."
+        "\(subject) must be a loopback URL path beginning with “/”."
       )
     }
     let components = URLComponents(string: path)
     guard components?.scheme == nil, components?.host == nil else {
       throw DemoLaunchValidationError.invalid(
-        "browser demos can open only a Spedito-managed loopback URL."
+        "a demo can open only a Spedito-managed loopback URL."
       )
     }
   }

@@ -178,6 +178,38 @@ struct DemoLaunchTests {
     }
   }
 
+  /// A live pilot run building a native Mac app was told "browser paths must be
+  /// a loopback URL path beginning with “/”". Every demo kind may declare an
+  /// HTTP readiness check, so this validation is not reached only for browser
+  /// demos, and naming the wrong one leaves the product owner reading a sentence
+  /// about a product they did not ask for.
+  @Test("A malformed readiness path is not described as a browser path")
+  func readinessPathFailureNamesReadiness() throws {
+    let nativeApp = DemoLaunchSpecification(
+      title: "Reviewed app",
+      launchCommand: DemoCommand(executable: "swift", arguments: ["run"]),
+      readiness: DemoReadinessCheck(kind: .http, path: "health"),
+      presentation: DemoPresentation(kind: .macApplication, path: ".build/Quick Notes.app")
+    )
+    let readinessFailure = #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(nativeApp)
+    }
+    #expect("\(readinessFailure!)".contains("readiness paths"))
+    #expect(!"\(readinessFailure!)".contains("browser paths"))
+
+    // A browser demo still names browser paths, because that is what it is.
+    let browserDemo = DemoLaunchSpecification(
+      title: "Reviewed web app",
+      launchCommand: DemoCommand(executable: "swift", arguments: ["run"]),
+      readiness: DemoReadinessCheck(kind: .http, path: "/"),
+      presentation: DemoPresentation(kind: .browser, path: "index.html")
+    )
+    let browserFailure = #expect(throws: DemoLaunchValidationError.self) {
+      try DemoLaunchSpecificationValidator.validate(browserDemo)
+    }
+    #expect("\(browserFailure!)".contains("browser paths"))
+  }
+
   @Test("Workspace paths cannot escape through traversal or symlinks")
   func workspacePathBoundary() throws {
     let root = FileManager.default.temporaryDirectory

@@ -101,6 +101,17 @@ enum PilotInvariants {
         )
       )
     }
+    for violation in PilotConventions.checkFailureText(context.snapshot.errorMessage) {
+      findings.append(
+        PilotJournal.Finding(
+          category: .leakedDiagnostic,
+          title: violation.rule,
+          evidence: "Error banner: \(violation.text)",
+          locationHint: "Sources/SpeditoApp/AppModel.swift",
+          at: Date()
+        )
+      )
+    }
     let labels = context.snapshot.tickets.flatMap(\.availableActions)
     for violation in PilotConventions.checkActionLabels(labels) {
       findings.append(

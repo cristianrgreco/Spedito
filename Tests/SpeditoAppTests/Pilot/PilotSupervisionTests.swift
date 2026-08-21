@@ -238,6 +238,29 @@ struct PilotSupervisionTests {
     #expect(!findings.contains { $0.title.contains(blocked.key) })
   }
 
+  /// A live native macOS run put this on the owner's screen and the pilot said
+  /// nothing, because its leaked-diagnostic check looked for a fixed list of
+  /// markers and none of them appeared.
+  @Test("A failure built from chained internal errors is reported")
+  func chainedFailureTextIsReported() {
+    let chained = """
+      The delivery agent returned an invalid execution result: The demo could \
+      not be prepared safely: browser paths must be a loopback URL path \
+      beginning with “/”.
+      """
+    let violations = PilotConventions.checkFailureText(chained)
+    #expect(violations.contains { $0.rule.contains("not a chain of internal errors") })
+    #expect(violations.contains { $0.rule.contains("raw technical evidence") })
+
+    // One concise explanation is what the contract asks for.
+    #expect(
+      PilotConventions.checkFailureText(
+        "Reconnect this product to GitHub before this ticket can finish review."
+      ).isEmpty
+    )
+    #expect(PilotConventions.checkFailureText(nil).isEmpty)
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
