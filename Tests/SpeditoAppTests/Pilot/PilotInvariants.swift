@@ -191,11 +191,70 @@ enum PilotInvariants {
             Runs in this product: \(model.runs.map(\.status.rawValue).joined(separator: ", "))
 
             No run is running, so nothing will move this ticket on its own.
+
+            \(admissionDiagnosis(run: run, model: model))
             """,
           locationHint: "Sources/SpeditoCore/Domain/TicketDeliveryRuntimeCoordinator.swift",
           at: now
         )
       }
+  }
+
+
+  /// Explains a stall using the production admission rule rather than guessing.
+  /// Every reason a queued run can be refused is reported against the durable
+  /// state, so a stalled run says why it is stalled.
+  private static func admissionDiagnosis(run: AgentRun, model: AppModel) -> String {
+    guard let plan = model.sprintPlan else {
+      return "There is no sprint plan loaded, so no run can be admitted."
+    }
+    var lines: [String] = []
+    lines.append("Sprint: \(plan.sprint.state.rawValue), \(plan.items.count) planned item(s)")
+
+    if run.sprintID != plan.sprint.id {
+      lines.append(
+        "This run belongs to sprint \(run.sprintID?.uuidString ?? "none"), not the loaded one."
+      )
+    }
+    if let item = plan.items.first(where: { $0.workItemID == run.workItemID }) {
+      if item.implementerProfileID != run.profileID {
+        lines.append(
+          "The planned implementer differs from the run's team member, so it is never admitted."
+        )
+      }
+    } else {
+      lines.append("This ticket is not in the sprint plan, so it is never admitted.")
+    }
+
+    let itemByID = Dictionary(uniqueKeysWithValues: model.workItems.map { ($0.id, $0) })
+    let prerequisites = model.dependencies
+      .filter { $0.workItemID == run.workItemID }
+      .map(\.dependsOnWorkItemID)
+    if prerequisites.isEmpty {
+      lines.append("No prerequisites, so nothing upstream is holding it.")
+    } else {
+      let unmet = prerequisites.filter { itemByID[$0]?.state != .released }
+      lines.append(
+        unmet.isEmpty
+          ? "Every prerequisite is released."
+          : "Waiting on \(unmet.count) unreleased prerequisite(s): "
+            + unmet.map { itemByID[$0]?.key ?? "unknown" }.joined(separator: ", ")
+      )
+    }
+
+    let eligible = SprintRunAdmission.eligibleImplementationRuns(
+      plan: plan,
+      runs: model.runs,
+      workItems: model.workItems,
+      dependencies: model.dependencies
+    )
+    lines.append(
+      eligible.contains { $0.id == run.id }
+        ? "Delivery considers this run eligible, so something after admission is not starting it."
+        : "Delivery does not consider this run eligible."
+    )
+    lines.append("Eligible runs right now: \(eligible.count)")
+    return lines.joined(separator: "\n")
   }
 
   /// Accepted tickets use one durable product sequence with no gaps or repeats.

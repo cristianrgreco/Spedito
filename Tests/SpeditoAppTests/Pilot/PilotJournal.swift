@@ -64,6 +64,12 @@ final class PilotJournal: @unchecked Sendable {
     )
     journalURL = bundleURL.appendingPathComponent("journal.jsonl")
     FileManager.default.createFile(atPath: journalURL.path, contents: nil)
+    // Name the live bundle explicitly. Picking "the newest directory" is wrong
+    // while a run is still building, because the previous run's bundle is still
+    // the newest and its findings get read as this run's.
+    try? Data(bundleURL.path.utf8).write(
+      to: rootURL.appendingPathComponent("current-run")
+    )
   }
 
   private static let stampFormatter: DateFormatter = {
