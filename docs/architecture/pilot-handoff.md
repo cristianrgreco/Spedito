@@ -29,15 +29,17 @@ Still unexercised: retrospectives, app versions, and the `script-log-summary`,
 
 ## What to do first
 
-1. **Take the resume-after-review hang.** It is the one thing standing between
-   this loop and a completed sprint, it now reproduces reliably, and the section
-   below tells you exactly where to instrument. Do not start from a hypothesis;
-   the last three sessions each lost time to one.
-2. **Then run the briefs nobody has run:** `script-log-summary`, `library-csv`,
-   `web-reading-list`, `vague-dashboard`. Each exercises a
-   `DemoPresentationKind` that has never been reached, and the product owner has
-   asked for breadth. The journal now records the kind each run actually
-   reached, so the coverage claim will be evidence rather than intent.
+1. **Confirm the hang fix on a live run.** `83686d8` is unproven in the field.
+   Watch a ticket through a tech lead review that requests changes — that is the
+   turn all three hangs occurred on.
+2. **Run the briefs nobody has run:** `script-log-summary`, `library-csv`,
+   `web-reading-list`, `vague-dashboard`, `static-weather`, `native-timer`. Each
+   exercises a `DemoPresentationKind` or a feature never reached, and the product
+   owner has asked for breadth. The journal now records the kind each run
+   actually reached, so the coverage claim will be evidence rather than intent.
+3. **Still untouched by any run:** retrospectives, app versions, repository
+   import, and the mid-sprint scope change that `web-reading-list` and
+   `static-weather` carry.
 
 ## Confirmed working this session
 
@@ -59,20 +61,51 @@ One batched request, two coherent paths, and a diagnosis the owner can actually
 judge. This closes the escalation problem, and it confirms the last session's
 conclusion that no new consent mechanism was needed.
 
-**Recovery runs once per product (`8fd8784`) holds.** No requeue events, no
-token burn, across a full run including a mid-delivery relaunch.
+**Recovery runs once per product (`8fd8784`) holds.** Run 13's database has
+exactly two `agent_run.queued` events, both reading "App stopped; preserved work
+queued to continue" at the relaunch, which is the relaunch working. Zero
+recovery requeues, against 64 in run 10.
 
-**The turn-wait fix (`c04bdb5`) is real but partial.** It explains run 12's T1
-exactly. It does not explain T2 in either run, because no owner decision was
-involved. See below.
+**The turn-wait fix (`c04bdb5`) was real but partial.** It explains run 12's T1
+exactly. It never explained T2 in either run, because no owner decision was
+involved — which is what led to the fix below.
 
-## The resume-after-review hang
+## The resume-after-review hang — diagnosed and fixed
 
-This is the open blocker, and it is now reproducible.
+**Fixed in `83686d8`.** Not yet confirmed on a live run; the first run after it
+should be watched through a tech lead review that requests changes.
 
-**Three turns have hung across runs 12 and 13. All three were the turn that
-resumes a ticket after the tech lead requested changes. No turn of any other
-kind has hung.**
+A turn's wait suspends its inactivity timeout while an approval is outstanding,
+and that suspension is the only thing making the wait unbounded. It was granted
+by `pendingApprovalTurns`, the Codex client's in-memory record of approvals it
+has asked for — transient operation state. Whether the product owner actually
+owes a decision is durable domain state, and **the two disagreed**.
+
+Run 12's database holds seven permission requests and every one reached a
+terminal status: allowed, denied, or policy-denied. Run 13's holds exactly one,
+allowed. In both runs nothing was awaiting the owner at the moment the turns
+hung, yet a leaked entry in that map kept the only timeout that could have ended
+the wait suspended, and the board reported a working agent for the rest of the
+run.
+
+Suspension now requires both: the client's flag *and* a durable permission
+request for that run that still needs the owner. Both true and the turn waits
+indefinitely, as it must. Flag without durable backing and the inactivity window
+applies, the wait ends, and the existing recovery path returns the completed
+turn. Covered by `staleApprovalFlagDoesNotSuspendTheTurn`, verified to fail
+without the fix, asserting both directions so a fix that merely deleted the
+suspension would not pass.
+
+**Which path leaks the entry is still unknown.** This makes the leak survivable
+rather than fatal, which is the right layer for the guarantee — the wait should
+not be able to hang whatever any single caller gets wrong. If you want the root
+cause, the instrumentation notes below still stand.
+
+### The evidence it was diagnosed from
+
+**Three turns hung across runs 12 and 13. All three were the turn that resumes
+a ticket after the tech lead requested changes. No turn of any other kind
+hung.**
 
 | Run | Ticket | Turn completed in Codex | Approval in that turn | Last durable Spedito event |
 | --- | --- | --- | --- | --- |
