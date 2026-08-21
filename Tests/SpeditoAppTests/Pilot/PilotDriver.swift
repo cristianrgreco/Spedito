@@ -24,6 +24,7 @@ final class PilotDriver {
   private var reportedFindings: Set<String> = []
   private(set) var observedThreadIDs: Set<String> = []
   private var didSimulateRelaunch = false
+  private var didAskMidSprintFollowUp = false
   /// Each awaiting run is answered once. Without this the driver re-answers the
   /// same question on every poll.
   private var answeredRunIDs: Set<UUID> = []
@@ -162,6 +163,78 @@ final class PilotDriver {
       )
     }
     journal.record(.observation, "Reopened with \(afterTickets) ticket(s)")
+  }
+
+  /// The owner thinks of something else while the sprint is running.
+  ///
+  /// This is a real product journey — planning has to work while delivery is
+  /// live — and the brief catalog has claimed to exercise it since it was
+  /// written, through a `midSprintFollowUp` no code ever read.
+  ///
+  /// The new tickets go to the backlog and deliberately not into the running
+  /// sprint: adding scope to a sprint already in flight is the owner's decision
+  /// to make, and the product rules are explicit that scope is never changed for
+  /// them.
+  private func askMidSprintFollowUp() async {
+    guard let model, let followUp = brief.midSprintFollowUp else { return }
+    let ticketsBefore = model.workItems.count
+    journal.record(.ownerCommand, "Ask for something else mid-sprint: \(followUp)")
+
+    guard await model.createEpicAndPlan(outcome: followUp) != nil else {
+      fileOnce(
+        PilotJournal.Finding(
+          category: .functional,
+          title: "Spedito would not plan a new request while a sprint was running",
+          evidence: """
+            Asked for: \(followUp)
+            \(model.errorMessage ?? "No reason given.")
+
+            An owner thinks of things mid-sprint. Planning is read-only and must
+            not be blocked by delivery running alongside it.
+            """,
+          locationHint: "Sources/SpeditoCore/Domain/EpicPlanningWorkflowCoordinator.swift",
+          at: Date()
+        )
+      )
+      return
+    }
+
+    let suggested = await waitUntil("suggested tickets for the follow-up") { model in
+      model.suggestionBatches.contains { batch in
+        batch.suggestions.contains { $0.status == .proposed }
+      }
+    }
+    guard suggested, let model = self.model, let batch = model.suggestionBatches.last
+    else {
+      fileOnce(
+        PilotJournal.Finding(
+          category: .stalled,
+          title: "A request made during a sprint never produced any suggested tickets",
+          evidence: PilotSnapshotRenderer.describe(PilotSnapshotRenderer.render(model)),
+          locationHint: "Sources/SpeditoCore/Codex/CodexTicketSuggestionGenerator.swift",
+          at: Date()
+        )
+      )
+      return
+    }
+
+    let proposed = batch.suggestions.filter { $0.status == .proposed }
+    journal.record(
+      .ownerCommand,
+      "Accept \(proposed.count) ticket(s) suggested mid-sprint",
+      detail: proposed.map { "\($0.reference) \($0.title)" }.joined(separator: "\n")
+    )
+    await withCheckedContinuation { continuation in
+      model.epicPlanningWorkflowCoordinator.decideAllTicketSuggestions(
+        sessionID: batch.session.id,
+        accept: true
+      ) { _ in continuation.resume() }
+    }
+    await settle(for: .seconds(2))
+    journal.record(
+      .observation,
+      "Backlog went from \(ticketsBefore) to \(self.model?.workItems.count ?? 0) ticket(s)"
+    )
   }
 
   /// Ends the application the way quitting Spedito does.
@@ -503,10 +576,24 @@ final class PilotDriver {
       return SupervisionTurn(board: snapshot, outcome: .reopened)
     }
 
-    let finished = model.workItems.allSatisfy { item in
+    if didSimulateRelaunch, !didAskMidSprintFollowUp, snapshot.isAgentWorking,
+      brief.midSprintFollowUp != nil
+    {
+      didAskMidSprintFollowUp = true
+      await askMidSprintFollowUp()
+    }
+
+    // The sprint's tickets, not the backlog's. An owner who asks for something
+    // new mid-sprint puts tickets in the backlog that this sprint was never
+    // going to deliver, and waiting for those would burn the whole budget after
+    // the sprint had actually finished.
+    let sprintWorkItemIDs = Set(model.sprintPlan?.items.map(\.workItemID) ?? [])
+    let sprintTickets = model.workItems.filter { sprintWorkItemIDs.contains($0.id) }
+    let tracked = sprintTickets.isEmpty ? model.workItems : sprintTickets
+    let finished = tracked.allSatisfy { item in
       item.state == .released || item.state == .cancelled
     }
-    if finished, !model.workItems.isEmpty {
+    if finished, !tracked.isEmpty {
       return SupervisionTurn(board: snapshot, outcome: .everyTicketFinished)
     }
 

@@ -449,6 +449,74 @@ struct PilotSupervisionTests {
     #expect(turn.outcome == .everyTicketFinished)
   }
 
+  /// An owner who asks for something new mid-sprint puts tickets in the backlog
+  /// that the running sprint was never going to deliver. Waiting for those to
+  /// reach a terminal state would burn the rest of the budget after the sprint
+  /// had actually finished — and the mid-sprint request is a journey the brief
+  /// catalog has claimed to exercise since it was written.
+  @Test("Delivery is finished when the sprint's tickets are, not the whole backlog")
+  func finishedDeliveryIgnoresTicketsOutsideTheSprint() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+
+    let laterIdea = try await fixture.store.createWorkItem(
+      productID: fixture.productID,
+      title: "Search what I have saved"
+    )
+    let profile = try #require(
+      try await fixture.store.fetchAgentProfiles(productID: fixture.productID)
+        .first { $0.role.canOwnDelivery }
+    )
+    // A sprint will not start on a ticket with no acceptance criterion, which is
+    // the product rule working.
+    let sprintTicket = try await fixture.store.fetchWorkItem(id: fixture.workItemID)
+    _ = try await fixture.store.updateWorkItem(
+      id: sprintTicket.id,
+      title: sprintTicket.title,
+      type: sprintTicket.type,
+      body: sprintTicket.body,
+      acceptanceCriteria: ["Converts metric and imperial units both ways."],
+      priority: sprintTicket.priority,
+      customFields: sprintTicket.customFields
+    )
+    let draft = try await fixture.store.saveDraftSprint(
+      productID: fixture.productID,
+      goal: "Convert everyday units",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: fixture.workItemID,
+          implementerProfileID: profile.id
+        )
+      ]
+    )
+    _ = try await fixture.store.startSprint(id: draft.sprint.id)
+    _ = try await fixture.store.transitionWorkItem(
+      id: fixture.workItemID,
+      to: .cancelled,
+      actor: "Product owner",
+      reason: "Dropped the ticket from the sprint"
+    )
+
+    let driver = PilotDriver(
+      brief: fixture.brief,
+      journal: fixture.journal,
+      workspace: fixture.workspace,
+      deadline: Date().addingTimeInterval(60)
+    )
+    let model = AppModel(
+      storeRegistry: fixture.registry,
+      selectedProductID: fixture.productID
+    )
+    await model.reload()
+    driver.adopt(model: model, registry: fixture.registry)
+
+    // The later idea is still sitting in the backlog, and that is correct.
+    #expect(model.workItems.contains { $0.id == laterIdea.id })
+    let turn = try #require(await driver.superviseTick(1))
+    #expect(turn.outcome == .everyTicketFinished)
+  }
+
   /// The pilot's relaunch carried the `ProductStoreRegistry` across, so the quit
   /// and reopen it claims to perform left every SQLite connection open. Durable
   /// state that only survives because the connection never closed would have
