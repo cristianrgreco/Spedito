@@ -39,7 +39,7 @@ enum PilotInvariants {
     findings.append(contentsOf: conventionFindings(context))
     findings.append(contentsOf: demoContract(context, model: model))
     findings.append(contentsOf: ticketSequence(model: model))
-    findings.append(contentsOf: stalledRuns(model: model))
+    findings.append(contentsOf: stalledRuns(context, model: model))
     findings.append(contentsOf: silentRuns(context, model: model))
     return findings
   }
@@ -52,6 +52,11 @@ enum PilotInvariants {
     return context.snapshot.tickets.compactMap { ticket in
       guard !terminal.contains(ticket.state) else { return nil }
       guard ticket.availableActions.isEmpty else { return nil }
+      // A ticket held back by its own prerequisites is not stranded. The
+      // dispatcher waits for direct prerequisites to reach done on purpose, and
+      // the board tells the owner which ones. Reporting these as dead ends
+      // produced noise in runs 7 and 8 that cost real triage time.
+      guard ticket.waitingOnPrerequisites.isEmpty else { return nil }
       guard ticket.latestRunStatus != .running else { return nil }
       // A queued run only counts as progress while something is actually
       // running. A board full of queued runs and no running one is frozen,
@@ -195,7 +200,10 @@ enum PilotInvariants {
   /// A queued run means Spedito intends to start work. Sitting queued for a long
   /// time with nothing else running means the owner is watching a board that
   /// claims to be busy and is not.
-  private static func stalledRuns(model: AppModel) -> [PilotJournal.Finding] {
+  private static func stalledRuns(
+    _ context: Context,
+    model: AppModel
+  ) -> [PilotJournal.Finding] {
     let now = Date()
     let anyRunning = model.runs.contains { $0.status == .running }
     guard !anyRunning else { return [] }
@@ -205,6 +213,9 @@ enum PilotInvariants {
       .compactMap { run in
         guard let item = model.workItems.first(where: { $0.id == run.workItemID })
         else { return nil }
+        // Waiting for a prerequisite is the dispatcher working as designed.
+        let ticket = context.snapshot.tickets.first { $0.key == item.key }
+        guard ticket?.waitingOnPrerequisites.isEmpty ?? true else { return nil }
         return PilotJournal.Finding(
           category: .stalled,
           title: "Ticket \(item.key) has been queued with nothing running",

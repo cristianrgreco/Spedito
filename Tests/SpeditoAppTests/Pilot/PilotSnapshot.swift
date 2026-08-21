@@ -18,6 +18,9 @@ struct PilotSnapshot: Sendable {
     let needsInput: Bool
     let latestRunStatus: AgentRunStatus?
     let candidateStatus: CandidateRevisionStatus?
+    /// Direct prerequisites that have not been released yet. A ticket waiting on
+    /// one is not stranded: the dispatcher is holding it back on purpose.
+    let waitingOnPrerequisites: [String]
     /// Owner-facing things that can be done to this ticket right now.
     let availableActions: [String]
   }
@@ -103,8 +106,19 @@ enum PilotSnapshotRenderer {
       latest[candidate.workItemID] = candidate
     }
 
+    let itemsByID = Dictionary(
+      model.workItems.map { ($0.id, $0) },
+      uniquingKeysWith: { first, _ in first }
+    )
     let tickets = model.workItems.map { item -> PilotSnapshot.TicketView in
       let run = latestRunByWorkItem[item.id]
+      let unreleasedPrerequisites =
+        model.dependencies
+        .filter { $0.workItemID == item.id }
+        .compactMap { itemsByID[$0.dependsOnWorkItemID] }
+        .filter { $0.state != .released && $0.state != .cancelled }
+        .map(\.key)
+        .sorted()
       let candidate = latestCandidateByWorkItem[item.id]
       let needsInput =
         run?.status == .awaitingOwner
@@ -116,6 +130,7 @@ enum PilotSnapshotRenderer {
         needsInput: needsInput,
         latestRunStatus: run?.status,
         candidateStatus: candidate?.status,
+        waitingOnPrerequisites: unreleasedPrerequisites,
         availableActions: availableActions(
           for: item,
           run: run,
@@ -234,6 +249,9 @@ enum PilotSnapshotRenderer {
         if ticket.needsInput { line += " (needs your input)" }
         if let candidate = ticket.candidateStatus { line += " candidate=\(candidate.rawValue)" }
         if let run = ticket.latestRunStatus { line += " run=\(run.rawValue)" }
+        if !ticket.waitingOnPrerequisites.isEmpty {
+          line += " waiting-on=\(ticket.waitingOnPrerequisites.joined(separator: "+"))"
+        }
         line += " actions=[\(ticket.availableActions.joined(separator: ", "))]"
         lines.append(line)
       }

@@ -1,8 +1,8 @@
 import Foundation
-import SpeditoCore
 import Testing
 
 @testable import SpeditoApp
+@testable import SpeditoCore
 
 /// The pilot relaunches Spedito mid-delivery, which replaces the application it
 /// is watching. A live run held the pre-relaunch application for the rest of the
@@ -178,6 +178,66 @@ struct PilotSupervisionTests {
     #expect(await findings().isEmpty)
   }
 
+  /// Runs 7 and 8 both reported a ticket waiting on its own prerequisites as a
+  /// dead end and a stall. The dispatcher holds a dependant back until its
+  /// direct prerequisites reach done, and the board names them, so that is the
+  /// system working. The noise cost real triage time.
+  @Test("A ticket waiting on its prerequisites is not reported as stranded")
+  func prerequisiteBlockedTicketIsNotAFinding() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+
+    let blocker = try await fixture.store.createWorkItem(
+      productID: fixture.productID,
+      title: "Establish the delivery setup"
+    )
+    let dependant = try #require(
+      try await fixture.store.fetchWorkItems(productID: fixture.productID)
+        .first { $0.id == fixture.workItemID }
+    )
+    try await fixture.store.replaceWorkItemDependencies(
+      for: dependant,
+      dependsOnWorkItemIDs: [blocker.id]
+    )
+    // Queued is the state a dependant waits in, and it offers the owner nothing,
+    // which is exactly what the dead-end rule looks for.
+    for state in [WorkItemState.refining, .ready, .queued] {
+      _ = try await fixture.store.transitionWorkItem(
+        id: fixture.workItemID,
+        to: state,
+        actor: "Sprint scheduler",
+        reason: "Authorized by the sprint"
+      )
+    }
+
+    let model = AppModel(
+      storeRegistry: fixture.registry,
+      selectedProductID: fixture.productID
+    )
+    await model.reload()
+    let snapshot = PilotSnapshotRenderer.render(model)
+    let blocked = try #require(snapshot.tickets.first { $0.key != blocker.key })
+    #expect(blocked.waitingOnPrerequisites == [blocker.key])
+    #expect(blocked.availableActions.isEmpty)
+    #expect(blocked.latestRunStatus == .queued)
+    #expect(PilotSnapshotRenderer.describe(snapshot).contains("waiting-on=\(blocker.key)"))
+
+    let findings = PilotInvariants.check(
+      PilotInvariants.Context(
+        snapshot: snapshot,
+        brief: fixture.brief,
+        unchangedSince: Dictionary(
+          uniqueKeysWithValues: snapshot.tickets.map {
+            ($0.key, Date().addingTimeInterval(-3600))
+          }
+        ),
+        anyRunIsRunning: false
+      ),
+      model: model
+    )
+    #expect(!findings.contains { $0.title.contains(blocked.key) })
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
@@ -271,11 +331,16 @@ private struct PilotSupervisionFixture {
       title: "Convert everyday metric and imperial units"
     )
     workItemID = item.id
+    // Older than every tolerance, so a test can exercise the stall checks
+    // without waiting them out.
+    let anHourAgo = Date().addingTimeInterval(-3600)
     let run = AgentRun(
       productID: product.id,
       workItemID: item.id,
       profileID: profile.id,
-      status: .queued
+      status: .queued,
+      createdAt: anHourAgo,
+      updatedAt: anHourAgo
     )
     _ = try await store.createAgentRun(run)
     runID = run.id
