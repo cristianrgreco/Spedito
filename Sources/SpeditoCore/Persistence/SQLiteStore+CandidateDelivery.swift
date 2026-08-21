@@ -224,6 +224,26 @@ extension SQLiteStore {
     }
   }
 
+  /// Sends a candidate back to its implementer for another attempt.
+  ///
+  /// Marking the candidate and releasing the run's settlement identity are one
+  /// durable step because they are one decision: this candidate is superseded,
+  /// so whatever the run delivers next is a new version. Two separate call sites
+  /// send a candidate back — a tech lead requesting changes, and a managed demo
+  /// failing verification — and the second was written without the release, so
+  /// its corrections were silently discarded exactly as the first one's were.
+  /// Keeping them together means a third caller cannot forget.
+  public func requestCandidateChanges(
+    candidateID: UUID,
+    implementationRunID: UUID
+  ) throws -> CandidateRevision {
+    try transaction {
+      let updated = try updateCandidateRevision(id: candidateID, status: .changesRequested)
+      try releaseDeliverySettlementIdentity(runID: implementationRunID)
+      return updated
+    }
+  }
+
   /// Releases a run's settlement identity so its next completed delivery
   /// settles as a new candidate rather than being recognised as one already
   /// settled.

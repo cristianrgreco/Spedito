@@ -2360,9 +2360,9 @@ public final class TicketDeliveryWorkflowCoordinator {
       } else {
         adoptedBaseline = nil
       }
-      _ = try await store.updateCandidateRevision(
-        id: candidate.id,
-        status: .changesRequested
+      _ = try await store.requestCandidateChanges(
+        candidateID: candidate.id,
+        implementationRunID: implementationRun.id
       )
       try await store.markKnowledgePageProposals(
         candidateRevisionID: candidate.id,
@@ -2416,11 +2416,6 @@ public final class TicketDeliveryWorkflowCoordinator {
         await reloadSelectedProductIfCurrent(productID: product.id)
         return
       }
-      // This is a new delivery attempt, not a recovery of the one the tech lead
-      // rejected. Its settlement identity has to be released, or the resumed run
-      // still carries the identity of that candidate and its result is
-      // recognised as already settled and dropped.
-      try await store.releaseDeliverySettlementIdentity(runID: implementationRun.id)
       _ = try await updateAgentRun(
         id: implementationRun.id,
         status: .running,
@@ -3648,9 +3643,9 @@ public final class TicketDeliveryWorkflowCoordinator {
       candidate: candidate,
       integratedSHA: integratedSHA
     )
-    _ = try await store.updateCandidateRevision(
-      id: candidate.id,
-      status: .changesRequested
+    _ = try await store.requestCandidateChanges(
+      candidateID: candidate.id,
+      implementationRunID: implementationRun.id
     )
     try await store.markKnowledgePageProposals(
       candidateRevisionID: candidate.id,

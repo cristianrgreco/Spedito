@@ -4287,7 +4287,7 @@ struct SQLiteStoreTests {
     let first = try await store.prepareCompletedDeliverySettlement(runID: run.id)
     #expect(first.candidateVersion == 1)
     #expect(first.existingCandidate == nil)
-    _ = try await store.settleCompletedDelivery(
+    let settled = try await store.settleCompletedDelivery(
       candidate: CandidateRevision(
         productID: product.id,
         sprintID: active.sprint.id,
@@ -4323,8 +4323,13 @@ struct SQLiteStoreTests {
     #expect(recovered.candidateVersion == 1)
     #expect(recovered.existingCandidate != nil)
 
-    // The tech lead requests changes, so the run is resumed for a new attempt.
-    try await store.releaseDeliverySettlementIdentity(runID: run.id)
+    // Sending the candidate back is one durable step with releasing the run's
+    // settlement identity, so no caller can do one without the other.
+    let sentBack = try await store.requestCandidateChanges(
+      candidateID: settled.candidate.id,
+      implementationRunID: run.id
+    )
+    #expect(sentBack.status == .changesRequested)
 
     let revision = try await store.prepareCompletedDeliverySettlement(runID: run.id)
     #expect(revision.candidateVersion == 2)
