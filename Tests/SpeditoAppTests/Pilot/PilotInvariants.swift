@@ -19,6 +19,11 @@ enum PilotInvariants {
   /// deliberately generous.
   static let queuedTolerance: TimeInterval = 600
 
+  /// How long a running agent may report nothing before the pilot treats it as
+  /// gone. A live turn reports activity as it works, so silence this long means
+  /// the turn ended without anyone noticing, not that it is thinking hard.
+  static let silentRunTolerance: TimeInterval = 600
+
   struct Context {
     let snapshot: PilotSnapshot
     let brief: PilotBrief
@@ -36,6 +41,7 @@ enum PilotInvariants {
     findings.append(contentsOf: completionHandoffs(context, model: model))
     findings.append(contentsOf: ticketSequence(model: model))
     findings.append(contentsOf: stalledRuns(model: model))
+    findings.append(contentsOf: silentRuns(context, model: model))
     return findings
   }
 
@@ -200,6 +206,55 @@ enum PilotInvariants {
       }
   }
 
+
+  /// A running agent that reports nothing is the one stall neither other check
+  /// can see: `stalledRuns` only looks at queued runs, and `deadEnds` skips any
+  /// ticket offering an action, which a running run always does because it
+  /// offers **Stop**.
+  ///
+  /// Run 9 sat like this for thirty minutes. That time the cause was the product
+  /// owner's connection dropping and the turn finished by itself, but a turn
+  /// that dies quietly looks identical from the board, and the owner is left in
+  /// front of a ticket in review with no explanation and nothing to do but stop
+  /// work that may still be running.
+  private static func silentRuns(
+    _ context: Context,
+    model: AppModel
+  ) -> [PilotJournal.Finding] {
+    let now = Date()
+    return model.runs
+      .filter { $0.status == .running }
+      .compactMap { run -> PilotJournal.Finding? in
+        let lastHeard = run.lastActivityAt ?? run.updatedAt
+        let silentFor = now.timeIntervalSince(lastHeard)
+        guard silentFor > silentRunTolerance else { return nil }
+        guard let item = model.workItems.first(where: { $0.id == run.workItemID })
+        else { return nil }
+        let ticket = context.snapshot.tickets.first { $0.key == item.key }
+        return PilotJournal.Finding(
+          category: .stalled,
+          title: "Ticket \(item.key)'s agent has reported nothing while still running",
+          evidence: """
+            Ticket: \(item.key) \(item.title)
+            Ticket state: \(item.state.rawValue)
+            Run status: running
+            Silent for: \(Int(silentFor))s
+            Last thing this run reported: \(run.lastActivityText ?? "nothing")
+            Candidate: \(ticket?.candidateStatus?.rawValue ?? "none")
+            What the owner can do: \
+            \(ticket?.availableActions.joined(separator: ", ") ?? "nothing")
+
+            The board says an agent is working. If its turn has ended without
+            Spedito noticing, the owner waits indefinitely with no explanation.
+
+            Rule out a dropped network connection before treating this as a
+            defect: a real turn resumes on its own once the connection returns.
+            """,
+          locationHint: "Sources/SpeditoCore/Domain/TicketDeliveryWorkflowCoordinator.swift",
+          at: now
+        )
+      }
+  }
 
   /// Explains a stall using the production admission rule rather than guessing.
   /// Every reason a queued run can be refused is reported against the durable

@@ -76,7 +76,10 @@ so a violation is a defect rather than a matter of taste:
 - **Functional** — a broken durable contract: ready for demo that will not open,
   a completed ticket with no handoff, a ticket sequence with gaps, state lost
   across a relaunch.
-- **Stalled** — nothing observable happened within the budget.
+- **Stalled** — nothing observable happened within the budget. Two shapes: a
+  queued run that is never admitted, and a running agent that reports nothing.
+  The second needs its own check because a running run always offers **Stop**,
+  so the dead-end rule never fires for it.
 
 ## Evidence bundle
 

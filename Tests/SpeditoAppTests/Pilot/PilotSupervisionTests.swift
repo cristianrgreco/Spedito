@@ -84,6 +84,50 @@ struct PilotSupervisionTests {
     await reopened.close()
   }
 
+  /// Run 9 sat for thirty minutes with a running agent that reported nothing and
+  /// the pilot filed nothing at all: `stalledRuns` only looks at queued runs,
+  /// and `deadEnds` skips any ticket offering an action, which a running run
+  /// always does because it offers **Stop**.
+  @Test("A running agent that reports nothing is reported")
+  func silentRunningAgentIsReported() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+    _ = try await fixture.store.updateAgentRun(id: fixture.runID, status: .running)
+
+    func findings(lastHeard: Date) async throws -> [PilotJournal.Finding] {
+      _ = try await fixture.store.recordAgentRunActivity(
+        id: fixture.runID,
+        activity: CodexLiveActivity(text: "Reviewing the converter", kind: .inspecting),
+        at: lastHeard
+      )
+      let model = AppModel(
+        storeRegistry: fixture.registry,
+        selectedProductID: fixture.productID
+      )
+      await model.reload()
+      let snapshot = PilotSnapshotRenderer.render(model)
+      return PilotInvariants.check(
+        PilotInvariants.Context(
+          snapshot: snapshot,
+          brief: fixture.brief,
+          unchangedSince: [:],
+          anyRunIsRunning: true
+        ),
+        model: model
+      )
+    }
+
+    // A turn that reported a moment ago is working, not hung.
+    #expect(try await findings(lastHeard: Date()).isEmpty)
+
+    let silent = try await findings(
+      lastHeard: Date().addingTimeInterval(-PilotInvariants.silentRunTolerance - 60)
+    )
+    let reported = try #require(silent.first { $0.category == .stalled })
+    #expect(reported.title.contains("reported nothing while still running"))
+    #expect(reported.evidence.contains("Reviewing the converter"))
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
