@@ -1,7 +1,7 @@
 # Pilot loop handoff
 
 - **Date:** 21 August 2026
-- **Branch:** `pilot` (24 commits ahead of `main`, tree clean)
+- **Branch:** `pilot` (31 commits ahead of `main`, tree clean)
 - **Harness:** `Tests/SpeditoAppTests/Pilot/`, runner `scripts/pilot.sh`
 - **Design rationale:** `docs/architecture/pilot.md`
 
@@ -10,20 +10,18 @@ covers only what a continuing agent needs to pick the loop up.
 
 ## Where the loop is
 
-Eleven live runs. The last four are the only ones whose observations can be
-trusted; everything before run 8 was reported by a harness watching an
-application it had already closed.
+Thirteen live runs. Only runs 8 onwards can be trusted; everything before was
+reported by a harness watching an application it had already closed.
 
-**Run 9 (`static-converter`) completed a ticket end to end and filed no
-findings**: plan, sprint, delivery, tech lead review, demo, acceptance,
-released, with the dependant ticket starting as soon as its prerequisite
-released. That remains the only complete journey.
+**Run 13 (`native-notes`) is the best run so far and it settles two of the three
+open questions.** T1 went plan → sprint → delivery → tech lead review → demo →
+acceptance → **released**, and its demo was a real `mac_application` bundle the
+owner opened. That is the first time this loop has taken a native Mac app to
+completion, and the first time any run has *proved* which
+`DemoPresentationKind` it reached rather than assuming it.
 
-**Runs 10, 11 and 12 (`native-notes`) all failed to reach a demo.** Between them
-they produced every fix listed below. Run 12 came closest: two reviewed
-candidates, no requeue loop, correct prerequisite handling, and then both runs
-hung with completed turns Spedito never processed. That hang is fixed but
-unconfirmed on a live run.
+**T2 hung, again.** Its turn completed cleanly in Codex and Spedito never
+processed it. Detail below — the shape is now much sharper than it was.
 
 Still unexercised: retrospectives, app versions, and the `script-log-summary`,
 `library-csv`, `web-reading-list`, `vague-dashboard`, `static-weather` and
@@ -31,118 +29,149 @@ Still unexercised: retrospectives, app versions, and the `script-log-summary`,
 
 ## What to do first
 
-1. **Run `native-notes` again.** Three fixes landed after run 12 and none has
-   been seen working live: the turn-wait hang, the coherent-capability guidance,
-   and the pilot's retry behaviour. The specific thing to watch for is whether
-   the agent now makes **one batched permission request instead of five**.
-2. **Then run the briefs nobody has run.** `script-log-summary`, `library-csv`,
+1. **Take the resume-after-review hang.** It is the one thing standing between
+   this loop and a completed sprint, it now reproduces reliably, and the section
+   below tells you exactly where to instrument. Do not start from a hypothesis;
+   the last three sessions each lost time to one.
+2. **Then run the briefs nobody has run:** `script-log-summary`, `library-csv`,
    `web-reading-list`, `vague-dashboard`. Each exercises a
    `DemoPresentationKind` that has never been reached, and the product owner has
-   asked for breadth.
-3. **Make the relaunch a genuinely cold start.** `simulateRelaunch` reuses the
-   `ProductStoreRegistry`, so the same SQLite connections survive a quit that
-   should have closed them. This is now the least faithful part of the harness
-   and the most likely source of the next wrong conclusion.
+   asked for breadth. The journal now records the kind each run actually
+   reached, so the coverage claim will be evidence rather than intent.
 
-## Fixed this session
+## Confirmed working this session
 
-Every fix below has a regression test that was verified to fail without it.
+All three fixes that were unverified in the last handoff were exercised live.
 
-### In Spedito
+**Coherent-capability guidance (`9f67a88`) works.** Run 12 asked the owner for
+five separate paths in two minutes. Run 13 made **exactly one** permission
+request in the whole run:
 
-**Delivery recovery looped, twice.** `recoverDelivery` adopts runs the database
-still calls running, on the assumption a process stopped and orphaned them. It
-is invoked from `prepareScheduler`, which runs every time a scheduler is
-created, and schedulers are created and retired constantly during a sprint.
+```
+Read /Applications/Xcode.app
+Read /Library/Developer/PrivateFrameworks
+reason: Run Quick Notes' Xcode 26.5 build and macOS unit tests; xcodebuild's
+        required simulator plug-in was blocked from loading Apple's
+        CoreSimulator framework.
+```
 
-The first fix (`de417d2`) skipped runs the runtime coordinator was executing.
-That removed one path and was declared done a run too early: run 10 looped
-between turns instead, when nothing owned the run and recovery was correct to
-call it an orphan. Each pass also resumed both agent threads to look for a
-missed result, at roughly 175,000 input tokens a time — about **fifteen million
-tokens of the product owner's usage in eight minutes, for no delivered work**.
+One batched request, two coherent paths, and a diagnosis the owner can actually
+judge. This closes the escalation problem, and it confirms the last session's
+conclusion that no new consent mechanism was needed.
 
-`8fd8784` fixed the cause: recovery runs once per product per process, which is
-what "recovery after restart" always meant. Run 12 recorded **0 requeue events,
-down from 64**.
+**Recovery runs once per product (`8fd8784`) holds.** No requeue events, no
+token burn, across a full run including a mid-delivery relaunch.
 
-**A completed turn could hang forever.** Two tickets in run 12 reported a
-working agent for fifty minutes after their turns had finished. A turn's wait
-suspends its inactivity timeout while the turn is awaiting an approval decision
-— correct, since an owner may take minutes — but the flag saying so was cleared
-only after the response was delivered successfully. One failed delivery left the
-turn flagged as awaiting an answer it had already been given, removing the only
-bound on the wait. `c04bdb5` defers the clear.
+**The turn-wait fix (`c04bdb5`) is real but partial.** It explains run 12's T1
+exactly. It does not explain T2 in either run, because no owner decision was
+involved. See below.
 
-Deliberately **not** capped with an absolute timeout: a turn genuinely waiting
-for the owner should wait indefinitely, and the board already says it needs
-their input. A blanket cap would fail runs that are behaving correctly.
+## The resume-after-review hang
 
-**Agents were never told how to scope a permission request.** Spedito's guidance
-— treat a runtime and the files it predictably needs as one coherent capability,
-diagnose the foreseeable boundary, make one batched request — shipped only from
-`permissionRecoveryContext` when there was an interrupted decision to recover.
-An ordinary turn got `"No interrupted permission request was recorded."` and
-nothing about scope. Both agents in run 12 were told exactly that and nothing
-else, which is why the owner saw five escalating requests in two minutes.
-`9f67a88` puts the guidance in both branches.
+This is the open blocker, and it is now reproducible.
 
-**Owner-facing text.** An Epic has no title until the plan names it, so the
-first alert a product owner ever receives was titled `" needs your input"`
-(`369e58d`). The live permission prompt said "Network access" for a scoped
-request while the saved grant said "Restricted network access" — the broader
-wording where consent is given, the narrower one where it is merely recorded
-(`f29f1f4`). Every demo kind may declare an HTTP readiness check, so a native
-Mac app with a malformed readiness path was told about "browser paths"
-(`2339a1e`).
+**Three turns have hung across runs 12 and 13. All three were the turn that
+resumes a ticket after the tech lead requested changes. No turn of any other
+kind has hung.**
 
-### In the harness
+| Run | Ticket | Turn completed in Codex | Approval in that turn | Last durable Spedito event |
+| --- | --- | --- | --- | --- |
+| 12 | T1 | 16:39:42Z | yes — one **denied** at 16:35:49Z | 16:35:49Z |
+| 12 | T2 | 16:34:13Z | **none anywhere in its history** | 16:33:38Z |
+| 13 | T2 | 18:32:52Z | **none anywhere in the run but T1's** | ~18:31:46Z |
 
-**It was watching an application it had already closed.** `superviseDelivery`
-bound `model` once before its loop; `simulateRelaunch` replaces it. From the
-relaunch onwards the board snapshot, the invariants, and the completion check
-all read the shut-down application, whose board froze with every run queued.
-This produced the previous handoff's entire "delivery stall" blocker, which did
-not exist. Fixed in `eb545f0` by `superviseTick`, which reads `model` every turn.
+Run 13's T2 is the cleanest specimen and its evidence is unambiguous:
 
-**Evidence capture dropped the write-ahead log** (`4aa3a98`). Run 9 — the first
-run ever to reach a demo — left a 4KB evidence database with no schema in it.
-Its data is unrecoverable.
+- the revision turn started 18:31:46Z and completed 18:32:52Z with a well-formed
+  structured result (`reviewInstructions`, `followUpTicketProposals`,
+  `knowledgePageProposals`, `tests`);
+- no Codex event of any kind followed it on any thread — Spedito never started
+  another turn, so it is not waiting on new agent work;
+- the Codex app-server process stayed alive throughout;
+- the board still read `run=running` with **Stop** eleven minutes later, and the
+  harness filed its silent-run finding at 18:43:01Z.
 
-**A hung run was invisible** (`c7fb203`). `stalledRuns` only looks at queued runs
-and `deadEnds` skips any ticket offering an action, which a running run always
-does because it offers **Stop**. `silentRuns` now reports a running run whose
-last activity is older than the tolerance. It caught a real defect on its first
-live run.
+So the owner is told an agent is working, indefinitely, after that agent
+finished.
 
-**The completion-handoff check could never fire** (`12827bd`). It asked whether
-every run's `lastActivityText` was empty — a transient activity summary, never
-empty on a finished run. It now reads the work log.
+### Where to instrument
 
-**Tickets waiting on prerequisites were reported as stalls** (`cf51ef3`). That is
-the dispatcher working as designed, and the noise cost real triage time in runs
-7 and 8. Board lines now say `waiting-on=T1+T2`.
+`TicketDeliveryWorkflowCoordinator` awaits the revision turn at
+`waitForFinalAgentMessage(threadID:turnID:timeout: .seconds(900))`, with no
+`totalTimeout`. Inside `CodexAppServerClient.waitForFinalAgentMessage` four
+tasks race:
 
-**Leaked diagnostics were matched against a fixed marker list** (`2339a1e`), so
-an owner-facing failure assembled from chained internal errors went unreported.
-Now detected structurally.
+1. the notification stream (primary);
+2. a **2-second reconciliation poller** calling `thread/read`;
+3. an inactivity timeout that only decrements when `isAwaitingApproval` is false;
+4. an optional absolute cap, which this caller does not pass.
 
-**The pilot never clicked Retry** (`46eacdc`). Run 11 sat with a failed ticket
-and "Retry work" on screen for its whole budget. It now retries as the ticket
-sheet does, capped at two attempts per run.
+Two of those should each have ended this on their own, and neither did. The
+reconciliation poller should have found the completed turn within two seconds —
+**its errors are swallowed by a bare `catch` and recorded nowhere**, which is
+the single most valuable thing to change. And the 900-second inactivity timer
+should have fired at 18:47:52Z at the latest; `activity.record()` is called only
+for notifications matching this thread *and* turn, so nothing obvious should
+have kept resetting it.
+
+Establish which of the two failed before proposing a fix. Recording the
+reconciliation error, and whether the inactivity timer ever reached zero, turns
+the next occurrence into an answer instead of another round of inference.
+
+**Do not add an absolute cap as the fix.** The last session considered and
+rejected it for the right reason: a turn genuinely waiting on the product owner
+should wait indefinitely. A cap would hide this defect rather than remove it.
+
+## Also fixed this session
+
+Harness only — no application code changed, so no relaunch was required.
+
+**The relaunch was not a cold start** (`64cdd30`). `simulateRelaunch` carried
+the `ProductStoreRegistry` across, so the reopened application inherited the
+same open SQLite connections, prepared statements, and transaction state. State
+that survived only because a connection never closed would have passed a
+relaunch check — the direction that is hardest to notice. Quitting now closes
+the stores, because the process ending is what closes them for a real owner, and
+reopening builds a new registry over the same root. Covered by
+`quittingClosesTheProductDatabases`, verified to fail without the fix.
+
+**An alert title glued a sentence to a clause** (`5658482`). The first alert a
+product owner ever receives read `"A native Mac app for jotting short notes that
+stay there when I reopen it. needs your input"`. An Epic has no analysed title
+until the plan arrives, so `displayTitle` falls back to the outcome the owner
+typed, and an outcome is a sentence. Titles are now checked on their own for a
+terminator followed by a lowercase word. **Reported, not fixed** — see the open
+items.
+
+**The board claimed a duplicate button** (`5c4ca27`). A ticket whose candidate
+was ready for demo while the ticket sat in acceptance rendered
+`actions=[Open demo, Accept, Accept]`. Spedito shows one button; the harness was
+describing a defect that does not exist.
+
+**A run's evidence never said which demo kind it reached** (`2909a31`). The whole
+catalog is organised by `DemoPresentationKind` and no run had ever recorded one.
+Opening a demo now records the declared kind beside the expected one. A mismatch
+is recorded, not filed: the agent may legitimately choose a different
+presentation, and noisy findings have cost this loop real triage time.
+
+**The board could not tell working from hung** (`92af448`). A line reading
+`run=running` gave triage no way to distinguish an agent that is working from
+one whose turn ended unnoticed, so the only way to tell was to wait out the
+ten-minute silent-run tolerance — which happened again live this session. Ticket
+lines now carry the run's last activity text and how long it has been quiet.
 
 ## Open, and what is known about each
 
-**Does the coherent-capability fix work?** Unconfirmed. The next `native-notes`
-run answers it: one batched request instead of five.
+**The resume-after-review hang.** Above. This is the blocker.
 
-**A second cause of the hang may exist.** The stuck-approval mechanism explains
-T1 in run 12 cleanly — five approval round-trips, one denied mid-turn. **T2 had
-no owner decision in its final turn and hung the same way.** Either it stuck
-through a different path or there is a second cause. The transport error that
-would have proved it was not recorded anywhere, which is its own small gap.
+**The malformed first alert.** Detected now, deliberately not fixed. There is no
+mechanical correction that is right for every outcome: trimming the full stop
+yields a longer run-on, and a goal phrased as a clause — "I want a dashboard" —
+reads worse still. The real question is whether an unanalysed Epic should be
+named by the owner's whole sentence at all. **That is the product owner's call.**
 
-**Three permission-UX items the product owner has not objected to**, none done:
+**Three permission-UX items the product owner has not objected to.** The
+escalation problem itself is solved, which changes their priority:
 
 - coalesce requests of the same shape arriving in one turn into one decision;
 - tell the owner when a request is the Nth for one ticket;
@@ -151,12 +180,10 @@ would have proved it was not recorded anywhere, which is its own small gap.
   differently" — instead of a failed run and a chained internal error.
 
 A fourth idea, standing consent scoped by *access shape* rather than path, was
-**proposed and withdrawn**. It duplicated coverage that
-`AgentPermissionGrantPolicy` already provides, and it either re-asks on every
-sibling path or grants far too much. Do not resurrect it without reading
+**proposed and withdrawn**. Do not resurrect it without reading
 `docs/product-spec.md` around line 2090 first: the permission model is more
-settled than it looks, and the escalation problem was an undelivered
-instruction, not a missing mechanism.
+settled than it looks, and run 13 has now demonstrated that the escalation
+problem was an undelivered instruction, not a missing mechanism.
 
 **Agent work escapes into the owner's desktop session.** Run 12's `xcodebuild
 test` invocations triggered a macOS *"wants permission to control your
@@ -170,7 +197,7 @@ with an obvious fix. **Report it; do not invent a policy.**
 
 ```sh
 ./scripts/pilot.sh                      # static-converter, 1800s
-./scripts/pilot.sh native-notes 2400    # a named brief and budget in seconds
+./scripts/pilot.sh native-notes 3600    # a named brief and budget in seconds
 ```
 
 Nine briefs, spanning every `DemoPresentationKind`. `import-repository` needs
@@ -186,23 +213,34 @@ report about the wrong run.
 scratch root is deleted otherwise, and run 9 showed what that costs.
 
 A run takes its budget in wall clock and can hold the machine while doing
-nothing. Run 11 sat dead for 45 minutes. Stop a run that cannot progress rather
-than waiting it out.
+nothing. Stop a run that cannot progress rather than waiting it out.
 
 ## Traps
+
+**Journal timestamps are UTC; file modification times are local.** They differ
+by an hour in British Summer Time. An evidence file "modified after the run
+finished" is almost always this, not an anomaly.
+
+**Codex rollouts are the fastest ground truth for a live run, and safe to read.**
+`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` is append-only. The `session_meta`
+line names the worktree, which is how you attribute a thread to a ticket —
+**do it explicitly.** Thread ordering is not ticket ordering, and this session
+misattributed two threads before checking, which inverted the conclusion.
+`task_started`, `task_complete` and `turn_aborted` give the turn timeline, and
+`last_agent_message` carries the structured result including the demo
+specification.
 
 **Do not read a live pilot database with external `sqlite3`.** The writer holds
 the WAL, so external reads silently fall back to the checkpointed file and
 under-report committed rows. Once a run has finished,
-`.pilot-runs/<run>/evidence/*.sqlite` is safe, and `activity_events` is the
-clearest record of what happened, in order.
+`.pilot-runs/<run>/evidence/*.sqlite` is safe, and `activity_events` joined to
+`work_items` is the clearest record of what happened, in order and per ticket.
+Timestamps are Core Data epoch: `datetime(created_at + 978307200, 'unixepoch')`.
 
-**Check every finding against the run's own evidence before believing it.** Six
+**Check every finding against the run's own evidence before believing it.** Seven
 of the defects found so far were the harness's own, not Spedito's. The worst
 cost a whole session and produced a confident handoff naming a blocker that did
-not exist. The Codex rollouts in `evidence/codex-threads/` are the ground truth
-for what the agent actually did: `task_complete` events, token counts, and the
-exact instructions the agent received.
+not exist.
 
 **Count the tokens when a finding mentions repeated turns.** A loop here spends
 the product owner's money. Run 10 spent roughly fifteen million input tokens in
@@ -210,29 +248,23 @@ eight minutes before anyone noticed.
 
 **A fix that removes a symptom is not a fix for its cause.** The recovery loop
 was declared fixed after run 8 and recurred in run 10 through its other path.
-Prefer the change that makes the failure impossible over the one that makes the
-observation go away.
+The turn-wait fix removed one of two causes and the second is still live.
 
 **Reason no further than the evidence.** Every wrong conclusion in this loop came
-from one step past what was established. When stuck, make the harness report a
+from one step past what was established. When stuck, make the system report a
 fact rather than theorising about it.
-
-**The relaunch is not a cold start.** It builds a new `AppModel` but reuses the
-`ProductStoreRegistry`. Rule this out before attributing any post-relaunch
-finding to Spedito.
 
 ## Working with the product owner's tree
 
-The tree is clean and every local change is committed, including work that had
-been uncommitted for a long time (`775e4bb`). Do not assume it stays that way:
-check `git status` on a path before staging it, and stage explicit paths rather
+Check `git status` on a path before staging it, and stage explicit paths rather
 than `git add -A` unless the owner has asked otherwise.
 
 Validation can run concurrently with a live pilot **only in a separate
 worktree**. Building in the main tree while a run is in flight risks replacing
 the test binary that run is executing. A detached worktree under the scratch
 directory works well: patch it with `git diff`, build and test there, then
-commit from the main tree.
+commit from the main tree. Remember to move the worktree forward as you commit,
+or you will validate a later packet against a stale base.
 
 ## Scope of autonomous fixes
 
@@ -261,7 +293,7 @@ git diff --check
 ./scripts/check_architecture_ratchets.sh
 ```
 
-Currently 618 tests pass, ratchets match all six baselines, diff is clean. The
+Currently 622 tests pass, ratchets match all six baselines, diff is clean. The
 pilot run itself is gated behind `SPEDITO_PILOT=1` and does not run in
 `swift test`, but the harness's own deterministic tests do and must stay that
 way: `PilotSupervisionTests` is the reason a relaunch defect cannot silently
@@ -269,10 +301,9 @@ return.
 
 A regression test must be verified to **fail without its fix**. Disable the fix,
 watch the test fail, restore it. A test written against an already-fixed
-behaviour proves nothing. Make the test faithful to the real failure while you
-are at it: one written this session passed against both the old and new code
-until its fixture was corrected to carry activity text, which is what the live
-run actually had.
+behaviour proves nothing. Where the change *is* the check — a new convention
+rule has no fix to disable — the honest substitute is showing it separates the
+live failure from the correct text beside it in the same run.
 
 ## Cost and side effects
 
