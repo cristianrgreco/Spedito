@@ -13,8 +13,12 @@ covers only what a continuing agent needs to pick the loop up.
 Thirteen live runs. Only runs 8 onwards can be trusted; everything before was
 reported by a harness watching an application it had already closed.
 
-**Run 18 (`web-reading-list`) delivered a whole sprint** — the first this loop
-has produced. T1 and T2 each went v1 → changes requested → **v2 accepted**, T3
+**Run 20 (`library-csv`) completed the first whole owner journey**: request,
+plan, sprint, delivery, review, correction, demo, acceptance, both tickets
+released, sprint finished, retrospective reached. Nothing about the product
+stopped it.
+
+**Run 18 (`web-reading-list`) delivered the first whole sprint.** T1 and T2 each went v1 → changes requested → **v2 accepted**, T3
 was accepted first time, and the sprint reached `completed`. It also ran the
 mid-sprint scope change: the owner asked for search while delivery was live, and
 two tickets landed in the backlog with correct dependency provenance.
@@ -26,9 +30,13 @@ Earlier milestones worth keeping: run 13 took a native Mac app to a real
 `mac_application` demo and released it; run 15 proved the first settlement fix
 with candidates v1 → v2 → v3.
 
-Still unexercised: retrospectives and app versions (driven now, first exercise
-pending), repository import, and the `vague-dashboard`, `static-weather` and
-`native-timer` briefs.
+Six delivery and harness defects were fixed to get here, each with a regression
+test verified to fail without it. The three that mattered are in the section
+below; the rest are in the commit log.
+
+Still unexercised: app versions (no run has produced one yet — an artifact
+product does not), repository import, and the `static-weather` and `native-timer`
+briefs. `vague-dashboard` is running now.
 
 ## What to do first
 
