@@ -128,6 +128,56 @@ struct PilotSupervisionTests {
     #expect(reported.evidence.contains("Reviewing the converter"))
   }
 
+  /// The check this replaced asked whether every run had an empty
+  /// `lastActivityText`, which is a transient activity summary rather than the
+  /// work log, and is never empty on a run that finished. It could not fail.
+  @Test("A released ticket with no handoff in its work log is reported")
+  func releasedTicketWithoutHandoffIsReported() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+    try await fixture.releaseTheWorkItem()
+    // A real completed run always carries activity text. The check this replaced
+    // only fired when every run's was empty, so setting it here is what makes
+    // this test distinguish the two.
+    _ = try await fixture.store.recordAgentRunActivity(
+      id: fixture.runID,
+      activity: CodexLiveActivity(text: "Finishing the converter", kind: .changingFiles)
+    )
+    _ = try await fixture.store.updateAgentRun(id: fixture.runID, status: .completed)
+
+    func findings() async -> [PilotJournal.Finding] {
+      let model = AppModel(
+        storeRegistry: fixture.registry,
+        selectedProductID: fixture.productID
+      )
+      await model.reload()
+      return await PilotInvariants.completionHandoffs(model: model)
+    }
+
+    // Spedito's own notes are not a handoff: the contract is that the assigned
+    // team member records the outcome dependants are given.
+    _ = try await fixture.store.appendComment(
+      workItemID: fixture.workItemID,
+      authorKind: .system,
+      authorName: "Spedito",
+      body: "The product owner accepted this work."
+    )
+    let missing = await findings()
+    #expect(missing.count == 1)
+    #expect(missing.first?.title.contains("left no completion handoff") == true)
+
+    _ = try await fixture.store.appendComment(
+      workItemID: fixture.workItemID,
+      authorKind: .agent,
+      authorName: "Implementer",
+      body: """
+        I delivered the converter page and its offline behaviour. Dependants may
+        assume the page is served from the repository root with no build step.
+        """
+    )
+    #expect(await findings().isEmpty)
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
@@ -236,6 +286,23 @@ private struct PilotSupervisionFixture {
       throw PilotSupervisionFixtureError.missingBrief
     }
     brief = catalogBrief
+  }
+
+  /// Walks the work item through every transition the workflow policy allows,
+  /// because `released` is only reachable from `readyToRelease`.
+  func releaseTheWorkItem() async throws {
+    let route: [WorkItemState] = [
+      .refining, .ready, .queued, .running, .integrating, .verifying, .acceptance,
+      .readyToRelease, .released,
+    ]
+    for state in route {
+      _ = try await store.transitionWorkItem(
+        id: workItemID,
+        to: state,
+        actor: "Product owner",
+        reason: "Walking the ticket to \(state.rawValue)"
+      )
+    }
   }
 
   func remove() {

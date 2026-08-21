@@ -38,7 +38,6 @@ enum PilotInvariants {
     findings.append(contentsOf: deadEnds(context))
     findings.append(contentsOf: conventionFindings(context))
     findings.append(contentsOf: demoContract(context, model: model))
-    findings.append(contentsOf: completionHandoffs(context, model: model))
     findings.append(contentsOf: ticketSequence(model: model))
     findings.append(contentsOf: stalledRuns(model: model))
     findings.append(contentsOf: silentRuns(context, model: model))
@@ -146,32 +145,51 @@ enum PilotInvariants {
 
   /// Every completed ticket must leave a self-contained handoff in its work log,
   /// because direct dependants are given only that handoff as context.
-  private static func completionHandoffs(
-    _ context: Context,
-    model: AppModel
-  ) -> [PilotJournal.Finding] {
-    model.workItems
-      .filter { $0.state == .released }
-      .compactMap { item in
-        let runs = model.runs.filter { $0.workItemID == item.id }
-        guard runs.contains(where: { $0.status == .completed }) else { return nil }
-        // The work log is durable; absence of any completed run comment means the
-        // handoff contract was not honoured.
-        guard runs.allSatisfy({ ($0.lastActivityText ?? "").isEmpty }) else { return nil }
-        return PilotJournal.Finding(
+  ///
+  /// This reads the work log, which needs the store, so it is separate from the
+  /// synchronous pass. The check it replaced asked whether every run had an
+  /// empty `lastActivityText` — a transient activity summary, not the work log,
+  /// and never empty on a run that finished. It could not fail, so a released
+  /// ticket with no handoff at all would have gone unreported.
+  ///
+  /// It deliberately does not judge wording. A real agent phrases a handoff
+  /// differently every run, so this asserts only that a released ticket carries
+  /// an agent-authored entry written no earlier than the work it describes.
+  static func completionHandoffs(model: AppModel) async -> [PilotJournal.Finding] {
+    var findings: [PilotJournal.Finding] = []
+    for item in model.workItems where item.state == .released {
+      let runs = model.runs.filter { $0.workItemID == item.id }
+      let completed = runs.filter { $0.status == .completed }
+      guard let finished = completed.map(\.updatedAt).max() else { continue }
+      let comments = await model.comments(for: item.id, productID: item.productID)
+      let handoffs = comments.filter { comment in
+        comment.authorKind == .agent && comment.createdAt >= finished.addingTimeInterval(-60)
+      }
+      guard handoffs.isEmpty else { continue }
+      let agentComments = comments.filter { $0.authorKind == .agent }
+      findings.append(
+        PilotJournal.Finding(
           category: .functional,
-          title: "Completed ticket \(item.key) left no completion handoff",
+          title: "Released ticket \(item.key) left no completion handoff",
           evidence: """
             Ticket: \(item.key) \(item.title)
-            Completed runs: \(runs.filter { $0.status == .completed }.count)
+            Completed runs: \(completed.count)
+            Work log entries: \(comments.count), of which \(agentComments.count) \
+            are from the assigned team member
+            Last completed run finished: \(finished)
+            Most recent team member entry: \
+            \(agentComments.map(\.createdAt).max().map(String.init(describing:)) ?? "none")
 
-            Every completed ticket must record the delivered outcome, decisions,
-            evidence, and what dependants may assume.
+            A direct dependant is given this handoff and little else, so a
+            released ticket without one silently starves the tickets that
+            depend on it.
             """,
           locationHint: "Sources/SpeditoCore/Domain/TicketDeliveryWorkflowCoordinator.swift",
           at: Date()
         )
-      }
+      )
+    }
+    return findings
   }
 
   /// A queued run means Spedito intends to start work. Sitting queued for a long

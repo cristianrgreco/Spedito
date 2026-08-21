@@ -420,6 +420,10 @@ final class PilotDriver {
       )
     }
 
+    for finding in await PilotInvariants.completionHandoffs(model: model) {
+      fileOnce(finding)
+    }
+
     for finding in PilotInvariants.check(
       PilotInvariants.Context(
         snapshot: snapshot,
