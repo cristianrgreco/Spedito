@@ -165,6 +165,95 @@ final class PilotDriver {
     journal.record(.observation, "Reopened with \(afterTickets) ticket(s)")
   }
 
+  /// What the owner does once the sprint's work is delivered.
+  ///
+  /// No run had ever reached this, so retrospectives and app versions had never
+  /// been exercised at all — the journey stopped at the last accepted ticket.
+  /// The owner looks at what the sprint produced, reads the retrospective, keeps
+  /// the actions worth keeping, and closes it.
+  private func closeOutTheSprint() async {
+    guard let model, let plan = model.sprintPlan else { return }
+    let productID = plan.sprint.productID
+    let sprintID = plan.sprint.id
+
+    journal.record(
+      .observation,
+      "Sprint finished: \(plan.sprint.state.rawValue)",
+      detail: "\(model.appVersions.count) app version(s) recorded"
+    )
+
+    // App versions are what the owner opens to see the product they now have.
+    if let version = model.appVersions.first {
+      journal.record(.ownerCommand, "Open app version \(version.revisionSHA.prefix(8))")
+      if await model.openAppVersion(id: version.id) == false {
+        fileOnce(
+          PilotJournal.Finding(
+            category: .functional,
+            title: "A recorded app version would not open",
+            evidence: """
+              Version: \(version.revisionSHA)
+              \(model.errorMessage ?? "No reason given.")
+              """,
+            locationHint: "Sources/SpeditoApp/AppVersionsView.swift",
+            at: Date()
+          )
+        )
+      }
+      await model.stopAppVersion(id: version.id)
+    }
+
+    model.prepareRetrospectiveSynthesisIfNeeded(sprintID: sprintID)
+    let arrived = await waitUntil("the sprint retrospective", limit: .seconds(300)) { model in
+      model.retrospectiveSyntheses.contains { $0.sprintID == sprintID }
+        || model.retrospectiveNotes.contains { $0.sprintID == sprintID }
+    }
+    guard arrived, let model = self.model else {
+      fileOnce(
+        PilotJournal.Finding(
+          category: .stalled,
+          title: "A finished sprint never produced a retrospective",
+          evidence: """
+            Sprint: \(plan.sprint.state.rawValue), \(plan.items.count) item(s)
+
+            The owner is meant to learn something from a finished sprint. If
+            nothing arrives they have no way to know whether it is coming.
+            """,
+          locationHint: "Sources/SpeditoApp/RetrospectivesView.swift",
+          at: Date()
+        )
+      )
+      return
+    }
+
+    let proposed = model.retrospectiveNotes.filter {
+      $0.sprintID == sprintID && $0.actionStatus == .proposed
+    }
+    if !proposed.isEmpty {
+      journal.record(
+        .ownerCommand,
+        "Accept \(proposed.count) retrospective action(s)",
+        detail: proposed.map(\.body).joined(separator: "\n")
+      )
+      await model.decideRetrospectiveActions(proposed, accept: true)
+    }
+
+    journal.record(.ownerCommand, "Conclude the retrospective")
+    if await model.concludeRetrospective(productID: productID, sprintID: sprintID) == false {
+      fileOnce(
+        PilotJournal.Finding(
+          category: .deadEnd,
+          title: "The owner could not conclude the sprint retrospective",
+          evidence: model.errorMessage ?? "No reason given.",
+          locationHint: "Sources/SpeditoApp/RetrospectivesView.swift",
+          at: Date()
+        )
+      )
+    }
+    journal.record(.snapshot, "Board", detail: PilotSnapshotRenderer.describe(
+      PilotSnapshotRenderer.render(model)
+    ))
+  }
+
   /// The owner thinks of something else while the sprint is running.
   ///
   /// This is a real product journey — planning has to work while delivery is
@@ -492,6 +581,7 @@ final class PilotDriver {
       switch turn.outcome {
       case .everyTicketFinished:
         journal.record(.observation, "Every ticket finished")
+        await closeOutTheSprint()
         return
       case .reopened:
         continue
@@ -903,12 +993,23 @@ final class PilotDriver {
     journal.writeFindingsReport()
   }
 
+  /// Waits for something the owner is entitled to see.
+  ///
+  /// `limit` bounds a wait that would otherwise run to the whole run deadline.
+  /// A step near the end of the journey can have most of the budget left, and
+  /// spending it polling for something that is never coming holds the machine
+  /// for nothing — which is exactly how a run gets described as taking an hour
+  /// when it finished in twenty minutes.
   private func waitUntil(
     _ what: String,
     poll: Duration = .seconds(3),
+    limit: Duration? = nil,
     condition: @MainActor (AppModel) -> Bool
   ) async -> Bool {
-    while Date() < deadline {
+    let until = limit.map {
+      min(deadline, Date().addingTimeInterval(Self.seconds(in: $0)))
+    } ?? deadline
+    while Date() < until {
       // Read the application every pass for the same reason `superviseTick`
       // does: a relaunch replaces it, and a binding held across passes waits
       // forever on a board that stopped changing when it was closed.
@@ -919,6 +1020,11 @@ final class PilotDriver {
     }
     journal.record(.note, "Gave up waiting for \(what)")
     return false
+  }
+
+  private nonisolated static func seconds(in duration: Duration) -> TimeInterval {
+    TimeInterval(duration.components.seconds)
+      + TimeInterval(duration.components.attoseconds) / 1e18
   }
 
   private func settle(for duration: Duration) async {
