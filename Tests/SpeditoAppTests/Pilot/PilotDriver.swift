@@ -52,9 +52,7 @@ final class PilotDriver {
   // MARK: - Application lifecycle
 
   private func startApplication() async throws {
-    let registry = try ProductStoreRegistry(
-      productWorkspacesRootURL: workspace.productWorkspacesURL
-    )
+    let registry = try openRegistry()
     let model = AppModel(
       storeRegistry: registry,
       ownerNotificationSoundPlayer: soundPlayer,
@@ -86,23 +84,56 @@ final class PilotDriver {
     if let registry { self.registry = registry }
   }
 
+  /// The one place a product database is opened, so opening and reopening
+  /// cannot drift apart.
+  private func openRegistry() throws -> ProductStoreRegistry {
+    try ProductStoreRegistry(productWorkspacesRootURL: workspace.productWorkspacesURL)
+  }
+
   /// Quits and reopens on the same durable root. Every durable intermediate
   /// state is required to survive this, so the driver does it mid-journey
   /// rather than at a convenient boundary.
-  private func simulateRelaunch() async {
-    guard let registry, let previous = model else { return }
+  ///
+  /// Quitting ends the process, and the process is what closes the application's
+  /// SQLite connections. So the reopened application gets a new registry over
+  /// the same root, and the closing one's stores are closed first. Carrying the
+  /// old registry across would hand the reopened application the same live
+  /// connections, and the harness would stop testing the thing it claims to.
+  func simulateRelaunch() async {
+    guard let closingRegistry = registry, let previous = model else { return }
     journal.record(.ownerCommand, "Quit and reopen Spedito")
     let productID = previous.selectedProductID
     let beforeTickets = previous.workItems.count
-    await previous.shutdown()
+    await quit(previous, registry: closingRegistry)
+
+    let reopenedRegistry: ProductStoreRegistry
+    do {
+      reopenedRegistry = try openRegistry()
+    } catch {
+      // Leaving the closed application installed would make every later turn
+      // report its frozen board, which is the failure `superviseTick` exists to
+      // prevent. A turn with nothing open reports nothing instead.
+      model = nil
+      registry = nil
+      journal.file(
+        PilotJournal.Finding(
+          category: .functional,
+          title: "Reopening Spedito could not open its product databases again",
+          evidence: "\(error)",
+          locationHint: "Sources/SpeditoCore/Persistence/ProductStoreRegistry.swift",
+          at: Date()
+        )
+      )
+      return
+    }
 
     let reopened = AppModel(
-      storeRegistry: registry,
+      storeRegistry: reopenedRegistry,
       selectedProductID: productID,
       ownerNotificationSoundPlayer: soundPlayer,
       ownerNotificationSystemNotifier: notificationRecorder
     )
-    adopt(model: reopened)
+    adopt(model: reopened, registry: reopenedRegistry)
     await reopened.load()
     observe()
 
@@ -131,6 +162,19 @@ final class PilotDriver {
       )
     }
     journal.record(.observation, "Reopened with \(afterTickets) ticket(s)")
+  }
+
+  /// Ends the application the way quitting Spedito does.
+  ///
+  /// `AppModel.shutdown()` settles the workflows, but the thing that closes an
+  /// application's SQLite connections is the process ending, and the pilot has
+  /// no process to end. So the harness closes them, and durable state that only
+  /// survived because a connection stayed open cannot pass a relaunch check.
+  func quit(_ application: AppModel, registry closingRegistry: ProductStoreRegistry) async {
+    await application.shutdown()
+    for store in closingRegistry.allStores {
+      await store.close()
+    }
   }
 
   // MARK: - Owner journey

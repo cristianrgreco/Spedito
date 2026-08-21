@@ -301,6 +301,48 @@ struct PilotSupervisionTests {
     let turn = try #require(await driver.superviseTick(1))
     #expect(turn.outcome == .everyTicketFinished)
   }
+
+  /// The pilot's relaunch carried the `ProductStoreRegistry` across, so the quit
+  /// and reopen it claims to perform left every SQLite connection open. Durable
+  /// state that only survives because the connection never closed would have
+  /// passed a relaunch check, which makes every post-relaunch finding suspect in
+  /// the direction that is hardest to notice.
+  @Test("Quitting Spedito closes the product databases it had open")
+  func quittingClosesTheProductDatabases() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+    let driver = PilotDriver(
+      brief: fixture.brief,
+      journal: fixture.journal,
+      workspace: fixture.workspace,
+      deadline: Date().addingTimeInterval(60)
+    )
+    let closing = AppModel(
+      storeRegistry: fixture.registry,
+      selectedProductID: fixture.productID
+    )
+    await closing.reload()
+    driver.adopt(model: closing, registry: fixture.registry)
+    #expect(try await fixture.store.fetchWorkItems(productID: fixture.productID).count == 1)
+
+    await driver.quit(closing, registry: fixture.registry)
+
+    // The connection the closed application held is gone, the way it would be if
+    // the process had ended.
+    await #expect(throws: PersistenceError.self) {
+      _ = try await fixture.store.fetchWorkItems(productID: fixture.productID)
+    }
+
+    // And the ticket is on disk, so reopening reads durable state rather than a
+    // connection that was never closed.
+    let reopenedRegistry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let reopenedStore = try #require(reopenedRegistry.store(for: fixture.productID))
+    let items = try await reopenedStore.fetchWorkItems(productID: fixture.productID)
+    #expect(items.map(\.id) == [fixture.workItemID])
+    await reopenedStore.close()
+  }
 }
 
 private enum PilotSupervisionFixtureError: Error {
