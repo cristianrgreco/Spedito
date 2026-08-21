@@ -353,6 +353,61 @@ struct PilotSupervisionTests {
     #expect(described.contains("quiet=\(quiet)s"))
   }
 
+  /// Establishing whether a hung ticket's agent had actually finished cost the
+  /// better part of a session: find the rollout, attribute it to a ticket, read
+  /// its turn events. Attributing a thread to the wrong ticket inverted a
+  /// conclusion once before it was checked.
+  @Test("A silent run's finding says what Codex recorded for its thread")
+  func silentRunFindingCarriesTheCodexVerdict() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("spedito-pilot-rollouts-\(UUID())", isDirectory: true)
+    let day = root.appendingPathComponent("2026/08/21", isDirectory: true)
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    func write(_ threadID: String, events: [(String, String)]) throws {
+      let lines = events.map { at, kind in
+        #"{"timestamp":"2026-08-21T\#(at).000Z","payload":{"type":"\#(kind)"}}"#
+      }
+      try lines.joined(separator: "\n").write(
+        to: day.appendingPathComponent("rollout-2026-08-21T18-31-46-\(threadID).jsonl"),
+        atomically: true,
+        encoding: .utf8
+      )
+    }
+
+    // The live shape: a turn that started and finished while Spedito kept
+    // reporting a working agent.
+    try write(
+      "finished-thread",
+      events: [("18:31:46", "task_started"), ("18:32:52", "task_complete")]
+    )
+    #expect(
+      PilotCodexRollout.lastTurnSummary(
+        threadID: "finished-thread",
+        sessionsRootURL: root
+      ) == "Codex says this thread's last turn completed at 18:32:52Z."
+    )
+
+    // An agent that really is still working must not be described as finished.
+    try write(
+      "working-thread",
+      events: [("18:31:46", "task_complete"), ("18:33:00", "task_started")]
+    )
+    #expect(
+      PilotCodexRollout.lastTurnSummary(
+        threadID: "working-thread",
+        sessionsRootURL: root
+      ) == "Codex says this thread's last turn started at 18:33:00Z and has not ended."
+    )
+
+    // No rollout is not evidence of no turn, so it must not read as a verdict.
+    #expect(
+      PilotCodexRollout.lastTurnSummary(threadID: "absent-thread", sessionsRootURL: root) == nil
+    )
+    #expect(PilotCodexRollout.lastTurnSummary(threadID: "", sessionsRootURL: root) == nil)
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()

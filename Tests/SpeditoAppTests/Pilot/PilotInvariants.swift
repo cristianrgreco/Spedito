@@ -284,6 +284,10 @@ enum PilotInvariants {
             What the owner can do: \
             \(ticket?.availableActions.joined(separator: ", ") ?? "nothing")
 
+            \(run.codexThreadID.flatMap {
+              PilotCodexRollout.lastTurnSummary(threadID: $0)
+            } ?? "Codex's own record for this thread could not be read.")
+
             The board says an agent is working. If its turn has ended without
             Spedito noticing, the owner waits indefinitely with no explanation.
 
