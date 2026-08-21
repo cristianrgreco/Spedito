@@ -471,6 +471,256 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// The changes-requested path had no coverage at all, which is why two
+  /// separate defects lived in it. This one: a revision the agent cannot get
+  /// right is thrown past a review flow that has already moved its candidate on,
+  /// where the failure is dropped as stale — leaving the run `running` with
+  /// nothing to move it and the board telling the product owner an agent is
+  /// still working. A live run spent the rest of its sprint that way.
+  @Test("A revision that never validates leaves the ticket with the owner, not running")
+  func failedRevisionReachesTheProductOwner() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-failed-revision-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("shared.txt"))
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Failed revision")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver something the tech lead will send back",
+      type: .story,
+      body: "The revision never validates.",
+      acceptanceCriteria: ["The product owner is left with something to do."],
+      priority: .normal
+    )
+    for state in [WorkItemState.refining, .ready] {
+      workItem = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: state,
+        actor: "Product owner",
+        reason: "Ready for delivery"
+      )
+    }
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Send one candidate back",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    var implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: implementationRun.id,
+      authorName: implementer.name
+    )
+    try Data("ticket behavior\n".utf8).write(
+      to: workspace.url.appendingPathComponent("shared.txt")
+    )
+    let snapshot = try await gitWorkspaceManager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: workItem.key,
+      version: 1,
+      authorName: implementer.name,
+      summary: "Delivered the candidate."
+    )
+    implementationRun = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .running,
+      worktreePath: workspace.url.path,
+      eventActor: implementer.name,
+      eventDetail: "Implementation started"
+    )
+    for state in [WorkItemState.running, .integrating] {
+      workItem = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: state,
+        actor: implementer.name,
+        reason: "Candidate prepared"
+      )
+    }
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the candidate.",
+      question: nil,
+      options: [],
+      summary: "The candidate is complete.",
+      changedFiles: ["shared.txt"],
+      tests: ["Checks passed"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the candidate."],
+      demo: DemoLaunchSpecification(
+        title: "Candidate evidence",
+        presentation: DemoPresentation(kind: .artifact, path: "shared.txt")
+      ),
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        worktreePath: workspace.url.path,
+        status: .queuedForIntegration,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: String(
+          decoding: try JSONEncoder().encode(implementation),
+          as: UTF8.self
+        )
+      )
+    )
+
+    func completedTurn(thread: String, turn: String, text: String) -> CodexInboundMessage {
+      .notification(
+        CodexNotification(
+          method: "turn/completed",
+          params: .object([
+            "threadId": .string(thread),
+            "turn": .object([
+              "id": .string(turn),
+              "status": .string("completed"),
+              "items": .array([
+                .object([
+                  "id": .string("message-\(turn)"),
+                  "type": .string("agentMessage"),
+                  "text": .string(text),
+                ])
+              ]),
+            ]),
+          ])
+        )
+      )
+    }
+
+    // The tech lead sends it back, and then every revision the implementer
+    // returns is unusable — the shape a live run hit three times over.
+    let unusable = "This is not the structured result Spedito asked for."
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/failed-revision"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("thread-review")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-review")])])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("thread-revision")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-revision")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-repair-1")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-repair-2")])])
+        ),
+      ],
+      inboundMessages: [
+        completedTurn(
+          thread: "thread-review",
+          turn: "turn-review",
+          text:
+            #"{"decision":"changes_requested","comment":"Please correct the delivery.","findings":["The shared file needs the agreed behaviour."],"retrospectiveWentWell":[],"retrospectiveCouldImprove":[],"retrospectiveActions":[]}"#
+        ),
+        completedTurn(thread: "thread-revision", turn: "turn-revision", text: unusable),
+        completedTurn(thread: "thread-revision", turn: "turn-repair-1", text: unusable),
+        completedTurn(thread: "thread-revision", turn: "turn-repair-2", text: unusable),
+      ]
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: try await store.fetchAgentRuns(productID: product.id)
+    )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let context = try #require(await coordinator.context(productID: product.id))
+    #expect(await coordinator.processIntegrationCandidates(context: context))
+    #expect(
+      await delegate.waitForRun(id: implementationRun.id, toReach: .awaitingOwner),
+      "The ticket never came back to the product owner."
+    )
+
+    let settledRun = try await store.fetchAgentRun(id: implementationRun.id)
+    let comments = try await store.fetchComments(workItemID: workItem.id)
+    let settledCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+
+    // The owner is left with something to do rather than an agent that is
+    // permanently working.
+    #expect(settledRun.status == .awaitingOwner)
+    #expect(settledRun.status != .running)
+    #expect(
+      comments.contains {
+        $0.authorKind == .system
+          && $0.body.contains("Applying the tech lead's feedback stopped unexpectedly")
+      }
+    )
+    #expect(settledCandidate.status == .changesRequested)
+
+    await client.disconnect()
+    await store.close()
+  }
+
   @Test("Conflict resolution that changes the result requires focused re-review")
   func changedConflictResolutionRequiresFocusedRereview() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -2250,6 +2500,8 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   var preparedDemoCandidateIDs: [UUID] = []
   private let readyCandidateIDs: AsyncStream<UUID>
   private let readyCandidateContinuation: AsyncStream<UUID>.Continuation
+  private let runUpdates: AsyncStream<AgentRun>
+  private let runUpdatesContinuation: AsyncStream<AgentRun>.Continuation
 
   init(
     store: SQLiteStore,
@@ -2262,6 +2514,9 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     let readyCandidatePair = AsyncStream<UUID>.makeStream()
     readyCandidateIDs = readyCandidatePair.stream
     readyCandidateContinuation = readyCandidatePair.continuation
+    let runUpdatePair = AsyncStream<AgentRun>.makeStream()
+    runUpdates = runUpdatePair.stream
+    runUpdatesContinuation = runUpdatePair.continuation
     self.store = store
     self.client = client
     self.productID = productID
@@ -2276,6 +2531,33 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
       return
     }
     preconditionFailure("The candidate update stream ended before ready for demo")
+  }
+
+  /// Observes run updates rather than sleeping on them. The deadline is a
+  /// failure bound, not an observation: a test whose expectation never arrives
+  /// has to fail rather than hang, which is what makes it usable as a
+  /// regression test for a defect whose symptom is waiting forever.
+  func waitForRun(
+    id: UUID,
+    toReach status: AgentRunStatus,
+    orFailAfter deadline: Duration = .seconds(30)
+  ) async -> Bool {
+    if runs.contains(where: { $0.id == id && $0.status == status }) { return true }
+    return await withTaskGroup(of: Bool.self) { group in
+      group.addTask { [runUpdates] in
+        for await run in runUpdates where run.id == id && run.status == status {
+          return true
+        }
+        return false
+      }
+      group.addTask {
+        try? await Task.sleep(for: deadline)
+        return false
+      }
+      let reached = await group.next() ?? false
+      group.cancelAll()
+      return reached
+    }
   }
 
   func deliveryStore(for productID: UUID) -> SQLiteStore? {
@@ -2422,6 +2704,7 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     runs.removeAll { $0.id == updated.id }
     runs.append(updated)
     presentedRuns.append(updated)
+    runUpdatesContinuation.yield(updated)
   }
 
   func deliveryReloadSelectedProductIfCurrent(productID: UUID) async {

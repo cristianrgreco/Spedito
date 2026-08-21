@@ -2569,19 +2569,51 @@ public final class TicketDeliveryWorkflowCoordinator {
       )
       stopLiveActivityMonitoring(runID: implementationRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: implementationRun.id)
-      let revision = try await validatedExecutionResult(revisionResponse,
-      client: client,
-      threadID: revisionThreadID,
-      runID: implementationRun.id,
-      productID: product.id,
-      assignee: implementer,
-      workspaceURL: revisionWorkspace,
-      canonicalKnowledgePages: context.knowledgePages)
-      await processExecutionResult(revision.result,
-      deliveryKind: revision.deliveryKind,
-      implementationRunID: implementationRun.id,
-      reviewCycle: reviewCycle + 1,
-      plan: plan)
+      // A revision that cannot be made sense of has to reach the product owner
+      // here. The enclosing review flow drops a failure once its candidate has
+      // stopped awaiting a review outcome — which this one has, because
+      // requesting changes is what moved it on — so a revision failure raised
+      // past this point is discarded as stale and the run is left running with
+      // nothing to move it. A live run spent the rest of its sprint that way,
+      // after its agent returned three results that would not validate.
+      do {
+        let revision = try await validatedExecutionResult(
+          revisionResponse,
+          client: client,
+          threadID: revisionThreadID,
+          runID: implementationRun.id,
+          productID: product.id,
+          assignee: implementer,
+          workspaceURL: revisionWorkspace,
+          canonicalKnowledgePages: context.knowledgePages
+        )
+        await processExecutionResult(
+          revision.result,
+          deliveryKind: revision.deliveryKind,
+          implementationRunID: implementationRun.id,
+          reviewCycle: reviewCycle + 1,
+          plan: plan
+        )
+      } catch {
+        guard !Task.isCancelled else { throw error }
+        _ = try? await updateAgentRun(
+          id: implementationRun.id,
+          status: .awaitingOwner,
+          eventActor: "Spedito",
+          eventDetail: "Applying the review feedback could not complete"
+        )
+        _ = try? await store.appendComment(
+          workItemID: item.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body:
+            "Applying the tech lead's feedback stopped unexpectedly: "
+            + "\(error.localizedDescription)\n\nComment on this ticket to retry from the "
+            + "preserved workspace."
+        )
+        presentExecutionError(error, productID: product.id)
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      }
     }
   }
   @discardableResult
