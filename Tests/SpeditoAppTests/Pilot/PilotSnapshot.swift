@@ -23,6 +23,14 @@ struct PilotSnapshot: Sendable {
     let waitingOnPrerequisites: [String]
     /// Owner-facing things that can be done to this ticket right now.
     let availableActions: [String]
+    /// The last thing this ticket's run reported, and when.
+    ///
+    /// A board line that says `run=running` cannot distinguish an agent that is
+    /// working from one whose turn ended without Spedito noticing. Triage had to
+    /// wait out the ten-minute silent-run tolerance to tell them apart, on a
+    /// harness whose whole job is reporting facts rather than inviting guesses.
+    let lastActivityText: String?
+    let quietForSeconds: Int?
   }
 
   let renderedAt: Date
@@ -61,6 +69,7 @@ struct PilotSnapshot: Sendable {
 @MainActor
 enum PilotSnapshotRenderer {
   static func render(_ model: AppModel) -> PilotSnapshot {
+    let renderedAt = Date()
     let connection: String
     let isConnected: Bool
     switch model.codexConnectionState {
@@ -136,7 +145,11 @@ enum PilotSnapshotRenderer {
           run: run,
           candidate: candidate,
           needsInput: needsInput
-        )
+        ),
+        lastActivityText: run?.lastActivityText,
+        quietForSeconds: run?.lastActivityAt.map {
+          Int(renderedAt.timeIntervalSince($0).rounded())
+        }
       )
     }
 
@@ -166,7 +179,7 @@ enum PilotSnapshotRenderer {
     ownerFacingText.append(contentsOf: demoSummaries)
 
     return PilotSnapshot(
-      renderedAt: Date(),
+      renderedAt: renderedAt,
       connection: connection,
       isConnected: isConnected,
       productName: selectedProduct?.name,
@@ -259,6 +272,10 @@ enum PilotSnapshotRenderer {
           line += " waiting-on=\(ticket.waitingOnPrerequisites.joined(separator: "+"))"
         }
         line += " actions=[\(ticket.availableActions.joined(separator: ", "))]"
+        if let activity = ticket.lastActivityText, !activity.isEmpty {
+          line += " last=\"\(activity)\""
+        }
+        if let quiet = ticket.quietForSeconds { line += " quiet=\(quiet)s" }
         lines.append(line)
       }
     }

@@ -322,6 +322,37 @@ struct PilotSupervisionTests {
     #expect(actions == ["Open demo", "Accept"])
   }
 
+  /// `run=running` alone cannot tell an agent that is working from one whose
+  /// turn ended without Spedito noticing. Triage had to wait out the ten-minute
+  /// silent-run tolerance to find out which, on a harness whose job is to report
+  /// facts rather than invite guesses.
+  @Test("The board says what a running agent last reported and how long ago")
+  func boardLineCarriesRunActivity() async throws {
+    let fixture = try await PilotSupervisionFixture()
+    defer { fixture.remove() }
+    _ = try await fixture.store.updateAgentRun(id: fixture.runID, status: .running)
+    _ = try await fixture.store.recordAgentRunActivity(
+      id: fixture.runID,
+      activity: CodexLiveActivity(text: "Verifying build and demo readiness", kind: .inspecting),
+      at: Date().addingTimeInterval(-90)
+    )
+    let model = AppModel(
+      storeRegistry: fixture.registry,
+      selectedProductID: fixture.productID
+    )
+    await model.reload()
+
+    let snapshot = PilotSnapshotRenderer.render(model)
+    let ticket = try #require(snapshot.tickets.first)
+    #expect(ticket.lastActivityText == "Verifying build and demo readiness")
+    let quiet = try #require(ticket.quietForSeconds)
+    #expect(quiet >= 88 && quiet <= 95)
+
+    let described = PilotSnapshotRenderer.describe(snapshot)
+    #expect(described.contains(#"last="Verifying build and demo readiness""#))
+    #expect(described.contains("quiet=\(quiet)s"))
+  }
+
   @Test("A turn with no application open reports nothing rather than stale state")
   func supervisionTurnWithoutApplicationReportsNothing() async throws {
     let fixture = try await PilotSupervisionFixture()
