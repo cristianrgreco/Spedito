@@ -13,12 +13,24 @@ covers only what a continuing agent needs to pick the loop up.
 Thirteen live runs. Only runs 8 onwards can be trusted; everything before was
 reported by a harness watching an application it had already closed.
 
-**Run 20 (`library-csv`) completed the first whole owner journey**: request,
-plan, sprint, delivery, review, correction, demo, acceptance, both tickets
-released, sprint finished, retrospective reached. Nothing about the product
-stopped it.
+**Run 21 (`vague-dashboard`) is the run to read.** It started from the vaguest
+request the catalog has — "I want a dashboard." — and finished with **zero
+findings**:
 
-**Run 18 (`web-reading-list`) delivered the first whole sprint.** T1 and T2 each went v1 → changes requested → **v2 accepted**, T3
+- eight clarification questions over three rounds, then a four-ticket plan with a
+  research ticket and a real dependency graph;
+- a network permission the owner **refused**, which delivery survived;
+- a quit and reopen mid-delivery;
+- **all four tickets released**, every one of them through a correction cycle —
+  nine candidates and eight corrections, T3 needing three;
+- an app version opened, a retrospective action accepted, the retrospective
+  concluded, the sprint `completed`.
+
+Eight corrections in one sprint is the measure of what changed today: before
+this session a **single** correction cycle ended a run, every time.
+
+**Run 20 (`library-csv`) was the first whole owner journey**, and **run 18
+(`web-reading-list`) the first whole sprint.** T1 and T2 each went v1 → changes requested → **v2 accepted**, T3
 was accepted first time, and the sprint reached `completed`. It also ran the
 mid-sprint scope change: the owner asked for search while delivery was live, and
 two tickets landed in the backlog with correct dependency provenance.
@@ -40,10 +52,10 @@ briefs. `vague-dashboard` is running now.
 
 ## What to do first
 
-1. **Confirm the hang fix on a live run.** `ab4a244` is unproven in the field.
-   Watch a ticket through a tech lead review that requests changes — that is the
-   turn all three hangs occurred on, and the first thing to check is that a
-   candidate **v2** appears.
+1. **Keep running briefs.** Delivery is no longer the blocker. `static-weather`
+   is running as this was written; `native-timer` and `import-repository` remain.
+   `import-repository` needs a repository the product owner nominates — do not
+   guess one.
 2. **Run the briefs nobody has run:** `script-log-summary`, `library-csv`,
    `web-reading-list`, `vague-dashboard`, `static-weather`, `native-timer`. Each
    exercises a `DemoPresentationKind` or a feature never reached, and the product
