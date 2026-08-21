@@ -33,9 +33,14 @@ final class PilotDriver {
   /// this sprint was never going to deliver — and the watch never ends.
   private var watchedSprint: (productID: UUID, sprintID: UUID)?
   private var watchedSprintWorkItemIDs: Set<UUID> = []
-  /// Each awaiting run is answered once. Without this the driver re-answers the
-  /// same question on every poll.
-  private var answeredRunIDs: Set<UUID> = []
+  /// Questions already answered, keyed by run and question.
+  ///
+  /// Answering per run was enough until an agent asked a second question: the
+  /// guard that stops the driver re-answering the same question on every poll
+  /// also stopped it answering the new one, and the ticket sat on "needs your
+  /// input" with an Answer button nobody pressed for the rest of the run. A real
+  /// owner answers every question they are asked.
+  private var answeredQuestions: Set<String> = []
   /// How many times the owner has retried each failed run.
   private var retryAttemptsByRunID: [UUID: Int] = [:]
   /// When each run's on-screen status first disagreed with the database.
@@ -834,14 +839,14 @@ final class PilotDriver {
       else { continue }
       // A pending permission request is answered by the permission flow instead.
       guard model.pendingPermissionRequest(workItemID: item.id) == nil else { continue }
-      guard !answeredRunIDs.contains(awaiting.id) else { continue }
-      answeredRunIDs.insert(awaiting.id)
-
       let comments = await model.comments(for: item.id, productID: item.productID)
       let presented = presentedQuestion(in: comments)
       let questionText = presented?.question.prompt
         ?? awaiting.lastActivityText
         ?? "The agent is waiting for me."
+      let questionKey = "\(awaiting.id)|\(questionText)"
+      guard !answeredQuestions.contains(questionKey) else { continue }
+      answeredQuestions.insert(questionKey)
       let selectedOption = presented?.question.options.first
       let reply = selectedOption ?? owner.replyToTicketQuestion(questionText)
       let answered = presented.map { presentation in
