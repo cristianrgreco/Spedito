@@ -415,11 +415,29 @@ enum CodexLifecycleGuidance {
     backlog when the improvement needs tangible implementation or provisioning tooling.
     """
 
+  /// How an agent should scope a permission request, which is true of every
+  /// delivery turn and not only of one recovering an interrupted decision.
+  ///
+  /// A live native macOS run asked the product owner for five separate paths in
+  /// two minutes, each discovered by rerunning a build that failed on the next
+  /// one. This is exactly the guidance that prevents it, and the agent never
+  /// saw it: it shipped only when there was an interrupted request to recover.
+  static let coherentCapabilityGuidance = """
+    Treat a runtime and the files it predictably needs as one coherent capability. Do not continue
+    requesting an executable, parent directory, symlink target, shared library, compiler resource,
+    or SDK file one at a time. Diagnose the foreseeable boundary and use one batched
+    `request_permissions` call. A Homebrew runtime may require `/opt/homebrew/bin`,
+    `/opt/homebrew/opt`, and `/opt/homebrew/Cellar` together.
+    """
+
   static func permissionRecoveryContext(
     for request: AgentPermissionRequest?
   ) -> String {
     guard let request else {
-      return "No interrupted permission request was recorded."
+      return """
+        No interrupted permission request was recorded.
+        \(coherentCapabilityGuidance)
+        """
     }
 
     let subject = "run"
@@ -436,13 +454,7 @@ enum CodexLifecycleGuidance {
       } else {
         ""
       }
-    let coherentCapability = """
-      Treat a runtime and the files it predictably needs as one coherent capability. Do not continue
-      requesting an executable, parent directory, symlink target, shared library, compiler resource,
-      or SDK file one at a time. Diagnose the foreseeable boundary and use one batched
-      `request_permissions` call. A Homebrew runtime may require `/opt/homebrew/bin`,
-      `/opt/homebrew/opt`, and `/opt/homebrew/Cellar` together.
-      """
+    let coherentCapability = Self.coherentCapabilityGuidance
 
     return switch request.status {
     case .allowOncePendingDelivery, .allowProductPendingDelivery,

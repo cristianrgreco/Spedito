@@ -233,4 +233,37 @@ struct CodexLifecycleGuidanceTests {
     #expect(instructions.contains("cannot expand permissions"))
     #expect(!CodexTechLeadReviewer.allowsApprovals)
   }
+
+  /// A live native macOS run asked the product owner for five separate paths in
+  /// two minutes, each found by rerunning a build that failed on the next one.
+  /// The guidance that prevents exactly that shipped only when there was an
+  /// interrupted decision to recover, so neither agent ever saw it.
+  @Test("Every delivery turn is told to request one coherent capability")
+  func coherentCapabilityGuidanceIsAlwaysDelivered() {
+    let withoutInterruption = CodexLifecycleGuidance.permissionRecoveryContext(for: nil)
+    #expect(withoutInterruption.contains("one coherent capability"))
+    #expect(withoutInterruption.contains("one batched"))
+    #expect(withoutInterruption.contains("No interrupted permission request was recorded."))
+
+    let interrupted = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-guidance",
+      turnID: "turn-guidance",
+      serverRequestID: "1",
+      method: "item/permissions/requestApproval",
+      kind: .permissions,
+      title: "Allow additional access?",
+      detail: "Read /opt/homebrew/bin",
+      reason: "The build needs its runtime.",
+      signature: "signature",
+      productGrantSignature: nil,
+      status: .interrupted
+    )
+    #expect(
+      CodexLifecycleGuidance.permissionRecoveryContext(for: interrupted)
+        .contains("one coherent capability")
+    )
+  }
 }
