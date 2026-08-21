@@ -1189,6 +1189,56 @@ struct CodexAdapterTests {
     )
   }
 
+  /// A live native macOS run left two tickets reporting a working agent for
+  /// fifty minutes after their turns had already finished. The turn's wait
+  /// suspends its inactivity timeout while the turn is awaiting an approval, and
+  /// the flag that says so was cleared only after the response was delivered
+  /// successfully. One failed delivery therefore left the turn waiting with
+  /// nothing left to time it out.
+  @Test("A failed approval response still releases the turn's inactivity timeout")
+  func failedApprovalResponseReleasesTheTurn() async throws {
+    let transport = ApprovalTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let messages = await client.inboundMessages(replayRecent: false)
+    let request = CodexServerRequest(
+      id: .integer(7),
+      method: "item/permissions/requestApproval",
+      params: .object([
+        "threadId": .string("thread-hang"),
+        "turnId": .string("turn-hang"),
+        "permissions": .object(["network": .object(["enabled": .bool(true)])]),
+      ])
+    )
+    await transport.send(request)
+    let received = await messages.first { if case .request = $0 { return true } else { return false } }
+    guard case .request(let approval)? = received else {
+      Issue.record("Expected an approval request")
+      return
+    }
+
+    await transport.failNextRespond(
+      with: CodexRPCError(code: -32_000, message: "The response could not be delivered.")
+    )
+    await #expect(throws: (any Error).self) {
+      try await client.resolveApprovalRequest(approval, allow: false)
+    }
+
+    // The turn is no longer awaiting anything, so its inactivity window applies
+    // and the wait ends by itself rather than hanging.
+    let started = ContinuousClock.now
+    await #expect(throws: (any Error).self) {
+      _ = try await client.waitForFinalAgentMessage(
+        threadID: "thread-hang",
+        turnID: "turn-hang",
+        timeout: .seconds(1),
+        reconciliationInterval: .seconds(30),
+        totalTimeout: .seconds(20)
+      )
+    }
+    #expect(ContinuousClock.now - started < .seconds(10))
+  }
+
   @Test("App Server approval requests can be allowed or denied through the client")
   func interactiveApprovalResponse() async throws {
     let transport = ApprovalTransport()
@@ -4114,12 +4164,15 @@ private actor ApprovalTransport: CodexRPCTransport {
   private let stream: AsyncStream<CodexInboundMessage>
   private let continuation: AsyncStream<CodexInboundMessage>.Continuation
   private var recordedResponse: Response?
+  private var respondFailure: Error?
 
   init() {
     let pair = AsyncStream<CodexInboundMessage>.makeStream()
     stream = pair.stream
     continuation = pair.continuation
   }
+
+  func failNextRespond(with error: Error) { respondFailure = error }
 
   func start() {}
 
@@ -4137,7 +4190,11 @@ private actor ApprovalTransport: CodexRPCTransport {
 
   func notify(method: String, params: JSONValue) {}
 
-  func respond(id: JSONValue, result: JSONValue) {
+  func respond(id: JSONValue, result: JSONValue) throws {
+    if let respondFailure {
+      self.respondFailure = nil
+      throw respondFailure
+    }
     recordedResponse = Response(id: id, result: result)
   }
 

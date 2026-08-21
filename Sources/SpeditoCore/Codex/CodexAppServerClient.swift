@@ -981,8 +981,13 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     default:
       throw CodexApprovalError.unsupportedRequest(request.method)
     }
+    // The turn stays flagged as awaiting approval until this is cleared, and
+    // that flag suspends the inactivity timeout on the turn's wait. Clearing it
+    // only after a successful response means one failed delivery leaves the turn
+    // waiting with nothing left to time it out, which is a silent hang the owner
+    // sees as an agent that is working and never finishes.
+    defer { removePendingApproval(request) }
     try await transport.respond(id: request.id, result: result)
-    removePendingApproval(request)
   }
 
   public func rejectUnsupportedServerRequest(_ request: CodexServerRequest) async {
