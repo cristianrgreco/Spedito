@@ -13,19 +13,22 @@ covers only what a continuing agent needs to pick the loop up.
 Thirteen live runs. Only runs 8 onwards can be trusted; everything before was
 reported by a harness watching an application it had already closed.
 
-**Run 13 (`native-notes`) is the best run so far and it settles two of the three
-open questions.** T1 went plan → sprint → delivery → tech lead review → demo →
-acceptance → **released**, and its demo was a real `mac_application` bundle the
-owner opened. That is the first time this loop has taken a native Mac app to
-completion, and the first time any run has *proved* which
-`DemoPresentationKind` it reached rather than assuming it.
+**Run 18 (`web-reading-list`) delivered a whole sprint** — the first this loop
+has produced. T1 and T2 each went v1 → changes requested → **v2 accepted**, T3
+was accepted first time, and the sprint reached `completed`. It also ran the
+mid-sprint scope change: the owner asked for search while delivery was live, and
+two tickets landed in the backlog with correct dependency provenance.
 
-**T2 hung, again.** Its turn completed cleanly in Codex and Spedito never
-processed it. Detail below — the shape is now much sharper than it was.
+That took **three delivery defects** to reach, all in the same unreviewed corner
+of the code, all found and fixed here. The section below is the record.
 
-Still unexercised: retrospectives, app versions, and the `script-log-summary`,
-`library-csv`, `web-reading-list`, `vague-dashboard`, `static-weather` and
-`import-repository` briefs.
+Earlier milestones worth keeping: run 13 took a native Mac app to a real
+`mac_application` demo and released it; run 15 proved the first settlement fix
+with candidates v1 → v2 → v3.
+
+Still unexercised: retrospectives and app versions (driven now, first exercise
+pending), repository import, and the `vague-dashboard`, `static-weather` and
+`native-timer` briefs.
 
 ## What to do first
 
