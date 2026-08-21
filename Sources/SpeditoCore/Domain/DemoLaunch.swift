@@ -299,7 +299,9 @@ public struct DemoSession: Identifiable, Codable, Equatable, Sendable {
   }
 }
 
-public enum DemoLaunchValidationError: Error, Equatable, LocalizedError, Sendable {
+public enum DemoLaunchValidationError: Error, Equatable, LocalizedError,
+  OwnerFacingFailure, Sendable
+{
   case invalid(String)
 
   public var errorDescription: String? {
@@ -307,6 +309,10 @@ public enum DemoLaunchValidationError: Error, Equatable, LocalizedError, Sendabl
     case .invalid(let detail):
       "The demo could not be prepared safely: \(detail)"
     }
+  }
+
+  public var ownerFacingDescription: String {
+    "This work cannot be demonstrated yet, so there is nothing to open."
   }
 }
 

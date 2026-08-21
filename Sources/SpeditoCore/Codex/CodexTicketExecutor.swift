@@ -249,7 +249,9 @@ public enum TicketDecisionArtifactValidator {
   }
 }
 
-public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError, Sendable {
+public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError,
+  OwnerFacingFailure, Sendable
+{
   case invalidResponse(String)
 
   public var errorDescription: String? {
@@ -257,6 +259,13 @@ public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError, Se
     case .invalidResponse(let detail):
       "The delivery agent returned an invalid execution result: \(detail)"
     }
+  }
+
+  /// The owner cannot act on what was wrong with the result, only on the fact
+  /// that the work needs another attempt. The detail stays in the work log,
+  /// where the team member's own account of it belongs.
+  public var ownerFacingDescription: String {
+    "The team member's work could not be used as delivered. Retry the work to have them try again."
   }
 }
 

@@ -1292,6 +1292,34 @@ struct CodexAdapterTests {
     #expect(await waitWithOwnerDecision(outstanding: true) > .seconds(4))
   }
 
+  /// A live run put this on a product owner's screen: "The delivery agent
+  /// returned an invalid execution result: The demo could not be prepared
+  /// safely: the demo artifact path is incomplete." Three layers of
+  /// implementation detail and nothing they can act on.
+  @Test("A delivery failure reaches the owner as one explanation, not a chain")
+  func deliveryFailuresAreOwnerFacing() {
+    let chained = TicketExecutionGenerationError.invalidResponse(
+      DemoLaunchValidationError.invalid("the demo artifact path is incomplete")
+        .localizedDescription
+    )
+
+    // The detail is still there for the repair prompt and the log.
+    #expect(chained.localizedDescription.contains("demo artifact path is incomplete"))
+
+    let owner = chained.ownerFacingDescription
+    #expect(!owner.contains("execution result"))
+    #expect(!owner.contains("artifact path"))
+    #expect(owner.components(separatedBy: ": ").count == 1)
+    #expect(owner.contains("Retry the work"))
+
+    // An error with no owner-facing form still says something rather than
+    // nothing, so adopting this stays incremental.
+    struct Plain: Error, LocalizedError {
+      var errorDescription: String? { "Something went wrong." }
+    }
+    #expect(Plain().ownerFacingDescription == "Something went wrong.")
+  }
+
   @Test("App Server approval requests can be allowed or denied through the client")
   func interactiveApprovalResponse() async throws {
     let transport = ApprovalTransport()

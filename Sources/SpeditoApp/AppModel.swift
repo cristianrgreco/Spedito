@@ -2950,7 +2950,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         specification: specification
       )
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = error.ownerFacingDescription
       return false
     }
   }
@@ -3738,7 +3738,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   func presentExecutionError(_ error: Error, productID: UUID) {
     guard selectedProductID == productID else { return }
-    errorMessage = error.localizedDescription
+    errorMessage = error.ownerFacingDescription
   }
 
   private func eligibleImplementationRuns(
