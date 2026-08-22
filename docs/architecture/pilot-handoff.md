@@ -42,13 +42,27 @@ Earlier milestones worth keeping: run 13 took a native Mac app to a real
 `mac_application` demo and released it; run 15 proved the first settlement fix
 with candidates v1 → v2 → v3.
 
-Six delivery and harness defects were fixed to get here, each with a regression
-test verified to fail without it. The three that mattered are in the section
+**Four consecutive runs then finished clean, across four different products:**
+
+| Run | Brief | Outcome |
+| --- | --- | --- |
+| 20 | `library-csv` | first whole journey; retrospective reached |
+| 21 | `vague-dashboard` | 4 tickets, 8 correction cycles, refused permission, **0 findings** |
+| 23 | `native-timer` | 3 tickets, app version, retrospective, **0 findings** |
+| 24 | `static-weather` | 4 tickets, mid-sprint scope change, app version, **0 findings** |
+
+Between them they exercise planning and clarification, suggestion review, sprint
+planning, parallel delivery, dependency graphs, research tickets, tech lead
+review and correction, permissions allowed, **refused** and policy-denied, demos,
+acceptance, release, relaunch recovery mid-delivery, mid-sprint scope change, app
+versions, and retrospectives.
+
+Nine delivery and harness defects were fixed to get here, each with a regression
+test verified to fail without it. The three delivery ones are in the section
 below; the rest are in the commit log.
 
-Still unexercised: app versions (no run has produced one yet — an artifact
-product does not), repository import, and the `static-weather` and `native-timer`
-briefs. `vague-dashboard` is running now.
+**The one journey still unexercised is repository import**, and it needs the
+product owner — see below.
 
 ## What to do first
 
