@@ -41,6 +41,17 @@ final class PilotDriver {
   /// input" with an Answer button nobody pressed for the rest of the run. A real
   /// owner answers every question they are asked.
   private var answeredQuestions: Set<String> = []
+  /// When the owner last replied on each run.
+  ///
+  /// Answering a given question once is right, but a ticket that is still
+  /// waiting after a reply needs another. Spedito pauses automatic revisions
+  /// after repeated review returns and asks for product owner direction, and
+  /// that request does not always arrive as a new question — a live run sat on
+  /// "needs your input" for the rest of its sprint because the text had not
+  /// changed. A real owner looks at a ticket that still wants them and says
+  /// something else.
+  private var lastReplyAtByRunID: [UUID: Date] = [:]
+  private static let replyAgainAfter: TimeInterval = 180
   /// How many times the owner has retried each failed run.
   private var retryAttemptsByRunID: [UUID: Int] = [:]
   /// When each run's on-screen status first disagreed with the database.
@@ -863,8 +874,12 @@ final class PilotDriver {
         ?? awaiting.lastActivityText
         ?? "The agent is waiting for me."
       let questionKey = "\(awaiting.id)|\(questionText)"
-      guard !answeredQuestions.contains(questionKey) else { continue }
+      let repliedRecently =
+        Date().timeIntervalSince(lastReplyAtByRunID[awaiting.id] ?? .distantPast)
+        < Self.replyAgainAfter
+      guard !answeredQuestions.contains(questionKey) || !repliedRecently else { continue }
       answeredQuestions.insert(questionKey)
+      lastReplyAtByRunID[awaiting.id] = Date()
       let selectedOption = presented?.question.options.first
       let reply = selectedOption ?? owner.replyToTicketQuestion(questionText)
       let answered = presented.map { presentation in
