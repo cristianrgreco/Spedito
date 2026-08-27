@@ -1187,6 +1187,20 @@ enum EvalScenarioCatalog {
   ) throws -> [EvalScenario] {
     let product = makeProduct()
     let environments = environmentsPage(productID: product.id)
+    // A delivery reply has two audiences: the completion comment goes to the
+    // owner's work log, while summary, reported checks, and changed files are
+    // the handoff addressed to the tech lead and the next agent.
+    let deliveryOwnerClarity = EvalRubricDimension(
+      name: "ownerClarity",
+      guidance: """
+        The completion comment — the owner-visible work log entry — is plain, \
+        concise language a non-technical product owner understands at a \
+        glance. Technical evidence such as commands, exit codes, and file \
+        paths belongs in the handoff summary and reported checks, which are \
+        addressed to the tech lead and the next agent; its presence there is \
+        correct and must not lower this score.
+        """
+    )
 
     func makeWorktree(
       name: String,
@@ -1249,22 +1263,19 @@ enum EvalScenarioCatalog {
             )
           )
         }
+        // Spedito owns every Git mutation and captures the candidate commit
+        // itself after the turn, so the agent's work legitimately sits
+        // uncommitted in the worktree.
         let headSHA = (try? EvalFixtureRepository.headSHA(at: worktreeURL)) ?? baseSHA
+        let status = (try? EvalFixtureRepository.statusPorcelain(at: worktreeURL)) ?? ""
+        let producedWork = headSHA != baseSHA || !status.isEmpty
         checks.append(
           EvalCheck(
-            name: "producedCommits",
-            passed: headSHA != baseSHA,
-            detail: headSHA == baseSHA
-              ? "no commits on the ticket branch"
-              : "candidate range \(String(baseSHA.prefix(8)))..\(String(headSHA.prefix(8)))"
-          )
-        )
-        let status = (try? EvalFixtureRepository.statusPorcelain(at: worktreeURL)) ?? "unknown"
-        checks.append(
-          EvalCheck(
-            name: "cleanWorktree",
-            passed: status.isEmpty,
-            detail: status.isEmpty ? "worktree clean" : "uncommitted state:\n\(status.prefix(400))"
+            name: "producedWorkInWorktree",
+            passed: producedWork,
+            detail: producedWork
+              ? "worktree contains the delivered work:\n\(status.prefix(300))"
+              : "the worktree is unchanged from base"
           )
         )
         var facts: [String: String] = [
@@ -1314,12 +1325,14 @@ enum EvalScenarioCatalog {
 
     func diffSupplement(worktreeURL: URL, baseSHA: String) -> @Sendable () -> String {
       {
-        let diff = (try? EvalFixtureRepository.diff(at: worktreeURL, from: baseSHA))
+        let diff = (try? EvalFixtureRepository.workingTreeDiff(at: worktreeURL, from: baseSHA))
           ?? "The diff could not be read."
         let bounded = diff.count > 30_000 ? String(diff.prefix(30_000)) + "\n[truncated]" : diff
         return """
-          ACTUAL CHANGES ON THE TICKET BRANCH (git diff, ground truth)
-          \(bounded.isEmpty ? "No committed changes." : bounded)
+          ACTUAL WORK IN THE TICKET WORKTREE (git diff against base, ground truth).
+          Spedito captures the candidate commit itself after the turn, so \
+          uncommitted work in the worktree is the normal, correct delivery state.
+          \(bounded.isEmpty ? "The worktree contains no changes." : bounded)
           """
       }
     }
@@ -1388,7 +1401,7 @@ enum EvalScenarioCatalog {
         baseSHA: implementFixture.baseSHA
       ),
       rubric: [
-        ownerClarity,
+        deliveryOwnerClarity,
         EvalRubricDimension(
           name: "implementationQuality",
           guidance: """
@@ -1486,7 +1499,7 @@ enum EvalScenarioCatalog {
         baseSHA: uxFixture.baseSHA
       ),
       rubric: [
-        ownerClarity,
+        deliveryOwnerClarity,
         EvalRubricDimension(
           name: "stateCoverage",
           guidance: """
@@ -1521,6 +1534,16 @@ enum EvalScenarioCatalog {
                 : "no managed demo, but the UX contract requires one for visible work"
             )
           )
+          if let demo = result.demo {
+            checks.append(
+              EvalCheck(
+                name: "demoIsStaticWeb",
+                passed: demo.presentation.kind == .staticWeb,
+                detail: "demo presentation kind is \(demo.presentation.kind.rawValue); "
+                  + "a self-contained prototype uses static_web"
+              )
+            )
+          }
         }
       },
       judgeSupplement: diffSupplement(

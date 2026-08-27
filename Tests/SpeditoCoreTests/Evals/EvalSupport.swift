@@ -80,8 +80,8 @@ enum EvalRetry {
   /// Retries a turn that failed only because the selected model was
   /// momentarily at capacity. Any other failure propagates immediately.
   static func withCapacityRetry<T: Sendable>(
-    attempts: Int = 3,
-    pause: Duration = .seconds(20),
+    attempts: Int = 4,
+    pause: Duration = .seconds(30),
     _ operation: () async throws -> T
   ) async throws -> T {
     var attempt = 1
@@ -300,9 +300,14 @@ struct EvalFixtureRepository {
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  static func diff(at worktreeURL: URL, from baseSHA: String) throws -> String {
+  /// The complete work in a worktree relative to base — committed, staged,
+  /// unstaged, and untracked — as one diff. Production captures the candidate
+  /// commit itself after the turn, so agent work legitimately sits uncommitted
+  /// in the worktree; staging it first makes new files visible to the diff.
+  static func workingTreeDiff(at worktreeURL: URL, from baseSHA: String) throws -> String {
     let repository = EvalFixtureRepository(rootURL: worktreeURL)
-    return try repository.git(["diff", "\(baseSHA)..HEAD"])
+    try repository.git(["add", "-A"])
+    return try repository.git(["diff", baseSHA])
   }
 
   /// Runs the fixture project's Node test suite in a worktree and reports
