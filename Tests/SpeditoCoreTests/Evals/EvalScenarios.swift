@@ -425,13 +425,15 @@ enum EvalScenarioCatalog {
       title: "",
       goal: """
         Add a printable monthly income summary. Decisions already made by the \
-        product owner: the summary counts paid invoices only, using the date each \
-        invoice was paid; totals are grouped by client, with one line per client \
-        and one overall total, and individual invoices are not listed; amounts \
-        are in GBP only; the summary uses only invoice data already saved in \
-        Ledgerline; no charts; printing uses the standard system print dialog; \
-        the owner picks the month from a list of all months that have at least \
-        one paid invoice, and other months are not shown.
+        product owner: the summary lives in the existing reports area; it counts \
+        paid invoices only, assigned to months by the paid date that Ledgerline \
+        already records when an invoice is marked paid; totals are grouped by \
+        client, with one line per client and one overall total, and individual \
+        invoices are not listed; amounts are in GBP only; the summary uses only \
+        invoice data already saved in Ledgerline; no charts; printing uses the \
+        standard system print dialog; the owner picks the month from a list of \
+        all months that have at least one paid invoice, and other months are \
+        not shown.
         """
     )
     let resolvedItems = establishedBacklog(productID: resolvedProduct.id)
