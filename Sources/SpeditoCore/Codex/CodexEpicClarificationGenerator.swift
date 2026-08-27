@@ -92,12 +92,18 @@ public enum CodexEpicClarificationGenerator {
       - explicitly delegating implementation-time selection to the implementer without a separate
         recommendation.
       Recommend the research option when no choice is already approved and a responsible recommendation
-      needs external evidence. Do not offer a vague option such as “let the team choose.”
+      needs external evidence. Do not offer a vague option such as “let the team choose.” A choice that
+      gestures at a category without naming the actual candidate, such as “use a named approved
+      provider”, is not self-contained either.
 
       Inventory the owner-observable information, interactions, and boundary states implied by the
       outcome. Ask about any material choice whose omission would leave acceptance criteria referring
       only to a generic result, an “agreed” detail, or a later design. Do not treat a restatement of the
-      outcome headline as enough detail to plan.
+      outcome headline as enough detail to plan. The reverse also holds: a decision the product owner
+      has already stated in the outcome is resolved. Do not re-ask it, offer alternatives to it, or ask
+      how to interpret it when a plain reading settles it. Do not ask about presentation details,
+      wording, or edge states that a reasonable default settles; choose the default and record it in
+      the plan instead of asking.
 
       Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified product
       knowledge supplied below, especially verified Environments knowledge. Planning is not source
@@ -138,10 +144,14 @@ public enum CodexEpicClarificationGenerator {
       Supplied planning evidence:
       \(evidence)
 
-      This is the first clarification turn. Ask one to three concise questions with two to four mutually
-      exclusive, business-friendly choices each. Put your recommended choice first and suffix it with
-      "(Recommended)". Do not include an "Other" option; the interface adds it. Keep the message short and
-      conversational. Set readyToPlan to false while questions remain. Do not propose tickets yet.
+      This is the first clarification turn. First decide whether any material choice is genuinely
+      unresolved after reading the outcome and the supplied evidence. If the outcome statement and
+      evidence already resolve every consequential choice, ask nothing: briefly confirm what you will
+      plan and set readyToPlan to true with an empty questions array. Otherwise ask one to three concise
+      questions with two to four mutually exclusive, business-friendly choices each. Put your
+      recommended choice first and suffix it with "(Recommended)". Do not include an "Other" option; the
+      interface adds it. Keep the message short and conversational. Set readyToPlan to false while
+      questions remain. Do not propose tickets yet.
       """
   }
 
