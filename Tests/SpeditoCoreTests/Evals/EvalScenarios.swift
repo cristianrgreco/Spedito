@@ -14,6 +14,15 @@ enum EvalThreadKind: Sendable {
   case readOnly(workingDirectoryURL: URL?)
   /// A repository-analysis thread over a sanitized snapshot.
   case repositoryAnalysis(snapshotURL: URL)
+  /// A write-enabled delivery thread in an isolated ticket worktree, the
+  /// production shape for implementer and UX designer runs. The runner resets
+  /// the worktree to baseSHA before every cell so repeated cells start clean.
+  case workspace(worktreeURL: URL, readOnlyGitDirectoryURL: URL, baseSHA: String)
+
+  var isWorkspace: Bool {
+    if case .workspace = self { return true }
+    return false
+  }
 }
 
 /// One prompt scenario: the exact developer instructions, prompt, and output
@@ -29,6 +38,10 @@ struct EvalScenario: Sendable {
   let threadKind: EvalThreadKind
   let rubric: [EvalRubricDimension]
   let evaluate: @Sendable (String) -> EvalDeterministicOutcome
+  /// Extra evidence for the judge computed after the turn — a delivery cell
+  /// supplies the actual worktree diff so the judge scores real changes, not
+  /// just the handoff's claims about them.
+  let judgeSupplement: (@Sendable () -> String)?
 
   init(
     id: String,
@@ -39,7 +52,8 @@ struct EvalScenario: Sendable {
     outputSchema: JSONValue,
     threadKind: EvalThreadKind = .readOnly(workingDirectoryURL: nil),
     rubric: [EvalRubricDimension],
-    evaluate: @escaping @Sendable (String) -> EvalDeterministicOutcome
+    evaluate: @escaping @Sendable (String) -> EvalDeterministicOutcome,
+    judgeSupplement: (@Sendable () -> String)? = nil
   ) {
     self.id = id
     self.generator = generator
@@ -50,6 +64,7 @@ struct EvalScenario: Sendable {
     self.threadKind = threadKind
     self.rubric = rubric
     self.evaluate = evaluate
+    self.judgeSupplement = judgeSupplement
   }
 }
 
@@ -76,6 +91,7 @@ enum EvalScenarioCatalog {
       + sprintGoalScenarios() + knowledgeScenarios()
       + (try reviewScenarios(workspace: workspace))
       + [try await repositoryAnalysisScenario(workspace: workspace)]
+      + (try deliveryScenarios(workspace: workspace))
   }
 
   // MARK: - Shared fixtures
@@ -191,8 +207,9 @@ enum EvalScenarioCatalog {
       productID: greenfieldProduct.id,
       title: "",
       goal: """
-        Freelancers can send a saved invoice to the client by email as a PDF \
-        attachment, directly from Ledgerline.
+        Freelancers can download a saved invoice as a PDF file from Ledgerline, \
+        laid out like a traditional printed invoice, so they can send it to \
+        clients however they already communicate with them.
         """
     )
     let greenfield = EvalScenario(
@@ -233,17 +250,18 @@ enum EvalScenarioCatalog {
     let establishedProduct = makeProduct()
     let establishedEpic = Epic(
       productID: establishedProduct.id,
-      title: "Invoice reminders",
+      title: "Chasing list",
       goal: """
-        Automatically remind a client about an unpaid invoice by email three days \
-        after its due date, at most once per invoice.
+        Show freelancers a chasing list inside Ledgerline: every unpaid invoice \
+        more than three days past its due date, with a way to note that the \
+        client has been chased, at most one chase note per invoice.
         """,
       successCriteria: [
-        "An unpaid invoice sends exactly one reminder email three days after its due date",
-        "Paid invoices never send a reminder",
-        "The owner can see whether a reminder was sent for each invoice",
+        "An unpaid invoice appears on the chasing list three days after its due date",
+        "Paid invoices never appear on the chasing list",
+        "The owner can record one chase note per invoice and see it on the list",
       ],
-      constraints: "No third-party email marketing services."
+      constraints: "Everything happens inside Ledgerline; no emails are sent."
     )
     let establishedItems = establishedBacklog(productID: establishedProduct.id)
     let established = EvalScenario(
@@ -1137,6 +1155,381 @@ enum EvalScenarioCatalog {
       checkName: "blocksFlawedCandidate"
     )
     return [clean, flawed]
+  }
+
+  // MARK: - Delivery runs
+
+  private static let dueSoonSpecification = """
+    import test from "node:test"
+    import assert from "node:assert/strict"
+    import { invoiceSummaryLine } from "../src/summary.js"
+
+    const lines = [{ amount: 60 }]
+
+    test("an unpaid invoice due within the next seven days shows DUE SOON", () => {
+      const invoice = { number: "AC-2026-003", status: "sent", dueDate: "2026-09-01", lines }
+      assert.match(invoiceSummaryLine(invoice, "2026-08-27"), / — DUE SOON$/)
+    })
+
+    test("a paid invoice never shows DUE SOON", () => {
+      const invoice = { number: "AC-2026-004", status: "paid", dueDate: "2026-09-01", lines }
+      assert.doesNotMatch(invoiceSummaryLine(invoice, "2026-08-27"), /DUE SOON/)
+    })
+
+    test("an unpaid invoice due more than seven days ahead shows no DUE SOON", () => {
+      const invoice = { number: "AC-2026-005", status: "sent", dueDate: "2026-10-01", lines }
+      assert.doesNotMatch(invoiceSummaryLine(invoice, "2026-08-27"), /DUE SOON/)
+    })
+    """
+
+  private static func deliveryScenarios(
+    workspace: EvalFixtureWorkspace
+  ) throws -> [EvalScenario] {
+    let product = makeProduct()
+    let environments = environmentsPage(productID: product.id)
+
+    func makeWorktree(
+      name: String,
+      branch: String,
+      extraFiles: [String: String]
+    ) throws -> (worktreeURL: URL, gitDirectoryURL: URL, baseSHA: String) {
+      let repository = try workspace.makeRepository(
+        name: name,
+        files: EvalFixtureWorkspace.sharedRepositoryFiles.merging(extraFiles) { _, new in new }
+      )
+      let worktreeURL = workspace.rootURL.appendingPathComponent(
+        "\(name)-worktree",
+        isDirectory: true
+      )
+      try repository.addWorktree(at: worktreeURL, branch: branch)
+      return (
+        worktreeURL,
+        repository.rootURL.appendingPathComponent(".git", isDirectory: true),
+        try repository.headSHA()
+      )
+    }
+
+    @Sendable func deliveryChecks(
+      response: String,
+      worktreeURL: URL,
+      baseSHA: String,
+      assignee: AgentProfile,
+      requiresPassingTests: Bool,
+      extraChecks: (TicketExecutionResult, inout [EvalCheck]) -> Void
+    ) -> EvalDeterministicOutcome {
+      do {
+        let result = try CodexTicketExecutor.decode(response)
+        var checks: [EvalCheck] = []
+        checks.append(
+          EvalCheck(
+            name: "reportsCompleted",
+            passed: result.status == .completed,
+            detail: "status was \(result.status.rawValue)"
+              + (result.question.map { "; question: \($0)" } ?? "")
+          )
+        )
+        do {
+          try CodexTicketExecutor.validateFollowUpTicketProposals(
+            in: result,
+            assignee: assignee
+          )
+          checks.append(
+            EvalCheck(
+              name: "noUnauthorizedFollowUps",
+              passed: true,
+              detail: "no follow-up proposals outside the research contract"
+            )
+          )
+        } catch {
+          checks.append(
+            EvalCheck(
+              name: "noUnauthorizedFollowUps",
+              passed: false,
+              detail: describeError(error)
+            )
+          )
+        }
+        let headSHA = (try? EvalFixtureRepository.headSHA(at: worktreeURL)) ?? baseSHA
+        checks.append(
+          EvalCheck(
+            name: "producedCommits",
+            passed: headSHA != baseSHA,
+            detail: headSHA == baseSHA
+              ? "no commits on the ticket branch"
+              : "candidate range \(String(baseSHA.prefix(8)))..\(String(headSHA.prefix(8)))"
+          )
+        )
+        let status = (try? EvalFixtureRepository.statusPorcelain(at: worktreeURL)) ?? "unknown"
+        checks.append(
+          EvalCheck(
+            name: "cleanWorktree",
+            passed: status.isEmpty,
+            detail: status.isEmpty ? "worktree clean" : "uncommitted state:\n\(status.prefix(400))"
+          )
+        )
+        var facts: [String: String] = [
+          "status": result.status.rawValue,
+          "changedFiles": result.changedFiles.joined(separator: " | "),
+          "reportedChecks": result.tests.joined(separator: " | "),
+          "providesDemo": String(result.demo != nil),
+        ]
+        if requiresPassingTests {
+          let tests = EvalFixtureRepository.runNodeTests(at: worktreeURL)
+          checks.append(
+            EvalCheck(
+              name: "seededSpecificationPasses",
+              passed: tests.passed,
+              detail: tests.passed
+                ? "node --test passes, including the seeded specification"
+                : "node --test fails:\n\(tests.output.suffix(600))"
+            )
+          )
+          checks.append(
+            EvalCheck(
+              name: "completionClaimIsHonest",
+              passed: tests.passed || result.status != .completed,
+              detail: tests.passed
+                ? "completion claim matches passing checks"
+                : "reported completed while the test suite fails"
+            )
+          )
+          facts["nodeTestsPassed"] = String(tests.passed)
+        }
+        extraChecks(result, &checks)
+        return EvalDeterministicOutcome(
+          decodePassed: true,
+          decodeFailure: nil,
+          checks: checks,
+          facts: facts
+        )
+      } catch {
+        return EvalDeterministicOutcome(
+          decodePassed: false,
+          decodeFailure: describeError(error),
+          checks: [],
+          facts: [:]
+        )
+      }
+    }
+
+    func diffSupplement(worktreeURL: URL, baseSHA: String) -> @Sendable () -> String {
+      {
+        let diff = (try? EvalFixtureRepository.diff(at: worktreeURL, from: baseSHA))
+          ?? "The diff could not be read."
+        let bounded = diff.count > 30_000 ? String(diff.prefix(30_000)) + "\n[truncated]" : diff
+        return """
+          ACTUAL CHANGES ON THE TICKET BRANCH (git diff, ground truth)
+          \(bounded.isEmpty ? "No committed changes." : bounded)
+          """
+      }
+    }
+
+    // Implementer: a seeded executable specification is the ticket's ground
+    // truth, so the deterministic tier can prove behavioral correctness.
+    let implementFixture = try makeWorktree(
+      name: "delivery-implement",
+      branch: "ticket/T6",
+      extraFiles: ["tests/due-soon.test.js": dueSoonSpecification]
+    )
+    let implementer = AgentProfile(
+      productID: product.id,
+      name: "Implementer",
+      role: .implementer,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "medium"
+    )
+    let implementItem = WorkItem(
+      productID: product.id,
+      key: "T6",
+      title: "Flag invoices that are due soon",
+      body: """
+        Freelancers want warning before an invoice becomes overdue. The team has \
+        recorded the agreed behaviour as an executable specification in \
+        tests/due-soon.test.js; it currently fails because the feature does not \
+        exist yet.
+        """,
+      acceptanceCriteria: [
+        "The invoice summary line ends with DUE SOON for an unpaid invoice "
+          + "due within the next seven days",
+        "A paid invoice never shows DUE SOON",
+        "The whole test suite passes, including tests/due-soon.test.js",
+      ],
+      state: .running
+    )
+    let implement = EvalScenario(
+      id: "delivery/implement-feature",
+      generator: "delivery",
+      brief: """
+        A real write-enabled delivery run for a small implementer ticket whose \
+        agreed behaviour exists as a seeded, currently failing executable \
+        specification. A good run implements the due-soon marker, makes the \
+        whole suite pass, commits to the ticket branch, leaves the worktree \
+        clean, and returns an honest, self-contained completion handoff.
+        """,
+      developerInstructions: CodexTicketExecutor.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: "",
+        assignee: implementer
+      ),
+      prompt: CodexTicketExecutor.prompt(
+        product: product,
+        item: implementItem,
+        assignee: implementer,
+        prerequisites: [],
+        dependants: [],
+        prerequisiteComments: [:],
+        ticketComments: [],
+        knowledgeContext: [environments]
+      ),
+      outputSchema: CodexTicketExecutor.outputSchema,
+      threadKind: .workspace(
+        worktreeURL: implementFixture.worktreeURL,
+        readOnlyGitDirectoryURL: implementFixture.gitDirectoryURL,
+        baseSHA: implementFixture.baseSHA
+      ),
+      rubric: [
+        ownerClarity,
+        EvalRubricDimension(
+          name: "implementationQuality",
+          guidance: """
+            The actual diff is minimal and idiomatic for this repository: it \
+            implements the specified behaviour without unrelated churn, \
+            speculative abstraction, or drive-by edits.
+            """
+        ),
+        EvalRubricDimension(
+          name: "handoffQuality",
+          guidance: """
+            The completion handoff is self-contained: delivered outcome, \
+            material decisions, evidence of the checks run, caveats, and what \
+            dependant tickets may safely assume — without restating the whole \
+            diff or leaking internal diagnostics.
+            """
+        ),
+      ],
+      evaluate: { response in
+        deliveryChecks(
+          response: response,
+          worktreeURL: implementFixture.worktreeURL,
+          baseSHA: implementFixture.baseSHA,
+          assignee: implementer,
+          requiresPassingTests: true
+        ) { _, _ in }
+      },
+      judgeSupplement: diffSupplement(
+        worktreeURL: implementFixture.worktreeURL,
+        baseSHA: implementFixture.baseSHA
+      )
+    )
+
+    // UX designer: visible experience work, so the contract requires a
+    // demoable prototype rather than prose.
+    let uxFixture = try makeWorktree(
+      name: "delivery-ux",
+      branch: "ticket/T7",
+      extraFiles: [:]
+    )
+    let uxDesigner = AgentProfile(
+      productID: product.id,
+      name: "UX designer",
+      role: .uxDesigner,
+      model: "gpt-5.6-terra",
+      reasoningEffort: "medium"
+    )
+    let uxItem = WorkItem(
+      productID: product.id,
+      key: "T7",
+      title: "Design how payment status is shown on the invoice list",
+      body: """
+        Freelancers scan the invoice list to see who has paid and who needs \
+        chasing. Design the visual treatment for paid, unpaid, and overdue \
+        invoices, and for a list with no invoices yet.
+        """,
+      acceptanceCriteria: [
+        "A self-contained prototype demonstrates the invoice list with paid, "
+          + "unpaid, and overdue treatments and the empty state",
+        "The managed demo opens the prototype for the product owner",
+        "A short written rationale records the chosen treatment and how it "
+          + "stays readable at a glance",
+      ],
+      state: .running
+    )
+    let uxDesign = EvalScenario(
+      id: "delivery/ux-prototype",
+      generator: "delivery",
+      brief: """
+        A real write-enabled delivery run for a UX designer ticket about a \
+        visible interface. The UX contract makes a demoable artifact the \
+        primary deliverable: a good run commits a self-contained prototype \
+        covering the named states, returns a managed demo recipe so the owner \
+        can open it, and keeps the rationale short and owner-readable.
+        """,
+      developerInstructions: CodexTicketExecutor.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: "",
+        assignee: uxDesigner
+      ),
+      prompt: CodexTicketExecutor.prompt(
+        product: product,
+        item: uxItem,
+        assignee: uxDesigner,
+        prerequisites: [],
+        dependants: [],
+        prerequisiteComments: [:],
+        ticketComments: [],
+        knowledgeContext: [environments]
+      ),
+      outputSchema: CodexTicketExecutor.outputSchema,
+      threadKind: .workspace(
+        worktreeURL: uxFixture.worktreeURL,
+        readOnlyGitDirectoryURL: uxFixture.gitDirectoryURL,
+        baseSHA: uxFixture.baseSHA
+      ),
+      rubric: [
+        ownerClarity,
+        EvalRubricDimension(
+          name: "stateCoverage",
+          guidance: """
+            The prototype genuinely demonstrates every named state — paid, \
+            unpaid, overdue, and empty — rather than describing them in prose \
+            or showing only the happy path.
+            """
+        ),
+        EvalRubricDimension(
+          name: "prototypeQuality",
+          guidance: """
+            The committed artifact is self-contained, opens without external \
+            dependencies, and presents a treatment a non-technical owner could \
+            evaluate and react to.
+            """
+        ),
+      ],
+      evaluate: { response in
+        deliveryChecks(
+          response: response,
+          worktreeURL: uxFixture.worktreeURL,
+          baseSHA: uxFixture.baseSHA,
+          assignee: uxDesigner,
+          requiresPassingTests: false
+        ) { result, checks in
+          checks.append(
+            EvalCheck(
+              name: "providesManagedDemo",
+              passed: result.demo != nil,
+              detail: result.demo != nil
+                ? "managed demo recipe supplied"
+                : "no managed demo, but the UX contract requires one for visible work"
+            )
+          )
+        }
+      },
+      judgeSupplement: diffSupplement(
+        worktreeURL: uxFixture.worktreeURL,
+        baseSHA: uxFixture.baseSHA
+      )
+    )
+
+    return [implement, uxDesign]
   }
 
   // MARK: - Repository knowledge analysis

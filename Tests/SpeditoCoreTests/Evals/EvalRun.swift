@@ -90,6 +90,12 @@ struct EvalRunTests {
       model: configuration.judgeModel,
       effort: configuration.judgeEffort
     )
+    let approvalResponder = EvalApprovalResponder(
+      client: client,
+      workspaceRootURL: workspace.rootURL
+    )
+    await approvalResponder.start()
+    defer { Task { await approvalResponder.stop() } }
 
     let totalCells = scenarios.count
       * configuration.models.reduce(0) { $0 + (effortsByModel[$1]?.count ?? 0) }
@@ -158,6 +164,14 @@ struct EvalRunTests {
             developerInstructions: scenario.developerInstructions,
             model: model
           )
+        case .workspace(let worktreeURL, let readOnlyGitDirectoryURL, let baseSHA):
+          try EvalFixtureRepository.resetWorktree(at: worktreeURL, to: baseSHA)
+          threadID = try await client.startWorkspaceThread(
+            workingDirectory: worktreeURL,
+            developerInstructions: scenario.developerInstructions,
+            model: model,
+            readOnlyGitDirectory: readOnlyGitDirectoryURL
+          )
         }
         let turnID = try await client.startStructuredTurn(
           threadID: threadID,
@@ -165,11 +179,12 @@ struct EvalRunTests {
           effort: effort,
           outputSchema: scenario.outputSchema
         )
+        let isWorkspace = scenario.threadKind.isWorkspace
         return try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: turnID,
-          timeout: .seconds(240),
-          totalTimeout: .seconds(900)
+          timeout: .seconds(isWorkspace ? 300 : 240),
+          totalTimeout: .seconds(isWorkspace ? 1_800 : 900)
         )
       }
     } catch {

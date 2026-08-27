@@ -118,9 +118,9 @@ struct EvalJudge {
 
       THE CANDIDATE REPLIED WITH
       \(response)
-
+      \(scenario.judgeSupplement.map { "\n\($0())\n" } ?? "")
       Score every rubric dimension exactly once, using its exact dimension name, \
-      with a concise rationale grounded in the reply.
+      with a concise rationale grounded in the reply and any supplied ground truth.
       """
   }
 

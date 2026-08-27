@@ -277,6 +277,57 @@ struct EvalFixtureRepository {
     return try headSHA()
   }
 
+  /// Adds a linked worktree on a new ticket branch, the isolation production
+  /// delivery runs use.
+  func addWorktree(at worktreeURL: URL, branch: String) throws {
+    try git(["worktree", "add", "--quiet", "-b", branch, worktreeURL.path])
+  }
+
+  static func resetWorktree(at worktreeURL: URL, to baseSHA: String) throws {
+    let repository = EvalFixtureRepository(rootURL: worktreeURL)
+    try repository.git(["reset", "--hard", "--quiet", baseSHA])
+    try repository.git(["clean", "-fdq"])
+  }
+
+  static func statusPorcelain(at worktreeURL: URL) throws -> String {
+    let repository = EvalFixtureRepository(rootURL: worktreeURL)
+    return try repository.git(["status", "--porcelain"])
+  }
+
+  static func headSHA(at worktreeURL: URL) throws -> String {
+    let repository = EvalFixtureRepository(rootURL: worktreeURL)
+    return try repository.git(["rev-parse", "HEAD"])
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  static func diff(at worktreeURL: URL, from baseSHA: String) throws -> String {
+    let repository = EvalFixtureRepository(rootURL: worktreeURL)
+    return try repository.git(["diff", "\(baseSHA)..HEAD"])
+  }
+
+  /// Runs the fixture project's Node test suite in a worktree and reports
+  /// whether it passed, with trailing output for evidence.
+  static func runNodeTests(at worktreeURL: URL) -> (passed: Bool, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["node", "--test"]
+    process.currentDirectoryURL = worktreeURL
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    do {
+      try process.run()
+    } catch {
+      return (false, "node could not be launched: \(error.localizedDescription)")
+    }
+    let output = String(
+      decoding: pipe.fileHandleForReading.readDataToEndOfFile(),
+      as: UTF8.self
+    )
+    process.waitUntilExit()
+    return (process.terminationStatus == 0, String(output.suffix(2_000)))
+  }
+
   func headSHA() throws -> String {
     try git(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -316,6 +367,88 @@ struct EvalFixtureRepository {
       )
     }
     return String(decoding: output, as: UTF8.self)
+  }
+}
+
+/// Plays a cautious product owner for delivery cells: approves command
+/// approvals inside the fixture workspace and read-or-execute permission
+/// grants, declines network access and writes outside the fixture root, and
+/// rejects anything it does not recognize so a turn can never hang on an
+/// unanswered request.
+actor EvalApprovalResponder {
+  private let client: CodexAppServerClient
+  private let workspaceRootURL: URL
+  private var task: Task<Void, Never>?
+  private(set) var decisions: [String] = []
+
+  init(client: CodexAppServerClient, workspaceRootURL: URL) {
+    self.client = client
+    self.workspaceRootURL = workspaceRootURL.standardizedFileURL
+  }
+
+  func start() async {
+    guard task == nil else { return }
+    let messages = await client.inboundMessages(replayRecent: false)
+    task = Task { [weak self] in
+      for await message in messages {
+        guard case .request(let request) = message else { continue }
+        await self?.respond(to: request)
+      }
+    }
+  }
+
+  func stop() {
+    task?.cancel()
+    task = nil
+  }
+
+  private func respond(to request: CodexServerRequest) async {
+    switch request.method {
+    case "item/commandExecution/requestApproval":
+      let cwd = request.params["cwd"]?.stringValue
+      let insideWorkspace = cwd.map { isInsideWorkspace($0) } ?? true
+      let commandAllowed = insideWorkspace
+        && permissionsAllowed(request.params["additionalPermissions"])
+      record(request.method, allowed: commandAllowed, detail: cwd ?? "no cwd")
+      try? await client.resolveApprovalRequest(request, allow: commandAllowed)
+    case "item/permissions/requestApproval":
+      let allowed = permissionsAllowed(request.params["permissions"])
+      record(request.method, allowed: allowed, detail: "")
+      try? await client.resolveApprovalRequest(request, allow: allowed)
+    default:
+      record(request.method, allowed: false, detail: "unsupported")
+      await client.rejectUnsupportedServerRequest(request)
+    }
+  }
+
+  /// Missing or null permission payloads are fine; network access and writes
+  /// outside the fixture root are not.
+  private func permissionsAllowed(_ permissions: JSONValue?) -> Bool {
+    guard let permissions, permissions != .null else { return true }
+    if permissions["network"]?["enabled"]?.boolValue == true {
+      return false
+    }
+    for entry in permissions["fileSystem"]?["entries"]?.arrayValue ?? [] {
+      let access = entry["access"]?.stringValue ?? "write"
+      if access == "read" || access == "execute" { continue }
+      let path =
+        entry["path"]?["path"]?.stringValue
+        ?? entry["path"]?["pattern"]?.stringValue
+      guard let path, isInsideWorkspace(path) else { return false }
+    }
+    return true
+  }
+
+  private func isInsideWorkspace(_ path: String) -> Bool {
+    let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+    let root = workspaceRootURL.path
+    return normalized == root || normalized.hasPrefix(root + "/")
+  }
+
+  private func record(_ method: String, allowed: Bool, detail: String) {
+    let entry = "\(method): \(allowed ? "approved" : "declined") \(detail)"
+    decisions.append(entry)
+    print("  approval — \(entry)")
   }
 }
 
