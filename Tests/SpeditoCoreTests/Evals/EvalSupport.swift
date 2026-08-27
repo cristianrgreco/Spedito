@@ -166,8 +166,8 @@ struct EvalFixtureWorkspace {
       ## Development
 
       Ledgerline is a Node.js 22 project. `npm test` runs the test suite with
-      the built-in Node test runner. There is no build step and no server; the
-      modules under `src/` are used directly.
+      the built-in Node test runner (tests live in `tests/*.test.js`). There is
+      no build step and no server; the modules under `src/` are used directly.
       """,
     "package.json": """
       {
@@ -175,13 +175,21 @@ struct EvalFixtureWorkspace {
         "private": true,
         "type": "module",
         "scripts": {
-          "test": "node --test tests/"
+          "test": "node --test"
         }
       }
       """,
     "src/invoices.js": """
       export function invoiceTotal(lines) {
         return lines.reduce((total, line) => total + line.amount, 0)
+      }
+      """,
+    "src/summary.js": """
+      import { invoiceTotal } from "./invoices.js"
+
+      export function invoiceSummaryLine(invoice) {
+        const total = invoiceTotal(invoice.lines)
+        return `${invoice.number} — £${total.toFixed(2)} — ${invoice.status}`
       }
       """,
     "tests/invoices.test.js": """

@@ -897,6 +897,17 @@ enum EvalScenarioCatalog {
 
   // MARK: - Tech lead review
 
+  private static let overdueSummaryIntegration = """
+    import { invoiceTotal } from "./invoices.js"
+    import { isOverdue } from "./overdue.js"
+
+    export function invoiceSummaryLine(invoice, today) {
+      const total = invoiceTotal(invoice.lines)
+      const overdue = isOverdue(invoice, today) ? " — OVERDUE" : ""
+      return `${invoice.number} — £${total.toFixed(2)} — ${invoice.status}${overdue}`
+    }
+    """
+
   private static let overdueTicketFiles: [String: String] = [
     "clean": """
       export function isOverdue(invoice, today) {
@@ -914,26 +925,30 @@ enum EvalScenarioCatalog {
     "cleanTest": """
       import test from "node:test"
       import assert from "node:assert/strict"
-      import { isOverdue } from "../src/overdue.js"
+      import { invoiceSummaryLine } from "../src/summary.js"
 
-      test("an unpaid invoice past its due date is overdue", () => {
-        const invoice = { status: "sent", dueDate: "2026-08-01" }
-        assert.equal(isOverdue(invoice, "2026-08-27"), true)
+      const lines = [{ amount: 120 }]
+
+      test("an unpaid invoice past its due date shows OVERDUE", () => {
+        const invoice = { number: "AC-2026-001", status: "sent", dueDate: "2026-08-01", lines }
+        assert.match(invoiceSummaryLine(invoice, "2026-08-27"), / — OVERDUE$/)
       })
 
-      test("a paid invoice is never overdue", () => {
-        const invoice = { status: "paid", dueDate: "2026-08-01" }
-        assert.equal(isOverdue(invoice, "2026-08-27"), false)
+      test("a paid invoice never shows OVERDUE", () => {
+        const invoice = { number: "AC-2026-002", status: "paid", dueDate: "2026-08-01", lines }
+        assert.doesNotMatch(invoiceSummaryLine(invoice, "2026-08-27"), /OVERDUE/)
       })
       """,
     "flawedTest": """
       import test from "node:test"
       import assert from "node:assert/strict"
-      import { isOverdue } from "../src/overdue.js"
+      import { invoiceSummaryLine } from "../src/summary.js"
 
-      test("an unpaid invoice past its due date is overdue", () => {
-        const invoice = { status: "sent", dueDate: "2026-08-01" }
-        assert.equal(isOverdue(invoice, "2026-08-27"), true)
+      const lines = [{ amount: 120 }]
+
+      test("an unpaid invoice past its due date shows OVERDUE", () => {
+        const invoice = { number: "AC-2026-001", status: "sent", dueDate: "2026-08-01", lines }
+        assert.match(invoiceSummaryLine(invoice, "2026-08-27"), / — OVERDUE$/)
       })
       """,
   ]
@@ -974,6 +989,7 @@ enum EvalScenarioCatalog {
       let baseSHA = try repository.headSHA()
       try repository.write(files: [
         "src/overdue.js": overdueSource,
+        "src/summary.js": overdueSummaryIntegration,
         "tests/overdue.test.js": overdueTest,
       ])
       let headSHA = try repository.commitAll(message: "T5: mark overdue invoices")
@@ -989,8 +1005,9 @@ enum EvalScenarioCatalog {
           can chase payment.
           """,
         acceptanceCriteria: [
-          "An unpaid invoice with a due date before today is marked overdue",
-          "A paid invoice is never marked overdue, whatever its due date",
+          "The invoice summary line ends with OVERDUE for an unpaid invoice "
+            + "with a due date before today",
+          "A paid invoice never shows OVERDUE, whatever its due date",
           "Automated tests cover both the unpaid-overdue and the paid case",
         ],
         state: .verifying
@@ -1012,23 +1029,24 @@ enum EvalScenarioCatalog {
       let implementation = TicketExecutionResult(
         status: .completed,
         comment: """
-          Overdue detection is in place: unpaid invoices past their due date are \
-          marked overdue and paid invoices never are, with tests covering both \
-          cases.
+          Overdue detection is in place: the summary line for an unpaid invoice \
+          past its due date now ends with OVERDUE, paid invoices never show it, \
+          and tests cover both cases.
           """,
         question: nil,
         options: [],
         summary: """
-          Added src/overdue.js with an isOverdue(invoice, today) helper and \
-          tests/overdue.test.js covering the acceptance criteria. Unpaid \
-          invoices with a due date before today report overdue; paid invoices \
-          never do. No other modules changed.
+          Added src/overdue.js with an isOverdue(invoice, today) helper, wired \
+          it into the summary line in src/summary.js, and added \
+          tests/overdue.test.js covering the acceptance criteria: an unpaid \
+          invoice with a due date before today shows OVERDUE, and a paid \
+          invoice never does. No other modules changed.
           """,
-        changedFiles: ["src/overdue.js", "tests/overdue.test.js"],
+        changedFiles: ["src/overdue.js", "src/summary.js", "tests/overdue.test.js"],
         tests: ["npm test — all tests passing"],
         knowledgeNotes: [],
         reviewInstructions: [
-          "Open an unpaid invoice with a past due date and confirm it shows as overdue"
+          "Check that the summary line for an unpaid invoice with a past due date ends with OVERDUE"
         ],
         retrospectiveWentWell: [],
         retrospectiveCouldImprove: [],
@@ -1092,9 +1110,10 @@ enum EvalScenarioCatalog {
     let clean = try makeScenario(
       id: "review/clean-candidate",
       brief: """
-        A sound candidate: the overdue helper meets every acceptance criterion, \
-        the tests cover both required cases, and the handoff is accurate. A good \
-        review approves it without inventing findings.
+        A sound candidate: the overdue helper is correct, it is wired into the \
+        owner-visible invoice summary line, the tests cover both required \
+        cases, and the handoff is accurate. A good review approves it without \
+        inventing findings.
         """,
       overdueSource: overdueTicketFiles["clean"]!,
       overdueTest: overdueTicketFiles["cleanTest"]!,
