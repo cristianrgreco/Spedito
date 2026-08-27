@@ -192,7 +192,12 @@ public enum CodexTicketSuggestionGenerator {
 
       Use the decisions resolved in the preceding clarification conversation. Do not invent product
       decisions or disguise an unresolved product owner choice as a backlog ticket. Every acceptance
-      criterion must be concrete. If a prerequisite research or design ticket will supply a decision,
+      criterion must be concrete and grounded in the outcome and the supplied evidence; do not add
+      behaviour, states, or data — retries, extra fields, test accounts, unrequested settings — that
+      the owner did not ask for and the evidence does not require. An implementation ticket must not
+      silently embed an unapproved choice of a real external service, provider, or delivery mechanism;
+      surface that choice to the product owner, or through authorised research, before committing the
+      implementation as scope. If a prerequisite research or design ticket will supply a decision,
       cite that exact ticket reference in the dependant criterion; never use vague “agreed”, “approved”,
       “chosen”, or “to be decided” placeholders without that provenance.
       A research or discovery ticket is valid only when the product owner explicitly requested research
@@ -231,7 +236,11 @@ public enum CodexTicketSuggestionGenerator {
       Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
       test, local-run, and demo entry points; run-private temporary and cache locations; the complete
       filesystem, localhost, network, and service capability boundary; a successful managed readiness
-      check; limitations; and a verified Environments product knowledge update. Consider the intended
+      check; limitations; and a verified Environments product knowledge update. Write that ticket's
+      owner-facing title, context, and acceptance criteria in plain product language the owner can read
+      at a glance — say “the team can build, test, and demo the product on this Mac, and the setup is
+      written down”, not “toolchain”, “localhost”, “capability boundary”, or cache paths; the technical
+      checklist above is coverage to satisfy, not wording to copy. Consider the intended
       deployment destination early when it affects the stack, but leave production accounts, credentials,
       signing identities, and irreversible release access to separately authorised release work.
 
