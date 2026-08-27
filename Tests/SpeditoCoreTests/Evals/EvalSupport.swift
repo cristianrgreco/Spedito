@@ -4,7 +4,7 @@ import SpeditoCore
 /// Configuration for one eval run, read from the environment so
 /// `scripts/evals.sh` can parameterize a run without code changes.
 struct EvalConfiguration: Sendable {
-  let model: String
+  let models: [String]
   let efforts: [String]
   let repetitions: Int
   let scenarioFilter: [String]
@@ -17,7 +17,11 @@ struct EvalConfiguration: Sendable {
   static func fromEnvironment(
     _ environment: [String: String] = ProcessInfo.processInfo.environment
   ) -> EvalConfiguration {
-    let model = environment["SPEDITO_EVAL_MODEL"] ?? "gpt-5.6-terra"
+    let fallbackModel = environment["SPEDITO_EVAL_MODEL"] ?? "gpt-5.6-terra"
+    let models = (environment["SPEDITO_EVAL_MODELS"] ?? fallbackModel)
+      .split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
     let efforts = (environment["SPEDITO_EVAL_EFFORTS"] ?? "medium,high")
       .split(separator: ",")
       .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -32,11 +36,11 @@ struct EvalConfiguration: Sendable {
         URL(fileURLWithPath: $0, isDirectory: true)
       } ?? EvalPaths.repositoryRootURL.appendingPathComponent(".eval-runs", isDirectory: true)
     return EvalConfiguration(
-      model: model,
+      models: models.isEmpty ? [fallbackModel] : models,
       efforts: efforts.isEmpty ? ["medium", "high"] : efforts,
       repetitions: repetitions,
       scenarioFilter: scenarioFilter,
-      judgeModel: environment["SPEDITO_EVAL_JUDGE_MODEL"] ?? model,
+      judgeModel: environment["SPEDITO_EVAL_JUDGE_MODEL"] ?? fallbackModel,
       judgeEffort: environment["SPEDITO_EVAL_JUDGE_EFFORT"] ?? "high",
       skipsJudge: environment["SPEDITO_EVAL_SKIP_JUDGE"] == "1",
       runsRootURL: runsRootURL,
@@ -145,50 +149,136 @@ enum EvalCodexRuntime {
   }
 }
 
-/// A small, generic local Git repository used as the read-only working
-/// directory for planning threads. Planning prompts forbid repository
-/// inspection, so the contents only need to be a plausible product workspace.
-struct EvalFixtureRepository {
+/// A temporary root owning every Git fixture an eval run needs: the shared
+/// generic product repository, review candidate checkouts, and sanitized
+/// analysis snapshots.
+struct EvalFixtureWorkspace {
   let rootURL: URL
+  let sharedRepository: EvalFixtureRepository
 
-  static func make() throws -> EvalFixtureRepository {
+  static let sharedRepositoryFiles: [String: String] = [
+    "README.md": """
+      # Ledgerline
+
+      A small invoicing tool for freelancers: create invoices, track payment
+      status, and keep client records in one place.
+
+      ## Development
+
+      Ledgerline is a Node.js 22 project. `npm test` runs the test suite with
+      the built-in Node test runner. There is no build step and no server; the
+      modules under `src/` are used directly.
+      """,
+    "package.json": """
+      {
+        "name": "ledgerline",
+        "private": true,
+        "type": "module",
+        "scripts": {
+          "test": "node --test tests/"
+        }
+      }
+      """,
+    "src/invoices.js": """
+      export function invoiceTotal(lines) {
+        return lines.reduce((total, line) => total + line.amount, 0)
+      }
+      """,
+    "tests/invoices.test.js": """
+      import test from "node:test"
+      import assert from "node:assert/strict"
+      import { invoiceTotal } from "../src/invoices.js"
+
+      test("totals the line amounts", () => {
+        assert.equal(invoiceTotal([{ amount: 40 }, { amount: 2.5 }]), 42.5)
+      })
+
+      test("an empty invoice totals zero", () => {
+        assert.equal(invoiceTotal([]), 0)
+      })
+      """,
+  ]
+
+  static func make() throws -> EvalFixtureWorkspace {
     let rootURL = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-evals", isDirectory: true)
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-    try """
-    # Ledgerline
+    let sharedRepository = try EvalFixtureRepository.create(
+      at: rootURL.appendingPathComponent("shared", isDirectory: true),
+      files: sharedRepositoryFiles
+    )
+    return EvalFixtureWorkspace(rootURL: rootURL, sharedRepository: sharedRepository)
+  }
 
-    A small invoicing tool for freelancers: create invoices, track payment
-    status, and keep client records in one place.
-    """.write(
-      to: rootURL.appendingPathComponent("README.md"),
-      atomically: true,
-      encoding: .utf8
+  func makeRepository(name: String, files: [String: String]) throws -> EvalFixtureRepository {
+    try EvalFixtureRepository.create(
+      at: rootURL.appendingPathComponent(name, isDirectory: true),
+      files: files
     )
-    let sourcesURL = rootURL.appendingPathComponent("src", isDirectory: true)
-    try FileManager.default.createDirectory(at: sourcesURL, withIntermediateDirectories: true)
-    try """
-    export function invoiceTotal(lines) {
-      return lines.reduce((total, line) => total + line.amount, 0)
-    }
-    """.write(
-      to: sourcesURL.appendingPathComponent("invoices.js"),
-      atomically: true,
-      encoding: .utf8
+  }
+
+  func prepareAnalysisSnapshot(
+    of repository: EvalFixtureRepository
+  ) async throws -> RepositoryAnalysisSnapshot {
+    let manager = GitWorkspaceManager()
+    let destinationURL = rootURL
+      .appendingPathComponent("snapshots", isDirectory: true)
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    return try await manager.prepareRepositoryAnalysisSnapshot(
+      repositoryURL: repository.rootURL,
+      sha: try repository.headSHA(),
+      destinationURL: destinationURL
     )
-    let repository = EvalFixtureRepository(rootURL: rootURL)
-    try repository.git(["init", "--quiet"])
-    try repository.git(["add", "."])
-    try repository.git(["commit", "--quiet", "-m", "Initial fixture"])
-    return repository
   }
 
   func remove() {
     try? FileManager.default.removeItem(at: rootURL)
   }
+}
 
-  private func git(_ arguments: [String]) throws {
+/// One local Git repository built from literal file contents, with the small
+/// set of operations the fixtures need: commit further states and pin a
+/// detached checkout the way production pins candidate review workspaces.
+struct EvalFixtureRepository {
+  let rootURL: URL
+
+  static func create(at rootURL: URL, files: [String: String]) throws -> EvalFixtureRepository {
+    let repository = EvalFixtureRepository(rootURL: rootURL)
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    try repository.git(["init", "--quiet"])
+    try repository.write(files: files)
+    _ = try repository.commitAll(message: "Initial fixture")
+    return repository
+  }
+
+  func write(files: [String: String]) throws {
+    for (path, contents) in files {
+      let fileURL = rootURL.appendingPathComponent(path)
+      try FileManager.default.createDirectory(
+        at: fileURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+  }
+
+  func commitAll(message: String) throws -> String {
+    try git(["add", "."])
+    try git(["commit", "--quiet", "-m", message])
+    return try headSHA()
+  }
+
+  func headSHA() throws -> String {
+    try git(["rev-parse", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  func checkoutDetached(_ sha: String) throws {
+    try git(["checkout", "--quiet", "--detach", sha])
+  }
+
+  @discardableResult
+  private func git(_ arguments: [String]) throws -> String {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
     process.arguments =
@@ -200,9 +290,11 @@ struct EvalFixtureRepository {
     environment["GIT_TERMINAL_PROMPT"] = "0"
     process.environment = environment
     let errorPipe = Pipe()
+    let outputPipe = Pipe()
     process.standardError = errorPipe
-    process.standardOutput = Pipe()
+    process.standardOutput = outputPipe
     try process.run()
+    let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
       let detail = String(
@@ -215,6 +307,7 @@ struct EvalFixtureRepository {
         userInfo: [NSLocalizedDescriptionKey: "git \(arguments.first ?? "") failed: \(detail)"]
       )
     }
+    return String(decoding: output, as: UTF8.self)
   }
 }
 

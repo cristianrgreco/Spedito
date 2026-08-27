@@ -6,6 +6,16 @@ struct EvalRubricDimension: Sendable {
   let guidance: String
 }
 
+/// How a scenario's Codex thread starts, mirroring the thread type the owning
+/// coordinator uses in production.
+enum EvalThreadKind: Sendable {
+  /// A read-only thread. A nil working directory means the shared fixture
+  /// repository; review scenarios pin their own detached candidate checkout.
+  case readOnly(workingDirectoryURL: URL?)
+  /// A repository-analysis thread over a sanitized snapshot.
+  case repositoryAnalysis(snapshotURL: URL)
+}
+
 /// One prompt scenario: the exact developer instructions, prompt, and output
 /// schema production would send, a deterministic evaluation built on the
 /// production decoder and validators, and a rubric for the LLM judge.
@@ -16,8 +26,31 @@ struct EvalScenario: Sendable {
   let developerInstructions: String
   let prompt: String
   let outputSchema: JSONValue
+  let threadKind: EvalThreadKind
   let rubric: [EvalRubricDimension]
   let evaluate: @Sendable (String) -> EvalDeterministicOutcome
+
+  init(
+    id: String,
+    generator: String,
+    brief: String,
+    developerInstructions: String,
+    prompt: String,
+    outputSchema: JSONValue,
+    threadKind: EvalThreadKind = .readOnly(workingDirectoryURL: nil),
+    rubric: [EvalRubricDimension],
+    evaluate: @escaping @Sendable (String) -> EvalDeterministicOutcome
+  ) {
+    self.id = id
+    self.generator = generator
+    self.brief = brief
+    self.developerInstructions = developerInstructions
+    self.prompt = prompt
+    self.outputSchema = outputSchema
+    self.threadKind = threadKind
+    self.rubric = rubric
+    self.evaluate = evaluate
+  }
 }
 
 enum EvalScenarioCatalog {
@@ -38,9 +71,11 @@ enum EvalScenarioCatalog {
       """
   )
 
-  static func scenarios() -> [EvalScenario] {
+  static func scenarios(workspace: EvalFixtureWorkspace) async throws -> [EvalScenario] {
     epicPlanScenarios() + clarificationScenarios() + refinementScenarios()
       + sprintGoalScenarios() + knowledgeScenarios()
+      + (try reviewScenarios(workspace: workspace))
+      + [try await repositoryAnalysisScenario(workspace: workspace)]
   }
 
   // MARK: - Shared fixtures
@@ -390,10 +425,13 @@ enum EvalScenarioCatalog {
       title: "",
       goal: """
         Add a printable monthly income summary. Decisions already made by the \
-        product owner: totals are grouped by client; amounts are in GBP only; the \
-        summary uses only invoice data already saved in Ledgerline; no charts; \
-        printing uses the standard system print dialog; the summary is available \
-        from the reports area for any month with at least one invoice.
+        product owner: the summary counts paid invoices only, using the date each \
+        invoice was paid; totals are grouped by client, with one line per client \
+        and one overall total, and individual invoices are not listed; amounts \
+        are in GBP only; the summary uses only invoice data already saved in \
+        Ledgerline; no charts; printing uses the standard system print dialog; \
+        the owner picks the month from a list of all months that have at least \
+        one paid invoice, and other months are not shown.
         """
     )
     let resolvedItems = establishedBacklog(productID: resolvedProduct.id)
@@ -855,6 +893,352 @@ enum EvalScenarioCatalog {
         facts: [:]
       )
     }
+  }
+
+  // MARK: - Tech lead review
+
+  private static let overdueTicketFiles: [String: String] = [
+    "clean": """
+      export function isOverdue(invoice, today) {
+        if (invoice.status === "paid") {
+          return false
+        }
+        return invoice.dueDate < today
+      }
+      """,
+    "flawed": """
+      export function isOverdue(invoice, today) {
+        return invoice.dueDate < today
+      }
+      """,
+    "cleanTest": """
+      import test from "node:test"
+      import assert from "node:assert/strict"
+      import { isOverdue } from "../src/overdue.js"
+
+      test("an unpaid invoice past its due date is overdue", () => {
+        const invoice = { status: "sent", dueDate: "2026-08-01" }
+        assert.equal(isOverdue(invoice, "2026-08-27"), true)
+      })
+
+      test("a paid invoice is never overdue", () => {
+        const invoice = { status: "paid", dueDate: "2026-08-01" }
+        assert.equal(isOverdue(invoice, "2026-08-27"), false)
+      })
+      """,
+    "flawedTest": """
+      import test from "node:test"
+      import assert from "node:assert/strict"
+      import { isOverdue } from "../src/overdue.js"
+
+      test("an unpaid invoice past its due date is overdue", () => {
+        const invoice = { status: "sent", dueDate: "2026-08-01" }
+        assert.equal(isOverdue(invoice, "2026-08-27"), true)
+      })
+      """,
+  ]
+
+  private static func reviewScenarios(workspace: EvalFixtureWorkspace) throws -> [EvalScenario] {
+    let rubric = [
+      ownerClarity,
+      EvalRubricDimension(
+        name: "findingPrecision",
+        guidance: """
+          Every finding names a real, material problem with exact evidence from \
+          the candidate. No invented problems, no cosmetic-only findings raised \
+          as blockers, and a sound candidate is approved rather than nitpicked.
+          """
+      ),
+      EvalRubricDimension(
+        name: "reviewJudgment",
+        guidance: """
+          The decision matches the evidence. Material acceptance-criteria \
+          violations are caught, and the implementer's handoff claims are \
+          verified against the actual files rather than trusted.
+          """
+      ),
+    ]
+
+    func makeScenario(
+      id: String,
+      brief: String,
+      overdueSource: String,
+      overdueTest: String,
+      expectedDecision: TechLeadReviewDecision,
+      checkName: String
+    ) throws -> EvalScenario {
+      let repository = try workspace.makeRepository(
+        name: id.replacingOccurrences(of: "/", with: "-"),
+        files: EvalFixtureWorkspace.sharedRepositoryFiles
+      )
+      let baseSHA = try repository.headSHA()
+      try repository.write(files: [
+        "src/overdue.js": overdueSource,
+        "tests/overdue.test.js": overdueTest,
+      ])
+      let headSHA = try repository.commitAll(message: "T5: mark overdue invoices")
+      try repository.checkoutDetached(headSHA)
+
+      let product = makeProduct()
+      let item = WorkItem(
+        productID: product.id,
+        key: "T5",
+        title: "Show which invoices are overdue",
+        body: """
+          Freelancers need to see at a glance which invoices are overdue so they \
+          can chase payment.
+          """,
+        acceptanceCriteria: [
+          "An unpaid invoice with a due date before today is marked overdue",
+          "A paid invoice is never marked overdue, whatever its due date",
+          "Automated tests cover both the unpaid-overdue and the paid case",
+        ],
+        state: .verifying
+      )
+      let implementer = AgentProfile(
+        productID: product.id,
+        name: "Implementer",
+        role: .implementer,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "medium"
+      )
+      let reviewer = AgentProfile(
+        productID: product.id,
+        name: "Tech lead",
+        role: .lead,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "high"
+      )
+      let implementation = TicketExecutionResult(
+        status: .completed,
+        comment: """
+          Overdue detection is in place: unpaid invoices past their due date are \
+          marked overdue and paid invoices never are, with tests covering both \
+          cases.
+          """,
+        question: nil,
+        options: [],
+        summary: """
+          Added src/overdue.js with an isOverdue(invoice, today) helper and \
+          tests/overdue.test.js covering the acceptance criteria. Unpaid \
+          invoices with a due date before today report overdue; paid invoices \
+          never do. No other modules changed.
+          """,
+        changedFiles: ["src/overdue.js", "tests/overdue.test.js"],
+        tests: ["npm test — all tests passing"],
+        knowledgeNotes: [],
+        reviewInstructions: [
+          "Open an unpaid invoice with a past due date and confirm it shows as overdue"
+        ],
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+      return EvalScenario(
+        id: id,
+        generator: "techLeadReview",
+        brief: brief,
+        developerInstructions: CodexTechLeadReviewer.developerInstructions(
+          productInstructions: product.instructions,
+          customInstructions: "",
+          reviewer: reviewer
+        ),
+        prompt: CodexTechLeadReviewer.prompt(
+          product: product,
+          item: item,
+          implementation: implementation,
+          knowledgePageProposals: [],
+          assignee: implementer,
+          baseSHA: baseSHA,
+          candidateHeadSHA: headSHA
+        ),
+        outputSchema: CodexTechLeadReviewer.outputSchema,
+        threadKind: .readOnly(workingDirectoryURL: repository.rootURL),
+        rubric: rubric,
+        evaluate: { response in
+          do {
+            let review = try CodexTechLeadReviewer.decode(response)
+            return EvalDeterministicOutcome(
+              decodePassed: true,
+              decodeFailure: nil,
+              checks: [
+                EvalCheck(
+                  name: checkName,
+                  passed: review.decision == expectedDecision,
+                  detail: "decision was \(review.decision.rawValue)"
+                    + (review.findings.isEmpty
+                      ? ""
+                      : "; findings: " + review.findings.joined(separator: " | "))
+                )
+              ],
+              facts: [
+                "decision": review.decision.rawValue,
+                "findingCount": String(review.findings.count),
+                "findings": review.findings.joined(separator: " | "),
+              ]
+            )
+          } catch {
+            return EvalDeterministicOutcome(
+              decodePassed: false,
+              decodeFailure: describeError(error),
+              checks: [],
+              facts: [:]
+            )
+          }
+        }
+      )
+    }
+
+    let clean = try makeScenario(
+      id: "review/clean-candidate",
+      brief: """
+        A sound candidate: the overdue helper meets every acceptance criterion, \
+        the tests cover both required cases, and the handoff is accurate. A good \
+        review approves it without inventing findings.
+        """,
+      overdueSource: overdueTicketFiles["clean"]!,
+      overdueTest: overdueTicketFiles["cleanTest"]!,
+      expectedDecision: .approved,
+      checkName: "approvesCleanCandidate"
+    )
+    let flawed = try makeScenario(
+      id: "review/flawed-candidate",
+      brief: """
+        A flawed candidate whose handoff overclaims: the overdue helper ignores \
+        whether an invoice is paid, violating the "a paid invoice is never \
+        marked overdue" criterion, and the promised paid-case test does not \
+        exist. The handoff claims both are covered. A good review reads the \
+        actual files, catches the violation, and requests changes.
+        """,
+      overdueSource: overdueTicketFiles["flawed"]!,
+      overdueTest: overdueTicketFiles["flawedTest"]!,
+      expectedDecision: .changesRequested,
+      checkName: "blocksFlawedCandidate"
+    )
+    return [clean, flawed]
+  }
+
+  // MARK: - Repository knowledge analysis
+
+  private static func repositoryAnalysisScenario(
+    workspace: EvalFixtureWorkspace
+  ) async throws -> EvalScenario {
+    let snapshot = try await workspace.prepareAnalysisSnapshot(
+      of: workspace.sharedRepository
+    )
+    let product = makeProduct()
+    let pages = [
+      KnowledgePage(productID: product.id, title: "Overview", slug: "overview"),
+      KnowledgePage(productID: product.id, title: "Architecture", slug: "architecture"),
+      KnowledgePage(productID: product.id, title: "Environments", slug: "environments"),
+      KnowledgePage(
+        productID: product.id,
+        title: "Features",
+        slug: "features",
+        kind: .section
+      ),
+    ].map { page in
+      KnowledgePage(
+        id: page.id,
+        productID: page.productID,
+        title: page.title,
+        slug: page.slug,
+        bodyMarkdown: "",
+        kind: page.kind
+      )
+    }
+    let environmentsPageID = pages.first { $0.slug == "environments" }!.id
+    let run = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      analyzedSHA: snapshot.analyzedSHA,
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID()
+    )
+    return EvalScenario(
+      id: "repo-knowledge/initial-analysis",
+      generator: "repositoryAnalysis",
+      brief: """
+        The first knowledge analysis of a small, honest Node.js repository with \
+        clear test instructions and no launchable app. A good result populates \
+        the empty starter pages the evidence supports — Environments especially, \
+        since the README and package.json state the toolchain and test entry \
+        point — cites exact snapshot paths, invents nothing the files do not \
+        say, and proposes no launch recipe because none exists.
+        """,
+      developerInstructions: CodexRepositoryKnowledgeAnalyzer.developerInstructions,
+      prompt: try CodexRepositoryKnowledgeAnalyzer.prompt(
+        run: run,
+        pages: pages,
+        snapshot: snapshot
+      ),
+      outputSchema: CodexRepositoryKnowledgeAnalyzer.outputSchema,
+      threadKind: .repositoryAnalysis(snapshotURL: snapshot.url),
+      rubric: [
+        ownerClarity,
+        EvalRubricDimension(
+          name: "evidenceFidelity",
+          guidance: """
+            Every statement in every draft is supported by the cited snapshot \
+            files. Nothing is inferred beyond the evidence, and limitations are \
+            stated rather than papered over.
+            """
+        ),
+        EvalRubricDimension(
+          name: "coverageJudgment",
+          guidance: """
+            Populates the starter pages the repository genuinely supports and \
+            leaves alone the ones it cannot, rather than padding every page or \
+            skipping obvious evidence.
+            """
+        ),
+      ],
+      evaluate: { response in
+        do {
+          let result = try CodexRepositoryKnowledgeAnalyzer.decode(
+            response,
+            run: run,
+            pages: pages,
+            snapshot: snapshot
+          )
+          let coversEnvironments = result.drafts.contains {
+            $0.targetPageID == environmentsPageID
+          }
+          return EvalDeterministicOutcome(
+            decodePassed: true,
+            decodeFailure: nil,
+            checks: [
+              EvalCheck(
+                name: "coversEnvironments",
+                passed: coversEnvironments,
+                detail: coversEnvironments
+                  ? "proposed an Environments update"
+                  : "left Environments empty despite README and package.json evidence"
+              ),
+              EvalCheck(
+                name: "omitsLaunchRecipe",
+                passed: result.launchProposal == nil,
+                detail: result.launchProposal == nil
+                  ? "no launch recipe, as the evidence requires"
+                  : "guessed a launch recipe for a repository with no app"
+              ),
+            ],
+            facts: [
+              "draftCount": String(result.drafts.count),
+              "draftTargets": result.drafts.map(\.title).joined(separator: " | "),
+              "summaryCharacterCount": String(result.summary.count),
+            ]
+          )
+        } catch {
+          return EvalDeterministicOutcome(
+            decodePassed: false,
+            decodeFailure: describeError(error),
+            checks: [],
+            facts: [:]
+          )
+        }
+      }
+    )
   }
 
   private static func describeError(_ error: Error) -> String {

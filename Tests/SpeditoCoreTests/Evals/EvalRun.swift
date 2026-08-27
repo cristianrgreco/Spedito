@@ -23,8 +23,8 @@ struct EvalRunTests {
   func runEvals() async throws {
     let configuration = EvalConfiguration.fromEnvironment()
     let bundle = try EvalRunBundle(runsRootURL: configuration.runsRootURL)
-    let fixtureRepository = try EvalFixtureRepository.make()
-    defer { fixtureRepository.remove() }
+    let workspace = try EvalFixtureWorkspace.make()
+    defer { workspace.remove() }
 
     let descriptor = try EvalCodexRuntime.resolveExecutable(
       overridePath: configuration.codexOverridePath
@@ -33,24 +33,32 @@ struct EvalRunTests {
     _ = try await client.connect()
     defer { Task { await client.disconnect() } }
 
-    let models = try await client.listModels()
-    guard let modelOption = models.first(where: { $0.model == configuration.model }) else {
-      throw EvalRuntimeError.modelNotAvailable(
-        configuration.model,
-        available: models.map(\.model)
+    let availableModels = try await client.listModels()
+    var effortsByModel: [String: [String]] = [:]
+    var supportedEffortsByModel: [String: [String]] = [:]
+    for model in configuration.models {
+      guard let option = availableModels.first(where: { $0.model == model }) else {
+        throw EvalRuntimeError.modelNotAvailable(
+          model,
+          available: availableModels.map(\.model)
+        )
+      }
+      let supported = option.supportedReasoningEfforts.map(\.id)
+      supportedEffortsByModel[model] = supported
+      effortsByModel[model] = configuration.efforts.filter { effort in
+        let isSupported = supported.contains(effort)
+        if !isSupported {
+          print("Skipping unsupported effort \(effort) for \(model)")
+        }
+        return isSupported
+      }
+      try #require(
+        !(effortsByModel[model] ?? []).isEmpty,
+        "No requested effort is supported by \(model)"
       )
     }
-    let supportedEfforts = modelOption.supportedReasoningEfforts.map(\.id)
-    let efforts = configuration.efforts.filter { effort in
-      let supported = supportedEfforts.contains(effort)
-      if !supported {
-        print("Skipping unsupported effort \(effort) for \(configuration.model)")
-      }
-      return supported
-    }
-    try #require(!efforts.isEmpty, "No requested effort is supported by \(configuration.model)")
 
-    var scenarios = EvalScenarioCatalog.scenarios()
+    var scenarios = try await EvalScenarioCatalog.scenarios(workspace: workspace)
     if !configuration.scenarioFilter.isEmpty {
       scenarios = scenarios.filter { scenario in
         configuration.scenarioFilter.contains { scenario.id.hasPrefix($0) }
@@ -61,15 +69,15 @@ struct EvalRunTests {
     var metadata = EvalRunMetadata(
       startedAt: Date(),
       finishedAt: nil,
-      model: configuration.model,
-      efforts: efforts,
+      models: configuration.models,
+      efforts: configuration.efforts,
       repetitions: configuration.repetitions,
       judgeModel: configuration.judgeModel,
       judgeEffort: configuration.judgeEffort,
       skipsJudge: configuration.skipsJudge,
       codexExecutablePath: descriptor.executableURL.path,
       codexVersion: descriptor.version,
-      supportedReasoningEfforts: supportedEfforts,
+      supportedReasoningEfforts: supportedEffortsByModel,
       rateLimitUsedPercentBefore: nil,
       rateLimitUsedPercentAfter: nil
     )
@@ -78,33 +86,38 @@ struct EvalRunTests {
 
     let judge = EvalJudge(
       client: client,
-      workingDirectory: fixtureRepository.rootURL,
+      workingDirectory: workspace.sharedRepository.rootURL,
       model: configuration.judgeModel,
       effort: configuration.judgeEffort
     )
 
-    let totalCells = scenarios.count * efforts.count * configuration.repetitions
+    let totalCells = scenarios.count
+      * configuration.models.reduce(0) { $0 + (effortsByModel[$1]?.count ?? 0) }
+      * configuration.repetitions
     print("Eval run: \(totalCells) cell(s) → \(bundle.bundleURL.path)")
 
     var records: [EvalCellRecord] = []
     var cellIndex = 0
     for scenario in scenarios {
-      for effort in efforts {
-        for repetition in 1...configuration.repetitions {
-          cellIndex += 1
-          print("[\(cellIndex)/\(totalCells)] \(scenario.id) at \(effort) effort…")
-          let record = await runCell(
-            scenario: scenario,
-            effort: effort,
-            repetition: repetition,
-            configuration: configuration,
-            client: client,
-            fixtureRepository: fixtureRepository,
-            judge: judge
-          )
-          records.append(record)
-          try bundle.write(records: records)
-          summarize(record)
+      for model in configuration.models {
+        for effort in effortsByModel[model] ?? [] {
+          for repetition in 1...configuration.repetitions {
+            cellIndex += 1
+            print("[\(cellIndex)/\(totalCells)] \(scenario.id) · \(model) at \(effort) effort…")
+            let record = await runCell(
+              scenario: scenario,
+              model: model,
+              effort: effort,
+              repetition: repetition,
+              configuration: configuration,
+              client: client,
+              workspace: workspace,
+              judge: judge
+            )
+            records.append(record)
+            try bundle.write(records: records)
+            summarize(record)
+          }
         }
       }
     }
@@ -118,11 +131,12 @@ struct EvalRunTests {
 
   private func runCell(
     scenario: EvalScenario,
+    model: String,
     effort: String,
     repetition: Int,
     configuration: EvalConfiguration,
     client: CodexAppServerClient,
-    fixtureRepository: EvalFixtureRepository,
+    workspace: EvalFixtureWorkspace,
     judge: EvalJudge
   ) async -> EvalCellRecord {
     let startedAt = Date()
@@ -130,11 +144,21 @@ struct EvalRunTests {
     let response: String
     do {
       response = try await EvalRetry.withCapacityRetry {
-        let threadID = try await client.startReadOnlyThread(
-          workingDirectory: fixtureRepository.rootURL,
-          developerInstructions: scenario.developerInstructions,
-          model: configuration.model
-        )
+        let threadID: String
+        switch scenario.threadKind {
+        case .readOnly(let workingDirectoryURL):
+          threadID = try await client.startReadOnlyThread(
+            workingDirectory: workingDirectoryURL ?? workspace.sharedRepository.rootURL,
+            developerInstructions: scenario.developerInstructions,
+            model: model
+          )
+        case .repositoryAnalysis(let snapshotURL):
+          threadID = try await client.startRepositoryAnalysisThread(
+            snapshotURL: snapshotURL,
+            developerInstructions: scenario.developerInstructions,
+            model: model
+          )
+        }
         let turnID = try await client.startStructuredTurn(
           threadID: threadID,
           prompt: scenario.prompt,
@@ -154,7 +178,7 @@ struct EvalRunTests {
       return EvalCellRecord(
         scenarioID: scenario.id,
         generator: scenario.generator,
-        model: configuration.model,
+        model: model,
         effort: effort,
         repetition: repetition,
         startedAt: startedAt,
@@ -193,7 +217,7 @@ struct EvalRunTests {
     return EvalCellRecord(
       scenarioID: scenario.id,
       generator: scenario.generator,
-      model: configuration.model,
+      model: model,
       effort: effort,
       repetition: repetition,
       startedAt: startedAt,

@@ -3,7 +3,7 @@ import Foundation
 struct EvalRunMetadata: Codable {
   let startedAt: Date
   var finishedAt: Date?
-  let model: String
+  let models: [String]
   let efforts: [String]
   let repetitions: Int
   let judgeModel: String
@@ -11,7 +11,7 @@ struct EvalRunMetadata: Codable {
   let skipsJudge: Bool
   let codexExecutablePath: String
   let codexVersion: String
-  let supportedReasoningEfforts: [String]
+  let supportedReasoningEfforts: [String: [String]]
   var rateLimitUsedPercentBefore: Double?
   var rateLimitUsedPercentAfter: Double?
 }
@@ -67,7 +67,10 @@ enum EvalReport {
     var lines: [String] = []
     lines.append("# Prompt eval run")
     lines.append("")
-    lines.append("- Model: `\(metadata.model)` at efforts \(metadata.efforts.joined(separator: ", "))")
+    lines.append(
+      "- Models: \(metadata.models.map { "`\($0)`" }.joined(separator: ", ")) "
+        + "at efforts \(metadata.efforts.joined(separator: ", "))"
+    )
     lines.append("- Judge: `\(metadata.judgeModel)` at \(metadata.judgeEffort)\(metadata.skipsJudge ? " (skipped)" : "")")
     lines.append("- Codex: \(metadata.codexVersion) (\(metadata.codexExecutablePath))")
     lines.append("- Repetitions per cell: \(metadata.repetitions)")
@@ -92,9 +95,9 @@ enum EvalReport {
       lines.append("## \(generator)")
       lines.append("")
       lines.append(
-        "| Scenario | Effort | Turn | Decode | Checks | Latency | Judge mean | Lowest dimension |"
+        "| Scenario | Model | Effort | Turn | Decode | Checks | Latency | Judge mean | Lowest dimension |"
       )
-      lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+      lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
       for record in generatorRecords {
         let turn = record.turnFailure == nil ? "ok" : "FAILED"
         let decode = record.turnFailure != nil ? "—" : (record.decodePassed ? "pass" : "FAIL")
@@ -114,21 +117,24 @@ enum EvalReport {
           judgeMean = "judge failed"
         }
         lines.append(
-          "| \(record.scenarioID) | \(record.effort) | \(turn) | \(decode) | \(checks) "
-            + "| \(latency) | \(judgeMean) | \(lowest) |"
+          "| \(record.scenarioID) | \(record.model) | \(record.effort) | \(turn) | \(decode) "
+            + "| \(checks) | \(latency) | \(judgeMean) | \(lowest) |"
         )
       }
 
-      let dimensionRows = dimensionAverages(for: generatorRecords, efforts: metadata.efforts)
+      let columns = orderedUnique(
+        records.map { "\($0.model) \($0.effort)" }
+      )
+      let dimensionRows = dimensionAverages(for: generatorRecords, columns: columns)
       if !dimensionRows.isEmpty {
         lines.append("")
-        lines.append("Judge dimensions (mean per effort):")
+        lines.append("Judge dimensions (mean per model and effort):")
         lines.append("")
-        lines.append("| Dimension | " + metadata.efforts.joined(separator: " | ") + " |")
-        lines.append("| --- | " + metadata.efforts.map { _ in "---" }.joined(separator: " | ") + " |")
+        lines.append("| Dimension | " + columns.joined(separator: " | ") + " |")
+        lines.append("| --- | " + columns.map { _ in "---" }.joined(separator: " | ") + " |")
         for row in dimensionRows {
-          let cells = metadata.efforts.map { effort in
-            row.meanByEffort[effort].map(format) ?? "—"
+          let cells = columns.map { column in
+            row.meanByColumn[column].map(format) ?? "—"
           }
           lines.append("| \(row.dimension) | " + cells.joined(separator: " | ") + " |")
         }
@@ -154,7 +160,7 @@ enum EvalReport {
         details.append("judge failed: \(judgeFailure)")
       }
       for detail in details {
-        lines.append("- \(record.scenarioID) [\(record.effort)]: \(detail)")
+        lines.append("- \(record.scenarioID) [\(record.model) \(record.effort)]: \(detail)")
         hasFailureLines = true
       }
     }
@@ -167,34 +173,35 @@ enum EvalReport {
 
   private struct DimensionRow {
     let dimension: String
-    let meanByEffort: [String: Double]
+    let meanByColumn: [String: Double]
   }
 
   private static func dimensionAverages(
     for records: [EvalCellRecord],
-    efforts: [String]
+    columns: [String]
   ) -> [DimensionRow] {
     var scoresByDimension: [String: [String: [Int]]] = [:]
     var dimensionOrder: [String] = []
     for record in records {
       guard let judge = record.judge, judge.failure == nil else { continue }
+      let column = "\(record.model) \(record.effort)"
       for score in judge.scores {
         if scoresByDimension[score.dimension] == nil {
           dimensionOrder.append(score.dimension)
         }
-        scoresByDimension[score.dimension, default: [:]][record.effort, default: []]
+        scoresByDimension[score.dimension, default: [:]][column, default: []]
           .append(score.score)
       }
     }
     return dimensionOrder.map { dimension in
-      let byEffort = scoresByDimension[dimension] ?? [:]
+      let byColumn = scoresByDimension[dimension] ?? [:]
       var means: [String: Double] = [:]
-      for effort in efforts {
-        if let scores = byEffort[effort], !scores.isEmpty {
-          means[effort] = Double(scores.reduce(0, +)) / Double(scores.count)
+      for column in columns {
+        if let scores = byColumn[column], !scores.isEmpty {
+          means[column] = Double(scores.reduce(0, +)) / Double(scores.count)
         }
       }
-      return DimensionRow(dimension: dimension, meanByEffort: means)
+      return DimensionRow(dimension: dimension, meanByColumn: means)
     }
   }
 

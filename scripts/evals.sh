@@ -10,9 +10,10 @@
 #   scripts/evals.sh                                # full matrix, medium+high
 #   scripts/evals.sh sprint-goal                    # scenario id prefix filter
 #   scripts/evals.sh "" low,medium,high             # all scenarios, 3 efforts
+#   scripts/evals.sh "" medium gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol
 #
 # Environment overrides:
-#   SPEDITO_EVAL_MODEL         model (default gpt-5.6-terra)
+#   SPEDITO_EVAL_MODEL         fallback model (default gpt-5.6-terra)
 #   SPEDITO_EVAL_REPS          repetitions per cell (default 1)
 #   SPEDITO_EVAL_JUDGE_MODEL   judge model (default: same as model)
 #   SPEDITO_EVAL_JUDGE_EFFORT  judge effort (default high)
@@ -31,11 +32,13 @@ cd "$project_root"
 
 scenarios=${1:-}
 efforts=${2:-medium,high}
+models=${3:-${SPEDITO_EVAL_MODEL:-gpt-5.6-terra}}
 runs_root="$project_root/.eval-runs"
 mkdir -p "$runs_root"
 
 print "Scenarios: ${scenarios:-all}"
 print "Efforts:   $efforts"
+print "Models:    $models"
 print "Bundles:   $runs_root"
 print ""
 
@@ -43,6 +46,7 @@ env \
   SPEDITO_EVALS=1 \
   SPEDITO_EVAL_SCENARIOS="$scenarios" \
   SPEDITO_EVAL_EFFORTS="$efforts" \
+  SPEDITO_EVAL_MODELS="$models" \
   SPEDITO_EVAL_RUNS="$runs_root" \
   SWIFT_MODULECACHE_PATH="$project_root/.build/module-cache" \
   CLANG_MODULE_CACHE_PATH="$project_root/.build/clang-cache" \
