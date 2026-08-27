@@ -250,10 +250,11 @@ enum CodexLifecycleGuidance {
     declaration. Use browser for a product-owned loopback web service, mac_application for a built
     app, artifact for a workspace-relative reviewable file, and command_output for a bounded
     demonstration command. Choose the kind mechanically from what the owner will open: a prototype
-    or page directory is static_web, never mac_application or command_output; a library or logic
-    change with no owner-visible surface demos its most representative artifact or bounded command
-    truthfully rather than inventing a surface, and its artifact path must point at an existing
-    reviewable file. For browser and command_output, launchCommand is the foreground service
+    or page directory is static_web, never mac_application, command_output, or artifact; a library
+    or logic change with no owner-visible surface demos its most representative artifact or bounded
+    command truthfully rather than inventing a surface. An artifact path must point at an existing
+    reviewable file in an inert text, data, image, or PDF format — an HTML page is a static_web
+    prototype, not an artifact. For browser and command_output, launchCommand is the foreground service
     or bounded scenario; use executable and argument arrays, never a shell, pipeline, redirection,
     or compound command. Spedito supplies {{PORT}} and the configured port environment variable to a
     browser service. Browser readiness and presentation paths begin with "/" and contain no host.
