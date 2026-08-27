@@ -20,8 +20,25 @@ It complements the other layers rather than replacing them:
 Each scenario in `Tests/SpeditoCoreTests/Evals/EvalScenarios.swift` sends the
 exact triple production sends — the generator's `developerInstructions`, its
 `prompt` built from fixture domain models, and its `outputSchema` — through a
-real read-only Codex thread, exactly as the owning coordinator does. Fixtures
-use a generic invoicing product; none refer to the weather-app example.
+real Codex thread of the kind the owning coordinator uses. Fixtures use a
+generic invoicing product; none refer to the weather-app example. Three thread
+kinds exist:
+
+- **Read-only** for planning, clarification, refinement, sprint goal,
+  knowledge answers, and tech lead review. Review scenarios pin their own
+  detached candidate checkout, the way production pins review workspaces, with
+  one sound candidate and one whose handoff overclaims a criterion the code
+  violates.
+- **Repository analysis** over a sanitized snapshot prepared with the
+  production `GitWorkspaceManager` snapshot pipeline.
+- **Workspace** for real write-enabled delivery runs in an isolated ticket
+  worktree: the implementer scenario seeds a failing executable specification
+  whose passing is deterministic ground truth, and the UX scenario requires a
+  demoable prototype per the UX ticket contract. An approval responder plays a
+  cautious product owner (commands inside the fixture workspace and
+  read-or-execute grants approved; network and outside writes declined), the
+  worktree resets to base before every cell, and the actual branch diff is
+  handed to the judge as ground truth alongside the handoff.
 
 Two scoring tiers run on every reply:
 
@@ -44,6 +61,7 @@ Two scoring tiers run on every reply:
 scripts/evals.sh                     # full matrix at medium and high effort
 scripts/evals.sh sprint-goal         # one scenario family
 scripts/evals.sh "" low,medium,high  # sweep efforts
+scripts/evals.sh "" medium gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol  # sweep models
 ```
 
 `swift test` skips the suite unless `SPEDITO_EVALS=1`; the script sets it. A
@@ -83,13 +101,31 @@ change, and the accepted workflow is propose, re-run, compare, review the
 prompt diff. Only infrastructure problems (no Codex runtime, unknown model)
 fail the test.
 
+## Fixture discipline
+
+Three fixture lessons were paid for with real runs and must not be relearned:
+
+1. **A scenario's ground truth must be airtight before its check is signal.**
+   The first "clean" review candidate omitted the owner-visible surface the
+   ticket promised, so the reviewer's block was correct and the judge —
+   anchored to the wrong brief — punished it. Verify candidate fixtures with a
+   real test run before trusting the scenario.
+2. **The judge scores against the scenario brief.** A wrong brief inverts the
+   judgement, so a surprising judge score means auditing the fixture first and
+   the prompt second.
+3. **Scenarios must be reachable production states.** Epic-plan fixtures whose
+   outcome hinges on an unresolved consequential choice put the planner in a
+   position production would not create (clarification settles such choices
+   first) and no available reply scores well. The real unresolved-choice case
+   needs a product decision about a sanctioned planner escape hatch before it
+   can be a fair scenario.
+
 ## Extending
 
 Add a scenario by constructing fixture domain models and reusing the
 generator's public `developerInstructions`, `prompt`, `outputSchema`, and
 `decode`. Keep fixtures generic, keep deterministic checks about contracts
 (not wording), and give the judge a rubric dimension only when a human could
-apply it consistently. Generators not yet covered (ticket execution, tech
-lead review, retrospective synthesis, conflict integration) need richer
-fixtures — a candidate diff or run history — and are the natural next
-additions.
+apply it consistently. Generators not yet covered (conversation turns,
+retrospective synthesis, conflict integration, knowledge review) need run
+histories or conflicting-branch fixtures and are the natural next additions.
