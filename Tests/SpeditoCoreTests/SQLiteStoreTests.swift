@@ -756,7 +756,7 @@ struct SQLiteStoreTests {
     #expect(defaultDesigner.model == "gpt-5.6-terra")
     #expect(defaultDesigner.reasoningEffort == "medium")
     #expect(lead.model == "gpt-5.6-terra")
-    #expect(lead.reasoningEffort == "high")
+    #expect(lead.reasoningEffort == "medium")
     #expect(lead.name == "Tech lead")
     #expect(lead.role.title == "Tech lead")
     #expect(lead.role.capabilityTitle == "Architecture, planning & review")

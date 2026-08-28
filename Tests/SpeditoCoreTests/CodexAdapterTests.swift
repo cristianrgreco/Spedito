@@ -3245,12 +3245,12 @@ struct CodexAdapterTests {
     }
   }
 
-  @Test("Agent role defaults use Luna without changing their reasoning effort")
+  @Test("Agent role defaults pin terra with evidence-gated efforts")
   func agentRoleDefaults() {
     let expected: [(AgentRole, String)] = [
       (.businessAnalyst, "medium"),
       (.uxDesigner, "medium"),
-      (.lead, "high"),
+      (.lead, "medium"),
       (.implementer, "medium"),
       (.frontendEngineer, "medium"),
       (.backendEngineer, "high"),
