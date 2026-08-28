@@ -152,10 +152,12 @@ public enum CodexEpicClarificationGenerator {
       paths, caches, or sandbox permissions
       unless they already expressed a relevant technical preference. Every choice must itself be a
       complete answer; never offer a placeholder such as “I’ll provide,” “we’ll decide later,” or “tell
-      the team separately.” The interface allows exactly one selection per question, so choices must be
-      mutually exclusive, self-contained descriptions of the complete resulting scope. Never make one
-      choice an addition to another with wording such as “add … as well,” “include … too,” or “also.”
-      Restate the full outcome in every option. If the owner may have an unlisted technology or hosting
+      the team separately.” The interface allows exactly one selection per question, so the question
+      itself carries the context shared by every choice, and each choice states only what differs
+      between the decisions while still standing alone as a complete, mutually exclusive decision.
+      Do not repeat the outcome or any context common to every choice inside the choices. Never make
+      one choice an addition to another with wording such as “add … as well,” “include … too,” or
+      “also.” If the owner may have an unlisted technology or hosting
       constraint, say in the question that they can choose Other and describe it in the interface's text
       field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
       choices.
@@ -219,8 +221,10 @@ public enum CodexEpicClarificationGenerator {
       readyToPlan to true. Recommend the simplest suitable option when the owner has no preference. Do not
       ask them to interpret runtime paths or permission details. Every choice must be a complete answer,
       never a promise to provide information later. Because the owner can select only one option per
-      question, every option must restate the complete resulting scope rather than add to a previous option;
-      never use incremental labels such as “as well,” “too,” or “also.” Direct an unlisted constraint
+      question, the question carries the shared context and each option states only what differs while
+      still standing alone as a complete, mutually exclusive decision; do not repeat shared context in
+      every option, and never use incremental labels such as “as well,” “too,” or “also.” Direct an
+      unlisted constraint
       through the interface's Other text field. Distinguish using the supplied verified product evidence
       without a research ticket from authorising a time-boxed business analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
@@ -280,8 +284,10 @@ public enum CodexEpicClarificationGenerator {
       question about an existing technology or hosting constraint versus a team recommendation. Never ask
       for package-manager paths, cache access, or other machine plumbing. Every choice must be a complete
       answer, never “I’ll provide” or another promise of a later answer. The owner can select exactly one
-      option per question, so every option must describe the complete resulting scope and must not compound
-      another option with “as well,” “too,” “also,” or equivalent wording. Tell the owner to use the
+      option per question, so the question carries the shared context and each option
+      states only what differs while remaining a self-contained, mutually exclusive decision; do not
+      repeat shared context in every option, and do not compound another option with “as well,” “too,”
+      “also,” or equivalent wording. Tell the owner to use the
       interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
       existing evidence without a research ticket from time-boxed research that creates one. Confirm that
       the final plan will include an environment-establishment prerequisite, with separate research only

@@ -554,8 +554,12 @@ enum EvalScenarioCatalog {
       EvalRubricDimension(
         name: "optionQuality",
         guidance: """
-          Answer options are concise, realistic, mutually exclusive, and cover the \
-          plausible choice space without steering the owner.
+          Answer options are concise, realistic, mutually exclusive decisions \
+          that cover the plausible choice space without steering the owner. \
+          Shared context belongs in the question prompt: each option states \
+          only what differs between the choices, and options that restate the \
+          epic outcome or repeat context common to every option fail this \
+          dimension even when they are otherwise accurate.
           """
       ),
     ]
@@ -589,7 +593,7 @@ enum EvalScenarioCatalog {
       outputSchema: CodexEpicClarificationGenerator.outputSchema,
       rubric: rubric,
       evaluate: { response in
-        evaluateClarification(response) { reply, checks in
+        evaluateClarification(response, epicGoal: vagueEpic.goal) { reply, checks in
           checks.append(
             EvalCheck(
               name: "asksBeforePlanning",
@@ -644,7 +648,7 @@ enum EvalScenarioCatalog {
       outputSchema: CodexEpicClarificationGenerator.outputSchema,
       rubric: rubric,
       evaluate: { response in
-        evaluateClarification(response) { reply, checks in
+        evaluateClarification(response, epicGoal: resolvedEpic.goal) { reply, checks in
           checks.append(
             EvalCheck(
               name: "readyWithoutQuestions",
@@ -659,16 +663,74 @@ enum EvalScenarioCatalog {
       }
     )
 
-    return [vague, resolved]
+    let detailedProduct = makeProduct()
+    let detailedEpic = Epic(
+      productID: detailedProduct.id,
+      title: "",
+      goal: """
+        Freelancers can send each overdue client one polite payment reminder \
+        email per week directly from Ledgerline, using the contact address \
+        already saved on the invoice, with every reminder recorded on that \
+        invoice so the freelancer can always see when a client was last \
+        reminded.
+        """
+    )
+    let detailedItems = establishedBacklog(productID: detailedProduct.id)
+    let detailed = EvalScenario(
+      id: "clarification/detailed-outcome",
+      generator: "clarification",
+      brief: """
+        A long, specific outcome sentence in which the owner has already \
+        resolved the audience, channel, frequency cap, address source, and \
+        record-keeping — but not how email actually leaves Ledgerline, which \
+        is a consequential external delivery choice with cost, privacy, and \
+        deliverability consequences. A good reply asks one to three material \
+        questions whose options are concise, self-contained decisions; the \
+        shared context is carried by the question prompt, and options that \
+        each restate the long outcome sentence are the failure this scenario \
+        probes.
+        """,
+      developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: detailedProduct.instructions,
+        customInstructions: ""
+      ),
+      prompt: CodexEpicClarificationGenerator.initialPrompt(
+        product: detailedProduct,
+        epic: detailedEpic,
+        existingItems: detailedItems,
+        verifiedKnowledge: [environmentsPage(productID: detailedProduct.id)]
+      ),
+      outputSchema: CodexEpicClarificationGenerator.outputSchema,
+      rubric: rubric,
+      evaluate: { response in
+        evaluateClarification(response, epicGoal: detailedEpic.goal) { reply, checks in
+          checks.append(
+            EvalCheck(
+              name: "asksBeforePlanning",
+              passed: !reply.readyToPlan,
+              detail: reply.readyToPlan
+                ? "declared ready to plan despite the unresolved email delivery choice"
+                : "asked before planning"
+            )
+          )
+        }
+      }
+    )
+
+    return [vague, resolved, detailed]
   }
 
   private static func evaluateClarification(
     _ response: String,
+    epicGoal: String,
     extraChecks: (EpicClarificationReply, inout [EvalCheck]) -> Void
   ) -> EvalDeterministicOutcome {
     do {
       let reply = try CodexEpicClarificationGenerator.decode(response)
       var checks: [EvalCheck] = []
+      if !reply.questions.isEmpty {
+        checks.append(optionRestatementCheck(reply, epicGoal: epicGoal))
+      }
       extraChecks(reply, &checks)
       return EvalDeterministicOutcome(
         decodePassed: true,
@@ -688,6 +750,49 @@ enum EvalScenarioCatalog {
         facts: [:]
       )
     }
+  }
+
+  /// Mechanically catches the observed production defect: every option in a
+  /// question opening with the same restated outcome sentence. Wording quality
+  /// stays with the judge; this check only flags a long shared option prefix
+  /// or a verbatim epic-goal restatement inside an option.
+  private static func optionRestatementCheck(
+    _ reply: EpicClarificationReply,
+    epicGoal: String
+  ) -> EvalCheck {
+    let sharedPrefixLimit = 25
+    let goalSentence =
+      epicGoal
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .split(separator: ".", maxSplits: 1, omittingEmptySubsequences: true)
+      .first
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+    var failures: [String] = []
+    for question in reply.questions {
+      let sharedPrefix = question.options.dropFirst().reduce(
+        question.options.first ?? ""
+      ) { $0.commonPrefix(with: $1) }
+      if sharedPrefix.count >= sharedPrefixLimit {
+        failures.append(
+          "options for “\(question.prompt)” share the prefix "
+            + "“\(String(sharedPrefix.prefix(60)))…”"
+        )
+      }
+      if goalSentence.count >= 20,
+        question.options.contains(where: { $0.contains(goalSentence) })
+      {
+        failures.append(
+          "an option for “\(question.prompt)” restates the epic goal verbatim"
+        )
+      }
+    }
+    return EvalCheck(
+      name: "optionsShareNoLongPrefix",
+      passed: failures.isEmpty,
+      detail: failures.isEmpty
+        ? "options state only what differs"
+        : failures.joined(separator: "; ")
+    )
   }
 
   // MARK: - Ticket refinement
