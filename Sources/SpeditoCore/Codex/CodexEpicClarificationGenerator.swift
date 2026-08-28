@@ -28,8 +28,11 @@ public enum EpicClarificationGenerationError: Error, Equatable, LocalizedError, 
 }
 
 public enum CodexEpicClarificationGenerator {
-  public static var outputSchema: JSONValue {
-    let question: JSONValue = .object([
+  /// The single question shape shared by ordinary clarification replies and the
+  /// final-plan escape in `CodexTicketSuggestionGenerator.epicOutputSchema`, so
+  /// the conversation UI renders both without a second component.
+  static var questionSchema: JSONValue {
+    .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
       "required": .array([.string("prompt"), .string("options")]),
@@ -43,6 +46,37 @@ public enum CodexEpicClarificationGenerator {
         ]),
       ]),
     ])
+  }
+
+  /// Trims and validates owner-facing questions with the same rules whether
+  /// they arrive in a clarification reply or a final-plan escape. Returns nil
+  /// when any prompt is empty or duplicated, an option count is outside two to
+  /// four, or an option is empty, duplicated, or a literal "Other".
+  static func normalizedQuestions(
+    _ questions: [TicketRefinementQuestion]
+  ) -> [TicketRefinementQuestion]? {
+    let normalized = questions.map {
+      TicketRefinementQuestion(
+        prompt: $0.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+        options: $0.options.map {
+          $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+      )
+    }
+    guard
+      normalized.allSatisfy({
+        !$0.prompt.isEmpty
+          && (2...4).contains($0.options.count)
+          && $0.options.allSatisfy { !$0.isEmpty && $0.lowercased() != "other" }
+          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
+      }),
+      Set(normalized.map { $0.prompt.lowercased() }).count == normalized.count
+    else { return nil }
+    return normalized
+  }
+
+  public static var outputSchema: JSONValue {
+    let question = questionSchema
 
     return .object([
       "type": .string("object"),
@@ -294,7 +328,11 @@ public enum CodexEpicClarificationGenerator {
       include the separately authorised business analyst recommendation before the establishment task.
       The establishment task must verify stable repository entry points, run-private temporary and cache
       locations, required capabilities, managed demo readiness, limitations, and the complete
-      Environments product knowledge update. Do not ask more questions in this response.
+      Environments product knowledge update. Do not ask more questions in this response unless a
+      consequential product choice genuinely survived the conversation unresolved — neither decided,
+      explicitly delegated, nor covered by authorised research. Only in that exact case, return the
+      questions form of the output schema instead of a plan, following its last-resort rules; never
+      return a plan alongside outstanding questions.
       """
   }
 
@@ -338,23 +376,7 @@ public enum CodexEpicClarificationGenerator {
       throw EpicClarificationGenerationError.invalidResponse(error.localizedDescription)
     }
 
-    let questions = generated.questions.map {
-      TicketRefinementQuestion(
-        prompt: $0.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-        options: $0.options.map {
-          $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-      )
-    }
-    guard
-      questions.allSatisfy({
-        !$0.prompt.isEmpty
-          && (2...4).contains($0.options.count)
-          && $0.options.allSatisfy { !$0.isEmpty && $0.lowercased() != "other" }
-          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
-      }),
-      Set(questions.map { $0.prompt.lowercased() }).count == questions.count
-    else {
+    guard let questions = normalizedQuestions(generated.questions) else {
       throw EpicClarificationGenerationError.invalidResponse(
         "Every clarification needs a unique prompt and two to four distinct choices."
       )

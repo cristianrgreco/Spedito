@@ -669,9 +669,9 @@ extension EpicPlanningWorkflowCoordinator {
           planningKnowledge: planningKnowledge
         )
         try Task.checkCancellation()
-        let plan: EpicPlanDraft
+        let reply: EpicPlanReply
         do {
-          plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
             response,
             existingItems: existingItems
           )
@@ -694,10 +694,26 @@ extension EpicPlanningWorkflowCoordinator {
             effort: analyst?.reasoningEffort ?? "medium"
           )
           try Task.checkCancellation()
-          plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
             repairedResponse,
             existingItems: existingItems
           )
+        }
+
+        let plan: EpicPlanDraft
+        switch reply {
+        case .questions(let message, let questions):
+          operations.clearTurn(for: token)
+          try await escapeEpicPlanningToQuestions(
+            for: epic,
+            sessionID: startedSession.id,
+            message: message,
+            questions: questions,
+            fallbackMessages: durableMessages
+          )
+          return
+        case .plan(let decodedPlan):
+          plan = decodedPlan
         }
 
         let ownerReviewedMetadata = epic.hasAnalyzedMetadata
@@ -887,6 +903,74 @@ extension EpicPlanningWorkflowCoordinator {
       turnID: turnID
     )
     return try await client.waitForFinalAgentMessage(threadID: threadID, turnID: turnID)
+  }
+
+  /// Handles the sanctioned final-plan escape: the turn returned outstanding
+  /// questions instead of a plan, so the durable clarification conversation
+  /// resumes with those questions and the placeholder suggestion session ends
+  /// without a suggestion set. The durable write happens before the snapshot
+  /// projection so an interruption can only lose presentation, never the
+  /// questions.
+  private func escapeEpicPlanningToQuestions(
+    for epic: Epic,
+    sessionID: UUID,
+    message: String,
+    questions: [TicketRefinementQuestion],
+    fallbackMessages: [EpicPlanningConversationMessage]
+  ) async throws {
+    await operations.settle(.persistence)
+    guard let store = storeProvider(epic.productID) else {
+      throw PersistenceError.recordNotFound("product store \(epic.productID)")
+    }
+    try await store.escapeTicketSuggestionSessionToQuestions(sessionID: sessionID)
+    if selectedProductID() == epic.productID {
+      removeSuggestionBatch(sessionID: sessionID)
+    }
+
+    let analystMessage = EpicPlanningConversationMessage(
+      author: .businessAnalyst,
+      body: message
+    )
+    var durable =
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
+      ?? EpicPlanningConversationSnapshot(
+        epicID: epic.id,
+        messages: fallbackMessages,
+        questions: [],
+        isComplete: false,
+        threadID: threadID
+      )
+    durable.messages.append(analystMessage)
+    durable.questions = questions
+    durable.isComplete = false
+    durable.threadID = threadID ?? durable.threadID
+    durable.updatedAt = Date()
+    try await store.saveEpicPlanningConversation(durable)
+
+    if var conversation = snapshot.conversation,
+      conversation.productID == epic.productID,
+      conversation.epicID == epic.id
+    {
+      conversation.messages = durable.messages
+      conversation.questions = questions
+      conversation.isRunning = false
+      conversation.isGeneratingPlan = false
+      conversation.isComplete = false
+      conversation.errorMessage = nil
+      updateSnapshot { $0.conversation = conversation }
+    }
+
+    await onOwnerNotification(
+      OwnerNotification(
+        id: analystMessage.id,
+        productID: epic.productID,
+        kind: .needsInput,
+        target: OwnerNotificationTarget(kind: .epic, id: epic.id),
+        title: "\(epic.displayTitle) needs your input",
+        body: questions.first?.prompt ?? message,
+        createdAt: analystMessage.createdAt
+      )
+    )
   }
 
   private func completeEpicPlanningConversation(

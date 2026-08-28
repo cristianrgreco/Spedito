@@ -1946,6 +1946,27 @@ struct CodexAdapterTests {
     }
   }
 
+  /// Wraps a bare reply body in the required top-level envelope, so fixtures
+  /// stay readable while decode sees the schema's exact shape.
+  private func epicReplyEnvelope(_ body: String) -> String {
+    "{\"reply\": \(body)}"
+  }
+
+  private func requireEpicPlan(
+    _ text: String,
+    existingItems: [WorkItem] = []
+  ) throws -> EpicPlanDraft {
+    guard
+      case .plan(let plan) = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(text),
+        existingItems: existingItems
+      )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a plan reply.")
+    }
+    return plan
+  }
+
   @Test("Epic planning decodes durable outcome metadata and ticket relationships")
   func epicPlanningDecoding() throws {
     let response = #"""
@@ -1989,7 +2010,7 @@ struct CodexAdapterTests {
         ]
       }
       """#
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
     #expect(plan.title == "Saved locations")
     #expect(plan.successCriteria == ["A saved location can be opened again"])
     #expect(plan.ticketSuggestions.count == 2)
@@ -2070,7 +2091,7 @@ struct CodexAdapterTests {
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
 
     #expect(plan.environmentAssessment.readiness == .foundationRequired)
     #expect(plan.environmentAssessment.foundationTicketReference == "S2")
@@ -2082,7 +2103,7 @@ struct CodexAdapterTests {
       with: #""dependsOn": ["T3"]"#
     )
     #expect(throws: TicketSuggestionGenerationError.self) {
-      try CodexTicketSuggestionGenerator.decodeEpicPlan(missingDependency)
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(missingDependency))
     }
   }
 
@@ -2121,7 +2142,7 @@ struct CodexAdapterTests {
       """#
 
     #expect(throws: TicketSuggestionGenerationError.self) {
-      try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(response))
     }
   }
 
@@ -2163,7 +2184,7 @@ struct CodexAdapterTests {
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
 
     #expect(plan.ticketSuggestions.count == 1)
     #expect(plan.ticketSuggestions[0].suggestedRole == .implementer)
@@ -2213,14 +2234,14 @@ struct CodexAdapterTests {
       }
       """#
     #expect(throws: TicketSuggestionGenerationError.self) {
-      try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(response))
     }
 
     let explicit = response.replacingOccurrences(
       of: "the agreed core weather information",
       with: "the details specified by DESIGN"
     )
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(explicit)
+    let plan = try requireEpicPlan(explicit)
     #expect(plan.ticketSuggestions[1].dependsOnReferences == ["S1"])
   }
 
@@ -2258,9 +2279,138 @@ struct CodexAdapterTests {
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
     #expect(plan.ticketSuggestions.count == 1)
     #expect(plan.ticketSuggestions[0].suggestedRole == .businessAnalyst)
+  }
+
+  @Test("Epic planning decodes questions and a plan exclusively, never both or neither")
+  func epicPlanningEscapeExclusivity() throws {
+    let escaped = #"""
+      {
+        "message": "One consequential choice is still unresolved.",
+        "questions": [
+          {
+            "prompt": "Which exchange-rate source should be used?",
+            "options": [
+              "Research current sources and recommend one (Recommended)",
+              "Name an approved source now"
+            ]
+          }
+        ]
+      }
+      """#
+    guard
+      case .questions(let message, let questions) =
+        try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(escaped))
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(message == "One consequential choice is still unresolved.")
+    #expect(questions.map(\.prompt) == ["Which exchange-rate source should be used?"])
+    #expect(questions[0].options.count == 2)
+
+    guard
+      case .questions(let defaultedMessage, _) =
+        try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          epicReplyEnvelope(
+            escaped.replacingOccurrences(
+              of: "One consequential choice is still unresolved.",
+              with: "  "
+            )
+          )
+        )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(!defaultedMessage.isEmpty)
+
+    let planFragment = #"""
+      "epic": {
+        "title": "Currency conversion",
+        "goal": "Show invoice totals in the client's currency.",
+        "successCriteria": ["A client sees the converted total"],
+        "constraints": "",
+        "environmentAssessment": {
+          "readiness": "sufficient",
+          "rationale": "The verified environment covers this work.",
+          "foundationTicketReference": null
+        }
+      },
+      "suggestions": [
+        {
+          "reference": "S1",
+          "title": "Convert invoice totals",
+          "type": "story",
+          "body": "Convert totals with current exchange rates.",
+          "acceptanceCriteria": ["The converted total is displayed"],
+          "role": "implementer",
+          "priority": "normal",
+          "rationale": "This delivers the outcome.",
+          "dependsOn": [],
+          "environmentRelationship": "requires"
+        }
+      ]
+      """#
+    _ = try requireEpicPlan("{\(planFragment)}")
+
+    let bothBranches =
+      "{\(planFragment), \"questions\": [{\"prompt\": \"Which source?\", "
+      + "\"options\": [\"Research one\", \"Name one\"]}]}"
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(bothBranches))
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope("{}"))
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(#"{"message": "Nothing is actually open.", "questions": []}"#)
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "Bad options.", "questions": [{"prompt": "Which source?", "options": ["Only one"]}]}"#
+        )
+      )
+    }
+  }
+
+  @Test("Epic plan schema admits the questions escape in the clarification shape")
+  func epicPlanSchemaCarriesEscapeBranch() throws {
+    let schema = CodexTicketSuggestionGenerator.epicOutputSchema
+    #expect(schema["type"]?.stringValue == "object")
+    #expect(
+      schema["required"]?.arrayValue?.compactMap(\.stringValue) == ["reply"]
+    )
+    let branches = try #require(
+      schema["properties"]?["reply"]?["anyOf"]?.arrayValue
+    )
+    #expect(branches.count == 2)
+    let planBranch = try #require(
+      branches.first { $0["properties"]?["epic"] != nil }
+    )
+    #expect(
+      planBranch["required"]?.arrayValue?.compactMap(\.stringValue)
+        == ["epic", "suggestions"]
+    )
+    let escapeBranch = try #require(
+      branches.first { $0["properties"]?["questions"] != nil }
+    )
+    #expect(
+      escapeBranch["required"]?.arrayValue?.compactMap(\.stringValue)
+        == ["message", "questions"]
+    )
+    let escapeQuestions = try #require(
+      escapeBranch["properties"]?["questions"]
+    )
+    #expect(escapeQuestions["minItems"]?.integerValue == 1)
+    #expect(escapeQuestions["maxItems"]?.integerValue == 3)
+    let clarificationQuestionSchema = try #require(
+      CodexEpicClarificationGenerator.outputSchema["properties"]?["questions"]?["items"]
+    )
+    #expect(escapeQuestions["items"] == clarificationQuestionSchema)
   }
 
   @Test("Epic planning clarifies the outcome before proposing tickets")

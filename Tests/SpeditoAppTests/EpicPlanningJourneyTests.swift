@@ -649,7 +649,7 @@ struct EpicPlanningJourneyTests {
       Self.completedTurn(
         threadID: "thread-e08",
         turnID: "turn-e08-plan",
-        text: #"{"epic":{"title":42},"suggestions":"invalid"}"#
+        text: #"{"reply":{"epic":{"title":42},"suggestions":"invalid"}}"#
       )
     )
     await transport.waitForRequest("turn/start", count: 3)
@@ -1207,6 +1207,188 @@ struct EpicPlanningJourneyTests {
     }
   }
 
+  @Test("E16 an unresolved final plan escapes to durable questions and recovers")
+  func e16FinalPlanEscapesToQuestionsAndRecovers() async throws {
+    let fixture = try EpicPlanningJourneyFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Escaped planning")
+    let store = try #require(registry.store(for: product.id))
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Let owners preserve draft notes"
+    )
+
+    let escapeQuestion = TicketRefinementQuestion(
+      prompt: "Where should draft notes be retained?",
+      options: ["On this Mac (Recommended)", "In the repository"]
+    )
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-e16")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e16-ready")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e16-escape")])])
+          ),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+    model.planEpic(epic)
+    await transport.waitForRequest("turn/start")
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e16",
+        turnID: "turn-e16-ready",
+        text: #"{"message":"The outcome is ready to plan.","questions":[],"readyToPlan":true}"#
+      )
+    )
+    await transport.waitForRequest("turn/start", count: 2)
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-e16",
+        turnID: "turn-e16-escape",
+        text: #"""
+          {"reply":{"message":"One product decision must be made before I can plan.","questions":[{"prompt":"Where should draft notes be retained?","options":["On this Mac (Recommended)","In the repository"]}]}}
+          """#
+      )
+    )
+    await model.epicPlanningWorkflowCoordinator.settlePlanning()
+
+    let escapedConversation = try #require(
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
+    )
+    #expect(escapedConversation.questions == [escapeQuestion])
+    #expect(escapedConversation.isComplete == false)
+    #expect(escapedConversation.messages.last?.author == .businessAnalyst)
+    #expect(
+      escapedConversation.messages.last?.body
+        == "One product decision must be made before I can plan."
+    )
+    let escapedSession = try #require(
+      try await store.fetchLatestEpicPlanningSuggestionSession(epicID: epic.id)
+    )
+    #expect(escapedSession.status == .cancelled)
+    #expect(
+      try await store.fetchOutstandingTicketSuggestionBatches(productID: product.id).isEmpty
+    )
+    #expect(model.suggestionBatches.isEmpty)
+    #expect(model.epicPlanningConversation?.questions == [escapeQuestion])
+    #expect(model.epicPlanningConversation?.isGeneratingPlan == false)
+    #expect(model.epicPlanningConversation?.errorMessage == nil)
+    let notification = try #require(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).first
+    )
+    #expect(notification.kind == .needsInput)
+    #expect(notification.target == OwnerNotificationTarget(kind: .epic, id: epic.id))
+    #expect(notification.body == "Where should draft notes be retained?")
+    #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    await model.shutdown()
+
+    let interruptedModel = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: EpicJourneyNotificationSound(),
+      ownerNotificationSystemNotifier: EpicJourneySystemNotifier()
+    )
+    await interruptedModel.reload()
+    let restoredEpic = try #require(
+      interruptedModel.epics.first(where: { $0.id == epic.id })
+    )
+    await interruptedModel.restoreEpicPlanningConversation(for: restoredEpic)
+    #expect(interruptedModel.epicPlanningConversation?.questions == [escapeQuestion])
+    #expect(interruptedModel.epicPlanningConversation?.isComplete == false)
+    #expect(interruptedModel.epicPlanningConversation?.errorMessage == nil)
+    await interruptedModel.shutdown()
+
+    let answeringTransport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e16-settled")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-e16-plan")])])
+          ),
+        ]
+    )
+    let answeringModel = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: answeringTransport
+    )
+    await answeringModel.load()
+    await answeringModel.restoreEpicPlanningConversation(for: restoredEpic)
+    answeringModel.continueEpicPlanning(
+      restoredEpic,
+      answers: ["Where should draft notes be retained?\nAnswer: On this Mac (Recommended)"],
+      answeredQuestions: [
+        EpicPlanningAnsweredQuestion(
+          question: escapeQuestion,
+          selectedOption: "On this Mac (Recommended)",
+          answer: "On this Mac (Recommended)"
+        )
+      ]
+    )
+    await answeringTransport.waitForRequest("turn/start")
+    await answeringTransport.emit(
+      Self.completedTurn(
+        threadID: "thread-e16",
+        turnID: "turn-e16-settled",
+        text: #"{"message":"That settles the outstanding decision.","questions":[],"readyToPlan":true}"#
+      )
+    )
+    await answeringTransport.waitForRequest("turn/start", count: 2)
+    await answeringTransport.emit(
+      Self.completedTurn(
+        threadID: "thread-e16",
+        turnID: "turn-e16-plan",
+        text: Self.epicPlanResponse
+      )
+    )
+    await answeringModel.epicPlanningWorkflowCoordinator.settlePlanning()
+
+    let plannedEpic = try #require(
+      try await store.fetchEpics(productID: product.id)
+        .first(where: { $0.id == epic.id })
+    )
+    #expect(plannedEpic.title == "Durable draft notes")
+    let batch = try #require(
+      try await store.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(batch.session.status == .ready)
+    #expect(batch.suggestions.map(\.title) == ["Preserve and reopen draft notes"])
+    let completedConversation = try #require(
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
+    )
+    #expect(completedConversation.isComplete == true)
+    #expect(completedConversation.questions.isEmpty)
+    #expect(
+      completedConversation.messages.flatMap(\.answeredQuestions).map(\.answer)
+        == ["On this Mac (Recommended)"]
+    )
+    await answeringModel.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
+  }
+
   private static func suggestionDraft(
     reference: String,
     title: String,
@@ -1232,6 +1414,7 @@ struct EpicPlanningJourneyTests {
 
   private static let epicPlanResponse = #"""
     {
+      "reply": {
       "epic": {
         "title": "Durable draft notes",
         "goal": "Owners can preserve and return to draft notes.",
@@ -1257,6 +1440,7 @@ struct EpicPlanningJourneyTests {
           "environmentRelationship": "independent"
         }
       ]
+      }
     }
     """#
 

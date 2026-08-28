@@ -106,6 +106,7 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 | E11 | `EpicPlanningPresentationTests.e11AcceptancePreviewsTransitivePrerequisites` | **Named:** the acceptance preview contains every transitive suggested prerequisite before any durable write. |
 | E12 | `SQLiteStoreTests.e12RejectingSuggestionPreservesDeliveredDependent` | **Named:** delivered dependants block an unsafe rejection cascade while open descendants are archived atomically. |
 | E14 | `SQLiteStoreTests.e14ArchivingEpicDisposesTicketsAndProposals` | **Named:** Epic archival atomically disposes unfinished tickets and every persisted proposal without touching completed history. |
+| E16 | `EpicPlanningJourneyTests.e16FinalPlanEscapesToQuestionsAndRecovers`, `CodexAdapterTests.epicPlanningEscapeExclusivity`, `.epicPlanSchemaCarriesEscapeBranch` | **Named:** a final-plan turn returning questions settles its suggestion session as cancelled without a suggestion set, resumes the durable clarification conversation with the exact questions and a needs-input notification, re-presents them from a fresh instance without an error state, and turns the owner's answers into a completed plan; decode enforces questions XOR plan, and the escape branch reuses the clarification question schema. |
 | B02 | `TicketAttentionTests.b02IncompleteTicketAttentionReturnsToExactTicket`, `PriorityZeroShellJourneyUITests.testB02ClosingIncompleteTicketReturnsToExactSourceTicket` | **Named:** the deterministic journey routes cross-Product attention to the exact editable ticket; the launched-process contract proves the source-Product switch and ticket sheet. |
 | B03 | `TicketConversationHistoryTests.b03RelaunchRestoresCompleteRefinementConversation` | **Named:** relaunch restores answered cards, pending cards, comments, and the complete refinement state together. |
 | B05 | `TicketRefinementApplicationTests.b05StaleCompletionPreservesNewerDraft` | **Named:** an in-flight stale completion presents the version conflict and preserves the newer owner draft. |
@@ -473,7 +474,7 @@ Priority meanings:
 - **P1:** primary product workflow and recovery.
 - **P2:** secondary navigation, filtering, display preference, or low-risk convenience behavior.
 
-## 5. Comprehensive owner journey inventory — 124
+## 5. Comprehensive owner journey inventory — 125
 
 Two rules apply to every row before it is scheduled.
 
@@ -519,7 +520,7 @@ S08 describes a specification contract whose implementation must be confirmed be
 | R13 | P0 | With no active sprint, prepare incoming fast-forward changes for exact review; accept or reject them atomically and recover safely after interruption. | J | Y |
 | R14 | P0 | While a sprint is active, defer incoming history to ticket integration; disconnecting or signing out affects the intended Product/account set and remains correct after relaunch. | J | — |
 
-### 5.3 Epics, clarification, and ticket suggestions — 15
+### 5.3 Epics, clarification, and ticket suggestions — 16
 
 | ID | Priority | Owner journey contract | Proof | Shell |
 | --- | --- | --- | --- | --- |
@@ -538,6 +539,7 @@ S08 describes a specification contract whose implementation must be confirmed be
 | E13 | P1 | Finish one suggestion batch, run Suggest missing tickets, and keep multiple outstanding batches queued and independently reviewable. | J+P | — |
 | E14 | P0 | Archive an Epic; archive unfinished backlog tickets and proposals while preserving delivered tickets and historical links. | J | — |
 | E15 | P2 | Reorder Epics by drag or top/bottom actions, and preserve each Product's completed-Epic disclosure preference. | J | — |
+| E16 | P1 | When the final planning turn finds a consequential choice still unresolved, it returns questions instead of a plan; the clarification conversation resumes with the same question cards, the questions survive interruption and relaunch, and the owner's answers feed the next planning attempt. | J | — |
 
 ### 5.4 Backlog and editable Ticket workflow — 11
 

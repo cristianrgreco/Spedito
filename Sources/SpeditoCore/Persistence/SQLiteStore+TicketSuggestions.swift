@@ -351,6 +351,34 @@ extension SQLiteStore {
     return try fetchSuggestionSession(id: sessionID)
   }
 
+  /// Settles a generating session whose final-plan turn legitimately returned
+  /// questions instead of a plan. The session ends cancelled — not failed — so
+  /// no retryable error surfaces and recovery does not resume it; the durable
+  /// outcome lives in the epic planning conversation's question payload.
+  public func escapeTicketSuggestionSessionToQuestions(sessionID: UUID) throws {
+    let session = try fetchSuggestionSession(id: sessionID)
+    guard session.status == .generating else { return }
+    try transaction {
+      try withStatement(
+        """
+        UPDATE suggestion_sessions
+        SET status = 'cancelled', error_message = NULL, updated_at = ?
+        WHERE id = ? AND status = 'generating';
+        """
+      ) { statement in
+        try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+        try bind(sessionID.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: session.productID,
+        kind: "ticket_suggestions.escaped_to_questions",
+        actor: "system",
+        detail: "Planning returned questions for the product owner instead of a plan"
+      )
+    }
+  }
+
   public func dismissTicketSuggestionSession(sessionID: UUID) throws {
     let session = try fetchSuggestionSession(id: sessionID)
     guard session.status == .failed else { return }

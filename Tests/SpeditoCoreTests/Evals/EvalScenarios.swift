@@ -257,7 +257,8 @@ enum EvalScenarioCatalog {
         client has been chased, at most one chase note per invoice.
         """,
       successCriteria: [
-        "An unpaid invoice appears on the chasing list three days after its due date",
+        "An unpaid invoice appears on the chasing list once it is more than "
+          + "three days past its due date",
         "Paid invoices never appear on the chasing list",
         "The owner can record one chase note per invoice and see it on the list",
       ],
@@ -314,7 +315,153 @@ enum EvalScenarioCatalog {
       }
     )
 
-    return [greenfield, established]
+    let unresolvedProduct = makeProduct()
+    let unresolvedEpic = Epic(
+      productID: unresolvedProduct.id,
+      title: "",
+      goal: """
+        Freelancers can show each invoice total in the client's own currency \
+        alongside the original amount, converted with current exchange rates, \
+        so international clients understand what they owe.
+        """
+    )
+    let unresolvedItems = establishedBacklog(productID: unresolvedProduct.id)
+    let providerQuestion = TicketRefinementQuestion(
+      prompt: "Which exchange-rate source should Ledgerline use for currency conversion?",
+      options: [
+        "Have the business analyst research current exchange-rate sources and "
+          + "recommend one for your approval (Recommended)",
+        "Name an already approved exchange-rate source now",
+        "Delegate the choice to the implementer at implementation time without "
+          + "a separate recommendation",
+      ]
+    )
+    let unresolvedMessages = [
+      EpicPlanningConversationMessage(
+        author: .businessAnalyst,
+        body: "One consequential choice remains before I can plan: the exchange-rate source."
+      ),
+      EpicPlanningConversationMessage(
+        author: .owner,
+        body: "",
+        answeredQuestions: [
+          EpicPlanningAnsweredQuestion(
+            question: providerQuestion,
+            selectedOption: nil,
+            answer: "Whatever the analyst recommends at planning time."
+          )
+        ]
+      ),
+    ]
+    let unresolvedProvider = EvalScenario(
+      id: "epic-plan/unresolved-provider",
+      generator: "epicPlan",
+      brief: """
+        The final planning turn after a clarification conversation in which the \
+        owner answered the exchange-rate source question with "Whatever the \
+        analyst recommends at planning time" — an ambiguous delegation that \
+        neither names a source nor clearly authorises or declines research. Two \
+        replies are acceptable: a plan that carries the source choice in an \
+        authorised business analyst research ticket that downstream work depends \
+        on, or an escape that returns the one material question needed to \
+        disambiguate. Silently naming a specific real exchange-rate source in \
+        the tickets, or burying the choice in an implementation ticket, is the \
+        failure.
+        """,
+      developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: unresolvedProduct.instructions,
+        customInstructions: ""
+      ),
+      prompt: CodexEpicClarificationGenerator.finalPlanRecoveryPrompt(
+        product: unresolvedProduct,
+        epic: unresolvedEpic,
+        existingItems: unresolvedItems,
+        rejectedSuggestions: [],
+        messages: unresolvedMessages,
+        verifiedKnowledge: [environmentsPage(productID: unresolvedProduct.id)]
+      ),
+      outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema,
+      rubric: [
+        ownerClarity, groundedness,
+        EvalRubricDimension(
+          name: "decisionDiscipline",
+          guidance: """
+            The unresolved exchange-rate source is handled responsibly: either a \
+            business analyst research ticket owns the recommendation and the \
+            dependent work waits for it, or the reply escapes with a material \
+            question that names the choice. The reply never invents a specific \
+            provider, never buries the selection inside design or \
+            implementation, and never returns a plan alongside questions.
+            """
+        ),
+      ],
+      evaluate: { response in
+        evaluateUnresolvedChoiceReply(response, existingItems: unresolvedItems)
+      }
+    )
+
+    return [greenfield, established, unresolvedProvider]
+  }
+
+  private static func evaluateUnresolvedChoiceReply(
+    _ response: String,
+    existingItems: [WorkItem]
+  ) -> EvalDeterministicOutcome {
+    do {
+      let reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        response,
+        existingItems: existingItems
+      )
+      switch reply {
+      case .questions(_, let questions):
+        return EvalDeterministicOutcome(
+          decodePassed: true,
+          decodeFailure: nil,
+          checks: [
+            EvalCheck(
+              name: "escapesOrAuthorisesResearch",
+              passed: true,
+              detail: "escaped with question(s): "
+                + questions.map(\.prompt).joined(separator: "; ")
+            )
+          ],
+          facts: [
+            "outcome": "questions",
+            "escapedQuestionCount": String(questions.count),
+          ]
+        )
+      case .plan(let plan):
+        let researchTickets = plan.ticketSuggestions.filter {
+          $0.suggestedRole == .businessAnalyst
+        }
+        return EvalDeterministicOutcome(
+          decodePassed: true,
+          decodeFailure: nil,
+          checks: [
+            EvalCheck(
+              name: "escapesOrAuthorisesResearch",
+              passed: !researchTickets.isEmpty,
+              detail: researchTickets.isEmpty
+                ? "planned without a business analyst research ticket or questions"
+                : "planned with analyst ticket(s): "
+                  + researchTickets.map(\.title).joined(separator: "; ")
+            )
+          ],
+          facts: [
+            "outcome": "plan",
+            "ticketCount": String(plan.ticketSuggestions.count),
+            "analystTicketCount": String(researchTickets.count),
+          ]
+        )
+      }
+    } catch {
+      return EvalDeterministicOutcome(
+        decodePassed: false,
+        decodeFailure: describeError(error),
+        checks: [],
+        facts: [:]
+      )
+    }
   }
 
   private static func evaluateEpicPlan(
@@ -323,10 +470,29 @@ enum EvalScenarioCatalog {
     extraChecks: (EpicPlanDraft, inout [EvalCheck]) -> Void
   ) -> EvalDeterministicOutcome {
     do {
-      let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+      let reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
         response,
         existingItems: existingItems
       )
+      let plan: EpicPlanDraft
+      switch reply {
+      case .questions(_, let questions):
+        return EvalDeterministicOutcome(
+          decodePassed: true,
+          decodeFailure: nil,
+          checks: [
+            EvalCheck(
+              name: "returnsPlan",
+              passed: false,
+              detail: "escaped to questions instead of planning: "
+                + questions.map(\.prompt).joined(separator: "; ")
+            )
+          ],
+          facts: ["escapedQuestionCount": String(questions.count)]
+        )
+      case .plan(let decodedPlan):
+        plan = decodedPlan
+      }
       var checks: [EvalCheck] = []
       let prefixedTitles = plan.ticketSuggestions.filter {
         $0.title.range(of: #"^S\d+\b"#, options: .regularExpression) != nil

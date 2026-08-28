@@ -11,6 +11,15 @@ public enum TicketSuggestionGenerationError: Error, Equatable, LocalizedError, S
   }
 }
 
+/// The outcome of a final epic-plan turn: either a complete plan, or — as a
+/// sanctioned last resort when a consequential product choice survived
+/// clarification unresolved — the remaining questions for the product owner.
+/// Decoding enforces the exclusivity: never both, never neither.
+public enum EpicPlanReply: Equatable, Sendable {
+  case plan(EpicPlanDraft)
+  case questions(message: String, questions: [TicketRefinementQuestion])
+}
+
 public enum CodexTicketSuggestionGenerator {
   private static let platformInstructions = """
     You are the single business analyst responsible for proposing a coherent delivery backlog from the
@@ -200,6 +209,19 @@ public enum CodexTicketSuggestionGenerator {
       implementation as scope. If a prerequisite research or design ticket will supply a decision,
       cite that exact ticket reference in the dependant criterion; never use vague “agreed”, “approved”,
       “chosen”, or “to be decided” placeholders without that provenance.
+      Clarification normally settles every consequential product choice before this turn. If one is
+      still genuinely unresolved — neither decided by the product owner, explicitly delegated, nor
+      covered by an authorised research ticket — return the questions form of the output schema instead
+      of a plan: one to three concise questions, each with two to four mutually exclusive,
+      business-friendly choices, your recommended choice first suffixed with "(Recommended)", and no
+      "Other" option because the interface adds it. This escape is a last resort after clarification,
+      not an invitation to defer: each question must name a consequential choice the plan cannot
+      responsibly proceed without — a real external service or source, material spend, or
+      product-behaviour decision only the product owner can make. A choice you can responsibly settle
+      yourself — an internal implementation approach, a presentation detail, or an option with a
+      sensible recommended default that commits no external service — belongs in the plan with your
+      recommendation recorded, not in a question. Never return a plan together with outstanding
+      questions, and never dilute the unresolved choice into ticket criteria instead of asking.
       A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
       decision-enabling output. An instruction for the business analyst or team to identify, compare,
@@ -366,7 +388,23 @@ public enum CodexTicketSuggestionGenerator {
     ])
   }
 
+  /// The structured-output endpoint requires a root of type object, so the
+  /// plan-or-questions alternative lives one level down in a single required
+  /// `reply` property; the two branches stay structurally exclusive there.
   public static var epicOutputSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([.string("reply")]),
+      "properties": .object([
+        "reply": .object([
+          "anyOf": .array([epicPlanSchema, epicEscapeSchema])
+        ])
+      ]),
+    ])
+  }
+
+  private static var epicPlanSchema: JSONValue {
     .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -392,6 +430,32 @@ public enum CodexTicketSuggestionGenerator {
           ]),
         ]),
         "suggestions": suggestionArraySchema,
+      ]),
+    ])
+  }
+
+  /// The sanctioned last-resort alternative to a plan: when a consequential
+  /// product choice survived clarification unresolved, the reply carries the
+  /// remaining questions in the same shape ordinary clarification uses, so
+  /// the conversation resumes with the existing question cards.
+  private static var epicEscapeSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([.string("message"), .string("questions")]),
+      "properties": .object([
+        "message": .object([
+          "type": .string("string"),
+          "description": .string(
+            "A short owner-facing explanation of why the plan cannot proceed yet."
+          ),
+        ]),
+        "questions": .object([
+          "type": .string("array"),
+          "minItems": .integer(1),
+          "maxItems": .integer(3),
+          "items": CodexEpicClarificationGenerator.questionSchema,
+        ]),
       ]),
     ])
   }
@@ -642,19 +706,50 @@ public enum CodexTicketSuggestionGenerator {
   public static func decodeEpicPlan(
     _ text: String,
     existingItems: [WorkItem] = []
-  ) throws -> EpicPlanDraft {
+  ) throws -> EpicPlanReply {
     guard let data = text.data(using: .utf8) else {
       throw TicketSuggestionGenerationError.invalidResponse("The response was not UTF-8.")
     }
     let response: GeneratedEpicResponse
     do {
-      response = try JSONDecoder().decode(GeneratedEpicResponse.self, from: data)
+      response = try JSONDecoder()
+        .decode(GeneratedEpicReplyEnvelope.self, from: data).reply
     } catch {
       throw TicketSuggestionGenerationError.invalidResponse(error.localizedDescription)
     }
-    let title = response.epic.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    let goal = response.epic.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-    let criteria = response.epic.successCriteria
+
+    if let rawQuestions = response.questions {
+      guard response.epic == nil, response.suggestions == nil else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A plan and outstanding questions cannot be returned together."
+        )
+      }
+      guard
+        (1...3).contains(rawQuestions.count),
+        let questions = CodexEpicClarificationGenerator.normalizedQuestions(rawQuestions)
+      else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "An escaped plan needs one to three questions, each with a unique prompt "
+            + "and two to four distinct choices."
+        )
+      }
+      let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return .questions(
+        message: message.isEmpty
+          ? "I need your decision on the following before I can prepare the epic plan."
+          : message,
+        questions: questions
+      )
+    }
+
+    guard let epic = response.epic, let suggestions = response.suggestions else {
+      throw TicketSuggestionGenerationError.invalidResponse(
+        "The reply must contain either a complete plan or outstanding questions."
+      )
+    }
+    let title = epic.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let goal = epic.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+    let criteria = epic.successCriteria
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     guard !title.isEmpty, !goal.isEmpty, !criteria.isEmpty else {
@@ -663,12 +758,12 @@ public enum CodexTicketSuggestionGenerator {
       )
     }
     let ticketSuggestions = try decodeSuggestions(
-      response.suggestions,
+      suggestions,
       existingItems: existingItems
     )
     let environmentAssessment = try decodeEnvironmentAssessment(
-      response.epic.environmentAssessment,
-      suggestions: response.suggestions,
+      epic.environmentAssessment,
+      suggestions: suggestions,
       ticketSuggestions: ticketSuggestions,
       existingItems: existingItems
     )
@@ -689,13 +784,15 @@ public enum CodexTicketSuggestionGenerator {
           + "Include the downstream delivery tickets needed to achieve it."
       )
     }
-    return EpicPlanDraft(
-      title: title,
-      goal: goal,
-      successCriteria: criteria,
-      constraints: response.epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
-      environmentAssessment: environmentAssessment,
-      ticketSuggestions: ticketSuggestions
+    return .plan(
+      EpicPlanDraft(
+        title: title,
+        goal: goal,
+        successCriteria: criteria,
+        constraints: epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
+        environmentAssessment: environmentAssessment,
+        ticketSuggestions: ticketSuggestions
+      )
     )
   }
 
@@ -888,9 +985,15 @@ private struct GeneratedResponse: Decodable {
   let suggestions: [GeneratedSuggestion]
 }
 
+private struct GeneratedEpicReplyEnvelope: Decodable {
+  let reply: GeneratedEpicResponse
+}
+
 private struct GeneratedEpicResponse: Decodable {
-  let epic: GeneratedEpic
-  let suggestions: [GeneratedSuggestion]
+  let epic: GeneratedEpic?
+  let suggestions: [GeneratedSuggestion]?
+  let message: String?
+  let questions: [TicketRefinementQuestion]?
 }
 
 private struct GeneratedEpic: Decodable {
