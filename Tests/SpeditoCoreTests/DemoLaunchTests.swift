@@ -57,7 +57,9 @@ struct DemoLaunchTests {
   @Test("Structured demo schema exposes only validator-supported variants")
   func structuredSchemaMatchesValidator() throws {
     let variants = try #require(
-      CodexTicketExecutor.demoLaunchSpecificationSchema["anyOf"]?.arrayValue
+      CodexTicketExecutor.demoLaunchSpecificationSchema(
+        deliveryDemoPolicy: .anyKind
+      )["anyOf"]?.arrayValue
     )
     let kinds = variants.compactMap {
       $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
@@ -120,6 +122,46 @@ struct DemoLaunchTests {
         )
       )
     }
+  }
+
+  @Test("Reviewable-prototype schema makes artifact and command_output inexpressible")
+  func reviewablePrototypeSchemaAdmitsOnlyInteractiveKinds() throws {
+    let variants = try #require(
+      CodexTicketExecutor.demoLaunchSpecificationSchema(
+        deliveryDemoPolicy: .reviewablePrototype
+      )["anyOf"]?.arrayValue
+    )
+    let kinds = variants.compactMap {
+      $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
+        .arrayValue?.first?.stringValue
+    }
+    #expect(
+      Set(kinds) == [
+        DemoPresentationKind.browser.rawValue,
+        DemoPresentationKind.staticWeb.rawValue,
+        DemoPresentationKind.macApplication.rawValue,
+      ]
+    )
+    #expect(variants.count == kinds.count)
+
+    let demoField = CodexTicketExecutor.outputSchema(
+      deliveryDemoPolicy: .reviewablePrototype
+    )["properties"]?["demo"]
+    let demoBranches = try #require(demoField?["anyOf"]?.arrayValue)
+    let demoKinds = demoBranches
+      .compactMap { $0["anyOf"]?.arrayValue }
+      .flatMap { $0 }
+      .compactMap {
+        $0["properties"]?["presentation"]?["properties"]?["kind"]?["enum"]?
+          .arrayValue?.first?.stringValue
+      }
+    #expect(!demoKinds.contains(DemoPresentationKind.artifact.rawValue))
+    #expect(!demoKinds.contains(DemoPresentationKind.commandOutput.rawValue))
+    #expect(demoKinds.contains(DemoPresentationKind.staticWeb.rawValue))
+    #expect(
+      demoBranches.contains { $0["type"]?.stringValue == "null" },
+      "awaiting_owner still needs a null demo under the narrowed policy"
+    )
   }
 
   @Test("Recipes reject shells, escaped paths, and non-loopback browser URLs")

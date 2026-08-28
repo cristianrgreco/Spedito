@@ -619,7 +619,7 @@ public enum CodexTicketExecutor {
     """
   }
 
-  public static var outputSchema: JSONValue {
+  public static func outputSchema(deliveryDemoPolicy: DeliveryDemoPolicy) -> JSONValue {
     .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -688,7 +688,9 @@ public enum CodexTicketExecutor {
           "items": .object(["type": .string("string")]),
         ]),
         "decisionArtifact": nullableDecisionArtifactSchema,
-        "demo": nullableDemoLaunchSpecificationSchema,
+        "demo": nullableDemoLaunchSpecificationSchema(
+          deliveryDemoPolicy: deliveryDemoPolicy
+        ),
         "retrospectiveWentWell": .object([
           "type": .string("array"),
           "items": .object(["type": .string("string")]),
@@ -1022,7 +1024,9 @@ public enum CodexTicketExecutor {
     ])
   }
 
-  static var demoLaunchSpecificationSchema: JSONValue {
+  static func demoLaunchSpecificationSchema(
+    deliveryDemoPolicy: DeliveryDemoPolicy
+  ) -> JSONValue {
     let command = JSONValue.object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -1210,18 +1214,23 @@ public enum CodexTicketExecutor {
       readiness: null,
       presentation: presentation(kind: .commandOutput, path: null)
     )
-    return .object([
-      "anyOf": .array([browser, staticWeb, macApplication, artifact, commandOutput])
-    ])
+    let admittedKinds: [JSONValue] =
+      switch deliveryDemoPolicy {
+      case .anyKind: [browser, staticWeb, macApplication, artifact, commandOutput]
+      case .reviewablePrototype: [browser, staticWeb, macApplication]
+      }
+    return .object(["anyOf": .array(admittedKinds)])
   }
 
-  private static var nullableDemoLaunchSpecificationSchema: JSONValue {
+  private static func nullableDemoLaunchSpecificationSchema(
+    deliveryDemoPolicy: DeliveryDemoPolicy
+  ) -> JSONValue {
     .object([
       "description": .string(
         "Managed review recipe for a completed candidate. Must be null for awaiting_owner."
       ),
       "anyOf": .array([
-        demoLaunchSpecificationSchema,
+        demoLaunchSpecificationSchema(deliveryDemoPolicy: deliveryDemoPolicy),
         .object(["type": .string("null")]),
       ]),
     ])

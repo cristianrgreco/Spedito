@@ -140,6 +140,52 @@ struct WorkflowPolicyTests {
     )
   }
 
+  @Test("Delivery demo policy narrows only prototype-promising UX contracts")
+  func deliveryDemoPolicyDerivation() {
+    let productID = UUID()
+    let designer = AgentProfile(
+      productID: productID,
+      name: "UX designer",
+      role: .uxDesigner
+    )
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+
+    let prototypeContract = WorkItem(
+      productID: productID,
+      key: "T-1",
+      title: "Design the invoice status treatment",
+      body: "Show paid, unpaid, and overdue at a glance.",
+      acceptanceCriteria: [
+        "A self-contained prototype demonstrates every named state",
+        "The managed demo opens the prototype",
+      ]
+    )
+    let documentFirstContract = WorkItem(
+      productID: productID,
+      key: "T-2",
+      title: "Review the onboarding copy",
+      body: "An explicitly document-first accessibility and copy review.",
+      acceptanceCriteria: ["The revised copy is recorded with its rationale"]
+    )
+
+    #expect(
+      DeliveryDemoPolicy(assignee: designer, item: prototypeContract)
+        == .reviewablePrototype
+    )
+    #expect(
+      DeliveryDemoPolicy(assignee: designer, item: documentFirstContract)
+        == .anyKind
+    )
+    #expect(
+      DeliveryDemoPolicy(assignee: implementer, item: prototypeContract)
+        == .anyKind
+    )
+  }
+
   @Test("[D02] Scheduler runs independent tickets before their direct dependant")
   func dependencyAwareRunAdmission() throws {
     let productID = UUID()

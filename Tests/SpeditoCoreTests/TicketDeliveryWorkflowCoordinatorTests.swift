@@ -398,6 +398,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       runID: run.id,
       productID: product.id,
       assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
       workspaceURL: workspace.url,
       canonicalKnowledgePages: []
     )

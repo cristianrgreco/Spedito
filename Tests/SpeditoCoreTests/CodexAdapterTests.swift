@@ -446,7 +446,7 @@ struct CodexAdapterTests {
       threadID: threadID,
       prompt: "Deliver the ticket",
       effort: "medium",
-      outputSchema: CodexTicketExecutor.outputSchema,
+      outputSchema: CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind),
       runtimeWorkspaceRoots: [
         URL(fileURLWithPath: "/private/tmp/spedito-product")
       ]
@@ -3546,10 +3546,11 @@ struct CodexAdapterTests {
     #expect(completed.workLogComment.contains("How to review"))
     #expect(completed.workLogComment.contains("Demo: Location form"))
     #expect(
-      CodexTicketExecutor.outputSchema["required"]?.arrayValue?.contains(.string("demo")) == true)
+      CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)["required"]?
+        .arrayValue?.contains(.string("demo")) == true)
     #expect(
-      CodexTicketExecutor.outputSchema["required"]?.arrayValue?
-        .contains(.string("decisionArtifact")) == true
+      CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)["required"]?
+        .arrayValue?.contains(.string("decisionArtifact")) == true
     )
 
     #expect(throws: TicketExecutionGenerationError.self) {

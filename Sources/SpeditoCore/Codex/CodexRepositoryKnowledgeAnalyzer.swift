@@ -56,7 +56,9 @@ public enum CodexRepositoryKnowledgeAnalyzer {
               "additionalProperties": .bool(false),
               "required": .array([.string("specification"), .string("evidence")]),
               "properties": .object([
-                "specification": CodexTicketExecutor.demoLaunchSpecificationSchema,
+                "specification": CodexTicketExecutor.demoLaunchSpecificationSchema(
+                  deliveryDemoPolicy: .anyKind
+                ),
                 "evidence": evidenceSchema,
               ]),
             ]),

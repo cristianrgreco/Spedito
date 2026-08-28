@@ -9,6 +9,30 @@ enum CodexTicketDeliveryMode: Equatable, Sendable {
   }
 }
 
+/// Which demo presentation kinds one delivery turn's output schema admits.
+/// Derived from the same facts that select the delivery guidance variant, so
+/// a contract-forbidden kind is structurally inexpressible instead of a
+/// repair-loop turn.
+public enum DeliveryDemoPolicy: Equatable, Sendable {
+  /// Every validator-supported presentation kind.
+  case anyKind
+  /// A UX ticket whose contract promises a reviewable prototype: the demo
+  /// must open as an interactive surface, so only static_web, browser, and
+  /// mac_application are expressible.
+  case reviewablePrototype
+
+  public init(assignee: AgentProfile, item: WorkItem) {
+    guard assignee.role == .uxDesigner else {
+      self = .anyKind
+      return
+    }
+    let contract = ([item.title, item.body] + item.acceptanceCriteria)
+      .joined(separator: " ")
+      .lowercased()
+    self = contract.contains("prototype") ? .reviewablePrototype : .anyKind
+  }
+}
+
 enum CodexLifecycleGuidance {
   static func configuredRoleGuidance(
     role: AgentRole,

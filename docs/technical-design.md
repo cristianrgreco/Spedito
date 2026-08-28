@@ -269,8 +269,13 @@ was running.
 
 Before candidate creation, `TicketDeliveryWorkflowCoordinator` validates the structured execution
 result and its Demo recipe against the actual ticket-workspace changes. The model-facing JSON schema
-rejects empty command, title, and presentation-path fields. A validation failure receives at most two
-focused repair turns on the same thread, each constrained by the same schema and the latest exact
+rejects empty command, title, and presentation-path fields. The demo kind enum is itself derived per
+delivery turn from a demo policy: a UX designer ticket whose contract promises a reviewable prototype
+receives a schema admitting only `static_web`, `browser`, and `mac_application`, so a
+contract-forbidden kind is structurally inexpressible instead of a repair turn; every other delivery
+turn keeps the full enum. A validation failure receives at most two
+focused repair turns on the same thread, each constrained by the same schema — including the
+delivering turn's narrowed demo policy — and the latest exact
 failure. Demo-specific repair guidance distinguishes a Spedito-hosted `static_web` directory from an
 inert artifact, bounded command output, and a product-owned browser service. Repair never discards the
 workspace or repeats successful checks; a second invalid repair settles as a reviewable failed run

@@ -1394,7 +1394,12 @@ enum EvalScenarioCatalog {
         ticketComments: [],
         knowledgeContext: [environments]
       ),
-      outputSchema: CodexTicketExecutor.outputSchema,
+      outputSchema: CodexTicketExecutor.outputSchema(
+        deliveryDemoPolicy: DeliveryDemoPolicy(
+          assignee: implementer,
+          item: implementItem
+        )
+      ),
       threadKind: .workspace(
         worktreeURL: implementFixture.worktreeURL,
         readOnlyGitDirectoryURL: implementFixture.gitDirectoryURL,
@@ -1492,7 +1497,9 @@ enum EvalScenarioCatalog {
         ticketComments: [],
         knowledgeContext: [environments]
       ),
-      outputSchema: CodexTicketExecutor.outputSchema,
+      outputSchema: CodexTicketExecutor.outputSchema(
+        deliveryDemoPolicy: DeliveryDemoPolicy(assignee: uxDesigner, item: uxItem)
+      ),
       threadKind: .workspace(
         worktreeURL: uxFixture.worktreeURL,
         readOnlyGitDirectoryURL: uxFixture.gitDirectoryURL,

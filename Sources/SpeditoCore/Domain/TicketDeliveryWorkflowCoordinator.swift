@@ -810,6 +810,10 @@ public final class TicketDeliveryWorkflowCoordinator {
           ? replacementContinuationPrompt
           : nil
       )
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: assignee,
+        item: currentItem
+      )
       var activeThreadID = threadID
       var turnPrompt =
         existingThreadID != nil && !replacedUnavailableThread
@@ -821,7 +825,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: activeThreadID,
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             workspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -857,7 +863,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: activeThreadID,
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             workspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -899,6 +907,7 @@ public final class TicketDeliveryWorkflowCoordinator {
         runID: run.id,
         productID: product.id,
         assignee: assignee,
+        deliveryDemoPolicy: deliveryDemoPolicy,
         workspaceURL: workspace,
         canonicalKnowledgePages: knowledgeSelection.directoryPages
       )
@@ -1006,6 +1015,7 @@ public final class TicketDeliveryWorkflowCoordinator {
     runID: UUID,
     productID: UUID,
     assignee: AgentProfile,
+    deliveryDemoPolicy: DeliveryDemoPolicy,
     workspaceURL: URL,
     canonicalKnowledgePages: [KnowledgePage]
   ) async throws -> (result: TicketExecutionResult, deliveryKind: CandidateDeliveryKind) {
@@ -1049,7 +1059,9 @@ public final class TicketDeliveryWorkflowCoordinator {
             validationError: validationError.localizedDescription
           ),
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             workspaceURL,
             try productDatabaseURL(productID: productID).deletingLastPathComponent(),
@@ -2441,6 +2453,10 @@ public final class TicketDeliveryWorkflowCoordinator {
         recentComments: comments,
         adoptedBaseline: adoptedBaseline
       )
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: implementer,
+        item: item
+      )
       var revisionThreadID: String
       if let existingThreadID = implementationRun.codexThreadID {
         do {
@@ -2496,7 +2512,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: revisionThreadID,
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             revisionWorkspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -2531,7 +2549,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: revisionThreadID,
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             revisionWorkspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -2579,6 +2599,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           runID: implementationRun.id,
           productID: product.id,
           assignee: implementer,
+          deliveryDemoPolicy: deliveryDemoPolicy,
           workspaceURL: revisionWorkspace,
           canonicalKnowledgePages: context.knowledgePages
         )
