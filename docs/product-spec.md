@@ -848,6 +848,20 @@ decision-enabling research ticket. When every credible recommendation still
 requires the agreed product change, the initial epic plan also includes the
 downstream delivery tickets rather than waiting for research to rediscover them.
 
+Clarification normally settles every consequential product choice before
+planning. When the final planning turn still finds one unresolved — for
+example an external source that was neither chosen, delegated, nor given an
+authorised research ticket — the business analyst returns its remaining
+questions instead of a plan. Spedito resumes the clarification conversation
+with those questions using the same question cards, choices, and **Other**
+field as ordinary clarification; nothing is planned, invented, or silently
+deferred, and a plan never arrives together with outstanding questions. The
+owner's answers feed the next planning attempt. This escape is a last resort
+after clarification, not an invitation to defer: a question returned this way
+must name a consequential choice the plan cannot proceed without. Like every
+clarification question, these late questions are durable and survive
+application restarts.
+
 Epic clarification is durable across application restarts. If its underlying
 Codex thread has expired, Spedito starts a replacement read-only thread,
 supplies the preserved business analyst conversation and product owner answers,
