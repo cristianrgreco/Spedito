@@ -41,9 +41,12 @@ Implement and commit one packet at a time, in the order below.
    handover); an empty retro list on an unremarkable run is CORRECT and never
    a deterministic failure.
 3. The product owner approved, on 2026-08-29: Packet A (permission-request
-   grading), Packet B (sprint-goal effort pinning), Packet C (the score
-   campaign), and Packet D (knowledge page creation and review grading)
-   below.
+   grading), Packet B (sprint-goal effort pinning), Packet C (the
+   native-product UX demo scenario), Packet D (knowledge page creation and
+   review grading), and Packet E (the score campaign). The owner explicitly
+   ordered D before E so the campaign can also improve the new knowledge
+   grading if its first scores warrant it; E's all-4s bar includes every
+   scenario that exists by then, the C and D additions included.
 4. The owner authorised pushing this session's work on 2026-08-29; push
    `pilot` after each accepted packet unless newer instructions say otherwise.
 
@@ -118,47 +121,40 @@ Ordinary suite, diff check, ratchets. Then a cheap proof:
 `SPEDITO_EVAL_REPS=1 scripts/evals.sh sprint-goal low,medium,high` — the run
 should execute only the pinned effort and log the skips.
 
-## Packet C: score campaign toward an all-4s minimum (approved as an attempt)
+## Packet C: native-product UX demo mis-kind scenario (approved)
 
-### Goal and bar
-Raise every scenario's judged mean to ≥ 4.0 at `SPEDITO_EVAL_REPS=3`, medium
-effort, infrastructure failures excluded. This is a stretch target the owner
-knows may not fully land: the sub-4 scenarios (greenfield 3.2,
-unresolved-provider 3.4, vague 2.96, detailed-outcome 3.0) are deliberately
-adversarial. Treat 4.0 as the bar to attempt, not a promise; if a scenario
-plateaus after two targeted iterations, stop and report rather than grinding.
+### Problem — observed in production
+In the owner's "native notes app" product, ticket T2, the UX designer
+created a static PNG and submitted it as the demo: a `mac_application`
+presentation whose path is `design/forecast-experience.png`. The validator
+does not require a `.app` suffix, so this decodes and validates and fails
+only at demo launch. This is the exact "valid shape, wrong kind" residual
+the rejected pattern experiment documented — schema `pattern` fixes remain
+off the table (decision 1), but *detecting* the defect in evals is in scope.
 
-### Method — the loop that already worked (2.38 → 2.96 on vague)
-One theme per iteration: turn a recurring judge critique into a deterministic
-check first, run a baseline, make ONE targeted prompt fix, re-run the same
-matrix, compare against repeat-run variance. Never tune against the judge
-without a deterministic anchor; on a surprising score, audit the fixture
-before the prompt (see evals.md, Fixture discipline).
+### Build
+A third delivery scenario, `delivery/ux-native-prototype`: a UX ticket in a
+product whose context and Environments page describe a native macOS
+application (keep the fixture in the generic invoicing family — e.g. a
+native Ledgerline companion app; no notes-app or weather-app references).
+The fixture worktree has no application-building toolchain, so the only
+achievable demoable prototype is a self-contained `static_web` mock of the
+native interface. Deterministic checks:
+- `demoIsNotStaticImageShoehorn`: fail when the demo kind is
+  `mac_application` and the path does not end in `.app` — the exact
+  production defect signature; the detail must name the offending path.
+- The existing `demoIsStaticWeb`-style expectation for the achievable kind,
+  and the shared delivery checks (including retro and, once Packet A lands,
+  permission checks).
+Rubric: reuse the ux-prototype dimensions; state in the brief that a static
+image or a fabricated application path is the failure this scenario probes.
+Verify the fixture with one real run before trusting the checks (fixture
+discipline lesson 1).
 
-Themes in recommended order, mined from the recorded judge rationales:
-1. **Owner-facing jargon in foundation/establishment tickets** (largest
-   greenfield drag: "repository", "caches", "localhost", "managed readiness
-   check" in owner-visible titles/bodies). Add a term-list check on epic-plan
-   suggestions' owner-facing fields; then strengthen the existing plain-
-   language instruction in `CodexTicketSuggestionGenerator.epicPrompt`.
-2. **Vague acceptance-criteria phrases** ("relevant", "that matter", "ready
-   for build hand-off"). Eval check first; do NOT extend the production
-   vague-decision validator without owner sign-off (it changes repair
-   behavior).
-3. **Clarification option wording follow-up** (options still long-ish and
-   jargon-tinged after `0f44fd0`).
-4. **Degenerate constrained-decoding replies** (observed twice: a reply of
-   `"x"` prompts / `":{"` options scoring 1.0, and a `"/?"` path). A
-   minimum-content validator in production decode would convert these into
-   ordinary repair turns — that is a PRODUCTION change: propose it to the
-   owner with the evidence before implementing.
-
-### Verification per iteration
-Family-scoped baseline and comparison runs (REPS=3), deterministic checks
-green, ordinary suite, diff check, ratchets. Finish the campaign with one
-full-matrix run at medium (REPS=2 minimum) and report the final per-scenario
-table against the baselines above. A regression on any untouched scenario
-family blocks the iteration that caused it.
+### Verification
+Ordinary suite, diff check, ratchets; then
+`SPEDITO_EVAL_REPS=2 scripts/evals.sh delivery medium` — report the new
+scenario's first results alongside the existing delivery cells.
 
 ## Packet D: grade knowledge page creations and review (approved)
 
@@ -199,6 +195,48 @@ Ordinary suite, `git diff --check`, ratchets; then
 `SPEDITO_EVAL_REPS=1 scripts/evals.sh delivery,knowledge-review medium` and
 report that the new checks and scenario execute, decode, and report, with
 observed results in the handoff.
+
+## Packet E: score campaign toward an all-4s minimum (approved as an attempt)
+
+### Goal and bar
+Raise every scenario's judged mean to ≥ 4.0 at `SPEDITO_EVAL_REPS=3`, medium
+effort, infrastructure failures excluded. This is a stretch target the owner
+knows may not fully land: the sub-4 scenarios (greenfield 3.2,
+unresolved-provider 3.4, vague 2.96, detailed-outcome 3.0) are deliberately
+adversarial. Treat 4.0 as the bar to attempt, not a promise; if a scenario
+plateaus after two targeted iterations, stop and report rather than grinding.
+
+### Method — the loop that already worked (2.38 → 2.96 on vague)
+One theme per iteration: turn a recurring judge critique into a deterministic
+check first, run a baseline, make ONE targeted prompt fix, re-run the same
+matrix, compare against repeat-run variance. Never tune against the judge
+without a deterministic anchor; on a surprising score, audit the fixture
+before the prompt (see evals.md, Fixture discipline).
+
+Themes in recommended order, mined from the recorded judge rationales:
+1. **Owner-facing jargon in foundation/establishment tickets** (largest
+   greenfield drag: "repository", "caches", "localhost", "managed readiness
+   check" in owner-visible titles/bodies). Add a term-list check on epic-plan
+   suggestions' owner-facing fields; then strengthen the existing plain-
+   language instruction in `CodexTicketSuggestionGenerator.epicPrompt`.
+2. **Vague acceptance-criteria phrases** ("relevant", "that matter", "ready
+   for build hand-off"). Eval check first; do NOT extend the production
+   vague-decision validator without owner sign-off (it changes repair
+   behavior).
+3. **Clarification option wording follow-up** (options still long-ish and
+   jargon-tinged after `0f44fd0`).
+4. **Degenerate constrained-decoding replies** (observed twice: a reply of
+   `"x"` prompts / `":{"` options scoring 1.0, and a `"/?"` path). A
+   minimum-content validator in production decode would convert these into
+   ordinary repair turns — that is a PRODUCTION change: propose it to the
+   owner with the evidence before implementing.
+
+### Verification per iteration
+Family-scoped baseline and comparison runs (REPS=3), deterministic checks
+green, ordinary suite, diff check, ratchets. Finish the campaign with one
+full-matrix run at medium (REPS=2 minimum) and report the final per-scenario
+table against the baselines above. A regression on any untouched scenario
+family blocks the iteration that caused it.
 
 ## Working notes
 
