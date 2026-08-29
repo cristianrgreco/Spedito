@@ -223,8 +223,10 @@ public enum CodexEpicClarificationGenerator {
       never a promise to provide information later. Because the owner can select only one option per
       question, the question carries the shared context and each option states only what differs while
       still standing alone as a complete, mutually exclusive decision; do not repeat shared context in
-      every option, and never use incremental labels such as “as well,” “too,” or “also.” Direct an
-      unlisted constraint
+      every option, and never use incremental labels such as “as well,” “too,” or “also.” Write each
+      option as a short, distinct phrase naming only that choice — a few words the owner could say
+      aloud, never a sentence restating the outcome — and never list an option whose substance the
+      owner would still have to type into Other. Direct an unlisted constraint
       through the interface's Other text field. Distinguish using the supplied verified product evidence
       without a research ticket from authorising a time-boxed business analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
@@ -287,7 +289,10 @@ public enum CodexEpicClarificationGenerator {
       option per question, so the question carries the shared context and each option
       states only what differs while remaining a self-contained, mutually exclusive decision; do not
       repeat shared context in every option, and do not compound another option with “as well,” “too,”
-      “also,” or equivalent wording. Tell the owner to use the
+      “also,” or equivalent wording. Write each option as a short, distinct phrase naming only that
+      choice — a few words the owner could say aloud, never a sentence restating the outcome — and
+      never list an option whose substance the owner would still have to type into Other. Tell the
+      owner to use the
       interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
       existing evidence without a research ticket from time-boxed research that creates one. Confirm that
       the final plan will include an environment-establishment prerequisite, with separate research only

@@ -820,6 +820,7 @@ enum EvalScenarioCatalog {
       var checks: [EvalCheck] = []
       if !reply.questions.isEmpty {
         checks.append(optionRestatementCheck(reply, epicGoal: epicGoal))
+        checks.append(optionSharedContextCheck(reply))
       }
       extraChecks(reply, &checks)
       return EvalDeterministicOutcome(
@@ -840,6 +841,50 @@ enum EvalScenarioCatalog {
         facts: [:]
       )
     }
+  }
+
+  /// Complements the shared-prefix check with the residual the judge kept
+  /// flagging after that check went green: context repeated in the middle of
+  /// every option instead of carried by the question prompt. Flags a long
+  /// case-insensitive substring common to every option of a question — unless
+  /// the question prompt itself contains that fragment, because options
+  /// naturally echo the subject noun the prompt already carries.
+  private static func optionSharedContextCheck(_ reply: EpicClarificationReply) -> EvalCheck {
+    let minimumLength = 20
+    var failures: [String] = []
+    for question in reply.questions where question.options.count >= 2 {
+      let lowered = question.options.map { $0.lowercased() }
+      let promptLowered = question.prompt.lowercased()
+      guard let shortest = lowered.min(by: { $0.count < $1.count }),
+        shortest.count >= minimumLength
+      else { continue }
+      let characters = Array(shortest)
+      var shared: String?
+      outer: for length in stride(from: characters.count, through: minimumLength, by: -1) {
+        for start in 0...(characters.count - length) {
+          let candidate = String(characters[start..<(start + length)])
+          if lowered.allSatisfy({ $0.contains(candidate) }),
+            !promptLowered.contains(candidate.trimmingCharacters(in: .whitespaces))
+          {
+            shared = candidate
+            break outer
+          }
+        }
+      }
+      if let shared {
+        failures.append(
+          "options for “\(question.prompt)” all repeat "
+            + "“\(shared.trimmingCharacters(in: .whitespaces).prefix(60))”"
+        )
+      }
+    }
+    return EvalCheck(
+      name: "optionsShareNoRepeatedContext",
+      passed: failures.isEmpty,
+      detail: failures.isEmpty
+        ? "no long context is repeated across every option of a question"
+        : failures.joined(separator: "; ")
+    )
   }
 
   /// Mechanically catches the observed production defect: every option in a
