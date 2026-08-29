@@ -25,6 +25,18 @@ enum EvalThreadKind: Sendable {
   }
 }
 
+/// Which of a run's requested efforts a scenario may execute at. Most
+/// scenarios sweep every requested effort; a family production only ever
+/// runs in one configuration declares that instead, so sweeps stop spending
+/// usage on configurations the product never uses.
+enum EvalEffortPolicy: Sendable {
+  /// Run at every requested effort.
+  case anyRequested
+  /// Run only at the lightest effort the model supports — production's
+  /// sprint-goal configuration under its hard 15-second deadline.
+  case lightestSupported
+}
+
 /// One prompt scenario: the exact developer instructions, prompt, and output
 /// schema production would send, a deterministic evaluation built on the
 /// production decoder and validators, and a rubric for the LLM judge.
@@ -36,6 +48,7 @@ struct EvalScenario: Sendable {
   let prompt: String
   let outputSchema: JSONValue
   let threadKind: EvalThreadKind
+  let effortPolicy: EvalEffortPolicy
   let rubric: [EvalRubricDimension]
   let evaluate: @Sendable (String) -> EvalDeterministicOutcome
   /// Extra evidence for the judge computed after the turn — a delivery cell
@@ -51,6 +64,7 @@ struct EvalScenario: Sendable {
     prompt: String,
     outputSchema: JSONValue,
     threadKind: EvalThreadKind = .readOnly(workingDirectoryURL: nil),
+    effortPolicy: EvalEffortPolicy = .anyRequested,
     rubric: [EvalRubricDimension],
     evaluate: @escaping @Sendable (String) -> EvalDeterministicOutcome,
     judgeSupplement: (@Sendable () -> String)? = nil
@@ -62,6 +76,7 @@ struct EvalScenario: Sendable {
     self.prompt = prompt
     self.outputSchema = outputSchema
     self.threadKind = threadKind
+    self.effortPolicy = effortPolicy
     self.rubric = rubric
     self.evaluate = evaluate
     self.judgeSupplement = judgeSupplement
@@ -1039,6 +1054,10 @@ enum EvalScenarioCatalog {
         ticketTitles: ticketTitles
       ),
       outputSchema: CodexSprintGoalGenerator.outputSchema,
+      // Production only ever generates the sprint goal at the lightest
+      // supported effort under its 15-second deadline; measuring heavier
+      // efforts spends usage on a configuration the product cannot reach.
+      effortPolicy: .lightestSupported,
       rubric: rubric,
       evaluate: { response in
         do {

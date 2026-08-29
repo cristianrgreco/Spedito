@@ -97,35 +97,60 @@ struct EvalRunTests {
     await approvalResponder.start()
     defer { Task { await approvalResponder.stop() } }
 
-    let totalCells = scenarios.count
-      * configuration.models.reduce(0) { $0 + (effortsByModel[$1]?.count ?? 0) }
-      * configuration.repetitions
+    // Plan the matrix before running it so effort pins are logged one line
+    // per skipped cell (no silent caps) and the printed total stays exact.
+    var plannedCells: [(scenario: EvalScenario, model: String, effort: String)] = []
+    for scenario in scenarios {
+      for model in configuration.models {
+        for effort in effortsByModel[model] ?? [] {
+          switch scenario.effortPolicy {
+          case .anyRequested:
+            break
+          case .lightestSupported:
+            let lightest = CodexSprintGoalGenerator.lightestReasoningEffort(
+              supportedEfforts: supportedEffortsByModel[model] ?? [],
+              fallback: effort
+            )
+            guard effort == lightest else {
+              print(
+                "Skipping \(scenario.id) · \(model) at \(effort) effort: "
+                  + "the scenario is pinned to the lightest supported effort (\(lightest))"
+              )
+              continue
+            }
+          }
+          plannedCells.append((scenario, model, effort))
+        }
+      }
+    }
+    try #require(
+      !plannedCells.isEmpty,
+      "Every requested cell was skipped by an effort pin; request the pinned effort"
+    )
+
+    let totalCells = plannedCells.count * configuration.repetitions
     print("Eval run: \(totalCells) cell(s) → \(bundle.bundleURL.path)")
 
     var records: [EvalCellRecord] = []
     var cellIndex = 0
-    for scenario in scenarios {
-      for model in configuration.models {
-        for effort in effortsByModel[model] ?? [] {
-          for repetition in 1...configuration.repetitions {
-            cellIndex += 1
-            print("[\(cellIndex)/\(totalCells)] \(scenario.id) · \(model) at \(effort) effort…")
-            let record = await runCell(
-              scenario: scenario,
-              model: model,
-              effort: effort,
-              repetition: repetition,
-              configuration: configuration,
-              client: client,
-              workspace: workspace,
-              judge: judge,
-              approvalResponder: approvalResponder
-            )
-            records.append(record)
-            try bundle.write(records: records)
-            summarize(record)
-          }
-        }
+    for cell in plannedCells {
+      for repetition in 1...configuration.repetitions {
+        cellIndex += 1
+        print("[\(cellIndex)/\(totalCells)] \(cell.scenario.id) · \(cell.model) at \(cell.effort) effort…")
+        let record = await runCell(
+          scenario: cell.scenario,
+          model: cell.model,
+          effort: cell.effort,
+          repetition: repetition,
+          configuration: configuration,
+          client: client,
+          workspace: workspace,
+          judge: judge,
+          approvalResponder: approvalResponder
+        )
+        records.append(record)
+        try bundle.write(records: records)
+        summarize(record)
       }
     }
 
