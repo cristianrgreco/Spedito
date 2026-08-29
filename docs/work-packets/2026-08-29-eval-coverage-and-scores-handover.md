@@ -143,13 +143,28 @@ native interface. Deterministic checks:
 - `demoIsNotStaticImageShoehorn`: fail when the demo kind is
   `mac_application` and the path does not end in `.app` — the exact
   production defect signature; the detail must name the offending path.
+- `prototypeIsRealMarkup`: the T2 image was also illegible — the agent drew
+  every string into the bitmap with a homemade glyph renderer, so all text
+  came out garbled. The judge cannot see image pixels (it reads the textual
+  diff; binary blobs are invisible), which is exactly why image deliverables
+  must be flagged deterministically: fail when the diff's design deliverable
+  is only binary image files, or when the committed prototype contains no
+  HTML file for the demo to open. The detail names the offending files.
+  Apply this check to the existing `delivery/ux-prototype` scenario too.
 - The existing `demoIsStaticWeb`-style expectation for the achievable kind,
   and the shared delivery checks (including retro and, once Packet A lands,
   permission checks).
-Rubric: reuse the ux-prototype dimensions; state in the brief that a static
-image or a fabricated application path is the failure this scenario probes.
-Verify the fixture with one real run before trusting the checks (fixture
-discipline lesson 1).
+Rubric: reuse the ux-prototype dimensions, adding to `prototypeQuality`
+that every visible string is real markup text the browser renders — text
+drawn into images or embedded as image data is a failure even when the
+layout is otherwise sound. State in the brief that a static image, a
+fabricated application path, or image-embedded text is the failure this
+scenario probes. Verify the fixture with one real run before trusting the
+checks (fixture discipline lesson 1).
+
+Out of scope unless the owner asks: a multimodal judge that attaches image
+artifacts to the judge turn so pixel legibility itself can be scored. Note
+it in the packet handoff if the first run suggests it would pay for itself.
 
 ### Verification
 Ordinary suite, diff check, ratchets; then
