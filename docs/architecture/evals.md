@@ -127,5 +127,5 @@ generator's public `developerInstructions`, `prompt`, `outputSchema`, and
 `decode`. Keep fixtures generic, keep deterministic checks about contracts
 (not wording), and give the judge a rubric dimension only when a human could
 apply it consistently. Generators not yet covered (conversation turns,
-retrospective synthesis, conflict integration, knowledge review) need run
-histories or conflicting-branch fixtures and are the natural next additions.
+conflict integration) need run histories or conflicting-branch fixtures and
+are the natural next additions.

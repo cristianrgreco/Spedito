@@ -106,6 +106,7 @@ enum EvalScenarioCatalog {
       + sprintGoalScenarios() + knowledgeScenarios()
       + (try reviewScenarios(workspace: workspace))
       + [try await repositoryAnalysisScenario(workspace: workspace)]
+      + [try await knowledgeReviewScenario(workspace: workspace)]
       + (try deliveryScenarios(workspace: workspace))
       + [retrospectiveSynthesisScenario()]
   }
@@ -1642,6 +1643,39 @@ enum EvalScenarioCatalog {
             workLogTexts: [result.comment, result.summary]
           )
         )
+        let proposals = result.knowledgePageProposals
+        if !proposals.isEmpty {
+          // Uniqueness is within the reply only: a proposal sharing a slug
+          // with a supplied page is a legitimate replacement body.
+          let slugs = proposals.map { knowledgeProposalSlug(for: $0.title) }
+          let duplicateSlugs = Dictionary(grouping: slugs) { $0 }
+            .filter { $1.count > 1 }.keys.sorted()
+          checks.append(
+            EvalCheck(
+              name: "knowledgeProposalSlugsUnique",
+              passed: duplicateSlugs.isEmpty,
+              detail: duplicateSlugs.isEmpty
+                ? "proposal slugs are unique within the reply: "
+                  + slugs.joined(separator: ", ")
+                : "the reply proposes the same page slug more than once: "
+                  + duplicateSlugs.joined(separator: ", ")
+            )
+          )
+          let blank = proposals.filter {
+            $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              || $0.proposedBodyMarkdown
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          }
+          checks.append(
+            EvalCheck(
+              name: "knowledgeProposalsHaveContent",
+              passed: blank.isEmpty,
+              detail: blank.isEmpty
+                ? "every proposal has a non-empty trimmed title and body"
+                : "\(blank.count) proposal(s) have an empty trimmed title or body"
+            )
+          )
+        }
         var facts: [String: String] = [
           "status": result.status.rawValue,
           "changedFiles": result.changedFiles.joined(separator: " | "),
@@ -1652,7 +1686,12 @@ enum EvalScenarioCatalog {
             + "actions \(result.retrospectiveActions.count)",
           "retroActionDestinations": result.retrospectiveActions
             .map(\.destination.rawValue).joined(separator: " | "),
+          "knowledgeProposalCount": String(proposals.count),
         ]
+        if !proposals.isEmpty {
+          facts["knowledgeProposalSlugs"] = proposals
+            .map { knowledgeProposalSlug(for: $0.title) }.joined(separator: " | ")
+        }
         if requiresPassingTests {
           let tests = EvalFixtureRepository.runNodeTests(at: worktreeURL)
           checks.append(
@@ -1801,6 +1840,7 @@ enum EvalScenarioCatalog {
             + "substantive observation of it, but never require any item."
         ),
         deliveryPermissionDiscipline,
+        deliveryKnowledgeDiscipline,
       ],
       evaluate: { response in
         deliveryChecks(
@@ -1895,6 +1935,7 @@ enum EvalScenarioCatalog {
         prototypeQuality,
         deliveryRetrospectiveDiscipline,
         deliveryPermissionDiscipline,
+        deliveryKnowledgeDiscipline,
       ],
       evaluate: { response in
         deliveryChecks(
@@ -2055,6 +2096,7 @@ enum EvalScenarioCatalog {
         prototypeQuality,
         deliveryRetrospectiveDiscipline,
         deliveryPermissionDiscipline,
+        deliveryKnowledgeDiscipline,
       ],
       evaluate: { response in
         deliveryChecks(
@@ -2139,6 +2181,31 @@ enum EvalScenarioCatalog {
           + restated.joined(separator: " | ")
     )
   }
+
+  /// Mirrors the internal KnowledgePageProposalMaterializer.slug(for:) rule
+  /// so proposal uniqueness is graded on the slug the page would receive.
+  private static func knowledgeProposalSlug(for title: String) -> String {
+    let slug =
+      title
+      .lowercased()
+      .split { !$0.isLetter && !$0.isNumber }
+      .map(String.init)
+      .joined(separator: "-")
+    return slug.isEmpty ? "page" : slug
+  }
+
+  private static let deliveryKnowledgeDiscipline = EvalRubricDimension(
+    name: "knowledgeDiscipline",
+    guidance: """
+      Knowledge page proposals follow the delivery contract: each holds \
+      durable cross-ticket knowledge grounded in this run's actual work, in \
+      plain language, and NO proposals on an ordinary run scores WELL — \
+      these tickets do not obviously warrant a page. Restated ticket \
+      content, invented pages, and claims the run did not verify are \
+      penalized. A replacement Environments body is legitimate when the run \
+      verified a workflow.
+      """
+  )
 
   /// Scored against the recorded permission and approval requests the judge
   /// prompt supplies as ground truth for delivery cells.
@@ -2458,6 +2525,147 @@ enum EvalScenarioCatalog {
               "draftCount": String(result.drafts.count),
               "draftTargets": result.drafts.map(\.title).joined(separator: " | "),
               "summaryCharacterCount": String(result.summary.count),
+            ]
+          )
+        } catch {
+          return EvalDeterministicOutcome(
+            decodePassed: false,
+            decodeFailure: describeError(error),
+            checks: [],
+            facts: [:]
+          )
+        }
+      }
+    )
+  }
+
+  // MARK: - Repository knowledge review
+
+  /// One reviewer turn deciding two analyzer drafts, the way production
+  /// reviews every draft of a run in one pass: one page fully supported by
+  /// the snapshot and one that contradicts the evidence it cites. The
+  /// contradiction is verifiable in the shared fixture itself: the README
+  /// states "There is no build step and no server" and package.json defines
+  /// only a "test" script, while the flawed draft prescribes `npm run build`
+  /// and a release pipeline.
+  private static func knowledgeReviewScenario(
+    workspace: EvalFixtureWorkspace
+  ) async throws -> EvalScenario {
+    let snapshot = try await workspace.prepareAnalysisSnapshot(
+      of: workspace.sharedRepository
+    )
+    let product = makeProduct()
+    let run = RepositoryKnowledgeRun(
+      productID: product.id,
+      attempt: 1,
+      analyzedSHA: snapshot.analyzedSHA,
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID()
+    )
+    let soundDraft = RepositoryKnowledgeDraft(
+      runID: run.id,
+      operation: .create,
+      title: "Environments",
+      proposedBodyMarkdown: """
+        Ledgerline is a Node.js project managed with npm scripts. `npm test` \
+        runs the test suite with the built-in Node test runner; tests live \
+        in `tests/*.test.js`. There is no build step and no server: the \
+        modules under `src/` are used directly.
+        """,
+      rationale: "The README and package.json state the toolchain and test entry point.",
+      evidence: [
+        RepositoryEvidence(path: "README.md"),
+        RepositoryEvidence(path: "package.json"),
+      ]
+    )
+    let flawedDraft = RepositoryKnowledgeDraft(
+      runID: run.id,
+      operation: .create,
+      title: "Build and release",
+      proposedBodyMarkdown: """
+        Run `npm run build` to compile the production bundle before every \
+        release. The build step bundles the modules under `src/` and writes \
+        the release artifact to `dist/`. Releases are automated by the \
+        repository's release pipeline.
+        """,
+      rationale: "The package.json defines the build and release workflow.",
+      evidence: [
+        RepositoryEvidence(path: "package.json"),
+        RepositoryEvidence(path: "README.md"),
+      ]
+    )
+    let drafts = [soundDraft, flawedDraft]
+    return EvalScenario(
+      id: "knowledge-review/mixed-drafts",
+      generator: "knowledgeReview",
+      brief: """
+        A repository knowledge review over two analyzer drafts against the \
+        sanitized snapshot of a small, honest Node.js repository: an \
+        Environments page fully supported by the README and package.json, \
+        and a "Build and release" page that contradicts its cited evidence \
+        (the repository has no build script, and its README states there is \
+        no build step). A good review approves the sound page, rejects the \
+        fabricated one naming the actual contradiction, and explains both \
+        decisions plainly.
+        """,
+      developerInstructions: CodexRepositoryKnowledgeReviewer.developerInstructions,
+      prompt: try CodexRepositoryKnowledgeReviewer.prompt(
+        run: run,
+        drafts: drafts,
+        launchProposal: nil,
+        snapshot: snapshot
+      ),
+      outputSchema: CodexRepositoryKnowledgeReviewer.outputSchema,
+      threadKind: .repositoryAnalysis(snapshotURL: snapshot.url),
+      rubric: [
+        ownerClarity,
+        EvalRubricDimension(
+          name: "evidenceFidelity",
+          guidance: """
+            Each decision follows the cited repository evidence exactly: \
+            content fully supported by the snapshot is approved, and content \
+            that overclaims, contradicts, or invents beyond the cited files \
+            is rejected with the actual conflict named. No decision rests on \
+            unverified claims from the draft itself.
+            """
+        ),
+      ],
+      evaluate: { response in
+        do {
+          let review = try CodexRepositoryKnowledgeReviewer.decode(
+            response,
+            drafts: drafts,
+            launchProposal: nil
+          )
+          let decisionsByID = Dictionary(
+            uniqueKeysWithValues: review.decisions.map { ($0.draftID, $0) }
+          )
+          let sound = decisionsByID[soundDraft.id]
+          let flawed = decisionsByID[flawedDraft.id]
+          return EvalDeterministicOutcome(
+            decodePassed: true,
+            decodeFailure: nil,
+            checks: [
+              EvalCheck(
+                name: "approvesSoundDraft",
+                passed: sound?.approved == true,
+                detail: "the supported Environments draft was "
+                  + (sound?.approved == true ? "approved" : "rejected")
+                  + ": " + (sound?.explanation ?? "no decision")
+              ),
+              EvalCheck(
+                name: "rejectsOverclaimingDraft",
+                passed: flawed?.approved == false,
+                detail: "the contradicted Build and release draft was "
+                  + (flawed?.approved == false ? "rejected" : "approved")
+                  + ": " + (flawed?.explanation ?? "no decision")
+              ),
+            ],
+            facts: [
+              "summaryCharacterCount": String(review.summary.count),
+              "decisions": review.decisions
+                .map { "\($0.approved ? "approved" : "rejected"): \($0.explanation)" }
+                .joined(separator: " | "),
             ]
           )
         } catch {
