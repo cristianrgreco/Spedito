@@ -84,8 +84,8 @@ struct EvalJudge {
       imageInputURLs.isEmpty
       ? scenario.rubric
       : scenario.rubric + [Self.visualFidelity]
-    do {
-      let reply = try await EvalRetry.withCapacityRetry {
+    func attemptJudgeTurn() async throws -> String {
+      try await EvalRetry.withCapacityRetry {
         let threadID = try await client.startReadOnlyThread(
           workingDirectory: workingDirectory,
           developerInstructions: Self.developerInstructions,
@@ -110,6 +110,17 @@ struct EvalJudge {
           timeout: .seconds(240),
           totalTimeout: .seconds(900)
         )
+      }
+    }
+    do {
+      // Mirror the candidate-turn stall recovery: one fresh-thread retry
+      // instead of surrendering the cell's judge sample.
+      let reply: String
+      do {
+        reply = try await attemptJudgeTurn()
+      } catch CodexClientError.turnTimedOut {
+        print("  judge turn stalled to its cap; retrying once…")
+        reply = try await attemptJudgeTurn()
       }
       let decoded = try decode(reply, expectedDimensions: rubric.map(\.name))
       return EvalJudgeRecord(
