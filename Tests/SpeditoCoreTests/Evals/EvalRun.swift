@@ -118,7 +118,8 @@ struct EvalRunTests {
               configuration: configuration,
               client: client,
               workspace: workspace,
-              judge: judge
+              judge: judge,
+              approvalResponder: approvalResponder
             )
             records.append(record)
             try bundle.write(records: records)
@@ -143,13 +144,15 @@ struct EvalRunTests {
     configuration: EvalConfiguration,
     client: CodexAppServerClient,
     workspace: EvalFixtureWorkspace,
-    judge: EvalJudge
+    judge: EvalJudge,
+    approvalResponder: EvalApprovalResponder
   ) async -> EvalCellRecord {
     let startedAt = Date()
     let started = ContinuousClock.now
-    let response: String
-    do {
-      response = try await EvalRetry.withCapacityRetry {
+    let decisionsBefore = await approvalResponder.decisions.count
+
+    func attemptTurn() async throws -> String {
+      try await EvalRetry.withCapacityRetry {
         let threadID: String
         switch scenario.threadKind {
         case .readOnly(let workingDirectoryURL):
@@ -179,17 +182,40 @@ struct EvalRunTests {
           effort: effort,
           outputSchema: scenario.outputSchema
         )
+        // Healthy cells finish in one to four minutes; a turn that is still
+        // running at the total cap is grinding, not late. One fresh-thread
+        // retry recovers the cell instead of surrendering its cost.
         let isWorkspace = scenario.threadKind.isWorkspace
         return try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: turnID,
           timeout: .seconds(isWorkspace ? 300 : 240),
-          totalTimeout: .seconds(isWorkspace ? 1_800 : 900)
+          totalTimeout: .seconds(isWorkspace ? 900 : 600)
         )
+      }
+    }
+
+    var stalledAttempts = 0
+    let response: String
+    do {
+      do {
+        response = try await attemptTurn()
+      } catch CodexClientError.turnTimedOut {
+        stalledAttempts = 1
+        print("  turn stalled to its total cap; retrying the cell once…")
+        response = try await attemptTurn()
       }
     } catch {
       let description =
         (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+      let cellDecisions = await approvalResponder.decisions.dropFirst(decisionsBefore)
+      var facts: [String: String] = [:]
+      if !cellDecisions.isEmpty {
+        facts["approvalDecisions"] = cellDecisions.joined(separator: " | ")
+      }
+      if stalledAttempts > 0 {
+        facts["stalledAttempts"] = String(stalledAttempts)
+      }
       return EvalCellRecord(
         scenarioID: scenario.id,
         generator: scenario.generator,
@@ -203,7 +229,7 @@ struct EvalRunTests {
         decodePassed: false,
         decodeFailure: nil,
         checks: [],
-        facts: [:],
+        facts: facts,
         judge: nil,
         rawResponse: nil
       )
@@ -229,6 +255,15 @@ struct EvalRunTests {
       judgeRecord = await judge.score(scenario: scenario, response: response)
     }
 
+    var facts = outcome.facts
+    let cellDecisions = await approvalResponder.decisions.dropFirst(decisionsBefore)
+    if !cellDecisions.isEmpty {
+      facts["approvalDecisions"] = cellDecisions.joined(separator: " | ")
+    }
+    if stalledAttempts > 0 {
+      facts["stalledAttempts"] = String(stalledAttempts)
+    }
+
     return EvalCellRecord(
       scenarioID: scenario.id,
       generator: scenario.generator,
@@ -242,7 +277,7 @@ struct EvalRunTests {
       decodePassed: outcome.decodePassed,
       decodeFailure: outcome.decodeFailure,
       checks: checks,
-      facts: outcome.facts,
+      facts: facts,
       judge: judgeRecord,
       rawResponse: response
     )
