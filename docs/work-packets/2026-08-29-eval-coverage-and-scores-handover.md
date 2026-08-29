@@ -42,11 +42,13 @@ Implement and commit one packet at a time, in the order below.
    a deterministic failure.
 3. The product owner approved, on 2026-08-29: Packet A (permission-request
    grading), Packet B (sprint-goal effort pinning), Packet C (the
-   native-product UX demo scenario), Packet D (knowledge page creation and
-   review grading), and Packet E (the score campaign). The owner explicitly
-   ordered D before E so the campaign can also improve the new knowledge
-   grading if its first scores warrant it; E's all-4s bar includes every
-   scenario that exists by then, the C and D additions included.
+   native-product UX demo scenario), Packet D (multimodal judging of image
+   artifacts), Packet E (knowledge page creation and review grading), and
+   Packet F (the score campaign). The owner explicitly ordered knowledge
+   grading (E) before the campaign (F) so the campaign can also improve the
+   new knowledge grading if its first scores warrant it; F's all-4s bar
+   includes every scenario that exists by then, the C, D, and E additions
+   included.
 4. The owner authorised pushing this session's work on 2026-08-29; push
    `pilot` after each accepted packet unless newer instructions say otherwise.
 
@@ -162,16 +164,58 @@ fabricated application path, or image-embedded text is the failure this
 scenario probes. Verify the fixture with one real run before trusting the
 checks (fixture discipline lesson 1).
 
-Out of scope unless the owner asks: a multimodal judge that attaches image
-artifacts to the judge turn so pixel legibility itself can be scored. Note
-it in the packet handoff if the first run suggests it would pay for itself.
+Pixel legibility itself is scored by Packet D's multimodal judge, which the
+owner approved after the localImage probe; this packet's deterministic
+checks remain the first line for prototype tickets.
 
 ### Verification
 Ordinary suite, diff check, ratchets; then
 `SPEDITO_EVAL_REPS=2 scripts/evals.sh delivery medium` — report the new
 scenario's first results alongside the existing delivery cells.
 
-## Packet D: grade knowledge page creations and review (approved)
+## Packet D: multimodal judging of image artifacts (approved)
+
+### Problem
+The judge reads only text — the brief, the reply, and the git diff — so a
+committed image is an invisible binary blob. The production T2 PNG (all text
+garbled by a hand-drawn glyph renderer) would sail through judging on any
+ticket where an image is a legitimate deliverable. Deterministic checks
+(Packet C) already fail image-only deliverables on prototype tickets; this
+packet makes images *scoreable* where they are legitimate — artifact demos,
+design references accompanying a real prototype.
+
+### Support is proven — do not re-investigate
+Probed live on 2026-08-29 through the same JSON-RPC path the evals use:
+`turn/start` accepts `{"type": "localImage", "path": ...}` input items
+alongside the text item (there is also `{"type": "image"}` with a base64
+`data:` URL; `localImage` is simpler). A PIL-rendered PNG containing
+"INVOICE 42 PAID" was attached on a read-only ephemeral gpt-5.6-terra
+thread at low effort; the reply was "INVOICE 42 PAID — clearly legible."
+The protocol's `UserInput` enum carries both variants.
+
+### Build
+- Client seam: let the judge turn attach image files — an optional image
+  input list on the turn-start path `EvalJudge` uses, emitting `localImage`
+  items before the text item. Production callers are unchanged (default
+  empty); prefer a harness-side extension over widening a production API if
+  a clean seam exists.
+- Harness: after a delivery cell, collect image files (png, jpeg, gif,
+  webp) added or changed in the worktree diff, bounded — suggest at most 4
+  files and 2 MB each, logging anything dropped (no silent caps) — and
+  attach them to that cell's judge turn.
+- Rubric: a visual-fidelity dimension for scenarios that may legitimately
+  produce images: text inside an image must be crisply legible real
+  typography; garbled, hand-drawn, or approximated glyphs are a serious
+  failure regardless of layout quality. Cells without images attach nothing
+  and pay nothing.
+
+### Verification
+Ordinary suite, diff check, ratchets; then
+`SPEDITO_EVAL_REPS=1 scripts/evals.sh delivery medium` and spot-check one
+image-bearing cell's judge rationale to confirm it references actual image
+content. State judge-turn token cost deltas in the handoff.
+
+## Packet E: grade knowledge page creations and review (approved)
 
 ### Problem
 Knowledge **answers** are graded (`knowledgeScenarios`, citation fidelity)
@@ -211,7 +255,7 @@ Ordinary suite, `git diff --check`, ratchets; then
 report that the new checks and scenario execute, decode, and report, with
 observed results in the handoff.
 
-## Packet E: score campaign toward an all-4s minimum (approved as an attempt)
+## Packet F: score campaign toward an all-4s minimum (approved as an attempt)
 
 ### Goal and bar
 Raise every scenario's judged mean to ≥ 4.0 at `SPEDITO_EVAL_REPS=3`, medium
