@@ -54,15 +54,36 @@ struct EvalJudge {
     ])
   }
 
+  /// Scored only when a cell's work includes image files, which are then
+  /// attached to the judge turn as image inputs so the pixels themselves are
+  /// judged, not the diff's binary placeholder.
+  private static let visualFidelity = EvalRubricDimension(
+    name: "visualFidelity",
+    guidance: """
+      Judge the attached image files directly. Text inside an image must be \
+      crisply legible real typography; garbled, hand-drawn, or approximated \
+      glyphs are a serious failure regardless of layout quality. The imagery \
+      must support the ticket's stated design intent.
+      """
+  )
+
   /// `approvalDecisions` carries a delivery cell's recorded permission and
   /// approval requests so the permissionDiscipline dimension is grounded in
   /// what the agent actually asked for; nil for scenarios without one.
+  /// `imageInputURLs` carries the image files the cell's work added or
+  /// changed; when non-empty they are attached to the judge turn and the
+  /// visualFidelity dimension is scored in addition to the scenario rubric.
   func score(
     scenario: EvalScenario,
     response: String,
-    approvalDecisions: [String]? = nil
+    approvalDecisions: [String]? = nil,
+    imageInputURLs: [URL] = []
   ) async -> EvalJudgeRecord {
     let started = ContinuousClock.now
+    let rubric =
+      imageInputURLs.isEmpty
+      ? scenario.rubric
+      : scenario.rubric + [Self.visualFidelity]
     do {
       let reply = try await EvalRetry.withCapacityRetry {
         let threadID = try await client.startReadOnlyThread(
@@ -74,11 +95,14 @@ struct EvalJudge {
           threadID: threadID,
           prompt: prompt(
             scenario: scenario,
+            rubric: rubric,
             response: response,
-            approvalDecisions: approvalDecisions
+            approvalDecisions: approvalDecisions,
+            imageInputURLs: imageInputURLs
           ),
           effort: effort,
-          outputSchema: Self.outputSchema
+          outputSchema: Self.outputSchema,
+          imageInputPaths: imageInputURLs
         )
         return try await client.waitForFinalAgentMessage(
           threadID: threadID,
@@ -87,7 +111,7 @@ struct EvalJudge {
           totalTimeout: .seconds(900)
         )
       }
-      let decoded = try decode(reply, expectedDimensions: scenario.rubric.map(\.name))
+      let decoded = try decode(reply, expectedDimensions: rubric.map(\.name))
       return EvalJudgeRecord(
         model: model,
         effort: effort,
@@ -112,12 +136,24 @@ struct EvalJudge {
 
   private func prompt(
     scenario: EvalScenario,
+    rubric rubricDimensions: [EvalRubricDimension],
     response: String,
-    approvalDecisions: [String]?
+    approvalDecisions: [String]?,
+    imageInputURLs: [URL]
   ) -> String {
-    let rubric = scenario.rubric
+    let rubric = rubricDimensions
       .map { "- \($0.name): \($0.guidance)" }
       .joined(separator: "\n")
+    let images =
+      imageInputURLs.isEmpty
+      ? ""
+      : """
+
+      ATTACHED IMAGES — these image files from the candidate's actual work \
+      are attached to this turn as image inputs; judge their content directly:
+      \(imageInputURLs.map { "- \($0.lastPathComponent)" }.joined(separator: "\n"))
+
+      """
     let approvals = approvalDecisions.map { decisions in
       """
 
@@ -144,7 +180,7 @@ struct EvalJudge {
 
       THE CANDIDATE REPLIED WITH
       \(response)
-      \(scenario.judgeSupplement.map { "\n\($0())\n" } ?? "")\(approvals)
+      \(scenario.judgeSupplement.map { "\n\($0())\n" } ?? "")\(approvals)\(images)
       Score every rubric dimension exactly once, using its exact dimension name, \
       with a concise rationale grounded in the reply and any supplied ground truth.
       """

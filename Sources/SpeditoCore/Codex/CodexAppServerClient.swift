@@ -490,11 +490,15 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     )
   }
 
+  /// `imageInputPaths` attaches local image files as additional turn input
+  /// items ahead of the text prompt, for callers whose evidence includes
+  /// images — the eval judge scoring committed image artifacts. Default empty.
   public func startStructuredTurn(
     threadID: String,
     prompt: String,
     effort: String,
     outputSchema: JSONValue,
+    imageInputPaths: [URL] = [],
     runtimeWorkspaceRoots: [URL] = [],
     responseTimeout: Duration? = nil
   ) async throws -> String {
@@ -503,6 +507,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       prompt: prompt,
       effort: effort,
       outputSchema: outputSchema,
+      imageInputPaths: imageInputPaths,
       runtimeWorkspaceRoots: runtimeWorkspaceRoots,
       responseTimeout: responseTimeout
     )
@@ -513,18 +518,27 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     prompt: String,
     effort: String,
     outputSchema: JSONValue?,
+    imageInputPaths: [URL] = [],
     runtimeWorkspaceRoots: [URL],
     responseTimeout: Duration?
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    let imageItems: [JSONValue] = imageInputPaths.map {
+      .object([
+        "type": .string("localImage"),
+        "path": .string($0.standardizedFileURL.path),
+      ])
+    }
     var params: [String: JSONValue] = [
       "effort": .string(effort),
-      "input": .array([
-        .object([
-          "text": .string(prompt),
-          "type": .string("text"),
-        ])
-      ]),
+      "input": .array(
+        imageItems + [
+          .object([
+            "text": .string(prompt),
+            "type": .string("text"),
+          ])
+        ]
+      ),
       "summary": .string("concise"),
       "threadId": .string(threadID),
     ]

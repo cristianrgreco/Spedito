@@ -284,6 +284,19 @@ struct EvalRunTests {
       )
     }
 
+    // Image files the cell's work produced become judge image inputs, so
+    // pixels are scoreable where the textual diff shows only a binary blob.
+    var judgeImages: (attached: [URL], dropped: [String]) = ([], [])
+    if case .workspace(let worktreeURL, _, let baseSHA) = scenario.threadKind {
+      judgeImages = EvalJudgeImageAttachments.collect(
+        worktreeURL: worktreeURL,
+        baseSHA: baseSHA
+      )
+      for drop in judgeImages.dropped {
+        print("  judge image dropped — \(drop)")
+      }
+    }
+
     var judgeRecord: EvalJudgeRecord?
     if !configuration.skipsJudge {
       judgeRecord = await judge.score(
@@ -291,13 +304,21 @@ struct EvalRunTests {
         response: response,
         approvalDecisions: scenario.threadKind.isWorkspace
           ? cellDecisions.map(\.summary)
-          : nil
+          : nil,
+        imageInputURLs: judgeImages.attached
       )
     }
 
     var facts = outcome.facts
     if !cellDecisions.isEmpty {
       facts["approvalDecisions"] = cellDecisions.map(\.summary).joined(separator: " | ")
+    }
+    if !judgeImages.attached.isEmpty {
+      facts["judgeImageAttachments"] = judgeImages.attached
+        .map(\.lastPathComponent).joined(separator: " | ")
+    }
+    if !judgeImages.dropped.isEmpty {
+      facts["judgeImageAttachmentsDropped"] = judgeImages.dropped.joined(separator: " | ")
     }
     if stalledAttempts > 0 {
       facts["stalledAttempts"] = String(stalledAttempts)

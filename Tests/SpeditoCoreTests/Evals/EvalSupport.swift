@@ -554,6 +554,47 @@ actor EvalApprovalResponder {
   }
 }
 
+/// Collects the image files a delivery cell added or changed in its worktree
+/// so they can be attached to the judge turn as image inputs — the judge
+/// otherwise reads only the textual diff, where an image is an invisible
+/// binary blob. Bounded to keep judge turns affordable; every dropped file is
+/// named so no cap is silent.
+enum EvalJudgeImageAttachments {
+  static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+  static let maximumFileCount = 4
+  static let maximumFileBytes = 2_000_000
+
+  static func collect(
+    worktreeURL: URL,
+    baseSHA: String
+  ) -> (attached: [URL], dropped: [String]) {
+    let changed =
+      (try? EvalFixtureRepository.changedFilePaths(at: worktreeURL, from: baseSHA)) ?? []
+    var attached: [URL] = []
+    var dropped: [String] = []
+    for path in changed {
+      let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+      guard imageExtensions.contains(ext) else { continue }
+      let fileURL = worktreeURL.appendingPathComponent(path)
+      // A path in the diff with no file on disk was deleted; nothing to attach.
+      guard
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+        let bytes = (attributes[.size] as? NSNumber)?.intValue
+      else { continue }
+      guard bytes <= maximumFileBytes else {
+        dropped.append("\(path) (\(bytes) bytes exceeds the \(maximumFileBytes)-byte bound)")
+        continue
+      }
+      guard attached.count < maximumFileCount else {
+        dropped.append("\(path) (beyond the \(maximumFileCount)-file bound)")
+        continue
+      }
+      attached.append(fileURL)
+    }
+    return (attached, dropped)
+  }
+}
+
 /// The on-disk bundle for one run: results.json is rewritten after every
 /// cell so an interrupted run still leaves scoreable evidence.
 struct EvalRunBundle {
