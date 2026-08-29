@@ -92,6 +92,7 @@ enum EvalScenarioCatalog {
       + (try reviewScenarios(workspace: workspace))
       + [try await repositoryAnalysisScenario(workspace: workspace)]
       + (try deliveryScenarios(workspace: workspace))
+      + [retrospectiveSynthesisScenario()]
   }
 
   // MARK: - Shared fixtures
@@ -1263,6 +1264,19 @@ enum EvalScenarioCatalog {
           verified against the actual files rather than trusted.
           """
       ),
+      EvalRubricDimension(
+        name: "retrospectiveDiscipline",
+        guidance: """
+          The reviewer's own retrospective lists stay within the review \
+          contract: empty unless a concrete observation is already evident \
+          from this pass, at most two items, each tied to evidence seen \
+          during review. Empty lists on an ordinary review score WELL. \
+          Generic praise, echoing the implementer's borderline-generic note, \
+          and restated review findings are penalized. A team_practice action \
+          describes conduct possible with existing capabilities, and missing \
+          evidence must not become a retrospective action.
+          """
+      ),
     ]
 
     func makeScenario(
@@ -1339,8 +1353,11 @@ enum EvalScenarioCatalog {
         reviewInstructions: [
           "Check that the summary line for an unpaid invoice with a past due date ends with OVERDUE"
         ],
-        retrospectiveWentWell: [],
-        retrospectiveCouldImprove: [],
+        retrospectiveWentWell: [
+          "The executable acceptance tests in tests/overdue.test.js made the "
+            + "overdue rules unambiguous to implement"
+        ],
+        retrospectiveCouldImprove: ["Everything went smoothly overall"],
         retrospectiveActions: []
       )
       return EvalScenario(
@@ -1378,12 +1395,21 @@ enum EvalScenarioCatalog {
                     + (review.findings.isEmpty
                       ? ""
                       : "; findings: " + review.findings.joined(separator: " | "))
-                )
+                ),
+                retrospectiveRestatementCheck(
+                  items: review.retrospectiveWentWell
+                    + review.retrospectiveCouldImprove
+                    + review.retrospectiveActions.map(\.body),
+                  workLogTexts: [review.comment] + review.findings
+                ),
               ],
               facts: [
                 "decision": review.decision.rawValue,
                 "findingCount": String(review.findings.count),
                 "findings": review.findings.joined(separator: " | "),
+                "retroCounts": "wentWell \(review.retrospectiveWentWell.count), "
+                  + "couldImprove \(review.retrospectiveCouldImprove.count), "
+                  + "actions \(review.retrospectiveActions.count)",
               ]
             )
           } catch {
@@ -1549,11 +1575,23 @@ enum EvalScenarioCatalog {
               : "the worktree is unchanged from base"
           )
         )
+        checks.append(
+          retrospectiveRestatementCheck(
+            items: result.retrospectiveWentWell + result.retrospectiveCouldImprove
+              + result.retrospectiveActions.map(\.body),
+            workLogTexts: [result.comment, result.summary]
+          )
+        )
         var facts: [String: String] = [
           "status": result.status.rawValue,
           "changedFiles": result.changedFiles.joined(separator: " | "),
           "reportedChecks": result.tests.joined(separator: " | "),
           "providesDemo": String(result.demo != nil),
+          "retroCounts": "wentWell \(result.retrospectiveWentWell.count), "
+            + "couldImprove \(result.retrospectiveCouldImprove.count), "
+            + "actions \(result.retrospectiveActions.count)",
+          "retroActionDestinations": result.retrospectiveActions
+            .map(\.destination.rawValue).joined(separator: " | "),
         ]
         if requiresPassingTests {
           let tests = EvalFixtureRepository.runNodeTests(at: worktreeURL)
@@ -1695,6 +1733,13 @@ enum EvalScenarioCatalog {
             diff or leaking internal diagnostics.
             """
         ),
+        EvalRubricDimension(
+          name: "retrospectiveDiscipline",
+          guidance: deliveryRetrospectiveDiscipline.guidance
+            + " For this run, making the seeded failing specification pass is "
+            + "a legitimate concrete wentWell observation; credit a "
+            + "substantive observation of it, but never require any item."
+        ),
       ],
       evaluate: { response in
         deliveryChecks(
@@ -1794,6 +1839,7 @@ enum EvalScenarioCatalog {
             evaluate and react to.
             """
         ),
+        deliveryRetrospectiveDiscipline,
       ],
       evaluate: { response in
         deliveryChecks(
@@ -1831,6 +1877,225 @@ enum EvalScenarioCatalog {
     )
 
     return [implement, uxDesign]
+  }
+
+  // MARK: - Retrospective grading
+
+  /// Empty retrospective lists are the correct output for an unremarkable run,
+  /// so this check passes trivially on empty lists; it only flags items that
+  /// repeat the run's own work log prose instead of adding an observation.
+  private static func retrospectiveRestatementCheck(
+    items: [String],
+    workLogTexts: [String]
+  ) -> EvalCheck {
+    let hosts = workLogTexts.map { $0.lowercased() }
+    let restated = items.filter { item in
+      let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard trimmed.count >= 15 else { return false }
+      return hosts.contains { $0.contains(trimmed) }
+    }
+    return EvalCheck(
+      name: "retroItemsAreNotRestatements",
+      passed: restated.isEmpty,
+      detail: restated.isEmpty
+        ? "no retrospective item repeats the work log prose verbatim"
+        : "retrospective items restate the work log verbatim: "
+          + restated.joined(separator: " | ")
+    )
+  }
+
+  private static let deliveryRetrospectiveDiscipline = EvalRubricDimension(
+    name: "retrospectiveDiscipline",
+    guidance: """
+      Retrospective lists follow the delivery contract: empty lists on an \
+      uneventful run score WELL, not poorly. Items present are concrete and \
+      tied to evidence from this specific run; generic praise, restated \
+      ticket scope, and invented lessons are penalized. A team_practice \
+      action describes conduct possible with capabilities that already \
+      exist — an action that would need installing, provisioning, \
+      configuring, or authorising something cannot be team_practice. \
+      Deferring a required current-ticket permission or verification into a \
+      retrospective action is a serious failure.
+      """
+  )
+
+  private static func retrospectiveSynthesisScenario() -> EvalScenario {
+    let product = makeProduct()
+    let items = establishedBacklog(productID: product.id)
+    let sprint = Sprint(
+      productID: product.id,
+      number: 3,
+      goal: "Freelancers can chase overdue invoices without leaving Ledgerline.",
+      state: .completed
+    )
+    let noteBase = Date(timeIntervalSince1970: 1_787_000_000)
+    func note(
+      _ offset: TimeInterval,
+      author: String,
+      category: RetrospectiveNoteCategory,
+      body: String,
+      workItemID: UUID? = nil,
+      isActionCandidate: Bool = false
+    ) -> RetrospectiveNote {
+      RetrospectiveNote(
+        productID: product.id,
+        sprintID: sprint.id,
+        workItemID: workItemID,
+        authorName: author,
+        category: category,
+        body: body,
+        isActionCandidate: isActionCandidate,
+        createdAt: noteBase.addingTimeInterval(offset),
+        updatedAt: noteBase.addingTimeInterval(offset)
+      )
+    }
+    let ticketID = items.last?.id
+    let concreteWin = note(
+      0,
+      author: "Implementer",
+      category: .wentWell,
+      body: "The executable acceptance tests on the chasing ticket made the "
+        + "overdue rules unambiguous, so the first candidate passed review.",
+      workItemID: ticketID
+    )
+    let duplicateA = note(
+      60,
+      author: "Implementer",
+      category: .couldImprove,
+      body: "Chasing the product owner mid-ticket for the reminder wording "
+        + "blocked delivery for most of a day.",
+      workItemID: ticketID
+    )
+    let duplicateB = note(
+      120,
+      author: "UX designer",
+      category: .couldImprove,
+      body: "Reminder copy sign-off arrived late, which held up the dependent "
+        + "design work."
+    )
+    let genericNote = note(
+      180,
+      author: "Tech lead",
+      category: .wentWell,
+      body: "The sprint went smoothly overall and everyone collaborated well."
+    )
+    let impossibleCapability = note(
+      240,
+      author: "Implementer",
+      category: .suggestedAction,
+      body: "Spedito should automatically retry failed test runs every hour so "
+        + "flaky infrastructure never blocks a review.",
+      isActionCandidate: true
+    )
+    let ownerCandidate = note(
+      300,
+      author: "Product owner",
+      category: .suggestedAction,
+      body: "Agree reminder wording with me during sprint planning instead of "
+        + "mid-ticket.",
+      isActionCandidate: true
+    )
+    let notes = [
+      concreteWin, duplicateA, duplicateB, genericNote,
+      impossibleCapability, ownerCandidate,
+    ]
+
+    return EvalScenario(
+      id: "retrospective/synthesis",
+      generator: "retrospectiveSynthesis",
+      brief: """
+        Sprint retrospective synthesis over six frozen notes: one concrete win, \
+        two notes from different agents describing the same late \
+        wording-sign-off problem (they must merge into one action), one \
+        generic praise note (no action), one suggestion that would require \
+        automation Spedito does not have (team_practice cannot deliver it — \
+        backlog or nothing), and a product owner candidate aligned with the \
+        duplicate pair. A good synthesis returns a small set of merged, \
+        evidence-linked actions in plain owner language.
+        """,
+      developerInstructions: CodexRetrospectiveSynthesizer.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: ""
+      ),
+      prompt: CodexRetrospectiveSynthesizer.prompt(
+        product: product,
+        sprint: sprint,
+        sourceNotes: notes,
+        workItems: items,
+        existingActions: [],
+        waysOfWorking: "Run the full test suite before handing off a candidate."
+      ),
+      outputSchema: CodexRetrospectiveSynthesizer.outputSchema,
+      rubric: [
+        ownerClarity, groundedness,
+        EvalRubricDimension(
+          name: "synthesisJudgment",
+          guidance: """
+            Notes describing the same underlying decision are merged into one \
+            action with every supporting source linked, and genuinely \
+            different interventions stay separate. No action springs from \
+            generic praise alone. No action promises what its destination \
+            cannot deliver: team_practice only adds text to Ways of working \
+            and cannot install, provision, automate, or authorise anything. \
+            Fewer, well-supported actions beat five padded ones.
+            """
+        ),
+      ],
+      evaluate: { response in
+        do {
+          let actions = try CodexRetrospectiveSynthesizer.decode(
+            response,
+            sourceNotes: notes
+          )
+          var checks: [EvalCheck] = []
+          let duplicatePairIDs: Set<UUID> = [duplicateA.id, duplicateB.id]
+          let actionsCitingPair = actions.filter {
+            !duplicatePairIDs.isDisjoint(with: $0.sourceNoteIDs)
+          }
+          checks.append(
+            EvalCheck(
+              name: "duplicateEvidenceMerged",
+              passed: actionsCitingPair.count <= 1,
+              detail: actionsCitingPair.count <= 1
+                ? "the duplicate wording-sign-off notes support at most one action"
+                : "the duplicate notes were split across \(actionsCitingPair.count) actions: "
+                  + actionsCitingPair.map(\.body).joined(separator: " | ")
+            )
+          )
+          let genericActioned = actions.filter {
+            $0.sourceNoteIDs.contains(genericNote.id)
+          }
+          checks.append(
+            EvalCheck(
+              name: "genericNoteNotActioned",
+              passed: genericActioned.isEmpty,
+              detail: genericActioned.isEmpty
+                ? "generic praise produced no action"
+                : "generic praise was cited as action evidence: "
+                  + genericActioned.map(\.body).joined(separator: " | ")
+            )
+          )
+          return EvalDeterministicOutcome(
+            decodePassed: true,
+            decodeFailure: nil,
+            checks: checks,
+            facts: [
+              "actionCount": String(actions.count),
+              "destinations": actions.map(\.destination.rawValue)
+                .joined(separator: " | "),
+              "actions": actions.map(\.body).joined(separator: " | "),
+            ]
+          )
+        } catch {
+          return EvalDeterministicOutcome(
+            decodePassed: false,
+            decodeFailure: describeError(error),
+            checks: [],
+            facts: [:]
+          )
+        }
+      }
+    )
   }
 
   // MARK: - Repository knowledge analysis
