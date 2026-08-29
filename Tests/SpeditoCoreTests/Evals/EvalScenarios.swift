@@ -481,6 +481,42 @@ enum EvalScenarioCatalog {
     }
   }
 
+  /// The mined judge critique behind sub-4 greenfield scores: engineering
+  /// vocabulary in owner-facing ticket fields. The term list stays small and
+  /// literal — every entry was observed in recorded judge rationales; the
+  /// judge remains the qualitative layer for wording this list cannot catch.
+  private static let ownerFacingJargonTerms = [
+    "repository", "repo", "localhost", "cache", "caches", "toolchain",
+    "readiness check", "capability boundary",
+  ]
+
+  private static func ownerJargonCheck(_ plan: EpicPlanDraft) -> EvalCheck {
+    var findings: [String] = []
+    for suggestion in plan.ticketSuggestions {
+      let text = ([suggestion.title, suggestion.body] + suggestion.acceptanceCriteria)
+        .joined(separator: "\n")
+        .lowercased()
+      let hits = ownerFacingJargonTerms.filter { term in
+        text.range(
+          of: "\\b\(NSRegularExpression.escapedPattern(for: term))\\b",
+          options: .regularExpression
+        ) != nil
+      }
+      if !hits.isEmpty {
+        findings.append(
+          "\(suggestion.reference) “\(suggestion.title)”: " + hits.joined(separator: ", ")
+        )
+      }
+    }
+    return EvalCheck(
+      name: "ownerFacingFieldsAvoidJargon",
+      passed: findings.isEmpty,
+      detail: findings.isEmpty
+        ? "no mined jargon term appears in owner-facing ticket fields"
+        : "owner-facing fields use engineering jargon — " + findings.joined(separator: "; ")
+    )
+  }
+
   private static func evaluateEpicPlan(
     _ response: String,
     existingItems: [WorkItem],
@@ -523,6 +559,7 @@ enum EvalScenarioCatalog {
             : "titles repeat references: \(prefixedTitles.map(\.title).joined(separator: "; "))"
         )
       )
+      checks.append(ownerJargonCheck(plan))
       extraChecks(plan, &checks)
       let dependencyEdges = plan.ticketSuggestions.reduce(0) {
         $0 + $1.dependsOnReferences.count + $1.dependsOnExistingWorkItemKeys.count

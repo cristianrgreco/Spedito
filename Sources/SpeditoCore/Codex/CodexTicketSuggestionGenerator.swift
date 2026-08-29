@@ -258,10 +258,11 @@ public enum CodexTicketSuggestionGenerator {
       Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
       test, local-run, and demo entry points; run-private temporary and cache locations; the complete
       filesystem, localhost, network, and service capability boundary; a successful managed readiness
-      check; limitations; and a verified Environments product knowledge update. Write that ticket's
+      check; limitations; and a verified Environments product knowledge update. Write every ticket's
       owner-facing title, context, and acceptance criteria in plain product language the owner can read
-      at a glance — say “the team can build, test, and demo the product on this Mac, and the setup is
-      written down”, not “toolchain”, “localhost”, “capability boundary”, or cache paths; the technical
+      at a glance — for the environment ticket say “the team can build, test, and demo the product on
+      this Mac, and the setup is written down”, and never put “repository”, “toolchain”, “localhost”,
+      “readiness check”, “capability boundary”, or cache paths in any owner-visible field; the technical
       checklist above is coverage to satisfy, not wording to copy. Consider the intended
       deployment destination early when it affects the stack, but leave production accounts, credentials,
       signing identities, and irreversible release access to separately authorised release work.
