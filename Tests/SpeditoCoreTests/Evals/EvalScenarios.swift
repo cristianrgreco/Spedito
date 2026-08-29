@@ -490,6 +490,41 @@ enum EvalScenarioCatalog {
     "readiness check", "capability boundary",
   ]
 
+  /// Theme 2's mined markers: acceptance-criteria phrases that defer what
+  /// would be verified instead of stating it. "hand-off" alone is excluded —
+  /// a criterion citing a named prerequisite's hand-off is legitimate
+  /// provenance under the criteriaQuality rubric.
+  private static let vagueCriteriaPhrases = [
+    "relevant", "that matter", "ready for build hand-off",
+  ]
+
+  private static func vagueCriteriaCheck(_ plan: EpicPlanDraft) -> EvalCheck {
+    var findings: [String] = []
+    for suggestion in plan.ticketSuggestions {
+      for criterion in suggestion.acceptanceCriteria {
+        let lowered = criterion.lowercased()
+        let hits = vagueCriteriaPhrases.filter { phrase in
+          lowered.range(
+            of: "\\b\(NSRegularExpression.escapedPattern(for: phrase))\\b",
+            options: .regularExpression
+          ) != nil
+        }
+        if !hits.isEmpty {
+          findings.append(
+            "\(suggestion.reference): “\(criterion.prefix(90))” (\(hits.joined(separator: ", ")))"
+          )
+        }
+      }
+    }
+    return EvalCheck(
+      name: "criteriaAvoidVaguePhrases",
+      passed: findings.isEmpty,
+      detail: findings.isEmpty
+        ? "no acceptance criterion defers its own definition"
+        : "criteria defer what they verify — " + findings.joined(separator: "; ")
+    )
+  }
+
   private static func ownerJargonCheck(_ plan: EpicPlanDraft) -> EvalCheck {
     var findings: [String] = []
     for suggestion in plan.ticketSuggestions {
@@ -560,6 +595,7 @@ enum EvalScenarioCatalog {
         )
       )
       checks.append(ownerJargonCheck(plan))
+      checks.append(vagueCriteriaCheck(plan))
       extraChecks(plan, &checks)
       let dependencyEdges = plan.ticketSuggestions.reduce(0) {
         $0 + $1.dependsOnReferences.count + $1.dependsOnExistingWorkItemKeys.count

@@ -269,8 +269,10 @@ public enum CodexTicketSuggestionGenerator {
 
       Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets. Split work
       where it creates an independently understandable, reviewable, or parallelizable outcome. Include
-      testable acceptance criteria, genuine dependencies, suitable ticket types, priorities, and future
-      owners. Before returning, trace every epic success criterion to at least one delivery ticket and make
+      testable acceptance criteria that state exactly what they verify — never “the relevant states”,
+      “states that matter”, or “ready for build hand-off” — while still verifying only behaviour the
+      owner asked for or the evidence requires. Include genuine dependencies, suitable ticket types,
+      priorities, and future owners. Before returning, trace every epic success criterion to at least one delivery ticket and make
       sure the dependency graph reaches the agreed product outcome rather than ending at analysis. Every
       dependsOn entry must reference either another ticket in this response or an exact active ticket key
       shown above.
