@@ -211,7 +211,7 @@ struct EvalRunTests {
       let cellDecisions = await approvalResponder.decisions.dropFirst(decisionsBefore)
       var facts: [String: String] = [:]
       if !cellDecisions.isEmpty {
-        facts["approvalDecisions"] = cellDecisions.joined(separator: " | ")
+        facts["approvalDecisions"] = cellDecisions.map(\.summary).joined(separator: " | ")
       }
       if stalledAttempts > 0 {
         facts["stalledAttempts"] = String(stalledAttempts)
@@ -235,6 +235,10 @@ struct EvalRunTests {
       )
     }
     let latency = seconds(since: started)
+    // The turn is settled, so its approval requests are too; capture them
+    // before the judge turn runs so judge activity can never be attributed
+    // to the cell.
+    let cellDecisions = Array(await approvalResponder.decisions.dropFirst(decisionsBefore))
 
     let outcome = scenario.evaluate(response)
     var checks = outcome.checks
@@ -249,16 +253,26 @@ struct EvalRunTests {
         )
       )
     }
+    if scenario.threadKind.isWorkspace {
+      checks.append(
+        contentsOf: EvalApprovalResponder.permissionDisciplineChecks(for: cellDecisions)
+      )
+    }
 
     var judgeRecord: EvalJudgeRecord?
     if !configuration.skipsJudge {
-      judgeRecord = await judge.score(scenario: scenario, response: response)
+      judgeRecord = await judge.score(
+        scenario: scenario,
+        response: response,
+        approvalDecisions: scenario.threadKind.isWorkspace
+          ? cellDecisions.map(\.summary)
+          : nil
+      )
     }
 
     var facts = outcome.facts
-    let cellDecisions = await approvalResponder.decisions.dropFirst(decisionsBefore)
     if !cellDecisions.isEmpty {
-      facts["approvalDecisions"] = cellDecisions.joined(separator: " | ")
+      facts["approvalDecisions"] = cellDecisions.map(\.summary).joined(separator: " | ")
     }
     if stalledAttempts > 0 {
       facts["stalledAttempts"] = String(stalledAttempts)

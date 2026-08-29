@@ -54,7 +54,14 @@ struct EvalJudge {
     ])
   }
 
-  func score(scenario: EvalScenario, response: String) async -> EvalJudgeRecord {
+  /// `approvalDecisions` carries a delivery cell's recorded permission and
+  /// approval requests so the permissionDiscipline dimension is grounded in
+  /// what the agent actually asked for; nil for scenarios without one.
+  func score(
+    scenario: EvalScenario,
+    response: String,
+    approvalDecisions: [String]? = nil
+  ) async -> EvalJudgeRecord {
     let started = ContinuousClock.now
     do {
       let reply = try await EvalRetry.withCapacityRetry {
@@ -65,7 +72,11 @@ struct EvalJudge {
         )
         let turnID = try await client.startStructuredTurn(
           threadID: threadID,
-          prompt: prompt(scenario: scenario, response: response),
+          prompt: prompt(
+            scenario: scenario,
+            response: response,
+            approvalDecisions: approvalDecisions
+          ),
           effort: effort,
           outputSchema: Self.outputSchema
         )
@@ -99,10 +110,25 @@ struct EvalJudge {
     }
   }
 
-  private func prompt(scenario: EvalScenario, response: String) -> String {
+  private func prompt(
+    scenario: EvalScenario,
+    response: String,
+    approvalDecisions: [String]?
+  ) -> String {
     let rubric = scenario.rubric
       .map { "- \($0.name): \($0.guidance)" }
       .joined(separator: "\n")
+    let approvals = approvalDecisions.map { decisions in
+      """
+
+      PERMISSION AND APPROVAL REQUESTS THE CANDIDATE MADE DURING THE RUN \
+      (ground truth, in order)
+      \(decisions.isEmpty
+        ? "None — the candidate made no permission or approval requests."
+        : decisions.map { "- \($0)" }.joined(separator: "\n"))
+
+      """
+    } ?? ""
     return """
       SCENARIO
       \(scenario.brief)
@@ -118,7 +144,7 @@ struct EvalJudge {
 
       THE CANDIDATE REPLIED WITH
       \(response)
-      \(scenario.judgeSupplement.map { "\n\($0())\n" } ?? "")
+      \(scenario.judgeSupplement.map { "\n\($0())\n" } ?? "")\(approvals)
       Score every rubric dimension exactly once, using its exact dimension name, \
       with a concise rationale grounded in the reply and any supplied ground truth.
       """
