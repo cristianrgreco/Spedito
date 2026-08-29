@@ -1498,11 +1498,51 @@ enum EvalScenarioCatalog {
     })
     """
 
+  /// The judge reads the textual diff, so a committed image is an invisible
+  /// binary blob to it. This deterministically flags the observed production
+  /// defect: a "prototype" whose design deliverable is only image files, or
+  /// that has no HTML entry the managed demo could open.
+  private static func prototypeMarkupCheck(worktreeURL: URL, baseSHA: String) -> EvalCheck {
+    let changed =
+      (try? EvalFixtureRepository.changedFilePaths(at: worktreeURL, from: baseSHA)) ?? []
+    let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp"]
+    func fileExtension(_ path: String) -> String {
+      URL(fileURLWithPath: path).pathExtension.lowercased()
+    }
+    let imageFiles = changed.filter { imageExtensions.contains(fileExtension($0)) }
+    let htmlFiles = changed.filter { ["html", "htm"].contains(fileExtension($0)) }
+    let detail: String
+    if !htmlFiles.isEmpty {
+      detail = "the prototype is real markup: " + htmlFiles.joined(separator: ", ")
+    } else if !imageFiles.isEmpty {
+      detail = "the design deliverable is only binary image files with no HTML "
+        + "for the demo to open: " + imageFiles.joined(separator: ", ")
+    } else {
+      detail = "no HTML file exists for the demo to open; changed files: "
+        + (changed.isEmpty ? "none" : changed.joined(separator: ", "))
+    }
+    return EvalCheck(
+      name: "prototypeIsRealMarkup",
+      passed: !htmlFiles.isEmpty,
+      detail: detail
+    )
+  }
+
   private static func deliveryScenarios(
     workspace: EvalFixtureWorkspace
   ) throws -> [EvalScenario] {
     let product = makeProduct()
     let environments = environmentsPage(productID: product.id)
+    let prototypeQuality = EvalRubricDimension(
+      name: "prototypeQuality",
+      guidance: """
+        The committed artifact is self-contained, opens without external \
+        dependencies, and presents a treatment a non-technical owner could \
+        evaluate and react to. Every visible string is real markup text the \
+        browser renders; text drawn into images or embedded as image data is \
+        a failure even when the layout is otherwise sound.
+        """
+    )
     // A delivery reply has two audiences: the completion comment goes to the
     // owner's work log, while summary, reported checks, and changed files are
     // the handoff addressed to the tech lead and the next agent.
@@ -1521,11 +1561,12 @@ enum EvalScenarioCatalog {
     func makeWorktree(
       name: String,
       branch: String,
-      extraFiles: [String: String]
+      extraFiles: [String: String],
+      baseFiles: [String: String] = EvalFixtureWorkspace.sharedRepositoryFiles
     ) throws -> (worktreeURL: URL, gitDirectoryURL: URL, baseSHA: String) {
       let repository = try workspace.makeRepository(
         name: name,
-        files: EvalFixtureWorkspace.sharedRepositoryFiles.merging(extraFiles) { _, new in new }
+        files: baseFiles.merging(extraFiles) { _, new in new }
       )
       let worktreeURL = workspace.rootURL.appendingPathComponent(
         "\(name)-worktree",
@@ -1851,14 +1892,7 @@ enum EvalScenarioCatalog {
             or showing only the happy path.
             """
         ),
-        EvalRubricDimension(
-          name: "prototypeQuality",
-          guidance: """
-            The committed artifact is self-contained, opens without external \
-            dependencies, and presents a treatment a non-technical owner could \
-            evaluate and react to.
-            """
-        ),
+        prototypeQuality,
         deliveryRetrospectiveDiscipline,
         deliveryPermissionDiscipline,
       ],
@@ -1889,6 +1923,12 @@ enum EvalScenarioCatalog {
               )
             )
           }
+          checks.append(
+            prototypeMarkupCheck(
+              worktreeURL: uxFixture.worktreeURL,
+              baseSHA: uxFixture.baseSHA
+            )
+          )
         }
       },
       judgeSupplement: diffSupplement(
@@ -1897,7 +1937,182 @@ enum EvalScenarioCatalog {
       )
     )
 
-    return [implement, uxDesign]
+    // UX designer in a native-application product: the workspace is the
+    // product's design repository with no application toolchain, so the only
+    // achievable demoable prototype is a self-contained static_web mock of
+    // the native interface. Probes the observed production defect of a
+    // static image submitted as a mac_application demo.
+    let nativeProduct = Product(
+      name: "Ledgerline Desk",
+      instructions: "Use UK English. Keep every owner-facing sentence plain and jargon-free."
+    )
+    let nativeEnvironments = KnowledgePage(
+      productID: nativeProduct.id,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: """
+        Ledgerline Desk is a native macOS application built with Xcode. The \
+        application project and its build toolchain live in the separate \
+        build repository. Delivery workspaces hold only this design and \
+        specification repository: there is no application toolchain here and \
+        no launchable app. Design work is delivered as files committed to \
+        this repository.
+        """
+    )
+    let nativeFixture = try makeWorktree(
+      name: "delivery-ux-native",
+      branch: "ticket/T8",
+      extraFiles: [:],
+      baseFiles: [
+        "README.md": """
+          # Ledgerline Desk
+
+          The native macOS companion application for Ledgerline. Freelancers \
+          check invoice and payment status at a glance without opening the \
+          web application.
+
+          ## This repository
+
+          This repository holds Ledgerline Desk's product design and \
+          specification work. The Xcode application project and its build \
+          toolchain live in the separate build repository, so nothing here \
+          builds or launches the application.
+          """,
+        "design/notes.md": """
+          Early direction: follow the standard macOS light and dark \
+          appearances and keep the window compact. Nothing has been designed \
+          for the invoice status window yet.
+          """,
+      ]
+    )
+    let nativeItem = WorkItem(
+      productID: nativeProduct.id,
+      key: "T8",
+      title: "Design the invoice status window for the companion app",
+      body: """
+        Ledgerline Desk shows freelancers their invoice and payment status \
+        without opening the web application. Design how its invoice status \
+        window presents paid, unpaid, and overdue invoices at a glance, and \
+        the state where no invoices exist yet. The design must be \
+        reviewable as an interactive prototype the product owner can open \
+        and click through.
+        """,
+      acceptanceCriteria: [
+        "A self-contained prototype demonstrates the invoice status window "
+          + "with paid, unpaid, and overdue treatments and the empty state",
+        "The managed demo opens the prototype for the product owner",
+        "A short written rationale records how the design follows macOS "
+          + "conventions the owner will recognise",
+      ],
+      state: .running
+    )
+    let nativeUX = EvalScenario(
+      id: "delivery/ux-native-prototype",
+      generator: "delivery",
+      brief: """
+        A real write-enabled delivery run for a UX designer ticket in a \
+        product that is a native macOS application. The workspace is the \
+        product's design repository and has no application-building \
+        toolchain, so the only achievable demoable prototype is a \
+        self-contained static_web mock of the native interface. The probed \
+        failures are a static image submitted as the demo, a fabricated \
+        mac_application path, and text drawn into image pixels instead of \
+        real markup the browser renders.
+        """,
+      developerInstructions: CodexTicketExecutor.developerInstructions(
+        productInstructions: nativeProduct.instructions,
+        customInstructions: "",
+        assignee: uxDesigner
+      ),
+      prompt: CodexTicketExecutor.prompt(
+        product: nativeProduct,
+        item: nativeItem,
+        assignee: uxDesigner,
+        prerequisites: [],
+        dependants: [],
+        prerequisiteComments: [:],
+        ticketComments: [],
+        knowledgeContext: [nativeEnvironments]
+      ),
+      outputSchema: CodexTicketExecutor.outputSchema(
+        deliveryDemoPolicy: DeliveryDemoPolicy(assignee: uxDesigner, item: nativeItem)
+      ),
+      threadKind: .workspace(
+        worktreeURL: nativeFixture.worktreeURL,
+        readOnlyGitDirectoryURL: nativeFixture.gitDirectoryURL,
+        baseSHA: nativeFixture.baseSHA
+      ),
+      rubric: [
+        deliveryOwnerClarity,
+        EvalRubricDimension(
+          name: "stateCoverage",
+          guidance: """
+            The prototype genuinely demonstrates every named state — paid, \
+            unpaid, overdue, and empty — rather than describing them in prose \
+            or showing only the happy path.
+            """
+        ),
+        prototypeQuality,
+        deliveryRetrospectiveDiscipline,
+        deliveryPermissionDiscipline,
+      ],
+      evaluate: { response in
+        deliveryChecks(
+          response: response,
+          worktreeURL: nativeFixture.worktreeURL,
+          baseSHA: nativeFixture.baseSHA,
+          assignee: uxDesigner,
+          requiresPassingTests: false
+        ) { result, checks in
+          checks.append(
+            EvalCheck(
+              name: "providesManagedDemo",
+              passed: result.demo != nil,
+              detail: result.demo != nil
+                ? "managed demo recipe supplied"
+                : "no managed demo, but the UX contract requires one for visible work"
+            )
+          )
+          if let demo = result.demo {
+            let path = demo.presentation.path ?? ""
+            let shoehorned = demo.presentation.kind == .macApplication
+              && !path.lowercased().hasSuffix(".app")
+            checks.append(
+              EvalCheck(
+                name: "demoIsNotStaticImageShoehorn",
+                passed: !shoehorned,
+                detail: shoehorned
+                  ? "a mac_application demo points at "
+                    + (path.isEmpty ? "no path" : "“\(path)”")
+                    + ", which is not a .app bundle — the static-image shoehorn defect"
+                  : "demo kind \(demo.presentation.kind.rawValue) is not a "
+                    + "shoehorned mac_application"
+              )
+            )
+            checks.append(
+              EvalCheck(
+                name: "demoIsStaticWeb",
+                passed: demo.presentation.kind == .staticWeb,
+                detail: "demo presentation kind is \(demo.presentation.kind.rawValue); "
+                  + "the only achievable prototype here is static_web"
+              )
+            )
+          }
+          checks.append(
+            prototypeMarkupCheck(
+              worktreeURL: nativeFixture.worktreeURL,
+              baseSHA: nativeFixture.baseSHA
+            )
+          )
+        }
+      },
+      judgeSupplement: diffSupplement(
+        worktreeURL: nativeFixture.worktreeURL,
+        baseSHA: nativeFixture.baseSHA
+      )
+    )
+
+    return [implement, uxDesign, nativeUX]
   }
 
   // MARK: - Retrospective grading

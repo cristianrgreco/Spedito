@@ -310,6 +310,17 @@ struct EvalFixtureRepository {
     return try repository.git(["diff", baseSHA])
   }
 
+  /// Every path changed in a worktree relative to base, staged first so new
+  /// files are visible, for checks that grade what kind of files the work
+  /// consists of.
+  static func changedFilePaths(at worktreeURL: URL, from baseSHA: String) throws -> [String] {
+    let repository = EvalFixtureRepository(rootURL: worktreeURL)
+    try repository.git(["add", "-A"])
+    return try repository.git(["diff", "--name-only", baseSHA])
+      .split(whereSeparator: \.isNewline)
+      .map(String.init)
+  }
+
   /// Runs the fixture project's Node test suite in a worktree and reports
   /// whether it passed, with trailing output for evidence.
   static func runNodeTests(at worktreeURL: URL) -> (passed: Bool, output: String) {
