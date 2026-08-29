@@ -1391,7 +1391,10 @@ move directly from successful review to **Ready for demo**, where the work log
 presents the outcome for approval without a Demo or Codebase action. Product owner
 acceptance and repository promotion remain serialized.
 
-The Codebase view defaults to accepted trunk history. Its history selector offers
+The Codebase view defaults to accepted trunk history. Trunk history shows each
+ticket's current integration merge; integration merges from superseded candidate
+versions stay out of the trunk stream and remain auditable in All activity.
+Its history selector offers
 each ticket with recorded changes as a logical stream, including that ticket's
 candidate and detached integration commits, plus an All activity audit view. Commit
 icons and labels describe delivery meaning such as candidate, integration, product
