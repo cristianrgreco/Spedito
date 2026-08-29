@@ -41,9 +41,9 @@ Implement and commit one packet at a time, in the order below.
    handover); an empty retro list on an unremarkable run is CORRECT and never
    a deterministic failure.
 3. The product owner approved, on 2026-08-29: Packet A (permission-request
-   grading), Packet B (sprint-goal effort pinning), and Packet C (the score
-   campaign) below. Packet D is a flagged gap the owner has NOT yet approved —
-   ask before starting it.
+   grading), Packet B (sprint-goal effort pinning), Packet C (the score
+   campaign), and Packet D (knowledge page creation and review grading)
+   below.
 4. The owner authorised pushing this session's work on 2026-08-29; push
    `pilot` after each accepted packet unless newer instructions say otherwise.
 
@@ -160,17 +160,45 @@ full-matrix run at medium (REPS=2 minimum) and report the final per-scenario
 table against the baselines above. A regression on any untouched scenario
 family blocks the iteration that caused it.
 
-## Packet D: grade knowledge page creations (NOT yet approved — ask first)
+## Packet D: grade knowledge page creations and review (approved)
 
+### Problem
 Knowledge **answers** are graded (`knowledgeScenarios`, citation fidelity)
-and the repository-analysis scenario covers analyzer-proposed pages, but
-delivery-created `knowledgePageProposals` (decode caps at 4;
-`CodexTicketExecutor.validateFollowUpTicketProposals` does not touch them)
-and the knowledge review step (`CodexRepositoryKnowledgeReviewer`, listed in
-evals.md as not yet covered) are ungraded. If the owner approves: delivery
-checks + facts for page proposals (grounded in the run, no duplicate slugs,
-plain titles), and a reviewer scenario in the established pattern. Follow the
-retrospective-grading commit (`8f38bd6`) as the template.
+and the repository-analysis scenario covers analyzer-proposed pages, but two
+steps are ungraded: delivery-created `knowledgePageProposals`
+(`TicketExecutionResult`; decode caps at 4) and the knowledge review step
+(`CodexRepositoryKnowledgeReviewer`, listed in evals.md as not yet covered).
+
+### Build
+Follow the retrospective-grading commit (`8f38bd6`) as the template; evals
+and fixtures only, no production changes.
+
+1. **Delivery scenarios**: deterministic checks and facts for
+   `knowledgePageProposals` — unique slugs within the reply, non-empty
+   trimmed titles and bodies, plus counts and slugs as facts. A rubric
+   dimension mirroring the retro framing: proposals hold durable cross-ticket
+   knowledge grounded in this run, in plain language; restated ticket content
+   or invented pages are penalized, and NO proposals on an ordinary run
+   scores well (the fixture tickets do not obviously warrant a page).
+   Proposing a replacement Environments body is legitimate when the run
+   verified a workflow, so a duplicate-of-supplied-slug is not a
+   deterministic failure.
+2. **Knowledge review scenario** (new generator, id prefix
+   `knowledge-review/` — distinct from the existing `knowledge/` and
+   `review/` prefixes so family filters stay precise): drive
+   `CodexRepositoryKnowledgeReviewer`'s production builders, schema, and
+   decoder over fixture proposals in the clean/flawed pattern the tech lead
+   review scenarios use — one sound page and one that overclaims or
+   contradicts the repository content it cites. Deterministic checks on the
+   decision per fixture; rubric on evidence fidelity and owner-facing
+   clarity. Verify the flawed fixture actually contains the defect before
+   trusting the check (evals.md, Fixture discipline lesson 1).
+
+### Verification
+Ordinary suite, `git diff --check`, ratchets; then
+`SPEDITO_EVAL_REPS=1 scripts/evals.sh delivery,knowledge-review medium` and
+report that the new checks and scenario execute, decode, and report, with
+observed results in the handoff.
 
 ## Working notes
 
