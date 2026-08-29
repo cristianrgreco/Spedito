@@ -2894,6 +2894,11 @@ public final class TicketDeliveryWorkflowCoordinator {
         return
       }
       let repositoryURL = try productWorkspaceURL(productID: product.id)
+      let priorIntegratedSHA = try await store.fetchCandidateRevisions(productID: product.id)
+        .first(where: {
+          $0.workItemID == candidate.workItemID && $0.version == candidate.version - 1
+        })?
+        .integratedSHA
       var integration: GitIntegrationSnapshot
       do {
         integration = try await gitWorkspaceManager.integrateCandidate(
@@ -2901,7 +2906,8 @@ public final class TicketDeliveryWorkflowCoordinator {
           integrationsRootURL: integrationWorktreesRootURL(productID: product.id),
           candidateID: candidate.id,
           headSHA: candidate.headSHA,
-          commitMessage: "Integrate \(item.key): \(item.title)"
+          commitMessage: "Integrate \(item.key): \(item.title)",
+          reusableIntegratedSHA: priorIntegratedSHA
         )
       } catch GitWorkspaceError.mergeConflict(
         let worktreePath,

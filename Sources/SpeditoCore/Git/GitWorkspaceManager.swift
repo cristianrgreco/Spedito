@@ -997,7 +997,8 @@ public actor GitWorkspaceManager {
     integrationsRootURL: URL,
     candidateID: UUID,
     headSHA: String,
-    commitMessage: String? = nil
+    commitMessage: String? = nil,
+    reusableIntegratedSHA: String? = nil
   ) throws -> GitIntegrationSnapshot {
     _ = try checkpointTrunk(
       at: repositoryURL,
@@ -1010,6 +1011,19 @@ public actor GitWorkspaceManager {
     )
     if fileManager.fileExists(atPath: integrationURL.path) {
       try removeWorktree(repositoryURL: repositoryURL, worktreeURL: integrationURL)
+    }
+    if reusableIntegratedSHA == headSHA,
+      try revision(
+        headSHA,
+        contains: try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL),
+        at: repositoryURL
+      )
+    {
+      _ = try run(
+        ["worktree", "add", "--detach", integrationURL.path, headSHA],
+        at: repositoryURL
+      )
+      return GitIntegrationSnapshot(url: integrationURL, integratedSHA: headSHA)
     }
     _ = try run(
       ["worktree", "add", "--detach", integrationURL.path, "trunk"],
