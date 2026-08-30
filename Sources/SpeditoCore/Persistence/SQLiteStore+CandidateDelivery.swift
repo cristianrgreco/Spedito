@@ -698,7 +698,11 @@ extension SQLiteStore {
                 && $0.createdAt >= notBefore
             }
             if !matchingRunExists {
-              _ = try createAgentRun(run)
+              // The run struct is built before this transaction, so restamp
+              // creation here: an earlier mutation in the same recovery may
+              // have advanced the candidate's updatedAt, and a run created
+              // before it would never match latestReviewRun.
+              _ = try createAgentRun(run.stampedAsCreated(at: Date()))
             }
 
           case .transitionWorkItem(
@@ -834,4 +838,37 @@ extension SQLiteStore {
     }
   }
 
+}
+
+extension AgentRun {
+  /// A copy whose creation and update times are the given date, for inserts
+  /// whose construction time predates the transaction that persists them.
+  fileprivate func stampedAsCreated(at date: Date) -> AgentRun {
+    AgentRun(
+      id: id,
+      productID: productID,
+      sprintID: sprintID,
+      sprintItemID: sprintItemID,
+      workItemID: workItemID,
+      profileID: profileID,
+      status: status,
+      codexThreadID: codexThreadID,
+      worktreePath: worktreePath,
+      ticketBudgetUsed: ticketBudgetUsed,
+      contextUsedTokens: contextUsedTokens,
+      contextWindowTokens: contextWindowTokens,
+      compactionCount: compactionCount,
+      cumulativeUsedTokens: cumulativeUsedTokens,
+      activeDurationSeconds: activeDurationSeconds,
+      turnStartedAt: turnStartedAt,
+      lastActivityAt: lastActivityAt,
+      lastActivityText: lastActivityText,
+      lastActivityKind: lastActivityKind,
+      executionConstraint: executionConstraint,
+      settlementOperationID: settlementOperationID,
+      settlementCandidateVersion: settlementCandidateVersion,
+      createdAt: date,
+      updatedAt: date
+    )
+  }
 }

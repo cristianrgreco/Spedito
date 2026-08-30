@@ -4886,15 +4886,21 @@ public final class TicketDeliveryWorkflowCoordinator {
           candidateHeadSHA: candidate.headSHA,
           integratedSHA: integratedSHA
         )
-        var mutations: [TicketDeliveryRecoveryMutation] = [
-          .updateCandidate(
-            id: candidate.id,
-            expectedStatuses: [.reviewing],
-            status: .reviewing,
-            integratedSHA: integratedSHA,
-            integrationWorktreePath: reviewWorkspace.url.path
+        // A value-preserving refresh would still advance the candidate's
+        // updatedAt past the review run's createdAt, and latestReviewRun
+        // would never match that run again.
+        var mutations: [TicketDeliveryRecoveryMutation] = []
+        if candidate.integrationWorktreePath != reviewWorkspace.url.path {
+          mutations.append(
+            .updateCandidate(
+              id: candidate.id,
+              expectedStatuses: [.reviewing],
+              status: .reviewing,
+              integratedSHA: integratedSHA,
+              integrationWorktreePath: reviewWorkspace.url.path
+            )
           )
-        ]
+        }
         switch item.state {
         case .running:
           mutations.append(
@@ -4921,11 +4927,13 @@ public final class TicketDeliveryWorkflowCoordinator {
           break
         }
 
+        let matchedReviewRunID: UUID?
         if let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
           for: candidate,
           runs: runs,
           reviewerProfileIDs: reviewerProfileIDs
         ) {
+          matchedReviewRunID = reviewRun.id
           if expiredPermissionRunIDs.contains(reviewRun.id) {
             mutations.append(
               .updateRun(
@@ -4947,6 +4955,7 @@ public final class TicketDeliveryWorkflowCoordinator {
             )
           }
         } else if let techLead = profiles.first(where: { $0.role == .lead }) {
+          matchedReviewRunID = nil
           mutations.append(
             .createRunIfAbsent(
               AgentRun(
@@ -4961,13 +4970,38 @@ public final class TicketDeliveryWorkflowCoordinator {
               notBefore: candidate.updatedAt
             )
           )
+        } else {
+          matchedReviewRunID = nil
         }
-        _ = await performTicketDeliveryRecovery(
-          productID: productID,
-          workItemID: item.id,
-          store: store,
-          mutations: mutations
-        )
+        // A queued review run older than the candidate's updatedAt can never
+        // match latestReviewRun again, so no drain will ever dispatch it.
+        for staleRun in runs
+        where
+          staleRun.workItemID == candidate.workItemID
+          && reviewerProfileIDs.contains(staleRun.profileID)
+          && staleRun.status == .queued
+          && staleRun.id != matchedReviewRunID
+          && staleRun.createdAt < candidate.updatedAt
+          && (staleRun.worktreePath == nil
+            || staleRun.worktreePath == reviewWorkspace.url.path)
+        {
+          mutations.append(
+            .updateRun(
+              id: staleRun.id,
+              expectedStatuses: [.queued],
+              status: .cancelled,
+              eventDetail: "Superseded queued tech lead review retired"
+            )
+          )
+        }
+        if !mutations.isEmpty {
+          _ = await performTicketDeliveryRecovery(
+            productID: productID,
+            workItemID: item.id,
+            store: store,
+            mutations: mutations
+          )
+        }
       } catch {
         await restoreCandidateToIntegrationQueue(
           candidate,

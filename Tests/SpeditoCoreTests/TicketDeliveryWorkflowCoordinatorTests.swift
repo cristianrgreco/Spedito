@@ -1413,6 +1413,95 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// A live pilot run left T2 at "queued for review" forever: recovery
+  /// refreshed the unchanged candidate row, which advanced its updatedAt past
+  /// the review run's createdAt, so `latestReviewRun` never matched the run
+  /// again and no drain could dispatch it.
+  @Test("[D12] Repeated recovery keeps the interrupted tech lead review dispatchable")
+  @MainActor
+  func repeatedRecoveryKeepsReviewRunDispatchable() async throws {
+    let harness = try await makeReviewRecoveryHarness()
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    for _ in 0..<2 {
+      let relaunched = TicketDeliveryWorkflowCoordinator(
+        delegate: harness.delegate,
+        gitWorkspaceManager: harness.gitWorkspaceManager,
+        runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+          prepareScheduler: { _ in },
+          drainScheduler: { _ in .finished }
+        ),
+        recoveryPolicy: SprintWorkRecoveryPolicy()
+      )
+      await relaunched.recoverDelivery(productID: harness.product.id)
+
+      let runs = try await harness.store.fetchAgentRuns(productID: harness.product.id)
+      let recovered = try #require(runs.first { $0.id == harness.reviewRun.id })
+      #expect(recovered.status == .queued)
+      let candidate = try #require(
+        try await harness.store.fetchCandidateRevisions(productID: harness.product.id)
+          .first { $0.id == harness.candidate.id }
+      )
+      #expect(candidate.status == .reviewing)
+      #expect(
+        SprintWorkRecoveryPolicy().latestReviewRun(
+          for: candidate,
+          runs: runs,
+          reviewerProfileIDs: [harness.techLead.id]
+        )?.id == harness.reviewRun.id
+      )
+      #expect(runs.filter { $0.profileID == harness.techLead.id }.count == 1)
+    }
+    await harness.store.close()
+  }
+
+  @Test("[D12] Recovery replaces a review run orphaned by an earlier candidate refresh")
+  @MainActor
+  func recoveryReplacesOrphanedQueuedReviewRun() async throws {
+    let harness = try await makeReviewRecoveryHarness()
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    // Reproduce the damage an earlier release left durable: the candidate row
+    // was refreshed after its review run was created, so the run can never
+    // match the dispatch guard again.
+    _ = try await harness.store.updateAgentRun(
+      id: harness.reviewRun.id,
+      status: .queued
+    )
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .reviewing,
+      integratedSHA: harness.candidate.integratedSHA,
+      integrationWorktreePath: harness.candidate.integrationWorktreePath
+    )
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+
+    let runs = try await harness.store.fetchAgentRuns(productID: harness.product.id)
+    let orphan = try #require(runs.first { $0.id == harness.reviewRun.id })
+    #expect(orphan.status == .cancelled)
+    let candidate = try #require(
+      try await harness.store.fetchCandidateRevisions(productID: harness.product.id)
+        .first { $0.id == harness.candidate.id }
+    )
+    let replacement = try #require(
+      SprintWorkRecoveryPolicy().latestReviewRun(
+        for: candidate,
+        runs: runs,
+        reviewerProfileIDs: [harness.techLead.id]
+      )
+    )
+    #expect(replacement.id != harness.reviewRun.id)
+    #expect(replacement.status == .queued)
+    #expect(replacement.worktreePath == harness.candidate.integrationWorktreePath)
+    #expect(
+      runs.filter {
+        $0.profileID == harness.techLead.id && $0.status == .queued
+      }.count == 1
+    )
+    await harness.store.close()
+  }
+
   @Test("[D05] Stopping delivery supersedes the unaccepted candidate")
   @MainActor
   func stoppedDeliveryPreservesAuditAndReturnsTicketToReady() async throws {
@@ -2436,6 +2525,188 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     )
   }
 
+  /// Seeds the durable state of a tech lead review interrupted mid-turn: a
+  /// reviewing candidate whose exact revision is integrated in a real Git
+  /// worktree, and a running review run created after the candidate row.
+  private func makeReviewRecoveryHarness() async throws -> ReviewRecoveryHarness {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-review-recovery-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Review recovery authority")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Resume the interrupted review",
+      acceptanceCriteria: ["The interrupted review continues after relaunch."]
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refined"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Continue the same review after restart",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .integrating,
+      actor: implementer.name,
+      reason: "Candidate queued for integration"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .verifying,
+      actor: techLead.name,
+      reason: "Independent tech lead review started"
+    )
+
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the reviewed change.",
+      question: nil,
+      options: [],
+      summary: "The candidate is ready for review.",
+      changedFiles: ["feature.txt"],
+      tests: ["Review recovery fixture"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the integrated revision."],
+      demo: nil,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let resultJSON = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: implementationRun.id,
+      authorName: implementer.name
+    )
+    try Data("reviewed change\n".utf8).write(
+      to: workspace.url.appendingPathComponent("feature.txt")
+    )
+    let snapshot = try await gitWorkspaceManager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: workItem.key,
+      version: 1,
+      authorName: implementer.name,
+      summary: "Deliver the reviewed change"
+    )
+    let candidateID = UUID()
+    let integration = try await gitWorkspaceManager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: root.appendingPathComponent("integrations", isDirectory: true),
+      candidateID: candidateID,
+      headSHA: snapshot.headSHA
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        id: candidateID,
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        integratedSHA: integration.integratedSHA,
+        worktreePath: workspace.url.path,
+        integrationWorktreePath: integration.url.path,
+        status: .reviewing,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: resultJSON
+      )
+    )
+    let reviewRun = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        profileID: techLead.id,
+        status: .running,
+        codexThreadID: "review-thread-recovery",
+        worktreePath: integration.url.path
+      )
+    )
+
+    let client = CodexAppServerClient(
+      transport: ScriptedCodexTransport(responses: [])
+    )
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [implementationRun, reviewRun]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    return ReviewRecoveryHarness(
+      root: root,
+      store: store,
+      product: product,
+      plan: plan,
+      workItem: workItem,
+      candidate: candidate,
+      reviewRun: reviewRun,
+      techLead: techLead,
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      coordinator: coordinator
+    )
+  }
+
+
 
   @MainActor
   private struct AcceptanceHarness {
@@ -2461,6 +2732,20 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let delegate: CandidateReviewDelegate
     let gitWorkspaceManager: GitWorkspaceManager
     let runtimeCoordinator: TicketDeliveryRuntimeCoordinator
+    let coordinator: TicketDeliveryWorkflowCoordinator
+  }
+  @MainActor
+  private struct ReviewRecoveryHarness {
+    let root: URL
+    let store: SQLiteStore
+    let product: Product
+    let plan: SprintPlan
+    let workItem: WorkItem
+    let candidate: CandidateRevision
+    let reviewRun: AgentRun
+    let techLead: AgentProfile
+    let delegate: CandidateReviewDelegate
+    let gitWorkspaceManager: GitWorkspaceManager
     let coordinator: TicketDeliveryWorkflowCoordinator
   }
   private func runGit(_ arguments: [String], at directory: URL) throws -> String {
