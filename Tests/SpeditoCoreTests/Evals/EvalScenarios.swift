@@ -440,7 +440,8 @@ enum EvalScenarioCatalog {
               passed: true,
               detail: "escaped with question(s): "
                 + questions.map(\.prompt).joined(separator: "; ")
-            )
+            ),
+            optionOtherDeferralCheck(questions),
           ],
           facts: [
             "outcome": "questions",
@@ -821,6 +822,7 @@ enum EvalScenarioCatalog {
       if !reply.questions.isEmpty {
         checks.append(optionRestatementCheck(reply, epicGoal: epicGoal))
         checks.append(optionSharedContextCheck(reply))
+        checks.append(optionOtherDeferralCheck(reply.questions))
       }
       extraChecks(reply, &checks)
       return EvalDeterministicOutcome(
@@ -926,6 +928,44 @@ enum EvalScenarioCatalog {
       passed: failures.isEmpty,
       detail: failures.isEmpty
         ? "options state only what differs"
+        : failures.joined(separator: "; ")
+    )
+  }
+
+  /// The owner-reported defect: an option that tells the owner to choose
+  /// Other and type the real answer into its text field ("choose Other and
+  /// name the service", "named in the Other field"). The interface always
+  /// adds the Other choice itself, so such an option is redundant and
+  /// confusing. Flags only references to the Other affordance; an ordinary
+  /// adjectival "other" ("supports other formats") passes.
+  static func optionOtherDeferralCheck(
+    _ questions: [TicketRefinementQuestion]
+  ) -> EvalCheck {
+    let loweredPatterns = [
+      #"(choose|select|pick|tap)\s+(the\s+)?["“']?other\b"#,
+      #"\bother["”']?\s+(field|option|choice|box)\b"#,
+      #"\bin\s+(the\s+)?["“']?other["”']?\s*[.,;:!)]*\s*$"#,
+    ]
+    var failures: [String] = []
+    for question in questions {
+      for option in question.options {
+        let lowered = option.lowercased()
+        let referencesAffordance =
+          loweredPatterns.contains {
+            lowered.range(of: $0, options: .regularExpression) != nil
+          }
+          || option.range(of: #"\bOther\b"#, options: .regularExpression)
+            .map { $0.lowerBound != option.startIndex } == true
+        if referencesAffordance {
+          failures.append("option “\(option.prefix(60))” defers to Other")
+        }
+      }
+    }
+    return EvalCheck(
+      name: "optionsNeverDeferToOther",
+      passed: failures.isEmpty,
+      detail: failures.isEmpty
+        ? "no option references the interface's Other choice"
         : failures.joined(separator: "; ")
     )
   }
@@ -1084,6 +1124,9 @@ enum EvalScenarioCatalog {
         validRelatedItems: relatedItems
       )
       var checks: [EvalCheck] = []
+      if !reply.proposal.missingQuestions.isEmpty {
+        checks.append(optionOtherDeferralCheck(reply.proposal.missingQuestions))
+      }
       extraChecks(reply, &checks)
       return EvalDeterministicOutcome(
         decodePassed: true,

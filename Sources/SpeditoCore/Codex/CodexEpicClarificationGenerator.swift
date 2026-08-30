@@ -158,8 +158,9 @@ public enum CodexEpicClarificationGenerator {
       Do not repeat the outcome or any context common to every choice inside the choices. Never make
       one choice an addition to another with wording such as “add … as well,” “include … too,” or
       “also.” If the owner may have an unlisted technology or hosting
-      constraint, say in the question that they can choose Other and describe it in the interface's text
-      field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
+      constraint, the question prompt — never an option — may say that they can
+      choose Other and describe it in the interface's text field. No option may mention Other or
+      its text field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
       choices.
 
       Resolve a standard foundation recommendation in this conversation when the supplied tickets and
@@ -226,8 +227,9 @@ public enum CodexEpicClarificationGenerator {
       every option, and never use incremental labels such as “as well,” “too,” or “also.” Write each
       option as a short, distinct phrase naming only that choice — a few words the owner could say
       aloud, never a sentence restating the outcome — and never list an option whose substance the
-      owner would still have to type into Other. Direct an unlisted constraint
-      through the interface's Other text field. Distinguish using the supplied verified product evidence
+      owner would still have to type into Other, such as “choose Other and name the service”. Only
+      the question prompt may direct an unlisted constraint
+      through the interface's Other text field; no option may mention Other. Distinguish using the supplied verified product evidence
       without a research ticket from authorising a time-boxed business analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
       authorise separate environment research only when the product owner agreed that current external
@@ -291,9 +293,10 @@ public enum CodexEpicClarificationGenerator {
       repeat shared context in every option, and do not compound another option with “as well,” “too,”
       “also,” or equivalent wording. Write each option as a short, distinct phrase naming only that
       choice — a few words the owner could say aloud, never a sentence restating the outcome — and
-      never list an option whose substance the owner would still have to type into Other. Tell the
+      never list an option whose substance the owner would still have to type into Other, such as
+      “choose Other and name the service”. Only the question prompt may tell the
       owner to use the
-      interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
+      interface's Other text field for an unlisted constraint; no option may mention Other. Distinguish a recommendation made from
       existing evidence without a research ticket from time-boxed research that creates one. Confirm that
       the final plan will include an environment-establishment prerequisite, with separate research only
       when the product owner authorised evidence gathering. Do not propose tickets in this response.

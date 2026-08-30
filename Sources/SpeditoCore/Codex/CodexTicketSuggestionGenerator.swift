@@ -214,7 +214,8 @@ public enum CodexTicketSuggestionGenerator {
       covered by an authorised research ticket — return the questions form of the output schema instead
       of a plan: one to three concise questions, each with two to four mutually exclusive,
       business-friendly choices, your recommended choice first suffixed with "(Recommended)", and no
-      "Other" option because the interface adds it. This escape is a last resort after clarification,
+      "Other" option — nor any option that refers to Other or its text field — because the interface
+      adds the Other choice itself. This escape is a last resort after clarification,
       not an invitation to defer: each question must name a consequential choice the plan cannot
       responsibly proceed without — a real external service or source, material spend, or
       product-behaviour decision only the product owner can make. A choice you can responsibly settle

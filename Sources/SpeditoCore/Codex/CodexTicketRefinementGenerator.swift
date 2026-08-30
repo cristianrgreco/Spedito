@@ -204,8 +204,10 @@ public enum CodexTicketRefinementGenerator {
     one selection per question, so every option must be a self-contained description of the complete
     resulting scope. Never make later options incremental with wording such as “add … as well,” “include
     … too,” or “also”; restate the full outcome in each alternative. Do not include an "Other" option
-    because the application adds it. When an unlisted constraint may be the answer, tell the owner in the
-    question to choose Other and describe it in the interface's text field. Distinguish a recommendation
+    because the application adds it, and never write an option that refers to Other or its text field,
+    such as “choose Other and name it” or “named in the Other field”. When an unlisted constraint may
+    be the answer, the question prompt — never an option — may tell the owner to
+    choose Other and describe it in the interface's text field. Distinguish a recommendation
     made from existing product and repository evidence without a research ticket from time-boxed external
     research that creates a separate business analyst ticket. Do not add a preamble such as "a material
     choice remains" to the prompt or message. The message, title, and rationale must never be empty.
@@ -326,7 +328,8 @@ public enum CodexTicketRefinementGenerator {
       ask the material owner-facing preference question first, then recommend a separate foundation ticket
       in splitRecommendation rather than folding machine setup into this feature.
       If a material question remains unanswered, ask it in missingQuestions with two to four concise,
-      mutually exclusive options. Do not include "Other"; the application adds it. Preserve the exact
+      mutually exclusive options. Do not include "Other", or any option that refers to Other or its
+      text field; the application adds the Other choice itself. Preserve the exact
       saved snapshot above and return no dependencies. Only refine the snapshot when missingQuestions is
       empty; the application will apply the completed refinement as one version-checked ticket update.
       """

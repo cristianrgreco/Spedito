@@ -176,7 +176,10 @@ enum CodexLifecycleGuidance {
     tests reports only checks actually run and their results.
 
     An awaiting_owner result pauses an unfinished ticket; it is not a completed candidate. Return
-    exactly one decision question and two to four concrete options. Set knowledgePageProposals and
+    exactly one decision question and two to four concrete options. Each option must itself be a
+    complete answer. Do not include an "Other" option, or an option that tells the owner to choose
+    Other and name or describe something there; the interface adds its own Other choice with a text
+    field. Set knowledgePageProposals and
     followUpTicketProposals to empty arrays and demo to null. Do not package an undecided outcome as
     canonical product knowledge. If a durable workspace file helps the product owner decide, return
     it as decisionArtifact with a short title and workspace-relative path, and include that path in
