@@ -681,15 +681,30 @@ public enum CodexTicketSuggestionGenerator {
             + "refinement or cite its exact dependency reference."
         )
       }
+      // Prose cites the model's own temporary references. Rewriting them to
+      // the canonical position-ordered `S` references here keeps every draft
+      // self-consistent, so the store can substitute the final durable keys
+      // at persist time from the draft references alone.
       return TicketSuggestionDraft(
         reference: proposalReference,
         title: suggestion.title,
         type: type,
-        body: suggestion.body,
-        acceptanceCriteria: suggestion.acceptanceCriteria,
+        body: TicketSuggestionKeySubstitution.substitute(
+          suggestion.body,
+          keysByBatchReference: proposalReferenceByGeneratedReference
+        ),
+        acceptanceCriteria: suggestion.acceptanceCriteria.map {
+          TicketSuggestionKeySubstitution.substitute(
+            $0,
+            keysByBatchReference: proposalReferenceByGeneratedReference
+          )
+        },
         suggestedRole: role,
         priority: priority,
-        rationale: suggestion.rationale,
+        rationale: TicketSuggestionKeySubstitution.substitute(
+          suggestion.rationale,
+          keysByBatchReference: proposalReferenceByGeneratedReference
+        ),
         dependsOnReferences: Array(
           Set(
             dependencyReferences.compactMap {

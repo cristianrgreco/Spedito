@@ -670,24 +670,24 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let contract = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let design = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1,
       dependencyIDs: [contract.id]
     )
     let implementation = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S3",
+      reference: "T3",
       position: 2,
       dependencyIDs: [design.id]
     )
     let unrelated = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S4",
+      reference: "T4",
       position: 3
     )
     let suggestions = [implementation, unrelated, design, contract]
@@ -701,10 +701,10 @@ struct EpicPlanningPresentationTests {
       prerequisites: prerequisites
     )
 
-    #expect(prerequisites.map(\.reference) == ["S1", "S2"])
+    #expect(prerequisites.map(\.reference) == ["T1", "T2"])
     #expect(impact.requiresConfirmation)
     #expect(impact.actionTitle == "Accept 3 tickets")
-    #expect(impact.message.contains("S1, S2"))
+    #expect(impact.message.contains("T1, T2"))
     #expect(suggestions.allSatisfy { $0.status == .proposed })
   }
 
@@ -713,12 +713,12 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let prerequisite = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let target = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1,
       dependencyIDs: [prerequisite.id]
     )
@@ -730,7 +730,7 @@ struct EpicPlanningPresentationTests {
     #expect(target.rationale == "Required delivery work.")
     #expect(impact.requiresConfirmation)
     #expect(impact.actionTitle == "Accept 2 tickets")
-    #expect(impact.message.contains("S1"))
+    #expect(impact.message.contains("T1"))
     #expect(impact.message.contains("backlog"))
     #expect(impact.message.contains("does not add them to a sprint"))
     #expect([prerequisite, target].allSatisfy { $0.status == .proposed })
@@ -741,17 +741,17 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let first = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let second = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1
     )
     let alreadyAccepted = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S3",
+      reference: "T3",
       position: 2,
       dependencyIDs: [first.id],
       status: .accepted,

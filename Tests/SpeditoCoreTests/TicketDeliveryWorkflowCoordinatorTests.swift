@@ -1232,7 +1232,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     #expect(batch.session.sourceWorkItemID == harness.workItem.id)
     #expect(batch.session.epicID == harness.workItem.epicID)
     #expect(batch.suggestions.map(\.status).allSatisfy { $0 == .proposed })
-    #expect(batch.suggestions.map(\.reference) == ["S1", "S2"])
+    #expect(batch.suggestions.map(\.reference) == ["T2", "T3"])
     #expect(batch.suggestions[0].existingDependencyWorkItemIDs == [harness.workItem.id])
     #expect(batch.suggestions[1].existingDependencyWorkItemIDs == [harness.workItem.id])
     #expect(batch.suggestions[1].dependencyIDs == [batch.suggestions[0].id])

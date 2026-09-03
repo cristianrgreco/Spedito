@@ -366,6 +366,8 @@ struct ProductStoreRegistryTests {
       );
       INSERT INTO schema_migrations (version, applied_at) VALUES (53, unixepoch());
       PRAGMA user_version = 0;
+      -- The real shared legacy schema predates the durable ticket key counter.
+      ALTER TABLE products DROP COLUMN next_ticket_key_number;
       """,
       at: legacyURL
     )
@@ -390,6 +392,14 @@ struct ProductStoreRegistryTests {
       ])
     #expect(try await firstStore.fetchWorkItems(productID: second.id).isEmpty)
     #expect(try await secondStore.fetchWorkItems(productID: first.id).isEmpty)
+
+    // The import re-derives the durable ticket key counter, so the next
+    // ticket takes the next free key instead of colliding with an imported one.
+    let importedFollowOn = try await firstStore.createWorkItem(
+      productID: first.id,
+      title: "Created after the import"
+    )
+    #expect(importedFollowOn.key == "T2")
 
     for (product, store) in [(first, firstStore), (second, secondStore)] {
       let threads = try await store.fetchConversationThreads(productID: product.id)

@@ -2022,7 +2022,7 @@ struct SQLiteStoreTests {
     )
     #expect(nextVisible.session.id == followUps.session.id)
 
-    for reference in ["S2", "S1"] {
+    for reference in ["T4", "T3"] {
       let suggestion = try #require(followUps.suggestions.first { $0.reference == reference })
       _ = try await store.decideTicketSuggestion(id: suggestion.id, decision: .accepted)
     }
@@ -2040,6 +2040,339 @@ struct SQLiteStoreTests {
     )
     #expect(recovered.session.sourceWorkItemID == source.id)
     #expect(recovered.session.epicID == epic.id)
+    await reopened.close()
+  }
+
+  @Test("A suggestion batch persists with final durable keys and substituted prose")
+  func suggestionBatchPersistsWithDurableKeys() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Durable keys")
+    let existing = try await store.createWorkItem(
+      productID: product.id,
+      title: "Existing foundation"
+    )
+    _ = try await store.createWorkItem(
+      productID: product.id,
+      title: "Existing follow-on"
+    )
+    #expect(existing.key == "T1")
+
+    let session = try await store.beginTicketSuggestionSession(productID: product.id)
+    let ready = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Choose a content provider",
+          type: .task,
+          body: "Recommend a provider.",
+          acceptanceCriteria: ["A provider is recommended"],
+          suggestedRole: .businessAnalyst,
+          priority: .high,
+          rationale: "The choice drives S2."
+        ),
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "Integrate the approved provider",
+          body: "Using the setup established by S1, integrate the provider.",
+          acceptanceCriteria: [
+            "Using the provider approved by S1, a result is shown",
+            "Builds on T1 without changing it",
+          ],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "Delivers the outcome from S1.",
+          dependsOnReferences: ["S1"],
+          dependsOnExistingWorkItemKeys: [existing.key]
+        ),
+      ]
+    )
+
+    #expect(ready.suggestions.map(\.reference) == ["T3", "T4"])
+    let research = try #require(ready.suggestions.first)
+    let integration = try #require(ready.suggestions.last)
+    #expect(research.rationale == "The choice drives T4.")
+    #expect(integration.body == "Using the setup established by T3, integrate the provider.")
+    #expect(
+      integration.acceptanceCriteria == [
+        "Using the provider approved by T3, a result is shown",
+        "Builds on T1 without changing it",
+      ]
+    )
+    #expect(integration.rationale == "Delivers the outcome from T3.")
+    #expect(integration.dependencyIDs == [research.id])
+    #expect(integration.existingDependencyWorkItemIDs == [existing.id])
+
+    await store.close()
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recovered = try #require(
+      await reopened.fetchLatestTicketSuggestionBatch(productID: product.id)
+    )
+    #expect(recovered.suggestions.map(\.reference) == ["T3", "T4"])
+    await reopened.close()
+  }
+
+  @Test("Acceptance keeps the proposal's key and text while other keys never collide")
+  func acceptedSuggestionKeepsItsDurableKeyAndText() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Key stability")
+    let session = try await store.beginTicketSuggestionSession(productID: product.id)
+    let ready = try await store.completeTicketSuggestionSession(
+      sessionID: session.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Agree the contract",
+          type: .task,
+          body: "Agree the shared contract.",
+          acceptanceCriteria: ["The contract is explicit"],
+          suggestedRole: .businessAnalyst,
+          priority: .high,
+          rationale: "Everything depends on it."
+        ),
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "Deliver against the contract",
+          body: "Implement the agreed contract.",
+          acceptanceCriteria: ["Using the contract agreed in S1, the outcome works"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "This delivers the outcome.",
+          dependsOnReferences: ["S1"]
+        ),
+      ]
+    )
+    #expect(ready.suggestions.map(\.reference) == ["T1", "T2"])
+
+    let manual = try await store.createWorkItem(
+      productID: product.id,
+      title: "Manually created during review"
+    )
+    #expect(manual.key == "T3")
+
+    let integration = try #require(ready.suggestions.last)
+    let accepted = try await store.decideTicketSuggestion(
+      id: integration.id,
+      decision: .accepted
+    )
+    #expect(accepted.suggestions.map(\.reference) == ["T1", "T2"])
+    #expect(accepted.suggestions.allSatisfy { $0.status == .accepted })
+
+    let items = try await store.fetchWorkItems(productID: product.id)
+    #expect(Set(items.map(\.key)) == ["T1", "T2", "T3"])
+    let acceptedIntegration = try #require(items.first { $0.key == "T2" })
+    #expect(acceptedIntegration.title == integration.title)
+    #expect(acceptedIntegration.body == integration.body)
+    #expect(acceptedIntegration.acceptanceCriteria == integration.acceptanceCriteria)
+    #expect(
+      acceptedIntegration.acceptanceCriteria
+        == ["Using the contract agreed in T1, the outcome works"]
+    )
+    await store.close()
+  }
+
+  @Test("Rejected proposals retire their durable keys permanently")
+  func rejectedSuggestionKeysAreNeverReused() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Retired keys")
+    let firstSession = try await store.beginTicketSuggestionSession(productID: product.id)
+    let firstBatch = try await store.completeTicketSuggestionSession(
+      sessionID: firstSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "A first plan",
+          body: "Propose the first plan.",
+          acceptanceCriteria: ["The plan is reviewable"],
+          suggestedRole: .businessAnalyst,
+          priority: .normal,
+          rationale: "The owner asked for a plan."
+        ),
+        TicketSuggestionDraft(
+          reference: "S2",
+          title: "A second proposal",
+          body: "Propose more work.",
+          acceptanceCriteria: ["The proposal is reviewable"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "The plan needs delivery."
+        ),
+      ]
+    )
+    #expect(firstBatch.suggestions.map(\.reference) == ["T1", "T2"])
+    _ = try await store.decideTicketSuggestionGroup(
+      ids: firstBatch.suggestions.map(\.id),
+      decision: .rejected
+    )
+
+    let secondSession = try await store.beginTicketSuggestionSession(productID: product.id)
+    let secondBatch = try await store.completeTicketSuggestionSession(
+      sessionID: secondSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "A replacement plan",
+          body: "Propose the replacement plan.",
+          acceptanceCriteria: ["The replacement is reviewable"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "The first plan was rejected."
+        )
+      ]
+    )
+    #expect(secondBatch.suggestions.map(\.reference) == ["T3"])
+
+    let replacement = try #require(secondBatch.suggestions.first)
+    _ = try await store.decideTicketSuggestion(id: replacement.id, decision: .accepted)
+    let items = try await store.fetchWorkItems(productID: product.id)
+    #expect(items.map(\.key) == ["T3"])
+    await store.close()
+  }
+
+  @Test("A failed batch persist rolls the durable key counter back")
+  func failedSuggestionPersistRollsBackCounter() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Counter rollback")
+    let session = try await store.beginTicketSuggestionSession(productID: product.id)
+    await #expect(throws: PersistenceError.self) {
+      _ = try await store.completeTicketSuggestionSession(
+        sessionID: session.id,
+        drafts: [
+          TicketSuggestionDraft(
+            reference: "S1",
+            title: "A proposal with a broken dependency",
+            body: "This persist must fail as one transaction.",
+            acceptanceCriteria: ["Nothing is stored"],
+            suggestedRole: .implementer,
+            priority: .normal,
+            rationale: "The dependency does not exist.",
+            dependsOnReferences: ["S9"]
+          )
+        ]
+      )
+    }
+
+    let manual = try await store.createWorkItem(
+      productID: product.id,
+      title: "First real ticket"
+    )
+    #expect(manual.key == "T1")
+    await store.close()
+  }
+
+  @Test("Migration re-keys pending proposals and preserves decided history")
+  func migrationAssignsDurableKeysToPendingProposals() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    try createVersionOneDatabase(at: fixture.databaseURL)
+    try fixture.execute(ProductDatabaseSchema.migrationV1ToV2)
+    try fixture.execute(ProductDatabaseSchema.migrationV2ToV3)
+
+    let productID = UUID()
+    let acceptedItemID = UUID()
+    let pendingSessionID = UUID()
+    let decidedSessionID = UUID()
+    let acceptedSuggestionID = UUID()
+    let proposedSuggestionID = UUID()
+    let rejectedSuggestionID = UUID()
+    let now = Date().timeIntervalSince1970
+    try fixture.execute(
+      """
+      INSERT INTO products (id, name, instructions, status, color, created_at, updated_at)
+      VALUES ('\(productID.uuidString)', 'Existing product', '', 'active', 'accent', \(now), \(now));
+
+      INSERT INTO work_items (
+        id, product_id, key_number, item_key, title, body, acceptance_criteria_json,
+        ticket_type, state, priority, rank, custom_fields_json, version, created_at, updated_at
+      ) VALUES (
+        '\(UUID().uuidString)', '\(productID.uuidString)', 1, 'T1',
+        'A first ticket', '', '[]', 'story', 'backlog', 2, 0, '{}', 1, \(now), \(now)
+      ), (
+        '\(acceptedItemID.uuidString)', '\(productID.uuidString)', 2, 'T2',
+        'An accepted research ticket', '', '[]', 'task', 'backlog', 2, 1, '{}',
+        1, \(now), \(now)
+      );
+
+      INSERT INTO suggestion_sessions (id, product_id, status, created_at, updated_at)
+      VALUES (
+        '\(pendingSessionID.uuidString)', '\(productID.uuidString)', 'ready', \(now), \(now)
+      ), (
+        '\(decidedSessionID.uuidString)', '\(productID.uuidString)', 'ready', \(now), \(now)
+      );
+
+      INSERT INTO ticket_suggestions (
+        id, session_id, reference, position, title, body, acceptance_criteria_json,
+        suggested_role, priority, rationale, status, accepted_work_item_id,
+        created_at, updated_at
+      ) VALUES (
+        '\(acceptedSuggestionID.uuidString)', '\(pendingSessionID.uuidString)', 'S1', 0,
+        'Recommend a provider', 'Recommend a provider.', '["A provider is recommended"]',
+        'business_analyst', 1, 'The choice drives delivery.', 'accepted',
+        '\(acceptedItemID.uuidString)', \(now), \(now)
+      ), (
+        '\(proposedSuggestionID.uuidString)', '\(pendingSessionID.uuidString)', 'S2', 1,
+        'Integrate the provider', 'Integrate using the provider approved by S1.',
+        '["Using the provider from S1, results are visible", "S3 stays out of scope"]',
+        'implementer', 2, 'S2 delivers the outcome recommended by S1.', 'proposed',
+        NULL, \(now), \(now)
+      ), (
+        '\(rejectedSuggestionID.uuidString)', '\(pendingSessionID.uuidString)', 'S3', 2,
+        'An out-of-scope idea', 'This stayed out of scope.', '["Nothing happens"]',
+        'implementer', 2, 'The owner rejected this.', 'rejected', NULL, \(now), \(now)
+      ), (
+        '\(UUID().uuidString)', '\(decidedSessionID.uuidString)', 'S1', 0,
+        'A fully decided proposal', 'History stays untouched.', '["History is audit-only"]',
+        'business_analyst', 2, 'Decided batches are history.', 'rejected', NULL,
+        \(now), \(now)
+      );
+      """
+    )
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let pending = try await store.fetchTicketSuggestionBatch(sessionID: pendingSessionID)
+    #expect(pending.suggestions.map(\.reference) == ["S1", "T3", "S3"])
+    let rekeyed = try #require(pending.suggestions.first { $0.id == proposedSuggestionID })
+    #expect(rekeyed.body == "Integrate using the provider approved by T2.")
+    #expect(
+      rekeyed.acceptanceCriteria == [
+        "Using the provider from T2, results are visible",
+        "S3 stays out of scope",
+      ]
+    )
+    #expect(rekeyed.rationale == "T3 delivers the outcome recommended by T2.")
+    let decided = try await store.fetchTicketSuggestionBatch(sessionID: decidedSessionID)
+    #expect(decided.suggestions.map(\.reference) == ["S1"])
+    #expect(decided.suggestions.first?.body == "History stays untouched.")
+
+    let accepted = try await store.decideTicketSuggestion(
+      id: proposedSuggestionID,
+      decision: .accepted
+    )
+    #expect(accepted.suggestions.first { $0.id == proposedSuggestionID }?.status == .accepted)
+    let items = try await store.fetchWorkItems(productID: productID)
+    #expect(items.first { $0.key == "T3" }?.title == "Integrate the provider")
+    let manual = try await store.createWorkItem(
+      productID: productID,
+      title: "Created after migration"
+    )
+    #expect(manual.key == "T4")
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let recovered = try await reopened.fetchTicketSuggestionBatch(sessionID: pendingSessionID)
+    #expect(recovered.suggestions.map(\.reference) == ["S1", "T3", "S3"])
     await reopened.close()
   }
 
@@ -2132,8 +2465,8 @@ struct SQLiteStoreTests {
         reason: "Prepare delivered dependent history"
       )
     }
-    let suggestionS3 = try #require(ready.suggestions.first { $0.reference == "S3" })
-    let suggestionS5 = try #require(ready.suggestions.first { $0.reference == "S5" })
+    let suggestionS3 = try #require(ready.suggestions.first { $0.reference == "T3" })
+    let suggestionS5 = try #require(ready.suggestions.first { $0.reference == "T5" })
     try fixture.execute(
       """
       UPDATE ticket_suggestions
@@ -2146,16 +2479,16 @@ struct SQLiteStoreTests {
       """
     )
 
-    let prerequisite = try #require(ready.suggestions.first { $0.reference == "S1" })
+    let prerequisite = try #require(ready.suggestions.first { $0.reference == "T1" })
     let cascaded = try await store.rejectTicketSuggestionCascade(id: prerequisite.id)
     let statuses = Dictionary(
       uniqueKeysWithValues: cascaded.suggestions.map { ($0.reference, $0.status) }
     )
-    #expect(statuses["S1"] == .rejected)
-    #expect(statuses["S2"] == .rejected)
-    #expect(statuses["S4"] == .rejected)
-    #expect(statuses["S3"] == .accepted)
-    #expect(statuses["S5"] == .accepted)
+    #expect(statuses["T1"] == .rejected)
+    #expect(statuses["T2"] == .rejected)
+    #expect(statuses["T4"] == .rejected)
+    #expect(statuses["T3"] == .accepted)
+    #expect(statuses["T5"] == .accepted)
 
     let acceptedTickets = try await store.fetchWorkItems(productID: product.id)
     #expect(acceptedTickets.first { $0.id == acceptedS3.id }?.state == .cancelled)

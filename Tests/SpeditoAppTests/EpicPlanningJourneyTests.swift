@@ -739,7 +739,7 @@ struct EpicPlanningJourneyTests {
     let retried = try await store.fetchTicketSuggestionBatch(sessionID: failed.session.id)
     #expect(retried.session.errorMessage == nil)
     #expect(retried.session.status == .ready)
-    #expect(retried.suggestions.map(\.reference) == ["S1"])
+    #expect(retried.suggestions.map(\.reference) == ["T1"])
     let retainedEpic = try #require(
       try await store.fetchEpics(productID: product.id).first { $0.id == epic.id }
     )
@@ -814,13 +814,13 @@ struct EpicPlanningJourneyTests {
         )
       ]
     )
-    let target = try #require(ready.suggestions.first { $0.reference == "S2" })
-    let unrelated = try #require(ready.suggestions.first { $0.reference == "S3" })
+    let target = try #require(ready.suggestions.first { $0.reference == "T2" })
+    let unrelated = try #require(ready.suggestions.first { $0.reference == "T3" })
     #expect(target.rationale == "Required by the agreed Epic outcome.")
     #expect(target.dependencyIDs.count == 1)
     #expect(
       transitiveSuggestedPrerequisites(of: target, in: ready.suggestions)
-        .map(\.reference) == ["S1"]
+        .map(\.reference) == ["T1"]
     )
 
     let model = AppModel(storeRegistry: registry, selectedProductID: product.id)
@@ -893,10 +893,10 @@ struct EpicPlanningJourneyTests {
     let decided = try await recoveredStore.fetchTicketSuggestionBatch(sessionID: session.id)
     #expect(
       decided.suggestions
-        .filter { ["S1", "S2"].contains($0.reference) }
+        .filter { ["T1", "T2"].contains($0.reference) }
         .allSatisfy { $0.status == .accepted }
     )
-    #expect(decided.suggestions.first { $0.reference == "S3" }?.status == .proposed)
+    #expect(decided.suggestions.first { $0.reference == "T3" }?.status == .proposed)
     let acceptedItem = try #require(
       try await recoveredStore.fetchWorkItems(productID: product.id)
         .first { $0.title == edited.title }
@@ -1016,10 +1016,10 @@ struct EpicPlanningJourneyTests {
     let acceptedItems = try await store.fetchWorkItems(productID: product.id)
     #expect(acceptedItems.count == acceptedReady.suggestions.count)
     let prerequisite = try #require(
-      accepted.suggestions.first { $0.reference == "S1" }?.acceptedWorkItemID
+      accepted.suggestions.first { $0.reference == "T1" }?.acceptedWorkItemID
     )
     let dependent = try #require(
-      accepted.suggestions.first { $0.reference == "S2" }?.acceptedWorkItemID
+      accepted.suggestions.first { $0.reference == "T2" }?.acceptedWorkItemID
     )
     #expect(
       try await store.fetchWorkItemDependencies(productID: product.id)

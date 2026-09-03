@@ -961,8 +961,13 @@ rationale, acceptance criteria, and **Accept**, **Reject**, **Discuss**, and
 batch-review actions. Acceptance removes the proposal card and creates the
 normal backlog ticket; rejection never creates scope.
 
-Suggested tickets are not backlog records until the owner accepts them. Temporary
-references such as `S1` are shown separately and are never part of the ticket title. The
+Suggested tickets are not backlog records until the owner accepts them. Each
+proposal carries its final durable ticket key, such as `T7`, allocated from the
+product's single key sequence when the batch is stored; the key is shown
+separately and is never part of the ticket title. Cross-references between
+proposals in criteria and rationale cite those final keys, and acceptance keeps
+the exact key and text the owner reviewed. Rejecting a proposal or regenerating
+the plan retires its keys permanently, so gaps in the key sequence are normal. The
 owner can accept, edit, or reject each suggestion, inspect why one item blocks
 another, accept the remaining reviewed batch directly, or dismiss the remaining
 batch with confirmation. Bulk acceptance only creates backlog records; it never

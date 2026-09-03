@@ -130,6 +130,25 @@ public actor SQLiteStore {
           )
         }
 
+        // The legacy schema predates the durable ticket key counter, so the
+        // copied products row keeps its column default. Re-derive it from the
+        // imported tickets or the next allocation would reuse a taken key.
+        try execute(
+          """
+          UPDATE main.products
+          SET next_ticket_key_number = MAX(
+              next_ticket_key_number,
+              COALESCE(
+                (
+                  SELECT MAX(key_number) FROM main.work_items
+                  WHERE work_items.product_id = products.id
+                ),
+                0
+              ) + 1
+          );
+          """
+        )
+
         let failures = try withStatement("PRAGMA foreign_key_check;") { statement in
           var descriptions: [String] = []
           while sqlite3_step(statement) == SQLITE_ROW {
@@ -193,7 +212,7 @@ public actor SQLiteStore {
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    guard version == 1 || version == 2 else {
+    guard (1...3).contains(version) else {
       throw unsupportedSchemaError(version: version, url: url)
     }
 
@@ -202,7 +221,11 @@ public actor SQLiteStore {
       if version == 1 {
         try execute(ProductDatabaseSchema.migrationV1ToV2, database: database)
       }
-      try execute(ProductDatabaseSchema.migrationV2ToV3, database: database)
+      if version <= 2 {
+        try execute(ProductDatabaseSchema.migrationV2ToV3, database: database)
+      }
+      try execute(ProductDatabaseSchema.migrationV3ToV4, database: database)
+      try assignDurableKeysToPendingSuggestions(database: database)
       let migrated = try integerPragma("user_version", database: database)
       guard migrated == ProductDatabaseSchema.version else {
         throw PersistenceError.corruptData(
@@ -217,8 +240,203 @@ public actor SQLiteStore {
     }
   }
 
-  /// Versions 1 and 2 are the released schemas this build can upgrade, so anything
-  /// else below the current version is an unsupported pre-release development schema.
+  /// Companion step to `migrationV3ToV4`, in the same transaction. Suggestions
+  /// that are still proposed were persisted with temporary `S` references, so
+  /// they are re-keyed from the new durable counter and their prose is
+  /// substituted exactly like a new batch persist. Decided suggestions keep
+  /// their `S` references as audit history. The `user_version` guard in
+  /// `initializeCurrentSchema` makes the step run at most once per database.
+  static func assignDurableKeysToPendingSuggestions(database: OpaquePointer) throws {
+    let sessions = try queryRows(
+      """
+      SELECT sessions.id, sessions.product_id
+      FROM suggestion_sessions AS sessions
+      WHERE EXISTS (
+        SELECT 1 FROM ticket_suggestions
+        WHERE session_id = sessions.id AND status = 'proposed'
+      )
+      ORDER BY sessions.created_at ASC, sessions.id ASC;
+      """,
+      bindings: [],
+      database: database
+    )
+    for session in sessions {
+      guard let sessionID = session.first ?? nil, let productID = session.last ?? nil else {
+        throw PersistenceError.corruptData("Invalid suggestion session during key migration")
+      }
+      let counterRows = try queryRows(
+        "SELECT next_ticket_key_number FROM products WHERE id = ?;",
+        bindings: [productID],
+        database: database
+      )
+      guard let counterText = counterRows.first?.first ?? nil,
+        var nextKeyNumber = Int(counterText)
+      else {
+        throw PersistenceError.corruptData("Missing ticket key counter during key migration")
+      }
+
+      let suggestions = try queryRows(
+        """
+        SELECT id, reference, status, accepted_work_item_id,
+               body, rationale, acceptance_criteria_json
+        FROM ticket_suggestions
+        WHERE session_id = ?
+        ORDER BY position ASC;
+        """,
+        bindings: [sessionID],
+        database: database
+      )
+      var keysByBatchReference: [String: String] = [:]
+      for suggestion in suggestions where suggestion[2] == "proposed" {
+        guard let reference = suggestion[1] else {
+          throw PersistenceError.corruptData("Invalid ticket suggestion during key migration")
+        }
+        keysByBatchReference[reference] = "T\(nextKeyNumber)"
+        nextKeyNumber += 1
+      }
+      for suggestion in suggestions where suggestion[2] == "accepted" {
+        guard
+          let reference = suggestion[1],
+          keysByBatchReference[reference] == nil,
+          let workItemID = suggestion[3]
+        else { continue }
+        let keyRows = try queryRows(
+          "SELECT item_key FROM work_items WHERE id = ?;",
+          bindings: [workItemID],
+          database: database
+        )
+        if let itemKey = keyRows.first?.first ?? nil {
+          keysByBatchReference[reference] = itemKey
+        }
+      }
+
+      for suggestion in suggestions where suggestion[2] == "proposed" {
+        guard
+          let suggestionID = suggestion[0],
+          let reference = suggestion[1],
+          let body = suggestion[4],
+          let rationale = suggestion[5],
+          let criteriaJSON = suggestion[6],
+          let assignedKey = keysByBatchReference[reference],
+          let criteriaData = criteriaJSON.data(using: .utf8),
+          let criteria = try? JSONDecoder().decode([String].self, from: criteriaData)
+        else {
+          throw PersistenceError.corruptData("Invalid ticket suggestion during key migration")
+        }
+        let substitutedCriteria = criteria.map {
+          TicketSuggestionKeySubstitution.substitute($0, keysByBatchReference: keysByBatchReference)
+        }
+        guard
+          let encodedCriteria = try? JSONEncoder().encode(substitutedCriteria),
+          let substitutedCriteriaJSON = String(data: encodedCriteria, encoding: .utf8)
+        else {
+          throw PersistenceError.corruptData("Invalid ticket suggestion during key migration")
+        }
+        try executeUpdate(
+          """
+          UPDATE ticket_suggestions
+          SET reference = ?, body = ?, rationale = ?, acceptance_criteria_json = ?
+          WHERE id = ?;
+          """,
+          bindings: [
+            assignedKey,
+            TicketSuggestionKeySubstitution.substitute(
+              body,
+              keysByBatchReference: keysByBatchReference
+            ),
+            TicketSuggestionKeySubstitution.substitute(
+              rationale,
+              keysByBatchReference: keysByBatchReference
+            ),
+            substitutedCriteriaJSON,
+            suggestionID,
+          ],
+          database: database
+        )
+      }
+      try executeUpdate(
+        "UPDATE products SET next_ticket_key_number = ? WHERE id = ?;",
+        bindings: ["\(nextKeyNumber)", productID],
+        database: database
+      )
+    }
+  }
+
+  private static func queryRows(
+    _ sql: String,
+    bindings: [String],
+    database: OpaquePointer
+  ) throws -> [[String?]] {
+    var statement: OpaquePointer?
+    let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+    guard prepareResult == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: prepareResult,
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    try bindText(bindings, to: statement, database: database)
+    var rows: [[String?]] = []
+    while sqlite3_step(statement) == SQLITE_ROW {
+      var row: [String?] = []
+      for column in 0..<sqlite3_column_count(statement) {
+        if let value = sqlite3_column_text(statement, column) {
+          row.append(String(cString: value))
+        } else {
+          row.append(nil)
+        }
+      }
+      rows.append(row)
+    }
+    return rows
+  }
+
+  private static func executeUpdate(
+    _ sql: String,
+    bindings: [String],
+    database: OpaquePointer
+  ) throws {
+    var statement: OpaquePointer?
+    let prepareResult = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
+    guard prepareResult == SQLITE_OK, let statement else {
+      throw PersistenceError.sqlite(
+        code: prepareResult,
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+    defer { sqlite3_finalize(statement) }
+    try bindText(bindings, to: statement, database: database)
+    guard sqlite3_step(statement) == SQLITE_DONE else {
+      throw PersistenceError.sqlite(
+        code: sqlite3_errcode(database),
+        message: String(cString: sqlite3_errmsg(database))
+      )
+    }
+  }
+
+  private static func bindText(
+    _ bindings: [String],
+    to statement: OpaquePointer,
+    database: OpaquePointer
+  ) throws {
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    for (index, value) in bindings.enumerated() {
+      let result = value.withCString {
+        sqlite3_bind_text(statement, Int32(index + 1), $0, -1, transient)
+      }
+      guard result == SQLITE_OK else {
+        throw PersistenceError.sqlite(
+          code: result,
+          message: String(cString: sqlite3_errmsg(database))
+        )
+      }
+    }
+  }
+
+  /// Versions 1 through 3 are the released schemas this build can upgrade, so
+  /// anything else below the current version is an unsupported pre-release
+  /// development schema.
   private static func unsupportedSchemaError(
     version: Int32,
     url: URL
@@ -1027,7 +1245,8 @@ public actor SQLiteStore {
     body: String,
     acceptanceCriteria: [String],
     priority: WorkItemPriority,
-    epicID: UUID? = nil
+    epicID: UUID? = nil,
+    preassignedKeyNumber: Int? = nil
   ) throws -> WorkItem {
     if let epicID {
       let epic = try fetchEpic(id: epicID)
@@ -1038,7 +1257,12 @@ public actor SQLiteStore {
         throw PersistenceError.corruptData("Tickets can only be created in an open epic")
       }
     }
-    let nextNumber = try nextWorkItemNumber(productID: productID)
+    let nextNumber: Int
+    if let preassignedKeyNumber {
+      nextNumber = preassignedKeyNumber
+    } else {
+      nextNumber = try nextWorkItemNumber(productID: productID)
+    }
     let nextRank = try nextWorkItemRank(productID: productID)
     let workItem = WorkItem(
       productID: productID,
@@ -1471,19 +1695,35 @@ public actor SQLiteStore {
   }
 
   func nextWorkItemNumber(productID: UUID) throws -> Int {
-    try withStatement(
-      """
-      SELECT COALESCE(MAX(key_number), 0) + 1
-      FROM work_items
-      WHERE product_id = ?;
-      """
+    try allocateTicketKeyNumbers(productID: productID, count: 1)
+  }
+
+  /// The single allocation path for durable ticket keys. Returns the first of
+  /// `count` sequential key numbers and advances the product's counter past
+  /// them. Retired keys are never reused, so gaps in the `T` sequence are
+  /// expected. Callers must already be inside a transaction so a failed
+  /// persist rolls the counter back with everything else.
+  func allocateTicketKeyNumbers(productID: UUID, count: Int) throws -> Int {
+    guard count > 0 else {
+      throw PersistenceError.corruptData("Ticket key allocation needs a positive count")
+    }
+    let first = try withStatement(
+      "SELECT next_ticket_key_number FROM products WHERE id = ?;"
     ) { statement in
       try bind(productID.uuidString, to: 1, in: statement)
       guard sqlite3_step(statement) == SQLITE_ROW else {
-        throw currentSQLiteError()
+        throw PersistenceError.recordNotFound("product \(productID)")
       }
       return Int(sqlite3_column_int64(statement, 0))
     }
+    try withStatement(
+      "UPDATE products SET next_ticket_key_number = ? WHERE id = ?;"
+    ) { statement in
+      try bind(Int64(first + count), to: 1, in: statement)
+      try bind(productID.uuidString, to: 2, in: statement)
+      try stepDone(statement)
+    }
+    return first
   }
 
   func nextWorkItemRank(productID: UUID) throws -> Int {

@@ -314,8 +314,11 @@ macOS behavior unless a custom control materially improves clarity.
 
 Completed prerequisites should not be presented as active blockers. Archived
 epics and tickets should not appear as active relationships. Suggested tickets
-may use temporary `S1`, `S2`, and similar references, but accepted tickets use
-the single durable product sequence `T1`, `T2`, and so on.
+carry final keys from the single durable product sequence `T1`, `T2`, and so
+on from the moment they are stored; the key a proposal shows is the key the
+accepted ticket keeps. Rejected and superseded proposals retire their keys, so
+gaps in the sequence are expected. Temporary `S1`-style references exist only
+inside the generation protocol and in decided historical suggestions.
 
 ## Making changes
 

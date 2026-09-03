@@ -108,8 +108,11 @@ for the same key. The old names remain accepted only by these migration and
 sandbox-denial paths; new data, runtime profiles, and artifacts use Spedito.
 Initial tables cover:
 
-- products with an indexed active/archive lifecycle state and a durable
-  curated display-color token;
+- products with an indexed active/archive lifecycle state, a durable curated
+  display-color token, and the product's durable ticket key counter — the
+  single allocation source for `T` keys, advanced inside the allocating
+  transaction and never rolled back by a rejection, so retired keys are never
+  reused;
 - work items and immutable contract versions;
 - Story/Task/Bug work-item classification and an optional epic foreign key;
   epic Created/Planned/In progress/Ready to complete progress remains derived
@@ -124,7 +127,10 @@ Initial tables cover:
 - built-in and custom persona identities, governed capability archetypes, and
   active/archive state;
 - ticket-suggestion sessions, proposals, proposal dependencies, and accepted
-  work-item dependency edges;
+  work-item dependency edges; a persisted proposal batch allocates final
+  durable ticket keys from the product counter and substitutes batch-internal
+  temporary references in its prose, so acceptance copies the reviewed key and
+  text verbatim instead of renumbering;
 - sprints, sprint assignments, forecast slots, dependency admission, internal
   safety limits, and frozen ticket snapshots;
 - immutable retrospective notes and action candidates from team runs, product

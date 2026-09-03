@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 3
+  static let version: Int32 = 4
 
   static let sql = """
     CREATE TABLE products (
@@ -15,7 +15,8 @@ enum ProductDatabaseSchema {
             color IN ('accent', 'blue', 'teal', 'green', 'orange', 'pink', 'indigo')
           ),
         created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        updated_at REAL NOT NULL,
+        next_ticket_key_number INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE agent_profiles (
@@ -1162,7 +1163,7 @@ enum ProductDatabaseSchema {
       JOIN sprints AS sprint ON sprint.id = note.sprint_id
       LEFT JOIN work_items AS item ON item.id = note.work_item_id;
 
-    PRAGMA user_version = 3;
+    PRAGMA user_version = 4;
     """
 
   static let migrationV1ToV2 = """
@@ -1755,6 +1756,26 @@ enum ProductDatabaseSchema {
     CREATE UNIQUE INDEX idx_candidate_revisions_implementation_version
       ON candidate_revisions(implementation_run_id, version);
     PRAGMA user_version = 3;
+    """
+
+  /// Adds the durable ticket key counter. Ticket suggestions persisted from
+  /// this version on carry final `T` keys allocated from this counter, so the
+  /// reference the product owner reads on a proposal is the key the accepted
+  /// ticket keeps. The Swift migration step in
+  /// `SQLiteStore.assignDurableKeysToPendingSuggestions` runs in the same
+  /// transaction and re-keys still-proposed suggestions.
+  static let migrationV3ToV4 = """
+    ALTER TABLE products
+      ADD COLUMN next_ticket_key_number INTEGER NOT NULL DEFAULT 1;
+    UPDATE products
+    SET next_ticket_key_number = COALESCE(
+        (
+          SELECT MAX(key_number) FROM work_items
+          WHERE work_items.product_id = products.id
+        ),
+        0
+    ) + 1;
+    PRAGMA user_version = 4;
     """
 
   static let legacyCopyTableOrder = [
