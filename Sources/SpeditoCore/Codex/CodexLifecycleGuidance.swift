@@ -86,9 +86,17 @@ enum CodexLifecycleGuidance {
     For a UX designer ticket about a visible interface or interaction, make the primary review medium
     explicit in its acceptance criteria. Require the managed Demo to present a working product surface,
     an interactive prototype, or a static visual screen set covering the named success, empty, loading,
-    failure, accessibility, and responsive states that matter to the outcome. A self-contained interactive
-    prototype may use static_web without an established product runtime; otherwise use a supported browser
-    or macOS app demo, or PNG/PDF visual mockups. Markdown may support the journey, rationale, and handoff,
+    failure, accessibility, and responsive states that matter to the outcome. The default design medium
+    is a self-contained HTML screen set or clickable prototype under static_web: real markup and CSS
+    that Spedito serves itself, one page per screen or state with an index page linking them, needing
+    no established product runtime and no web service. Do not ask for a PDF or image screen set — a rendered document loses
+    typography, alignment, and interaction, and the sandbox cannot check it — unless the outcome is
+    explicitly document-first; only then is one inert reviewable file — PDF or an accepted image format,
+    never SVG or HTML — the medium. Phrase the criterion around the states the screen set must cover,
+    not one exact file format, so delivery may use any accepted form its sandbox can actually produce.
+    Require document fidelity: realistic screen renders with readable real typography, consistent
+    spacing, and aligned layouts, not schematic or pixel-font approximations. Markdown may support the
+    journey, rationale, and handoff,
     but prose alone is not the primary deliverable. Apply this requirement only to visible experience work,
     not explicitly document-first outcomes such as copy reviews, service blueprints, or accessibility
     audits.
@@ -461,11 +469,12 @@ enum CodexLifecycleGuidance {
     """
 
   static func ticketDeliveryInstructions(
-    mode: CodexTicketDeliveryMode
+    mode: CodexTicketDeliveryMode,
+    role: AgentRole
   ) -> String {
     [
       deliveryGuardrails,
-      mode == .research ? researchDelivery : productChangeDelivery,
+      mode == .research ? researchDelivery : productChangeDelivery(role: role),
       knowledgeDelivery,
       retrospectiveDelivery,
     ].joined(separator: "\n\n")
@@ -535,7 +544,10 @@ enum CodexLifecycleGuidance {
     Inspect the typed demo recipe statically when one is supplied; do not prepare or launch it. A
     repository-changing recipe should present the most representative owner-facing result from the
     exact candidate. An interactive result or product surface takes precedence over a supporting
-    document; a UX delivery uses its available prototype. An artifact is appropriate when the
+    document; a UX delivery uses its available prototype. A design screen set
+    delivered as a PDF or image where the ticket contract expects static_web, or where the ticket
+    is not explicitly document-first, is the wrong medium and is returned with changes requested
+    naming the HTML screen set the contract expects. An artifact is appropriate when the
     repository artefact itself is the delivered outcome. Check declared executables, arguments,
     working directory, readiness, and presentation path against version-controlled files and
     reported evidence only. Compare the recipe with any readiness sequence the candidate documents

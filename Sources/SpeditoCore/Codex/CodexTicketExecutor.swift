@@ -315,7 +315,8 @@ public enum CodexTicketExecutor {
     savedPermissionGrants: [AgentPermissionGrant] = []
   ) -> String {
     let lifecycle = CodexLifecycleGuidance.ticketDeliveryInstructions(
-      mode: CodexTicketDeliveryMode(assignee: assignee)
+      mode: CodexTicketDeliveryMode(assignee: assignee),
+      role: assignee.role
     )
     return """
       \(lifecycle)
