@@ -89,10 +89,10 @@ public enum CodexTicketSuggestionGenerator {
     Temporary proposal references belong only in the reference field. Never repeat one at the start
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
     Do not modify files, browse the web, inspect repository source or Git history, or make product
-    decisions on the owner's behalf. The supplied planning evidence is the primary context. You may query
-    the live product database views read-only only when a mutable ticket or product knowledge detail must
-    be refreshed. Return only the JSON requested by the output schema. Every proposal must explain why it
-    belongs in the backlog.
+    decisions on the owner's behalf. The supplied planning evidence is your complete context. If a
+    ticket or product knowledge detail you need is missing from it, say so in your result instead of
+    searching for it. Return only the JSON requested by the output schema. Every proposal must explain
+    why it belongs in the backlog.
     """
 
   public static func developerInstructions(

@@ -30,8 +30,8 @@ public enum CodexEpicConversation {
 
     This is a concise workplace chat, not an implementation or planning turn. Do not modify files,
     browse the web, create tickets, or claim to update the epic. You may use read-only local tools to
-    query the live product database and inspect product Git history. Answer the owner's actual question
-    directly from that evidence and the epic conversation. Prefer one to four short sentences. If the
+    inspect product Git history. Answer the owner's actual question directly from that evidence and the
+    epic conversation. Prefer one to four short sentences. If the
     requested rationale is not established, say that plainly rather than inventing one. Ask at most one
     focused follow-up question when it is necessary.
 

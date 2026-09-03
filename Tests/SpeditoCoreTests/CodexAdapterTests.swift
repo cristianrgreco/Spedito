@@ -243,10 +243,7 @@ struct CodexAdapterTests {
 
     let threadID = try await client.startReadOnlyThread(
       workingDirectory: URL(fileURLWithPath: "/private/tmp/spedito-product"),
-      developerInstructions: "Act as a BA",
-      readOnlyProductDirectory: URL(
-        fileURLWithPath: "/private/tmp/spedito-product/.spedito"
-      )
+      developerInstructions: "Act as a BA"
     )
     let turnID = try await client.startStructuredTurn(
       threadID: threadID,
@@ -267,10 +264,7 @@ struct CodexAdapterTests {
     )
     #expect(
       requests[1].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
-        == [
-          "/private/tmp/spedito-product",
-          "/private/tmp/spedito-product/.spedito",
-        ]
+        == ["/private/tmp/spedito-product"]
     )
     #expect(requests[1].params["permissionProfile"] == nil)
     #expect(requests[1].params["sandbox"] == nil)
@@ -478,7 +472,7 @@ struct CodexAdapterTests {
     #expect(
       deliveryConfig?["filesystem"]?[
         "/private/tmp/spedito-canonical-product/.spedito"
-      ]?.stringValue == "read"
+      ] == nil
     )
     #expect(
       deliveryConfig?["filesystem"]?[":workspace_roots"]?["."]?.stringValue
@@ -559,7 +553,7 @@ struct CodexAdapterTests {
     #expect(
       requests[2].params["config"]?["permissions.spedito-delivery"]?[
         "filesystem"
-      ]?["/private/tmp/product/.spedito"]?.stringValue == "read"
+      ]?["/private/tmp/product/.spedito"] == nil
     )
     #expect(
       requests[2].params["config"]?["permissions.spedito-delivery"]?[
@@ -616,22 +610,39 @@ struct CodexAdapterTests {
     #expect(arguments.contains(#"":root"="read""#))
     #expect(arguments.contains(#""~/.codex"="deny""#))
     #expect(arguments.contains(#""~/Library/Application Support/Spedito"="deny""#))
+    // Delivery cannot blanket-deny the Spedito directory the way the demo
+    // profile does, because ticket worktrees live under it. It denies the
+    // product workspaces holding every product's database instead.
     #expect(
       arguments.contains(
-        #""~/Library/Application Support/Spedito/spedito.sqlite"="deny""#
+        #""~/Library/Application Support/Spedito/Product Workspaces"="deny""#
       )
     )
     #expect(
       arguments.contains(
-        #""~/Library/Application Support/StoryPointless/storypointless.sqlite"="deny""#
+        #""~/Library/Application Support/StoryPointless"="deny""#
       )
     )
+    #expect(!arguments.contains("spedito.sqlite"))
+    #expect(!arguments.contains("storypointless.sqlite"))
     #expect(
       !CodexPermissionProfiles.deliveryProfileOverride.contains(
         #""~/Library/Application Support/Spedito"="deny""#
       )
     )
     #expect(!CodexPermissionProfiles.deliveryProfileOverride.contains(#"":root"="read""#))
+    // Delivery reads the system typefaces: without them CoreText draws nothing
+    // inside the sandbox, every render a team member checks shows blank text,
+    // and designers shipped hand-drawn pixel glyphs in place of real type.
+    #expect(
+      CodexPermissionProfiles.systemFontReadPaths == ["/System/Library/Fonts", "/Library/Fonts"]
+    )
+    for path in CodexPermissionProfiles.systemFontReadPaths {
+      #expect(
+        CodexPermissionProfiles.deliveryProfileOverride.contains(#""\#(path)"="read""#),
+        "The launch-time delivery profile does not grant \(path)."
+      )
+    }
     #expect(arguments.contains(#""localhost"="allow""#))
     #expect(!arguments.contains("openssl.cnf"))
     #expect(!arguments.contains("/opt/homebrew/bin"))
@@ -691,6 +702,51 @@ struct CodexAdapterTests {
       deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[
         "/Users/example/Library/Caches/Spedito/PreviewWorktrees"
       ]?.stringValue == "deny"
+    )
+    for path in CodexPermissionProfiles.systemFontReadPaths {
+      #expect(
+        deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[path]?.stringValue
+          == "read",
+        "The thread-time delivery profile does not grant \(path)."
+      )
+    }
+  }
+
+  @Test("Delivery denies Spedito's control plane and grants only product Git")
+  func deliveryControlPlaneBoundary() {
+    let gitDirectory = URL(
+      fileURLWithPath: "/private/tmp/Spedito/Product Workspaces/product/.git"
+    )
+    let deliveryConfig = CodexPermissionProfiles.deliveryThreadConfiguration(
+      readOnlyGitDirectory: gitDirectory
+    )
+    let filesystem = deliveryConfig["permissions.spedito-delivery"]?["filesystem"]
+    let override = CodexPermissionProfiles.deliveryProfileOverrideValue(
+      readOnlyGitDirectory: gitDirectory
+    )
+
+    // Each product's database lives at Product Workspaces/<id>/.spedito, so the
+    // deny has to name the directory. The control directory must never appear
+    // as a read: granting it is granting the live database.
+    for path in CodexPermissionProfiles.speditoControlPlaneDenyPaths {
+      #expect(filesystem?[path]?.stringValue == "deny")
+      #expect(override.contains(#""\#(path)"="deny""#))
+    }
+    #expect(
+      CodexPermissionProfiles.speditoControlPlaneDenyPaths.contains(
+        "~/Library/Application Support/Spedito/Product Workspaces"
+      )
+    )
+    #expect(filesystem?[gitDirectory.path]?.stringValue == "read")
+    #expect(!override.contains(#"".spedito"="read""#))
+    #expect(!override.contains("/.spedito\"=\"read\""))
+
+    // The delivery run's own worktree lives under Run Worktrees, so denying it
+    // here would remove the agent's workspace.
+    #expect(
+      !CodexPermissionProfiles.speditoControlPlaneDenyPaths.contains {
+        $0.contains("Run Worktrees")
+      }
     )
   }
 
@@ -797,7 +853,7 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("Delivery can read product Git and context without changing either")
+  @Test("Delivery reads product Git but never Spedito's own control plane")
   func deliveryGitBoundary() async throws {
     let codexURL = URL(
       fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
@@ -890,7 +946,11 @@ struct CodexAdapterTests {
       "-c",
       CodexPermissionProfiles.deliveryProfileOverrideValue(
         readOnlyGitDirectory: gitDirectory,
-        readOnlyProductDirectory: productControl
+        controlPlaneDenyPaths: [
+          boundaryRoot
+            .appendingPathComponent("Product Workspaces", isDirectory: true)
+            .path
+        ]
       ),
       "sandbox",
       "-P",
@@ -913,8 +973,8 @@ struct CodexAdapterTests {
       git diff --cached --quiet || exit 12
       cat "\(otherProductGit.appendingPathComponent("private-object").path)" \
         >/dev/null 2>&1 && exit 13
-      test "$(cat "\(productControl.appendingPathComponent("context.txt").path)")" \
-        = "active context" || exit 14
+      cat "\(productControl.appendingPathComponent("context.txt").path)" \
+        >/dev/null 2>&1 && exit 14
       printf changed >> "\(productControl.appendingPathComponent("context.txt").path)" \
         >/dev/null 2>&1 && exit 15
       cat "\(otherProductControl.appendingPathComponent("context.txt").path)" \
@@ -2941,6 +3001,93 @@ struct CodexAdapterTests {
     #expect(!schemas.contains("ticket_key"))
   }
 
+  @Test("No inheriting agent's finished instructions invite a database query")
+  func inheritingAgentInstructionsNeverInviteDatabaseQueries() {
+    let product = Product(name: "Weather")
+    let analyst = AgentProfile(
+      productID: product.id,
+      name: "Business analyst",
+      role: .businessAnalyst
+    )
+    let inherited = CodexLiveProductContext.inheritedInstructions(
+      sharedInstructions: product.instructions,
+      allowsRepositoryInspection: true
+    )
+    let finished = [
+      CodexTicketConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexEpicConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexSprintPlanningConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexTicketRefinementGenerator.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+      CodexRetrospectiveSynthesizer.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+      CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+    ]
+
+    // The inherited block and each role's platform block are concatenated into
+    // one developer-instruction string, so a permissive clause in either half
+    // contradicts the other.
+    for instructions in finished {
+      #expect(instructions.contains("Do not locate or query it."))
+      #expect(!instructions.contains("query the live product database"))
+      #expect(!instructions.contains("live product database views"))
+      #expect(!instructions.contains("LIVE PRODUCT CONTEXT"))
+      #expect(!instructions.contains("sqlite3"))
+    }
+  }
+
+  @Test("Only product chat instructions expose the live product database")
+  func liveDatabaseContextStaysInProductChat() {
+    let conversation = CodexLiveProductContext.conversationInstructions(
+      sharedInstructions: "Use UK English.",
+      databasePath: "/tmp/product.sqlite"
+    )
+
+    #expect(conversation.contains("Use UK English."))
+    #expect(conversation.contains("LIVE PRODUCT CONTEXT"))
+    #expect(conversation.contains("/tmp/product.sqlite"))
+    #expect(conversation.contains("/usr/bin/sqlite3 -readonly"))
+    #expect(conversation.contains("agent_tickets("))
+
+    for allowsRepositoryInspection in [true, false] {
+      let inherited = CodexLiveProductContext.inheritedInstructions(
+        sharedInstructions: "Use UK English.",
+        allowsRepositoryInspection: allowsRepositoryInspection
+      )
+
+      #expect(inherited.contains("Use UK English."))
+      #expect(!inherited.contains("LIVE PRODUCT CONTEXT"))
+      #expect(!inherited.contains("sqlite3"))
+      #expect(!inherited.contains("agent_tickets"))
+      #expect(inherited.contains("Do not locate or query it."))
+      #expect(
+        inherited.contains("This is a planning turn.") == !allowsRepositoryInspection
+      )
+      #expect(
+        inherited.contains("Search the product Git history") == allowsRepositoryInspection
+      )
+    }
+  }
+
   @Test("Repeated backlog analysis receives the previous rejected proposals")
   func rejectedSuggestionContext() {
     let product = Product(name: "Weather")
@@ -3693,7 +3840,12 @@ struct CodexAdapterTests {
     #expect(instructions.contains("You may inspect Git"))
     #expect(instructions.contains("owns every Git mutation"))
     #expect(instructions.contains("noninteractive environment"))
-    #expect(instructions.contains("command -v"))
+    // A shell builtin cannot be the recommended diagnostic in a turn that is
+    // forbidden from invoking a shell.
+    #expect(instructions.contains("`/usr/bin/which`"))
+    #expect(!instructions.contains("command -v"))
+    #expect(!instructions.contains("type -a"))
+    #expect(instructions.contains("without external network access"))
     #expect(instructions.contains("request_permissions"))
     #expect(instructions.contains("smallest coherent"))
     #expect(instructions.contains("Batch all known paths into one"))
@@ -4609,8 +4761,9 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Earlier verified environment guidance."))
     #expect(prompt.contains(proposedBody))
     #expect(
-      prompt.contains("`agent_verified_knowledge` contains accepted canonical knowledge only"))
-    #expect(prompt.contains("Do not require a pending proposal to be"))
+      prompt.contains(
+        "The verified product knowledge store contains accepted canonical knowledge only"))
+    #expect(prompt.contains("Do not require a pending"))
     #expect(prompt.contains("Exercise the product when forecast data cannot be retrieved."))
     #expect(prompt.contains("The retry path is verified without losing the selected place."))
     #expect(prompt.contains("Priority: High"))

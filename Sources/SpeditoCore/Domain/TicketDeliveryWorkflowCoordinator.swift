@@ -199,10 +199,7 @@ public protocol TicketDeliveryWorkflowDelegate: AnyObject {
     removesPreview: Bool
   ) async
   func deliveryScheduleRetrospectiveSyntheses()
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String
+  func deliveryInheritedAgentInstructions(for product: Product) -> String
   func deliveryAgentRunDidUpdate(previous: AgentRun, updated: AgentRun) async
   func deliveryReloadSelectedProductIfCurrent(productID: UUID) async
   func deliveryReplacePermissionRequest(_ request: AgentPermissionRequest)
@@ -436,14 +433,8 @@ public final class TicketDeliveryWorkflowCoordinator {
     delegate?.deliveryScheduleRetrospectiveSyntheses()
   }
 
-  private func inheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool = true
-  ) -> String {
-    delegate?.deliveryInheritedAgentInstructions(
-      for: product,
-      includesMandatoryKnowledge: includesMandatoryKnowledge
-    ) ?? ""
+  private func inheritedAgentInstructions(for product: Product) -> String {
+    delegate?.deliveryInheritedAgentInstructions(for: product) ?? ""
   }
 
   private func reloadSelectedProductIfCurrent(productID: UUID) async {
@@ -673,10 +664,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       }
 
       let developerInstructions = CodexTicketExecutor.developerInstructions(
-        productInstructions: inheritedAgentInstructions(
-          for: product,
-          includesMandatoryKnowledge: false
-        ),
+        productInstructions: inheritedAgentInstructions(for: product),
         customInstructions: assignee.customInstructionText,
         assignee: assignee,
         savedPermissionGrants: context.permissionGrants
@@ -1706,8 +1694,7 @@ public final class TicketDeliveryWorkflowCoordinator {
             workingDirectory: reviewWorkspace.url,
             developerInstructions: developerInstructions,
             model: techLead.model,
-            allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-            readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+            allowsApprovals: CodexTechLeadReviewer.allowsApprovals
           )
           resumedReviewThreadID = resumedThreadID
           if let recoveredResponse = try? await client.latestCompletedAgentMessage(
@@ -1786,8 +1773,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-          readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+          allowsApprovals: CodexTechLeadReviewer.allowsApprovals
         )
         turnPrompt = fullReviewPrompt
         if replacedUnavailableThread {
@@ -1830,8 +1816,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-          readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+          allowsApprovals: CodexTechLeadReviewer.allowsApprovals
         )
         turnPrompt = fullReviewPrompt
         _ = try await updateAgentRun(
@@ -2125,8 +2110,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           reviewer: techLead
         ),
         model: techLead.model,
-        allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-        readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+        allowsApprovals: CodexTechLeadReviewer.allowsApprovals
       )
       _ = try await updateAgentRun(
         id: reviewRun.id,

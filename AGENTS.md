@@ -225,6 +225,17 @@ Agent permissions must remain least-privilege:
 - Do not weaken sandbox or approval behavior as a convenience fallback.
 - Capability-detect required runtime features and fail closed when safe
   isolation cannot be provided.
+- Never put a wildcard in a directory component of a deny path. Codex expands
+  each deny pattern into ancestor directory-unlink rules, so `**/.env` makes
+  every workspace directory undeletable and breaks all delivery. Put the
+  wildcard in the filename (`.env.*`) or name the directory. Deny paths live in
+  `CodexPermissionProfiles.workspaceDenyPaths`.
+
+A permission profile is only proven by running it. A test that skips when no
+Codex runtime is present reports an uncovered run as a passing one, so the
+sandbox guards fail instead, and CI installs a runtime. When you report a
+sandbox- or runtime-dependent result as green, name the binary and version that
+were exercised, or say plainly that none was.
 
 ## Dependency context and ticket handoffs
 

@@ -3454,10 +3454,7 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
 
   func deliveryScheduleRetrospectiveSyntheses() {}
 
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String {
+  func deliveryInheritedAgentInstructions(for product: Product) -> String {
     "Review only the supplied candidate."
   }
 

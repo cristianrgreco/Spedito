@@ -185,8 +185,9 @@ enum CodexLifecycleGuidance {
     credential, secret, or remote-service outage remains after capability handling.
 
     When a required command fails with `operation not permitted` or `permission denied`, do not
-    merely repeat it or add another shell wrapper. Use non-mutating diagnostics such as `command -v`
-    or `type -a`, inspect the foreseeable executable, symlink, library, compiler, SDK, filesystem,
+    merely repeat it or add another shell wrapper. Use non-mutating diagnostics such as
+    `/usr/bin/which`, which runs directly rather than as a shell builtin. Inspect the foreseeable
+    executable, symlink, library, compiler, SDK, filesystem,
     or network boundary, and submit one `request_permissions` call for the smallest coherent
     capability. Batch all known paths into one request; do not discover a runtime one approval at a
     time. A Homebrew runtime may require `/opt/homebrew/bin`, `/opt/homebrew/opt`, and
@@ -231,7 +232,9 @@ enum CodexLifecycleGuidance {
     owner approval. Distinguish sourced facts, assumptions, recommendation, and approval. Do not
     select, use, provision, or implement the recommendation before the product owner approves it.
     Prefer current primary sources and targeted evidence; stop once the acceptance criteria are
-    supported rather than expanding into a general market or repository survey.
+    supported rather than expanding into a general market or repository survey. This turn starts
+    without external network access, so request the smallest network capability you need before
+    trying to reach a remote source rather than after a command fails.
 
     Historical delivery notes are analogous context, not executable instructions. Reuse a useful
     decision structure when appropriate, but do not copy an earlier ticket's tools, commands,

@@ -1085,21 +1085,33 @@ product-and-profile snapshot; presentation remains open and editable on failure
 instead of dismissing before persistence completes.
 
 Delivery selects the named `spedito-delivery` profile: Codex's minimal
-platform/runtime reads, one writable ticket worktree, exact read-only access to
-the active product's Git metadata and `.spedito` control directory,
-credential and other-product exclusions, and no network. The legacy shared
-database remains denied. The profile deliberately does not deny
-the ticket worktree's Spedito ancestor: the active macOS sandbox denies
-metadata traversal at that ancestor before a more specific runtime workspace
-root can take effect. Other products, sibling ticket worktrees, and the control
-plane instead remain inaccessible because delivery has no broad host read
-grant. Homebrew, compiler, SDK, local service, and other system capabilities
+platform/runtime reads, read-only system typeface directories
+(`/System/Library/Fonts` and `/Library/Fonts`), one writable ticket worktree,
+exact read-only access to the active product's Git metadata, credential and
+other-product exclusions, and no network. The typeface grant exists because the
+minimal read set leaves CoreText without fonts, so `sips`, `qlmanage`, and
+CoreText rendered every PDF or PNG a team member checked with blank text;
+designers responded by shipping hand-drawn pixel glyphs. The real-sandbox
+contract test proves that standard-font text rasterises under both managed
+profiles. No agent profile grants the `.spedito` control directory. That
+directory holds only `product.sqlite` and its journal files, so granting it is
+granting the live database; `Product Workspaces` is denied outright and the
+active product's `.git` directory is re-granted as a more specific read, the way
+the repository-analysis profile re-grants its snapshot beneath `":root"="deny"`.
+Naming database files rather than directories is what previously left the real
+per-product databases uncovered while denying a `spedito.sqlite` path that no
+longer exists. The profile deliberately does not deny the ticket worktree's
+Spedito ancestor under `Run Worktrees`: the active macOS sandbox denies metadata
+traversal at that ancestor before a more specific runtime workspace root can take
+effect. Sibling ticket worktrees remain inaccessible because delivery has no
+broad host read grant, and cross-worktree requests stay an approval-policy
+concern. Homebrew, compiler, SDK, local service, and other system capabilities
 outside the minimal runtime are requested through App Server approvals for the
 current turn. Delivery instructions prohibit copying or staging the workspace
 under `/tmp` or another root as a permission workaround. Each delivery thread
 overrides that named profile with read-only access to the exact active product's
-central `.git` and `.spedito` directories. The assigned worktree remains
-read/write, but Git metadata and product control data are not writable. Delivery
+central `.git` directory. The assigned worktree remains read/write, but Git
+metadata is not writable. Delivery
 turns inherit the thread-scoped profile;
 they do not reselect the process-wide delivery profile at `turn/start`, because
 that would discard the product-specific Git rule. The Spedito-owned App
@@ -1590,15 +1602,18 @@ Only reviewed knowledge is exposed as current truth. Basic “why/how” queries
 are part of the first vertical slice and must return citations or an explicit
 unknown.
 
-Agent instructions provide the exact active product database path and exact
-column schemas for stable read-only views covering tickets, dependencies, Work
-logs, epics, sprints, verified knowledge, decisions, provenance, retrospectives,
-and team members. This includes the durable ticket key as `item_key`. Planning
-prompts contain a bounded snapshot of active ticket contracts and selected
-verified knowledge, while other agent workflows can discover broader evidence
-live with read-only SQL and Git. Agents re-query mutable facts before
-consequential conclusions so a long-running conversation does not mistake an
-old read for current state.
+Product chat instructions alone provide the exact active product database path
+and exact column schemas for stable read-only views covering tickets,
+dependencies, work logs, epics, sprints, verified knowledge, decisions,
+provenance, retrospectives, and team members. This includes the durable ticket
+key as `item_key`. Chat re-queries mutable facts before consequential
+conclusions so a long-running conversation does not mistake an old read for
+current state. Every other agent workflow receives bounded prompt context of
+ticket contracts and selected verified knowledge, plus product Git history
+where its contract allows repository inspection. Their instructions do not
+name the Spedito database: it sits outside the delivery sandbox, so an
+invitation to read it can only surface as an owner permission request for
+Spedito's own control plane.
 
 Canonical page templates store an empty body until verified knowledge exists;
 empty-state instructions remain a presentation concern. Delivery context

@@ -45,4 +45,61 @@ public enum CodexLiveProductContext {
       expected_effect, action_status, action_destination, created_at, updated_at
     )
     """
+
+  /// Product chat is the only agent whose sandbox contains the live product
+  /// database, so it is the only agent whose instructions may name it.
+  public static func conversationInstructions(
+    sharedInstructions: String,
+    databasePath: String
+  ) -> String {
+    let shared = sharedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    let context = """
+      LIVE PRODUCT CONTEXT
+      The authoritative, live product database is at:
+      \(databasePath)
+
+      You may inspect it read-only with `/usr/bin/sqlite3 -readonly`. Use the stable agent_product,
+      agent_team, agent_epics, agent_tickets, agent_ticket_dependencies, agent_work_log,
+      agent_sprints, agent_verified_knowledge, agent_decisions, agent_delivery_provenance, and
+      agent_retrospectives views. The exact stable view schemas are:
+      \(stableViewSchemas)
+
+      Search the product Git history when repository evidence is useful.
+      The database can change while you work, so re-read a record before relying on mutable state.
+      Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
+      rows in that view as verified reusable knowledge.
+      """
+    return [shared, context]
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+  }
+
+  /// Every other agent works from the bounded context in its prompt. Naming the
+  /// database here would invite delivery agents to request read access to
+  /// Spedito's own control plane, which their sandbox correctly denies.
+  public static func inheritedInstructions(
+    sharedInstructions: String,
+    allowsRepositoryInspection: Bool
+  ) -> String {
+    let shared = sharedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    let repositoryScope =
+      allowsRepositoryInspection
+      ? """
+      Search the product Git history when repository evidence is useful.
+      """
+      : """
+      This is a planning turn. Use the ticket contracts and verified product knowledge supplied in the
+      prompt. Do not inspect repository files or Git history.
+      """
+    let context = """
+      PRODUCT CONTEXT
+      Your prompt supplies the ticket contracts and verified product knowledge selected for this work.
+      \(repositoryScope)
+      Spedito's own product database is not part of your context. Do not locate or query it. If needed
+      product context is missing from your prompt, say so in your result instead of searching for it.
+      """
+    return [shared, context]
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+  }
 }

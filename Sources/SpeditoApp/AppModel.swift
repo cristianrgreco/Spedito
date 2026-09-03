@@ -595,11 +595,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       try Self.productWorkspaceURL(productID: productID)
     },
     inheritedInstructions: { [weak self] product in
-      self?.inheritedAgentInstructions(
-        for: product,
-        includesMandatoryKnowledge: true,
-        allowsRepositoryInspection: true
-      ) ?? ""
+      self?.inheritedAgentInstructions(for: product) ?? ""
     },
     onReloadActivity: { [weak self] productID in
       try await self?.reloadSprintPlanningActivity(productID: productID)
@@ -720,7 +716,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       try Self.productWorkspaceURL(productID: productID)
     },
     inheritedInstructions: { [weak self] product in
-      self?.inheritedAgentInstructions(for: product) ?? ""
+      self?.conversationAgentInstructions(for: product) ?? ""
     },
     modelOptions: { [weak self] in self?.codexModels ?? [] },
     isShuttingDown: { [weak self] in self?.isShuttingDown ?? true },
@@ -4270,51 +4266,22 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   private func inheritedAgentInstructions(
     for product: Product,
-    includesMandatoryKnowledge: Bool = true,
     allowsRepositoryInspection: Bool = true
   ) -> String {
-    let shared = product.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    CodexLiveProductContext.inheritedInstructions(
+      sharedInstructions: product.instructions,
+      allowsRepositoryInspection: allowsRepositoryInspection
+    )
+  }
+
+  private func conversationAgentInstructions(for product: Product) -> String {
     let databasePath =
       (try? Self.productDatabaseURL(productID: product.id).path)
       ?? ".spedito/product.sqlite"
-    let knowledgeScope =
-      includesMandatoryKnowledge
-      ? """
-      Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
-      rows in that view as verified reusable knowledge.
-      """
-      : """
-      Query agent_verified_knowledge when the assigned ticket needs durable product context.
-      """
-    let repositoryScope =
-      allowsRepositoryInspection
-      ? """
-      Search the product Git history when repository evidence is useful.
-      """
-      : """
-      This is a planning turn. Use the ticket contracts and verified product knowledge supplied in the
-      prompt. Do not inspect repository files or Git history.
-      """
-    return [
-      shared,
-      """
-      LIVE PRODUCT CONTEXT
-      The authoritative, live product database is at:
-      \(databasePath)
-
-      You may inspect it read-only with `/usr/bin/sqlite3 -readonly`. Use the stable agent_product,
-      agent_team, agent_epics, agent_tickets, agent_ticket_dependencies, agent_work_log,
-      agent_sprints, agent_verified_knowledge, agent_decisions, agent_delivery_provenance, and
-      agent_retrospectives views. The exact stable view schemas are:
-      \(CodexLiveProductContext.stableViewSchemas)
-
-      \(repositoryScope)
-      The database can change while you work, so re-read a record before relying on mutable state.
-      \(knowledgeScope)
-      """,
-    ]
-    .filter { !$0.isEmpty }
-    .joined(separator: "\n\n")
+    return CodexLiveProductContext.conversationInstructions(
+      sharedInstructions: product.instructions,
+      databasePath: databasePath
+    )
   }
 
   private func recordKnowledgeContext(
@@ -5077,14 +5044,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     scheduleRetrospectiveSyntheses()
   }
 
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String {
-    inheritedAgentInstructions(
-      for: product,
-      includesMandatoryKnowledge: includesMandatoryKnowledge
-    )
+  func deliveryInheritedAgentInstructions(for product: Product) -> String {
+    inheritedAgentInstructions(for: product)
   }
 
   func deliveryAgentRunDidUpdate(previous: AgentRun, updated: AgentRun) async {

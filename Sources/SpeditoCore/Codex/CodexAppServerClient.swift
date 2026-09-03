@@ -313,7 +313,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     allowsApprovals: Bool = false,
-    readOnlyProductDirectory: URL? = nil,
     ephemeral: Bool = false,
     responseTimeout: Duration? = nil
   ) async throws -> String {
@@ -325,10 +324,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "ephemeral": .bool(ephemeral),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array(
-        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
-          .map { .string($0.standardizedFileURL.path) }
-      ),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
       "serviceName": .string("Spedito"),
     ]
     if let model, model != "default" {
@@ -356,18 +354,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil,
     writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
-    let productDirectory =
-      readOnlyProductDirectory
-      ?? readOnlyGitDirectory?
-      .deletingLastPathComponent()
-      .appendingPathComponent(
-        ProductStoreRegistry.controlDirectoryName,
-        isDirectory: true
-      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -382,7 +371,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
       readOnlyGitDirectory: readOnlyGitDirectory,
-      readOnlyProductDirectory: productDirectory,
       writableTransientStorageRoots: writableTransientStorageRoots
     )
     if let model, model != "default" {
@@ -401,8 +389,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    allowsApprovals: Bool = false,
-    readOnlyProductDirectory: URL? = nil
+    allowsApprovals: Bool = false
   ) async throws -> String {
     var params: [String: JSONValue] = [
       "approvalPolicy": .string(allowsApprovals ? "on-request" : "never"),
@@ -410,10 +397,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "developerInstructions": .string(developerInstructions),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array(
-        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
-          .map { .string($0.standardizedFileURL.path) }
-      ),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
       "threadId": .string(threadID),
     ]
     if let model, model != "default" {
@@ -428,17 +414,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil,
     writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
-    let productDirectory =
-      readOnlyProductDirectory
-      ?? readOnlyGitDirectory?
-      .deletingLastPathComponent()
-      .appendingPathComponent(
-        ProductStoreRegistry.controlDirectoryName,
-        isDirectory: true
-      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -452,7 +429,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
       readOnlyGitDirectory: readOnlyGitDirectory,
-      readOnlyProductDirectory: productDirectory,
       writableTransientStorageRoots: writableTransientStorageRoots
     )
     if let model, model != "default" {

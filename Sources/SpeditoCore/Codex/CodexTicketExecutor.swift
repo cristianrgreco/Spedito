@@ -1897,9 +1897,10 @@ public enum CodexTechLeadReviewer {
       Candidate-bound product knowledge lifecycle:
       - The proposal records above belong to the exact candidate revision under review. Review their
         complete proposed Markdown and candidate-captured base snapshots as delivery evidence.
-      - `agent_verified_knowledge` contains accepted canonical knowledge only. It is expected to remain
-        unchanged while these proposals are under review. Do not require a pending proposal to be
-        published there, or duplicated in an ordinary repository document, before approval.
+      - The verified product knowledge store contains accepted canonical knowledge only. It is
+        expected to remain unchanged while these proposals are under review. Do not require a pending
+        proposal to be published there, or duplicated in an ordinary repository document, before
+        approval.
       - Tech lead approval makes an accurate proposal eligible for candidate materialization. The
         reviewed Markdown becomes canonical product knowledge only when the product owner accepts the
         ticket. A missing, materially inaccurate, or destructive proposal may still block approval.
