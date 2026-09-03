@@ -1750,28 +1750,46 @@ not interrupt ticket or epic refinement, ticket or epic conversation replies, or
 Chat replies; only product archival, an explicit stop, or application shutdown
 ends that work. If the exact ticket, epic, or Chat thread is visible while
 Spedito is active, the result appears inline and no banner is added. Otherwise an
-active Spedito window slides one transient banner in at the bottom right; an
-inactive app sends one macOS notification instead. Opening either presentation
-selects the product only after the product owner chooses the action and opens
-the exact source.
+active Spedito window pops one transient callout out of the notification bell,
+with an arrow pointing at the bell; an inactive app sends one macOS notification
+instead. The callout shows a thin line in the notification's tint that empties
+as its display time runs out. When it times out or is dismissed, it scales back
+into the bell, showing the owner where a missed item stays reachable. Opening
+either presentation selects the product only after the product owner chooses the
+action and opens the exact source.
 
 | Durable state | Entered by | SQLite evidence | What the owner sees | Available actions | Relaunch recovery |
 | --- | --- | --- | --- | --- | --- |
 | Needs input | A ticket or epic refinement turn returns one or more owner questions | The source conversation or work-log question plus an unresolved owner notification | Orange **Needs your input** treatment and one chime unless the source is already visible | Open the source and answer; dismissing or viewing does not resolve it | It remains discoverable until the answer is saved |
-| Refinement complete | A ticket refinement is applied or an epic plan is ready for review | The applied ticket version or completed epic suggestion session plus an unread owner notification | Purple **Refinement complete** or **Plan ready for review** treatment without a chime | Open the ticket or epic | Its unread indicator remains until the source is opened |
+| Refinement complete | A ticket refinement is applied | The applied ticket version plus an unread owner notification | Purple **Refinement complete** treatment without a chime | Open the ticket | Its unread indicator remains until the source is opened |
+| Plan ready for review | An epic plan lands with undecided proposals | The completed epic suggestion session with undecided proposals; the stored notification only carries the banner and macOS delivery | Purple **Plan ready for review** treatment without a chime; the bell row persists as an owed decision | Open the epic and decide the proposals; opening alone does not clear the bell row | The bell row is derived from the undecided batch, so it survives relaunch until every proposal is decided |
 | New reply | A team member appends a ticket, epic, or Chat reply | The durable reply plus an unread owner notification | Purple **New reply** treatment without a chime | Open the ticket, epic, or exact Chat thread | Its unread indicator remains until the source is opened |
 
 Unread updates are distinct from unresolved actions. Opening their exact source
 marks completion and reply notifications read. Answering a refinement question
-resolves its action notification. When either operation makes a delivered macOS
+resolves its action notification, and a **Needs your input** notification also
+resolves when its wait ends by any other route: the epic plan lands, the
+awaiting run moves on, or a refinement completes without questions. On launch,
+Spedito retires any needs-input notification whose wait no longer exists in
+durable state. When either operation makes a delivered macOS
 notification obsolete, Spedito removes that notification from Notification
 Center so a stale alert cannot route to an already-cleared state. Sidebar and
 row indicators identify unread backlog and Chat destinations; they do not turn
 ordinary completions or replies into **Needs your input** counts.
 
-This notification flow does not create a general notification center, notify
-for title-generation helpers, or replay historical results that predate its
-durable notification record.
+The notification bell sits at the top right of every workspace view. Its badge
+counts the items that still wait on the product owner across every product:
+live ticket questions and active notifications, one per source. Opening the
+bell lists those items grouped by product with the selected product first, and
+choosing an item opens its exact source through the same routing as the banner.
+Rows clear through the existing transitions — unread updates leave when their
+source is opened, action items leave when their question is answered, and a
+**Plan ready for review** row leaves only when every proposal in its batch is
+decided — so an empty bell means nothing waits on the owner.
+
+This notification flow does not keep a notification history: the bell lists
+only currently active items. It does not notify for title-generation helpers or
+replay historical results that predate its durable notification record.
 
 ### 10.2 State transition rules
 

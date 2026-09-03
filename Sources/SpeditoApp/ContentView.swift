@@ -292,10 +292,7 @@ struct ProductWorkspaceView: View {
         }
       }
       .id(model.selectedProductID)
-      .ignoresSafeArea(
-        .container,
-        edges: columnVisibility == .detailOnly ? [] : .top
-      )
+      .extendsUnderHiddenTitleBar(columnVisibility != .detailOnly)
     }
     .onAppear {
       restoreDestination(for: model.selectedProductID)
@@ -339,23 +336,9 @@ struct ProductWorkspaceView: View {
         handleOwnerNotificationNavigationRequest(request)
       }
     }
-    .overlay(alignment: .bottomTrailing) {
-      if let notification = model.presentedOwnerNotification {
-        OwnerNotificationBanner(
-          notification: notification,
-          onOpen: {
-            Task { await model.openOwnerNotification(notification) }
-          },
-          onDismiss: {
-            model.dismissPresentedOwnerNotification(id: notification.id)
-          }
-        )
-        .padding(.trailing, 16)
-        .padding(.bottom, 16)
-        .transition(.move(edge: .trailing).combined(with: .opacity))
-      }
+    .overlayPreferenceValue(OwnerNotificationBellAnchorKey.self) { bellAnchor in
+      OwnerNotificationBannerOverlay(bellAnchor: bellAnchor)
     }
-    .animation(.easeInOut(duration: 0.2), value: model.presentedOwnerNotification?.id)
     .sheet(isPresented: $showingNewTicket) {
       NewTicketView(
         isPresented: $showingNewTicket,

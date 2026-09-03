@@ -804,6 +804,12 @@ extension EpicPlanningWorkflowCoordinator {
           threadID: completedBatch.session.codexThreadID,
           fallbackMessages: durableMessages
         )
+        // The landed plan ends every wait this epic announced — clarification
+        // questions answered by any route and failed generations now retried.
+        await onResolveOwnerNotification(
+          product.id,
+          OwnerNotificationTarget(kind: .epic, id: epic.id)
+        )
         await onOwnerNotification(
           OwnerNotification(
             id: completedBatch.session.id,

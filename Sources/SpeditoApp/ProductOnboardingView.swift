@@ -45,7 +45,7 @@ struct ProductOnboardingView: View {
       .padding(.vertical, 40)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .ignoresSafeArea(.container, edges: .top)
+    .extendsUnderHiddenTitleBar()
     .sheet(isPresented: $showingProductLibrary) {
       ProductLibraryView(
         isPresented: $showingProductLibrary,

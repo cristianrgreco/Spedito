@@ -180,6 +180,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     set { productLibraryFeature.archivedProducts = newValue }
   }
   @Published private(set) var ticketAttentionsByProductID: [UUID: [TicketAttention]] = [:]
+  @Published private(set) var epicPlanReviewsByProductID: [UUID: [EpicPlanReviewAttention]] = [:]
   @Published private(set) var ticketAttentionNavigationRequest: TicketAttentionNavigationRequest?
   @Published private(set) var ownerNotificationNavigationRequest:
     OwnerNotificationNavigationRequest?
@@ -688,6 +689,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       onOwnerNotification: { [weak self] notification in
         await self?.publishOwnerNotification(notification)
       },
+      onResolveOwnerNotification: { [weak self] productID, target in
+        await self?.ownerNotificationCoordinator.resolve(
+          productID: productID,
+          target: target
+        )
+      },
       onSelectedActivityChange: { [weak self] productID, activity in
         guard self?.selectedProductID == productID else { return }
         self?.activity = activity
@@ -1010,23 +1017,44 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  private func fetchTicketAttentions(
-    products: [Product]
-  ) async -> [UUID: [TicketAttention]] {
+  private func fetchOwnerAttention(
+    product: Product,
+    store: SQLiteStore
+  ) async throws -> (
+    attentions: [TicketAttention], planReviews: [EpicPlanReviewAttention]
+  ) {
+    (
+      attentions: try await fetchTicketAttentions(product: product, store: store),
+      planReviews: EpicPlanReviewAttention.derive(
+        product: product,
+        epics: try await store.fetchEpics(productID: product.id),
+        batches: try await store.fetchOutstandingTicketSuggestionBatches(
+          productID: product.id
+        )
+      )
+    )
+  }
+
+  private func refreshOwnerAttentionState(products: [Product]) async {
     var attentionsByProductID: [UUID: [TicketAttention]] = [:]
+    var planReviewsByProductID: [UUID: [EpicPlanReviewAttention]] = [:]
     for product in products {
       guard
         let productStore = store(for: product.id),
-        let attentions = try? await fetchTicketAttentions(
+        let derived = try? await fetchOwnerAttention(
           product: product,
           store: productStore
         )
       else { continue }
-      if !attentions.isEmpty {
-        attentionsByProductID[product.id] = attentions
+      if !derived.attentions.isEmpty {
+        attentionsByProductID[product.id] = derived.attentions
+      }
+      if !derived.planReviews.isEmpty {
+        planReviewsByProductID[product.id] = derived.planReviews
       }
     }
-    return attentionsByProductID
+    ticketAttentionsByProductID = attentionsByProductID
+    epicPlanReviewsByProductID = planReviewsByProductID
   }
 
   private func refreshTicketAttentions(productID: UUID) async {
@@ -1035,18 +1063,24 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productStore = store(for: productID)
     else {
       ticketAttentionsByProductID.removeValue(forKey: productID)
+      epicPlanReviewsByProductID.removeValue(forKey: productID)
       return
     }
     guard
-      let attentions = try? await fetchTicketAttentions(
+      let derived = try? await fetchOwnerAttention(
         product: product,
         store: productStore
       )
     else { return }
-    if attentions.isEmpty {
+    if derived.attentions.isEmpty {
       ticketAttentionsByProductID.removeValue(forKey: productID)
     } else {
-      ticketAttentionsByProductID[productID] = attentions
+      ticketAttentionsByProductID[productID] = derived.attentions
+    }
+    if derived.planReviews.isEmpty {
+      epicPlanReviewsByProductID.removeValue(forKey: productID)
+    } else {
+      epicPlanReviewsByProductID[productID] = derived.planReviews
     }
   }
 
@@ -1200,11 +1234,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await reloadSelectedProduct()
     }
     ownerNotificationCoordinator.dismissPresented(id: attention.id)
+    guard
+      let current = ticketAttentionsByProductID[attention.productID]?
+        .first(where: { $0.workItemID == attention.workItemID })
+    else { return }
     ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
-      productID: attention.productID,
-      sprintID: attention.sprintID,
-      workItemIDs: [attention.workItemID],
-      openWorkItemID: attention.workItemID
+      productID: current.productID,
+      sprintID: current.sprintID,
+      workItemIDs: [current.workItemID],
+      openWorkItemID: current.workItemID
     )
   }
 
@@ -1218,12 +1256,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   func openTicketAttentions(for product: Product) async {
-    let attentions = ticketAttentionsByProductID[product.id] ?? []
     if selectedProductID != product.id {
       await selectProduct(product)
     } else {
       await reloadSelectedProduct()
     }
+    let attentions = ticketAttentionsByProductID[product.id] ?? []
     guard !attentions.isEmpty else { return }
     if let presentedOwnerNotification,
       attentions.contains(where: { $0.id == presentedOwnerNotification.id })
@@ -1298,17 +1336,37 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     productID: UUID,
     target: OwnerNotificationTarget
   ) async {
+    var navigatesAsTicketAttention = false
+    var navigatesAsEpicPlanReview = false
     if let notificationID {
-      let matchesOwnerNotification =
-        ownerNotificationsByProductID[productID]?.contains(where: {
-          $0.id == notificationID && $0.target == target
-        }) == true
-      let matchesTicketAttention =
-        target.kind == .ticket
-        && ticketAttentionsByProductID[productID]?.contains(where: {
-          $0.id == notificationID && $0.workItemID == target.id
-        }) == true
-      guard matchesOwnerNotification || matchesTicketAttention else { return }
+      func matches() -> (ownerNotification: Bool, attention: Bool, planReview: Bool) {
+        (
+          ownerNotification: ownerNotificationsByProductID[productID]?.contains(where: {
+            $0.id == notificationID && $0.target == target
+          }) == true,
+          attention: target.kind == .ticket
+            && ticketAttentionsByProductID[productID]?.contains(where: {
+              $0.id == notificationID && $0.workItemID == target.id
+            }) == true,
+          planReview: target.kind == .epic
+            && epicPlanReviewsByProductID[productID]?.contains(where: {
+              $0.id == notificationID && $0.epicID == target.id
+            }) == true
+        )
+      }
+      var match = matches()
+      if !match.ownerNotification, !match.attention, !match.planReview {
+        // A macOS notification can arrive before the in-memory caches load.
+        // Refresh from the store before concluding the click is stale.
+        await ownerNotificationCoordinator.refresh(productID: productID)
+        await refreshTicketAttentions(productID: productID)
+        match = matches()
+      }
+      guard match.ownerNotification || match.attention || match.planReview
+      else { return }
+      navigatesAsTicketAttention = !match.ownerNotification && match.attention
+      navigatesAsEpicPlanReview =
+        !match.ownerNotification && !match.attention && match.planReview
     }
     guard let product = products.first(where: { $0.id == productID }) else {
       return
@@ -1317,6 +1375,22 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await selectProduct(product)
     } else {
       await reloadSelectedProduct()
+    }
+    // The reload refreshed the derived caches; a row whose owed decision has
+    // since been made must drop instead of navigating as attention.
+    if navigatesAsTicketAttention, let notificationID,
+      ticketAttentionsByProductID[productID]?
+        .contains(where: { $0.workItemID == target.id }) != true
+    {
+      ownerNotificationCoordinator.dismissPresented(id: notificationID)
+      return
+    }
+    if navigatesAsEpicPlanReview, let notificationID,
+      epicPlanReviewsByProductID[productID]?
+        .contains(where: { $0.epicID == target.id }) != true
+    {
+      ownerNotificationCoordinator.dismissPresented(id: notificationID)
+      return
     }
     guard ownerNotificationTargetExists(target) else {
       await ownerNotificationCoordinator.markRead(
@@ -1959,7 +2033,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       selectedProductID = product.id
       repositoryKnowledgeSnapshot = repositoryKnowledgeCoordinator.snapshot(for: product.id)
@@ -2097,7 +2171,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       selectedProductID = products.first?.id
       if let selectedProductID {
@@ -2138,7 +2212,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       guard let restored = products.first(where: { $0.id == product.id }) else {
         throw PersistenceError.recordNotFound("restored product \(product.id)")
@@ -4368,7 +4442,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       if !didResolveInitialProductSelection {
         didResolveInitialProductSelection = true
@@ -4460,6 +4534,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         productID: productID,
         threads: workspace.conversationThreads
       )
+      await refreshTicketAttentions(productID: productID)
     } catch {
       presentExecutionError(error, productID: productID)
     }
@@ -5054,23 +5129,27 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       newStatus: updated.status,
       isShuttingDown: isShuttingDown
     )
-    if previous.status == .awaitingOwner || updated.status == .awaitingOwner {
+    // The board projects durable run state, so every status change has to reach
+    // it. Refreshing only for attention transitions left the owner watching
+    // queued tickets while their agents were running and completing work, and
+    // left ready-for-demo attention rows arriving late or surviving approval.
+    if previous.status != updated.status {
+      await reloadSelectedProductIfCurrent(productID: updated.productID)
+    } else if updated.status == .awaitingOwner {
       await refreshTicketAttentions(productID: updated.productID)
     }
     if previous.status == .awaitingOwner && updated.status != .awaitingOwner {
       ownerNotificationCoordinator.dismissSystemNotification(id: previous.id)
+      await resolveOwnerNotifications(
+        productID: updated.productID,
+        target: OwnerNotificationTarget(kind: .ticket, id: updated.workItemID)
+      )
     }
     if newlyNeedsAttention,
       let attention = ticketAttentionsByProductID[updated.productID]?
         .first(where: { $0.workItemID == updated.workItemID })
     {
       ownerNotificationCoordinator.present(attention)
-    }
-    // The board projects durable run state, so every status change has to reach
-    // it. Refreshing only for attention transitions left the owner watching
-    // queued tickets while their agents were running and completing work.
-    if previous.status != updated.status {
-      await reloadSelectedProductIfCurrent(productID: updated.productID)
     }
   }
 

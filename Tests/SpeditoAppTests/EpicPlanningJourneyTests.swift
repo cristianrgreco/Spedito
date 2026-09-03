@@ -1091,6 +1091,11 @@ struct EpicPlanningJourneyTests {
 
     let model = AppModel(storeRegistry: registry, selectedProductID: product.id)
     await model.reload()
+    // The undecided plan keeps a derived bell row until every proposal is
+    // decided.
+    let planReview = try #require(model.epicPlanReviewsByProductID[product.id]?.first)
+    #expect(planReview.epicID == epic.id)
+    #expect(planReview.proposalCount == 2)
     try await store.execute(
       """
       CREATE TRIGGER fail_e10_batch_acceptance
@@ -1116,6 +1121,7 @@ struct EpicPlanningJourneyTests {
     )
     #expect(afterInterruption.suggestions.allSatisfy { $0.status == .proposed })
     #expect(try await store.fetchWorkItems(productID: product.id).isEmpty)
+    #expect(model.epicPlanReviewsByProductID[product.id]?.first?.proposalCount == 2)
     try await store.execute("DROP TRIGGER fail_e10_batch_acceptance;")
     let acceptedAll = await withCheckedContinuation { continuation in
       model.decideAllTicketSuggestions(
@@ -1148,6 +1154,9 @@ struct EpicPlanningJourneyTests {
         )
     )
     #expect(try await store.fetchCurrentSprint(productID: product.id) == nil)
+    // Deciding every proposal clears the derived bell row without a product
+    // switch.
+    #expect(model.epicPlanReviewsByProductID[product.id] == nil)
 
     let rejectedSession = try await store.beginTicketSuggestionSession(
       productID: product.id,
@@ -1178,6 +1187,7 @@ struct EpicPlanningJourneyTests {
       }
     }
     #expect(rejectedAll)
+    #expect(model.epicPlanReviewsByProductID[product.id] == nil)
     let rejected = try await store.fetchTicketSuggestionBatch(
       sessionID: rejectedSession.id
     )

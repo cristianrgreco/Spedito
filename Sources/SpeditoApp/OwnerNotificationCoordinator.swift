@@ -23,6 +23,57 @@ struct TicketAttentionNavigationRequest: Identifiable, Equatable, Sendable {
   let openWorkItemID: UUID?
 }
 
+/// A derived bell row for an epic whose suggestion batch is still undecided.
+/// The owed decision persists until every proposal is decided; the stored
+/// one-shot plan-ready notification only carries banner and system delivery.
+struct EpicPlanReviewAttention: Identifiable, Equatable, Sendable {
+  let id: UUID
+  let productID: UUID
+  let productName: String
+  let epicID: UUID
+  let epicTitle: String
+  let proposalCount: Int
+  let updatedAt: Date
+
+  static func derive(
+    product: Product,
+    epics: [Epic],
+    batches: [TicketSuggestionBatch]
+  ) -> [EpicPlanReviewAttention] {
+    var latestByEpicID: [UUID: EpicPlanReviewAttention] = [:]
+    for batch in batches {
+      guard
+        batch.session.status == .ready,
+        let epicID = batch.session.epicID,
+        let epic = epics.first(where: {
+          $0.id == epicID && $0.status != .archived
+        })
+      else { continue }
+      let proposalCount = batch.suggestions.filter { $0.status == .proposed }.count
+      guard proposalCount > 0 else { continue }
+      let review = EpicPlanReviewAttention(
+        id: batch.session.id,
+        productID: product.id,
+        productName: product.name,
+        epicID: epicID,
+        epicTitle: epic.displayTitle,
+        proposalCount: proposalCount,
+        updatedAt: batch.session.updatedAt
+      )
+      if let current = latestByEpicID[epicID], current.updatedAt >= review.updatedAt {
+        continue
+      }
+      latestByEpicID[epicID] = review
+    }
+    return latestByEpicID.values.sorted {
+      if $0.updatedAt != $1.updatedAt {
+        return $0.updatedAt > $1.updatedAt
+      }
+      return $0.epicTitle.localizedStandardCompare($1.epicTitle) == .orderedAscending
+    }
+  }
+}
+
 struct OwnerNotificationPresentation: Identifiable, Equatable, Sendable {
   let id: UUID
   let productID: UUID
@@ -50,6 +101,19 @@ struct OwnerNotificationPresentation: Identifiable, Equatable, Sendable {
     target = OwnerNotificationTarget(kind: .ticket, id: attention.workItemID)
     title = "\(attention.itemKey) needs your input"
     summary = attention.summary
+  }
+
+  init(planReview: EpicPlanReviewAttention) {
+    id = planReview.id
+    productID = planReview.productID
+    productName = planReview.productName
+    kind = .refinementComplete
+    target = OwnerNotificationTarget(kind: .epic, id: planReview.epicID)
+    title = "\(planReview.epicTitle) plan ready for review"
+    summary =
+      "\(planReview.proposalCount) proposed "
+      + (planReview.proposalCount == 1 ? "ticket is" : "tickets are")
+      + " ready to review."
   }
 
   var actionTitle: String {
@@ -251,8 +315,9 @@ final class OwnerNotificationCoordinator: ObservableObject {
   func load(products: [Product]) async {
     var loaded: [UUID: [OwnerNotification]] = [:]
     for product in products {
+      guard let store = storeProvider(product.id) else { continue }
+      await retireOrphanedNeedsInput(productID: product.id, store: store)
       guard
-        let store = storeProvider(product.id),
         let notifications = try? await store.fetchActiveOwnerNotifications(
           productID: product.id
         ),
@@ -261,6 +326,60 @@ final class OwnerNotificationCoordinator: ObservableObject {
       loaded[product.id] = notifications
     }
     notificationsByProductID = loaded
+  }
+
+  /// Retires `needs_input` rows whose announced wait no longer exists in
+  /// durable state. Idempotent: resolving removes a row from the active set,
+  /// so a repeat sweep has nothing left to do.
+  private func retireOrphanedNeedsInput(
+    productID: UUID,
+    store: SQLiteStore
+  ) async {
+    guard
+      let active = try? await store.fetchActiveOwnerNotifications(
+        productID: productID
+      )
+    else { return }
+    let waitingTargets = Set(
+      active
+        .filter { $0.kind.requiresAction && $0.resolvedAt == nil }
+        .map(\.target)
+    )
+    for target in waitingTargets {
+      let shouldRetire: Bool
+      switch target.kind {
+      case .epic:
+        guard let epics = try? await store.fetchEpics(productID: productID)
+        else { continue }
+        shouldRetire = OwnerNotificationRecoveryPolicy.shouldRetireEpicNeedsInput(
+          epic: epics.first { $0.id == target.id },
+          pendingQuestions:
+            (try? await store.fetchEpicPlanningConversation(epicID: target.id))?
+            .questions ?? [],
+          latestPlanningSessionStatus: (try? await store
+            .fetchLatestEpicPlanningSuggestionSession(epicID: target.id))?.status
+        )
+      case .ticket:
+        guard
+          let workItems = try? await store.fetchWorkItems(productID: productID),
+          let runs = try? await store.fetchAgentRuns(productID: productID),
+          let comments = try? await store.fetchComments(workItemID: target.id)
+        else { continue }
+        shouldRetire = OwnerNotificationRecoveryPolicy.shouldRetireTicketNeedsInput(
+          workItem: workItems.first { $0.id == target.id },
+          runs: runs,
+          comments: comments
+        )
+      case .conversationThread:
+        shouldRetire = false
+      }
+      if shouldRetire {
+        _ = try? await store.resolveOwnerNotifications(
+          productID: productID,
+          target: target
+        )
+      }
+    }
   }
 
   func refresh(productID: UUID) async {

@@ -3950,8 +3950,16 @@ struct SprintTicketDetailView: View {
     }
     .onDisappear {
       model.setGitHubReviewTicket(item.id, isVisible: false)
+      model.clearOwnerNotificationTargetVisible(
+        productID: item.productID,
+        target: OwnerNotificationTarget(kind: .ticket, id: item.id)
+      )
     }
     .task {
+      await model.setOwnerNotificationTargetVisible(
+        productID: item.productID,
+        target: OwnerNotificationTarget(kind: .ticket, id: item.id)
+      )
       while !Task.isCancelled {
         let isFirstLoad = !hasLoadedWorkLog
         let previousLastEntryID = workLogEntries.last?.id
