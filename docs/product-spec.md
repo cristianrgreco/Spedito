@@ -23,7 +23,9 @@ The first release line is a macOS application. The product owner describes a
 product, connects a compatible Codex installation, and uses Spedito to
 manage product records, repositories, agent workspaces, local previews, and
 delivery history. It exposes product concepts—not terminals, CLIs, Git commands,
-or local runner configuration—as the normal workflow. Early builds may still
+or local runner configuration—as the normal workflow. Spedito never requires the
+owner to use a terminal; when the product itself is a terminal program, Demo
+opens it in Terminal for the owner. Early builds may still
 require local developer components and are not yet a self-contained production
 distribution.
 
@@ -1535,15 +1537,25 @@ and feedback remain available in the item history.
 
 The selected product has a **Demos** workspace. It lists any independently
 verified imported-source version together with every accepted candidate that has
-a valid product browser, static web prototype, or macOS app launch recipe, newest
-first, and selects the latest by default. The product owner can open or revisit
-any listed revision; Spedito reconstructs its exact imported or integrated commit
-and owns its local service, prototype server, or application lifecycle. Opening
-another demo stops the currently running version first. Accepted artifacts and
-command-output results remain ticket evidence and never appear as demos.
+a valid product browser, static web prototype, macOS app, or terminal app launch
+recipe, newest first, and selects the latest by default. The product owner can
+open or revisit any listed revision; Spedito reconstructs its exact imported or
+integrated commit and owns its local service, prototype server, application, or
+Terminal program lifecycle. Opening another demo stops the currently running
+version first. Accepted artifacts and command-output results remain ticket
+evidence and never appear as demos.
 
-During repository import, the business analyst may propose a complete typed web
-or macOS app build, run, and relaunch recipe backed by exact source evidence. A
+A terminal app demo builds the reviewed program inside the managed demo
+workspace and then opens a Terminal window that runs it from that checkout. The
+board explains that the program is running in Terminal. **Open demo** while it
+runs brings the Terminal window forward without starting a second copy; **Stop
+demo** ends the program, and the owner may also just close the window, after
+which **Demo** opens it again. Delivery never wraps a terminal program in a Mac
+app, a web page, or any other surface to satisfy a contracted medium; it
+contests the medium instead.
+
+During repository import, the business analyst may propose a complete typed web,
+macOS app, or terminal app build, run, and relaunch recipe backed by exact source evidence. A
 tech lead must independently approve that recipe before the imported revision
 appears in **Demos**. Import never executes a proposed recipe, parses
 product knowledge into a command, or guesses missing commands, arguments, paths,
@@ -2667,7 +2679,9 @@ changed-file evidence, knowledge destinations, and managed Demo recipe against t
 workspace. A rejected envelope receives up to two focused correction turns in the same conversation;
 each turn receives the latest validation error and the exact supported Demo shapes, while preserving
 the existing files and successful checks. Static directories containing `index.html` are identified
-as `static_web` prototypes rather than placeholder command or artifact recipes. If the second
+as `static_web` prototypes rather than placeholder command or artifact recipes, and an interactive
+terminal program is identified as `terminal_application`, whose launch command names the built
+workspace-relative program and whose path, port, and readiness are empty. If the second
 correction is still invalid, the run fails with that exact evidence and **Retry work** continues from
 the same conversation and workspace instead of discarding the implementation.
 
@@ -2897,7 +2911,9 @@ GitHub issue before implementation.
 - Improve evidence, forecasting, context selection, and retrospective learning
   using only inspectable product-owned history.
 - Expand supported project environments through verified, repository-owned
-  build, test, run, and demo contracts.
+  build, test, run, and demo contracts. Delivered 2026-09-01: the
+  `terminal_application` demo kind, which opens the reviewed terminal program
+  in Terminal.
 - Add provider-neutral agent adapters only when each agent is certified per
   lifecycle against the same isolation, recovery, approval, and audit
   boundaries. ACP may provide the common agent transport, but stable ACP alone

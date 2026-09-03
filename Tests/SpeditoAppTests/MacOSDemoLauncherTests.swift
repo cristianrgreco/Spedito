@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -778,6 +779,577 @@ struct MacOSDemoLauncherTests {
     )
   }
 
+  // MARK: - Terminal app demos (D24)
+
+  private func terminalSpecification(
+    title: String = "Dog finder",
+    executable: String = "bin/tui",
+    arguments: [String] = [],
+    preparation: [DemoCommand] = [DemoCommand(executable: "scripts/build.sh", timeoutSeconds: 30)]
+  ) -> DemoLaunchSpecification {
+    DemoLaunchSpecification(
+      title: title,
+      preparationCommands: preparation,
+      launchCommand: DemoCommand(executable: executable, arguments: arguments),
+      presentation: DemoPresentation(kind: .terminalApplication)
+    )
+  }
+
+  private func writeExecutable(at url: URL, body: String) throws {
+    try FileManager.default.createDirectory(
+      at: url.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try Data(body.utf8).write(to: url)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+  }
+
+  private func resolvedRuntimeRoot(of workspace: URL) -> (workspace: URL, runtime: URL) {
+    let resolved = workspace.standardizedFileURL.resolvingSymlinksInPath()
+    return (
+      resolved,
+      resolved.appendingPathComponent(".spedito-demo-runtime", isDirectory: true)
+    )
+  }
+
+  @Test("D24 a terminal app launch prepares in the sandbox, writes the script, and opens Terminal")
+  func terminalLaunchWritesScriptAndOpensTerminal() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    try writeExecutable(at: workspace.appendingPathComponent("bin/tui"), body: "#!/bin/sh\nexit 0\n")
+    let executor = DemoCommandExecutorStub()
+    let opener = DemoTerminalOpenerStub(behaviour: .writesProcessID(4242))
+    let signaler = DemoProcessSignalerStub(alive: [4242])
+    let launcher = MacOSDemoLauncher(
+      executor: executor,
+      terminalOpener: opener,
+      processSignaler: signaler
+    )
+    let candidateID = UUID()
+    let specification = terminalSpecification(arguments: ["--breed", "Great Dane"])
+
+    let outcome = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+
+    #expect(outcome == DemoLaunchOutcome(output: nil, allocatedPort: nil))
+    let scriptURL = try #require(opener.openedScriptURLs.first)
+    let (resolvedWorkspace, runtimeRoot) = resolvedRuntimeRoot(of: workspace)
+    #expect(
+      scriptURL.deletingLastPathComponent().path
+        == runtimeRoot.appendingPathComponent("terminal", isDirectory: true).path
+    )
+    #expect(scriptURL.pathExtension == "command")
+    let launchID = try #require(
+      UUID(uuidString: scriptURL.deletingPathExtension().lastPathComponent)
+    )
+    let permissions = try FileManager.default.attributesOfItem(atPath: scriptURL.path)[
+      .posixPermissions
+    ] as? Int
+    #expect(permissions == 0o755)
+    #expect(
+      try String(contentsOf: scriptURL, encoding: .utf8)
+        == TerminalDemoLaunchScript.text(
+          specification: specification,
+          workspaceURL: resolvedWorkspace,
+          runtimeDirectoryURL: runtimeRoot,
+          launchID: launchID
+        )
+    )
+    for directory in TerminalDemoLaunchScript.requiredDirectories(runtimeDirectoryURL: runtimeRoot) {
+      var isDirectory: ObjCBool = false
+      #expect(
+        FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory)
+          && isDirectory.boolValue,
+        "\(directory.path)"
+      )
+    }
+    // Preparation ran through the sandboxed executor; the program itself was
+    // never a managed command.
+    let build = try #require(
+      await executor.completedRequests().first { $0.command.first == "scripts/build.sh" }
+    )
+    #expect(build.permissionProfile == CodexPermissionProfiles.demo)
+    #expect(await executor.startedRequests().isEmpty)
+    let processIDFile = TerminalDemoLaunchScript.processIDURL(
+      runtimeDirectoryURL: runtimeRoot,
+      launchID: launchID
+    )
+    #expect(FileManager.default.fileExists(atPath: processIDFile.path))
+
+    // The runtime holds the pid: Open demo brings Terminal forward instead
+    // of starting a second copy.
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    #expect(opener.openedScriptURLs.count == 1)
+    #expect(opener.activationCount == 1)
+
+    await launcher.stop(candidateID: candidateID)
+    #expect(signaler.terminated == [4242])
+    #expect(signaler.killed.isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: processIDFile.path))
+  }
+
+  /// Runs the generated script for real through `/bin/zsh` against a program
+  /// that records what it received, so the script contract — working
+  /// directory, arguments, exported variables, and the pid record — is proven
+  /// by execution rather than by string comparison alone.
+  private func launchRealTerminalProgram(
+    workspace: URL,
+    launcher: MacOSDemoLauncher,
+    opener: DemoTerminalOpenerStub,
+    candidateID: UUID
+  ) async throws -> (record: [String: String], process: Process) {
+    let recordURL = workspace.appendingPathComponent("record.txt")
+    try writeExecutable(
+      at: workspace.appendingPathComponent("bin/tui"),
+      body: """
+        #!/bin/sh
+        {
+          printf 'cwd=%s\\n' "$PWD"
+          for argument in "$@"; do printf 'arg=%s\\n' "$argument"; done
+          printf 'TMPDIR=%s\\n' "$TMPDIR"
+          printf 'XDG_CACHE_HOME=%s\\n' "$XDG_CACHE_HOME"
+          printf 'SPEDITO_DEMO_DATA_DIRECTORY=%s\\n' "$SPEDITO_DEMO_DATA_DIRECTORY"
+          printf 'pid=%s\\n' "$$"
+        } > '\(recordURL.path)'
+        exec /bin/sleep 60
+        """
+    )
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: terminalSpecification(arguments: ["--breed", "Great Dane", "it's"]),
+      workspaceURL: workspace
+    )
+    let process = try #require(opener.launchedProcesses.first)
+    // The script records the pid before it execs the program, so the launch
+    // can return before the program's own record is complete.
+    var recordText = ""
+    for _ in 0..<100 {
+      if let text = try? String(contentsOf: recordURL, encoding: .utf8),
+        text.contains("pid=")
+      {
+        recordText = text
+        break
+      }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    var record: [String: String] = [:]
+    var arguments: [String] = []
+    for line in recordText.split(separator: "\n") {
+      let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+      guard parts.count == 2 else { continue }
+      if parts[0] == "arg" {
+        arguments.append(parts[1])
+      } else {
+        record[parts[0]] = parts[1]
+      }
+    }
+    record["arguments"] = arguments.joined(separator: "\u{1F}")
+    return (record, process)
+  }
+
+  @Test("D24 the launcher script runs the program from the workspace with the isolated variables")
+  func terminalScriptRunsTheProgramFromTheWorkspace() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let opener = DemoTerminalOpenerStub(behaviour: .runsScript)
+    let launcher = MacOSDemoLauncher(executor: DemoCommandExecutorStub(), terminalOpener: opener)
+    let candidateID = UUID()
+    defer { Task { await launcher.stop(candidateID: candidateID) } }
+
+    let (record, process) = try await launchRealTerminalProgram(
+      workspace: workspace,
+      launcher: launcher,
+      opener: opener,
+      candidateID: candidateID
+    )
+
+    let (resolvedWorkspace, runtimeRoot) = resolvedRuntimeRoot(of: workspace)
+    #expect(record["cwd"] == resolvedWorkspace.path)
+    #expect(record["arguments"] == ["--breed", "Great Dane", "it's"].joined(separator: "\u{1F}"))
+    #expect(record["TMPDIR"] == runtimeRoot.appendingPathComponent("tmp").path)
+    #expect(record["XDG_CACHE_HOME"] == runtimeRoot.appendingPathComponent("cache/xdg").path)
+    #expect(
+      record["SPEDITO_DEMO_DATA_DIRECTORY"] == runtimeRoot.appendingPathComponent("data").path
+    )
+    // exec keeps the shell's pid, so the recorded pid is the program's and
+    // equals the pid file the launcher read.
+    #expect(record["pid"] == String(process.processIdentifier))
+    let scriptURL = try #require(opener.openedScriptURLs.first)
+    let processIDFile = scriptURL.deletingPathExtension().appendingPathExtension("pid")
+    #expect(
+      try String(contentsOf: processIDFile, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines) == String(process.processIdentifier)
+    )
+    #expect(process.isRunning)
+
+    await launcher.stop(candidateID: candidateID)
+    process.waitUntilExit()
+    #expect(!process.isRunning)
+  }
+
+  @Test("D24 Stop demo ends the program within its bound and removes the pid file; a second stop is a no-op")
+  func terminalStopTerminatesTheProgram() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let opener = DemoTerminalOpenerStub(behaviour: .runsScript)
+    let launcher = MacOSDemoLauncher(executor: DemoCommandExecutorStub(), terminalOpener: opener)
+    let candidateID = UUID()
+    let (_, process) = try await launchRealTerminalProgram(
+      workspace: workspace,
+      launcher: launcher,
+      opener: opener,
+      candidateID: candidateID
+    )
+    let scriptURL = try #require(opener.openedScriptURLs.first)
+    let processIDFile = scriptURL.deletingPathExtension().appendingPathExtension("pid")
+    #expect(process.isRunning)
+
+    let started = ContinuousClock.now
+    await launcher.stop(candidateID: candidateID)
+    process.waitUntilExit()
+
+    #expect(!process.isRunning)
+    #expect(process.terminationReason == .uncaughtSignal)
+    #expect(ContinuousClock.now - started < .seconds(5))
+    #expect(!FileManager.default.fileExists(atPath: processIDFile.path))
+    #expect(Darwin.kill(process.processIdentifier, 0) != 0)
+
+    await launcher.stop(candidateID: candidateID)
+    #expect(!FileManager.default.fileExists(atPath: processIDFile.path))
+  }
+
+  @Test("D24 Open demo activates Terminal while the program lives and relaunches once it has died")
+  func terminalReopenActivatesWhileAliveAndRelaunchesWhenDead() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    try writeExecutable(at: workspace.appendingPathComponent("bin/tui"), body: "#!/bin/sh\nexit 0\n")
+    let opener = DemoTerminalOpenerStub(behaviour: .writesProcessID(100))
+    let signaler = DemoProcessSignalerStub(alive: [100, 101])
+    let launcher = MacOSDemoLauncher(
+      executor: DemoCommandExecutorStub(),
+      terminalOpener: opener,
+      processSignaler: signaler
+    )
+    let candidateID = UUID()
+    let specification = terminalSpecification()
+
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    #expect(opener.openedScriptURLs.count == 1)
+    #expect(opener.activationCount == 1)
+    let firstPIDFile = try #require(opener.openedScriptURLs.first)
+      .deletingPathExtension().appendingPathExtension("pid")
+    #expect(FileManager.default.fileExists(atPath: firstPIDFile.path))
+
+    // The owner closed the window: the program is gone, so Open demo
+    // relaunches from the reviewed checkout instead of activating nothing.
+    signaler.markDead(100)
+    opener.behaviour = .writesProcessID(101)
+    _ = try await launcher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    #expect(opener.openedScriptURLs.count == 2)
+    #expect(opener.activationCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: firstPIDFile.path))
+    #expect(signaler.terminated.isEmpty, "a dead pid is never signalled")
+
+    await launcher.stop(candidateID: candidateID)
+    #expect(signaler.terminated == [101])
+  }
+
+  @Test("D24 the smoke test builds through the sandbox but never runs the interactive program")
+  func terminalSmokeTestNeverRunsTheProgram() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let marker = workspace.appendingPathComponent("invoked.txt")
+    try writeExecutable(
+      at: workspace.appendingPathComponent("bin/tui"),
+      body: "#!/bin/sh\nprintf invoked > '\(marker.path)'\nexit 0\n"
+    )
+    let executor = DemoCommandExecutorStub()
+    let opener = DemoTerminalOpenerStub(behaviour: .runsScript)
+    let launcher = MacOSDemoLauncher(executor: executor, terminalOpener: opener)
+
+    let output = try await launcher.smokeTest(
+      candidateID: UUID(),
+      specification: terminalSpecification(),
+      workspaceURL: workspace
+    )
+
+    #expect(output == nil)
+    #expect(!FileManager.default.fileExists(atPath: marker.path))
+    #expect(opener.openedScriptURLs.isEmpty)
+    #expect(await executor.completedRequests().contains { $0.command.first == "scripts/build.sh" })
+    #expect(await executor.startedRequests().isEmpty)
+  }
+
+  @Test("D24 a missing or non-executable program after preparation is a candidate failure")
+  func terminalMissingExecutableIsACandidateFailure() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let opener = DemoTerminalOpenerStub(behaviour: .runsScript)
+    let launcher = MacOSDemoLauncher(executor: DemoCommandExecutorStub(), terminalOpener: opener)
+    let specification = terminalSpecification()
+
+    func expectCandidateFailure(_ operation: () async throws -> Void) async {
+      do {
+        try await operation()
+        Issue.record("Expected the terminal program check to fail")
+      } catch let error as DemoLauncherError {
+        guard case .missingPresentation(let path) = error else {
+          Issue.record("Expected a missing program, received \(error)")
+          return
+        }
+        #expect(path == "bin/tui")
+        #expect(DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate)
+      } catch {
+        Issue.record("Unexpected error \(error)")
+      }
+    }
+
+    // Nothing built.
+    await expectCandidateFailure {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+    }
+    // Built without the execute bit.
+    try FileManager.default.createDirectory(
+      at: workspace.appendingPathComponent("bin"),
+      withIntermediateDirectories: true
+    )
+    try Data("#!/bin/sh\n".utf8).write(to: workspace.appendingPathComponent("bin/tui"))
+    await expectCandidateFailure {
+      _ = try await launcher.launch(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+    }
+    // A directory where the program should be.
+    try FileManager.default.removeItem(at: workspace.appendingPathComponent("bin/tui"))
+    try FileManager.default.createDirectory(
+      at: workspace.appendingPathComponent("bin/tui"),
+      withIntermediateDirectories: true
+    )
+    await expectCandidateFailure {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+    }
+    #expect(opener.openedScriptURLs.isEmpty)
+  }
+
+  @Test("D24 Terminal failing to open or to record the program's pid is a host failure")
+  func terminalOpenFailureIsAHostFailure() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    try writeExecutable(at: workspace.appendingPathComponent("bin/tui"), body: "#!/bin/sh\nexit 0\n")
+    let opener = DemoTerminalOpenerStub(behaviour: .throwsOnOpen)
+    let launcher = MacOSDemoLauncher(
+      executor: DemoCommandExecutorStub(),
+      terminalOpener: opener,
+      processSignaler: DemoProcessSignalerStub(alive: []),
+      terminalTiming: TerminalDemoLaunchTiming(
+        processIDTimeout: .milliseconds(300),
+        pollInterval: .milliseconds(20),
+        stopTimeout: .milliseconds(200)
+      )
+    )
+    let candidateID = UUID()
+    let specification = terminalSpecification(title: "Dog finder")
+
+    func expectHostFailure(_ operation: () async throws -> Void) async {
+      do {
+        try await operation()
+        Issue.record("Expected the Terminal launch to fail")
+      } catch let error as DemoLauncherError {
+        guard case .couldNotOpen(let title) = error else {
+          Issue.record("Expected a host open failure, received \(error)")
+          return
+        }
+        #expect(title == "Dog finder")
+        #expect(DemoPreparationFailurePolicy.disposition(for: error) == .retryPreparation)
+      } catch {
+        Issue.record("Unexpected error \(error)")
+      }
+    }
+
+    await expectHostFailure {
+      _ = try await launcher.launch(
+        candidateID: candidateID,
+        specification: specification,
+        workspaceURL: workspace
+      )
+    }
+    #expect(opener.openedScriptURLs.count == 1)
+
+    // Terminal opened the script but the program never recorded its pid.
+    opener.behaviour = .neverWritesProcessID
+    await expectHostFailure {
+      _ = try await launcher.launch(
+        candidateID: candidateID,
+        specification: specification,
+        workspaceURL: workspace
+      )
+    }
+    #expect(opener.openedScriptURLs.count == 2)
+    // No runtime was retained, so the next Demo tries again from scratch.
+    opener.behaviour = .writesProcessID(7)
+    let signalerAfterRetry = DemoProcessSignalerStub(alive: [7])
+    let retryLauncher = MacOSDemoLauncher(
+      executor: DemoCommandExecutorStub(),
+      terminalOpener: opener,
+      processSignaler: signalerAfterRetry
+    )
+    _ = try await retryLauncher.launch(
+      candidateID: candidateID,
+      specification: specification,
+      workspaceURL: workspace
+    )
+    #expect(opener.openedScriptURLs.count == 3)
+    await retryLauncher.stop(candidateID: candidateID)
+  }
+
+  @Test("D24 a program that resolves outside the reviewed checkout is rejected before Terminal opens")
+  func terminalLaunchRejectsExecutableOutsideWorkspace() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let binDirectory = workspace.appendingPathComponent("bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(
+      at: binDirectory.appendingPathComponent("tui"),
+      withDestinationURL: URL(fileURLWithPath: "/usr/bin/true")
+    )
+    let opener = DemoTerminalOpenerStub(behaviour: .runsScript)
+    let launcher = MacOSDemoLauncher(executor: DemoCommandExecutorStub(), terminalOpener: opener)
+
+    do {
+      _ = try await launcher.launch(
+        candidateID: UUID(),
+        specification: terminalSpecification(),
+        workspaceURL: workspace
+      )
+      Issue.record("Expected the escaping program to be rejected")
+    } catch let error as DemoLaunchValidationError {
+      #expect(error.localizedDescription.contains("outside the reviewed preview"))
+      #expect(DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate)
+    }
+
+    // A symlink that stays inside the checkout is still not the program.
+    try FileManager.default.removeItem(at: binDirectory.appendingPathComponent("tui"))
+    try writeExecutable(
+      at: workspace.appendingPathComponent("real/tui"),
+      body: "#!/bin/sh\nexit 0\n"
+    )
+    try FileManager.default.createSymbolicLink(
+      at: binDirectory.appendingPathComponent("tui"),
+      withDestinationURL: workspace.appendingPathComponent("real/tui")
+    )
+    do {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: terminalSpecification(),
+        workspaceURL: workspace
+      )
+      Issue.record("Expected the symlinked program to be rejected")
+    } catch let error as DemoLauncherError {
+      guard case .missingPresentation = error else {
+        Issue.record("Expected a missing program, received \(error)")
+        return
+      }
+      #expect(DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate)
+    }
+    #expect(opener.openedScriptURLs.isEmpty)
+  }
+
+  /// Real-sandbox proof for the terminal kind: preparation compiles a Swift
+  /// terminal program with `swiftc` inside the `spedito-demo` profile and the
+  /// smoke test resolves the built executable without running it. Fails, never
+  /// skips, when no Codex runtime is found.
+  @Test("D24 a terminal recipe builds with swiftc in the real sandbox and resolves its program")
+  func realSandboxTerminalRecipeBuildsAndResolves() async throws {
+    let codexURL = try CodexSandboxRuntimeLocator.resolve()
+    let cachesRoot = try #require(
+      FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    )
+    let parityRoot = cachesRoot
+      .appendingPathComponent("Spedito", isDirectory: true)
+      .appendingPathComponent("PreviewWorktrees", isDirectory: true)
+      .appendingPathComponent(
+        "terminal-parity-test-\(UUID().uuidString.lowercased())",
+        isDirectory: true
+      )
+    let workspace = parityRoot.appendingPathComponent("ws", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: parityRoot) }
+    try FileManager.default.createDirectory(
+      at: workspace.appendingPathComponent("Sources", isDirectory: true),
+      withIntermediateDirectories: true
+    )
+    try Data(
+      """
+      print("Ledgerline menu")
+      while let line = readLine() {
+        if line == "q" { break }
+        print("Unknown entry")
+      }
+      """.utf8
+    ).write(to: workspace.appendingPathComponent("Sources/main.swift"))
+    try writeExecutable(
+      at: workspace.appendingPathComponent("scripts/build.sh"),
+      body: """
+        #!/bin/sh
+        set -e
+        mkdir -p bin
+        swiftc -o bin/menu Sources/main.swift
+        """
+    )
+    let opener = DemoTerminalOpenerStub(behaviour: .throwsOnOpen)
+    let launcher = MacOSDemoLauncher(
+      executor: CodexWorkspaceCommandExecutor(executableURL: codexURL),
+      terminalOpener: opener
+    )
+
+    let output = try await launcher.smokeTest(
+      candidateID: UUID(),
+      specification: terminalSpecification(
+        executable: "bin/menu",
+        preparation: [DemoCommand(executable: "scripts/build.sh", timeoutSeconds: 300)]
+      ),
+      workspaceURL: workspace
+    )
+
+    #expect(output == nil, "codex at \(codexURL.path)")
+    #expect(
+      FileManager.default.isExecutableFile(
+        atPath: workspace.appendingPathComponent("bin/menu").path
+      ),
+      "codex at \(codexURL.path)"
+    )
+    #expect(opener.openedScriptURLs.isEmpty)
+  }
+
   private func makeWorkspace() throws -> URL {
     let workspace = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-demo-launch-\(UUID())", isDirectory: true)
@@ -859,6 +1431,91 @@ private final class DemoURLOpenerStub: DemoURLOpening {
   func open(_ url: URL) -> Bool {
     openedURLs.append(url)
     return true
+  }
+}
+
+/// Stands in for Terminal.app. `writesProcessID` mimics the script's own pid
+/// record without running anything; `runsScript` executes the generated
+/// script through `/bin/zsh` exactly as Terminal would, as a child of the
+/// test process.
+@MainActor
+private final class DemoTerminalOpenerStub: DemoTerminalOpening {
+  enum Behaviour {
+    case writesProcessID(pid_t)
+    case runsScript
+    case throwsOnOpen
+    case neverWritesProcessID
+  }
+
+  var behaviour: Behaviour
+  private(set) var openedScriptURLs: [URL] = []
+  private(set) var activationCount = 0
+  private(set) var launchedProcesses: [Process] = []
+
+  init(behaviour: Behaviour) {
+    self.behaviour = behaviour
+  }
+
+  func openScript(at scriptURL: URL) async throws {
+    openedScriptURLs.append(scriptURL)
+    switch behaviour {
+    case .throwsOnOpen:
+      throw CocoaError(.fileNoSuchFile)
+    case .neverWritesProcessID:
+      return
+    case .writesProcessID(let processID):
+      let processIDFile = scriptURL.deletingPathExtension().appendingPathExtension("pid")
+      try Data("\(processID)".utf8).write(to: processIDFile)
+    case .runsScript:
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+      process.arguments = [scriptURL.path]
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      launchedProcesses.append(process)
+    }
+  }
+
+  func activateTerminal() {
+    activationCount += 1
+  }
+}
+
+private final class DemoProcessSignalerStub: DemoProcessSignaling, @unchecked Sendable {
+  private let lock = NSLock()
+  private var alive: Set<pid_t>
+  private var terminatedStorage: [pid_t] = []
+  private var killedStorage: [pid_t] = []
+
+  init(alive: Set<pid_t>) {
+    self.alive = alive
+  }
+
+  var terminated: [pid_t] { lock.withLock { terminatedStorage } }
+  var killed: [pid_t] { lock.withLock { killedStorage } }
+
+  func markDead(_ processID: pid_t) {
+    lock.withLock { _ = alive.remove(processID) }
+  }
+
+  func isAlive(_ processID: pid_t) -> Bool {
+    lock.withLock { alive.contains(processID) }
+  }
+
+  func terminate(_ processID: pid_t) {
+    lock.withLock {
+      terminatedStorage.append(processID)
+      alive.remove(processID)
+    }
+  }
+
+  func kill(_ processID: pid_t) {
+    lock.withLock {
+      killedStorage.append(processID)
+      alive.remove(processID)
+    }
   }
 }
 

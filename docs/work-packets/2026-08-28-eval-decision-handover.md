@@ -51,7 +51,7 @@ pays for as a repair turn.
 ### Non-goals
 
 - No effort or model changes (Packet 3 owns those).
-- No new demo kinds and no changes to demo validation semantics.
+- No new demo kinds and no changes to demo validation semantics. Reversed on 2026-09-01 by `2026-09-01-terminal-demo-kind-handover.md`, which adds the `terminal_application` kind.
 - No UX changes.
 
 ### Current authority

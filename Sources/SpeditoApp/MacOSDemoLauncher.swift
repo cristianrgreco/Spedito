@@ -99,6 +99,90 @@ protocol DemoURLOpening {
   func open(_ url: URL) -> Bool
 }
 
+/// Opens a Spedito-authored launcher script in Terminal.app and brings
+/// Terminal forward for a program that is still running.
+@MainActor
+protocol DemoTerminalOpening {
+  func openScript(at scriptURL: URL) async throws
+  func activateTerminal()
+}
+
+/// Liveness and termination for the reviewed program running in Terminal.
+/// The program is a host process outside the managed sandbox, so the launcher
+/// signals it directly rather than through the Codex runtime.
+protocol DemoProcessSignaling: Sendable {
+  func isAlive(_ processID: pid_t) -> Bool
+  func terminate(_ processID: pid_t)
+  func kill(_ processID: pid_t)
+}
+
+/// How long the launcher waits for the terminal program to record its process
+/// id after the script opens, and how long a stop waits before escalating.
+struct TerminalDemoLaunchTiming: Sendable {
+  var processIDTimeout: Duration = .seconds(5)
+  var pollInterval: Duration = .milliseconds(100)
+  var stopTimeout: Duration = .seconds(2)
+
+  static let standard = TerminalDemoLaunchTiming()
+}
+
+@MainActor
+private final class WorkspaceDemoTerminalOpener: DemoTerminalOpening {
+  private static let terminalBundleIdentifier = "com.apple.Terminal"
+  private let workspace: NSWorkspace
+
+  init(workspace: NSWorkspace) {
+    self.workspace = workspace
+  }
+
+  func openScript(at scriptURL: URL) async throws {
+    guard
+      let terminalURL = workspace.urlForApplication(
+        withBundleIdentifier: Self.terminalBundleIdentifier
+      )
+    else {
+      throw CocoaError(.fileNoSuchFile)
+    }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Void, any Error>) in
+      workspace.open(
+        [scriptURL],
+        withApplicationAt: terminalURL,
+        configuration: configuration
+      ) { _, error in
+        if let error {
+          continuation.resume(throwing: error)
+        } else {
+          continuation.resume()
+        }
+      }
+    }
+  }
+
+  func activateTerminal() {
+    NSRunningApplication
+      .runningApplications(withBundleIdentifier: Self.terminalBundleIdentifier)
+      .first?
+      .activate()
+  }
+}
+
+private struct DarwinDemoProcessSignaler: DemoProcessSignaling {
+  func isAlive(_ processID: pid_t) -> Bool {
+    Darwin.kill(processID, 0) == 0
+  }
+
+  func terminate(_ processID: pid_t) {
+    _ = Darwin.kill(processID, SIGTERM)
+  }
+
+  func kill(_ processID: pid_t) {
+    _ = Darwin.kill(processID, SIGKILL)
+  }
+}
+
 @MainActor
 private final class WorkspaceDemoApplicationOpener: DemoApplicationOpening {
   private let workspace: NSWorkspace
@@ -149,6 +233,10 @@ final class MacOSDemoLauncher {
     let presentationURL: URL?
     let output: String?
     let allocatedPort: Int?
+    /// The reviewed program running in Terminal, identified by the pid its
+    /// launcher script recorded before `exec`. Transient operation state.
+    var terminalProcessID: pid_t? = nil
+    var terminalProcessIDFileURL: URL? = nil
   }
 
   private var runtimes: [UUID: Runtime] = [:]
@@ -156,6 +244,9 @@ final class MacOSDemoLauncher {
   private let fileManager: FileManager
   private let urlOpener: any DemoURLOpening
   private let applicationOpener: any DemoApplicationOpening
+  private let terminalOpener: any DemoTerminalOpening
+  private let processSignaler: any DemoProcessSignaling
+  private let terminalTiming: TerminalDemoLaunchTiming
   private let urlSession: URLSession
 
   init(
@@ -164,6 +255,9 @@ final class MacOSDemoLauncher {
     workspace: NSWorkspace = .shared,
     applicationOpener: (any DemoApplicationOpening)? = nil,
     urlOpener: (any DemoURLOpening)? = nil,
+    terminalOpener: (any DemoTerminalOpening)? = nil,
+    processSignaler: (any DemoProcessSignaling)? = nil,
+    terminalTiming: TerminalDemoLaunchTiming = .standard,
     urlSession: URLSession? = nil
   ) {
     self.executor = executor
@@ -172,6 +266,9 @@ final class MacOSDemoLauncher {
     self.applicationOpener =
       applicationOpener
       ?? WorkspaceDemoApplicationOpener(workspace: workspace)
+    self.terminalOpener = terminalOpener ?? WorkspaceDemoTerminalOpener(workspace: workspace)
+    self.processSignaler = processSignaler ?? DarwinDemoProcessSignaler()
+    self.terminalTiming = terminalTiming
     self.urlSession = urlSession ?? Self.makeReadinessURLSession()
   }
 
@@ -233,6 +330,14 @@ final class MacOSDemoLauncher {
         throw DemoLaunchValidationError.invalid("the result command is missing.")
       }
       return try await runToCompletion(command, workspaceURL: workspaceURL)
+    case .terminalApplication:
+      // An interactive program would hang a bounded smoke test, so the smoke
+      // proves only that preparation left the reviewed program in place.
+      _ = try terminalExecutableURL(
+        specification: specification,
+        workspaceURL: workspaceURL
+      )
+      return nil
     }
   }
 
@@ -243,7 +348,18 @@ final class MacOSDemoLauncher {
   ) async throws -> DemoLaunchOutcome {
     try DemoLaunchSpecificationValidator.validate(specification)
     if let existing = runtimes[candidateID] {
-      if let processID = existing.processID {
+      if let terminalProcessID = existing.terminalProcessID {
+        if processSignaler.isAlive(terminalProcessID) {
+          terminalOpener.activateTerminal()
+          return DemoLaunchOutcome(output: nil, allocatedPort: nil)
+        }
+        // The owner closed the window or the program exited: drop the dead
+        // runtime and relaunch from the reviewed checkout.
+        if let pidFileURL = existing.terminalProcessIDFileURL {
+          try? fileManager.removeItem(at: pidFileURL)
+        }
+        runtimes.removeValue(forKey: candidateID)
+      } else if let processID = existing.processID {
         if await isRunning(processID: processID) {
           if let presentationURL = existing.presentationURL {
             _ = urlOpener.open(presentationURL)
@@ -352,11 +468,24 @@ final class MacOSDemoLauncher {
         allocatedPort: nil
       )
       return DemoLaunchOutcome(output: output, allocatedPort: nil)
+    case .terminalApplication:
+      let runtime = try await startTerminalProgram(
+        specification: specification,
+        workspaceURL: workspaceURL
+      )
+      runtimes[candidateID] = runtime
+      return DemoLaunchOutcome(output: nil, allocatedPort: nil)
     }
   }
 
   func stop(candidateID: UUID) async {
     guard let runtime = runtimes.removeValue(forKey: candidateID) else { return }
+    if let terminalProcessID = runtime.terminalProcessID {
+      await stopTerminalProgram(
+        processID: terminalProcessID,
+        processIDFileURL: runtime.terminalProcessIDFileURL
+      )
+    }
     if let processID = runtime.processID {
       await executor?.terminateManagedCommand(processID: processID)
       for _ in 0..<20 where await isRunning(processID: processID) {
@@ -752,6 +881,154 @@ final class MacOSDemoLauncher {
       output = message
     }
     return ownerFacingLogSummary(output, workspaceURL: workspaceURL)
+  }
+
+  /// The reviewed program a terminal app demo runs: a regular, non-symlink,
+  /// executable file inside the preview checkout. Both the smoke test and the
+  /// launch resolve it here, so a program that preparation did not build, or
+  /// one that escapes the workspace, is a candidate failure before any
+  /// Terminal window opens.
+  private func terminalExecutableURL(
+    specification: DemoLaunchSpecification,
+    workspaceURL: URL
+  ) throws -> URL {
+    guard let command = specification.launchCommand else {
+      throw DemoLaunchValidationError.invalid("the terminal app launch command is missing.")
+    }
+    let executableURL = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+      command.executable,
+      in: workspaceURL
+    )
+    let unresolvedURL = workspaceURL.appendingPathComponent(command.executable)
+    let unresolvedValues = try? unresolvedURL.resourceValues(forKeys: [.isSymbolicLinkKey])
+    let values = try? executableURL.resourceValues(
+      forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+    )
+    guard
+      unresolvedValues?.isSymbolicLink != true,
+      values?.isRegularFile == true,
+      values?.isSymbolicLink != true,
+      fileManager.isExecutableFile(atPath: executableURL.path)
+    else {
+      throw DemoLauncherError.missingPresentation(command.executable)
+    }
+    return executableURL
+  }
+
+  /// Writes the Spedito-authored launcher script into the preview's runtime
+  /// directory and opens it with Terminal.app. The script records the
+  /// program's pid before `exec`, and the launch is complete only once that
+  /// pid has been read back; the pid is the launcher's handle on the program
+  /// for reuse and Stop demo.
+  private func startTerminalProgram(
+    specification: DemoLaunchSpecification,
+    workspaceURL: URL
+  ) async throws -> Runtime {
+    guard let command = specification.launchCommand else {
+      throw DemoLaunchValidationError.invalid("the terminal app launch command is missing.")
+    }
+    _ = try terminalExecutableURL(specification: specification, workspaceURL: workspaceURL)
+    let workingDirectoryURL = try DemoLaunchSpecificationValidator.resolveWorkspacePath(
+      command.workingDirectory,
+      in: workspaceURL
+    )
+    var isDirectory: ObjCBool = false
+    guard
+      fileManager.fileExists(atPath: workingDirectoryURL.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      throw DemoLauncherError.missingPresentation(command.workingDirectory)
+    }
+    let resolvedWorkspaceURL = workspaceURL.standardizedFileURL.resolvingSymlinksInPath()
+    let runtimeRoot =
+      resolvedWorkspaceURL
+      .appendingPathComponent(".spedito-demo-runtime", isDirectory: true)
+    let launchID = UUID()
+    let scriptURL = TerminalDemoLaunchScript.scriptURL(
+      runtimeDirectoryURL: runtimeRoot,
+      launchID: launchID
+    )
+    let processIDFileURL = TerminalDemoLaunchScript.processIDURL(
+      runtimeDirectoryURL: runtimeRoot,
+      launchID: launchID
+    )
+    do {
+      for directory in TerminalDemoLaunchScript.requiredDirectories(
+        runtimeDirectoryURL: runtimeRoot
+      ) {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+      }
+      let script = try TerminalDemoLaunchScript.text(
+        specification: specification,
+        workspaceURL: resolvedWorkspaceURL,
+        runtimeDirectoryURL: runtimeRoot,
+        launchID: launchID
+      )
+      try Data(script.utf8).write(to: scriptURL, options: .atomic)
+      try fileManager.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: scriptURL.path
+      )
+    } catch let error as DemoLaunchValidationError {
+      throw error
+    } catch {
+      throw DemoLauncherError.couldNotOpen(specification.title)
+    }
+    do {
+      try await terminalOpener.openScript(at: scriptURL)
+    } catch {
+      throw DemoLauncherError.couldNotOpen(specification.title)
+    }
+    guard let processID = await waitForTerminalProcessID(at: processIDFileURL) else {
+      throw DemoLauncherError.couldNotOpen(specification.title)
+    }
+    return Runtime(
+      processID: nil,
+      application: nil,
+      staticWebServer: nil,
+      presentationURL: nil,
+      output: nil,
+      allocatedPort: nil,
+      terminalProcessID: processID,
+      terminalProcessIDFileURL: processIDFileURL
+    )
+  }
+
+  private func waitForTerminalProcessID(at url: URL) async -> pid_t? {
+    let deadline = ContinuousClock.now + terminalTiming.processIDTimeout
+    while true {
+      if let data = try? Data(contentsOf: url),
+        let value = pid_t(
+          String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        ),
+        value > 0
+      {
+        return value
+      }
+      guard ContinuousClock.now < deadline else { return nil }
+      try? await Task.sleep(for: terminalTiming.pollInterval)
+    }
+  }
+
+  /// Ends the reviewed program: SIGTERM, a bounded wait, then SIGKILL. The
+  /// Terminal window is never closed — like a browser tab, it may belong to
+  /// the owner. The pid file goes with the runtime so a stale pid is never
+  /// signalled later.
+  private func stopTerminalProgram(processID: pid_t, processIDFileURL: URL?) async {
+    if processSignaler.isAlive(processID) {
+      processSignaler.terminate(processID)
+      let deadline = ContinuousClock.now + terminalTiming.stopTimeout
+      while processSignaler.isAlive(processID), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: terminalTiming.pollInterval)
+      }
+      if processSignaler.isAlive(processID) {
+        processSignaler.kill(processID)
+      }
+    }
+    if let processIDFileURL {
+      try? fileManager.removeItem(at: processIDFileURL)
+    }
   }
 
   private func artifactURL(

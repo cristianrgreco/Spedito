@@ -6,6 +6,7 @@ public enum DemoPresentationKind: String, Codable, CaseIterable, Sendable {
   case macApplication = "mac_application"
   case artifact
   case commandOutput = "command_output"
+  case terminalApplication = "terminal_application"
 
   public var title: String {
     switch self {
@@ -303,7 +304,8 @@ public enum AcceptedAppLaunchPolicy {
       let specification = result.demo,
       specification.presentation.kind == .browser
         || specification.presentation.kind == .staticWeb
-        || specification.presentation.kind == .macApplication,
+        || specification.presentation.kind == .macApplication
+        || specification.presentation.kind == .terminalApplication,
       (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
     else {
       return nil
@@ -774,6 +776,47 @@ public enum DemoLaunchSpecificationValidator {
       guard specification.presentation.path == nil else {
         throw DemoLaunchValidationError.invalid(
           "a result demo cannot contain an artifact path."
+        )
+      }
+    case .terminalApplication:
+      guard let launchCommand = specification.launchCommand else {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app demo needs a launch command naming the built program; Spedito runs it in a Terminal window."
+        )
+      }
+      guard specification.readiness == nil else {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app runs interactively in Terminal and cannot declare a readiness check."
+        )
+      }
+      guard specification.portEnvironmentVariable == nil else {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app cannot declare a managed service port."
+        )
+      }
+      guard specification.presentation.path == nil else {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app demo cannot contain a presentation path; the program is named by launchCommand."
+        )
+      }
+      // The launch command is the program the owner drives, so it must be the
+      // built workspace file itself. A bare tool name such as go, python3, or
+      // sh would run a host tool against the workspace instead of the
+      // reviewed program, and an absolute or escaping path leaves the
+      // reviewed checkout.
+      let executable = launchCommand.executable.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard executable.contains("/") else {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app launch command must name the built program by a workspace-relative path "
+            + "containing “/”, such as bin/your-program; “\(executable)” is a tool name, not the built program."
+        )
+      }
+      do {
+        try validateRelativePath(executable, allowsCurrentDirectory: false)
+      } catch {
+        throw DemoLaunchValidationError.invalid(
+          "a terminal app launch command must name the built program by a workspace-relative path "
+            + "inside the reviewed preview, such as bin/your-program; “\(executable)” is not."
         )
       }
     }

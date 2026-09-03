@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Managed demo launch")
 struct DemoLaunchTests {
-  @Test("Web, native app, safe artifact, and command-output recipes validate")
+  @Test("Web, native app, safe artifact, command-output, and terminal app recipes validate")
   func supportedPresentations() throws {
     let web = DemoLaunchSpecification(
       title: "Local web preview",
@@ -52,6 +52,14 @@ struct DemoLaunchTests {
       presentation: DemoPresentation(kind: .commandOutput)
     )
     try DemoLaunchSpecificationValidator.validate(output)
+
+    let terminal = DemoLaunchSpecification(
+      title: "Dog finder",
+      preparationCommands: [DemoCommand(executable: "scripts/build.sh")],
+      launchCommand: DemoCommand(executable: "bin/tui", arguments: ["--breed", "Beagle"]),
+      presentation: DemoPresentation(kind: .terminalApplication)
+    )
+    try DemoLaunchSpecificationValidator.validate(terminal)
   }
 
   @Test("Structured demo schema exposes only validator-supported variants")
@@ -1027,7 +1035,7 @@ struct DemoLaunchTests {
     #expect(versions.map(\.sessionSourceKind) == [.acceptedCandidate, .importedRepository])
   }
 
-  @Test("Accepted browser, static prototype, and macOS app candidates resolve")
+  @Test("Accepted browser, static prototype, macOS app, and terminal app candidates resolve")
   func acceptedApplicationPresentations() throws {
     let browser = try candidate(demo: browserRecipe())
     let macApplication = try candidate(
@@ -1061,6 +1069,25 @@ struct DemoLaunchTests {
       AcceptedAppLaunchPolicy.latest(
         in: [browser, macApplication, staticPrototype]
       )?.candidate == staticPrototype
+    )
+
+    // A terminal app is a runnable version like a browser or Mac app.
+    let terminal = try candidate(
+      demo: terminalRecipe(),
+      updatedAt: Date(timeIntervalSince1970: 6)
+    )
+    #expect(
+      AcceptedAppLaunchPolicy.latest(in: [terminal])?.specification.presentation.kind
+        == .terminalApplication
+    )
+    #expect(
+      AcceptedAppLaunchPolicy.latest(
+        in: [browser, macApplication, staticPrototype, terminal]
+      )?.candidate == terminal
+    )
+    #expect(
+      AcceptedAppLaunchPolicy.all(in: [browser, terminal, macApplication]).map(\.candidate)
+        == [terminal, macApplication, browser]
     )
   }
 

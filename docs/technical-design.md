@@ -811,8 +811,9 @@ GitHub to be available.
 Every newly completed repository-changing delivery includes a typed demo recipe.
 Supported presentations are a product-owned loopback browser preview, a
 Spedito-hosted static web prototype, a workspace-relative macOS application
-bundle, an inert workspace-relative artifact from an explicit allowlist, or
-captured output from a bounded scenario. Product browser recipes contain
+bundle, an interactive terminal program opened in Terminal.app from a built
+workspace-relative executable, an inert workspace-relative artifact from an
+explicit allowlist, or captured output from a bounded scenario. Product browser recipes contain
 executable and argument arrays, never shell command strings. Working directories,
 applications, prototypes, and artifacts resolve inside the reviewed checkout;
 product browser URLs contain only a path, and Spedito allocates and injects their
@@ -850,7 +851,21 @@ automate desktop interaction. For a macOS app recipe, sandboxed preparation
 builds the bundle and smoke testing verifies its workspace-relative path and
 executable without launching it. Only Spedito opens the validated bundle through
 Launch Services, and only after the product owner explicitly chooses **Demo** or
-opens an accepted app version. Rendered markdown strips non-HTTPS links, and the
+opens an accepted app version. For a terminal app recipe, sandboxed preparation
+builds the program and smoke testing requires the launch command's
+workspace-relative executable to be a regular, non-symlink, executable file
+inside the reviewed checkout without running it, because an interactive
+program would hang a bounded smoke. At launch Spedito writes a zsh launcher
+script (`TerminalDemoLaunchScript`) into the preview's
+`.spedito-demo-runtime/terminal/` directory with mode 0755 and opens it with
+Terminal.app through `NSWorkspace.open(_:withApplicationAt:configuration:)`;
+no AppleScript, Automation consent, or shell string is involved. The script
+sets the window title, moves into the recipe's working directory, exports the
+same `TMPDIR`, `XDG_CACHE_HOME`, and `SPEDITO_DEMO_DATA_DIRECTORY` that
+sandboxed demo commands receive, records its pid, and `exec`s the program. The
+program then runs on the host in the owner's login session with the owner's
+privileges, outside the `spedito-demo` sandbox, exactly as a Mac app bundle
+does once Launch Services opens it. Rendered markdown strips non-HTTPS links, and the
 application URL-opening boundary independently permits only credential-free
 HTTPS destinations with a host.
 
@@ -859,8 +874,8 @@ worktree pinned to the current integrated SHA and smoke-tests the recipe without
 opening its presentation. A candidate enters **Ready for demo** only after that
 test succeeds. The product owner's **Demo** action prepares the same exact
 revision, starts or reuses a managed service where the recipe requires one, and
-opens the browser, validated macOS application, inert artifact, or captured
-result.
+opens the browser, validated macOS application, Terminal window running the
+reviewed program, inert artifact, or captured result.
 
 Multiple independently reviewed candidates may integrate, receive any necessary
 conflict resolution and focused re-review, and prepare demos in parallel.
@@ -938,12 +953,25 @@ detached or daemonized services are invalid because they cannot provide reliable
 disconnection terminate the managed command session. Feedback and approval
 additionally remove the acceptance preview worktree.
 
+A terminal program is owned through its pid, never through the Terminal
+window. The launcher reads the pid the script recorded before `exec` (polling
+up to five seconds after the script opens; a pid that never appears is a host
+`couldNotOpen` failure), keeps it as transient runtime state, and checks
+liveness with `kill(pid, 0)`. **Stop demo** sends `SIGTERM`, waits up to two
+seconds, then `SIGKILL`, and removes the pid file. Spedito never closes the
+Terminal window: like a browser tab, it may belong to the owner. Closing the
+window ends the program; the next **Open demo** sees the dead pid, drops the
+runtime, and relaunches. After a Spedito relaunch the durable session is marked
+stopped like every other kind and a stale pid file is ignored, never
+signalled.
+
 Repository analysis may return a structured imported-app launch proposal
-alongside product knowledge drafts. The proposal contains a validated browser
-`DemoLaunchSpecification` and exact snapshot evidence. It remains inert until
+alongside product knowledge drafts. The proposal contains a validated browser,
+macOS app, or terminal app `DemoLaunchSpecification` and exact snapshot
+evidence. It remains inert until
 an independent tech lead returns a separate decision for that exact proposal.
 An approved proposal is stored with its repository-analysis run and exact
-`analyzedSHA`. Native macOS application, executable artifact, and unsupported
+`analyzedSHA`. Artifact, command-output, executable-artifact, and unsupported
 URL presentations fail Core validation. If a proposed recipe fails Core
 validation, the same schema-constrained analyzer thread receives the exact
 validation failure and one correction turn. Product knowledge drafts from the
@@ -960,8 +988,9 @@ review and evidence checks apply. Repository prose is never parsed or executed a
 an implicit recipe.
 
 The selected product's **Demos** workspace combines the approved imported
-browser or macOS app recipe, when present, with every accepted browser or macOS
-app candidate that has a valid schema-versioned recipe. Entries are ordered by
+browser, macOS app, or terminal app recipe, when present, with every accepted
+browser, static web prototype, macOS app, or terminal app candidate that has a
+valid schema-versioned recipe. Entries are ordered by
 their publication or acceptance time and the latest is selected by default. Any listed version
 recreates a managed preview from its exact imported or integrated SHA. Durable
 `DemoSession` identity is `(source_kind, launch_id)`, so imported analysis
@@ -977,9 +1006,9 @@ removes the previous latest accepted version's managed preview; historical
 accepted candidates and the imported source remain selectable.
 Accepting artifact or command-output evidence does not alter app version history
 or stop its current runtime. On restart, a previously active durable session is
-marked stopped rather than being mistaken for a live process. Browser tabs and
-shared document-viewer windows are not force-closed because they may belong to
-the product owner rather than the demo session.
+marked stopped rather than being mistaken for a live process. Browser tabs,
+Terminal windows, and shared document-viewer windows are not force-closed
+because they may belong to the product owner rather than the demo session.
 
 ## 7. Codex adapter boundary
 

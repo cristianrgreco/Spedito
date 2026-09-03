@@ -278,6 +278,7 @@ struct AppVersionsView: View {
     switch version.specification.presentation.kind {
     case .browser, .staticWeb: "globe"
     case .macApplication: "macwindow"
+    case .terminalApplication: "terminal"
     case .artifact, .commandOutput: "doc"
     }
   }

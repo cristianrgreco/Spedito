@@ -89,7 +89,7 @@ The passing cells show the attractor is correct once bad shapes are blocked:
   exactly these residuals; the schema is the contract. If failures persist
   after the patterns, that is new evidence for a product-owner decision, not a
   deeper schema hack.
-- No new demo kinds, no UX changes.
+- No new demo kinds, no UX changes. Reversed on 2026-09-01 by `2026-09-01-terminal-demo-kind-handover.md`, which adds the `terminal_application` kind.
 
 ### Current authority
 

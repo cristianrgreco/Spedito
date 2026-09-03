@@ -4057,7 +4057,8 @@ public final class TicketDeliveryWorkflowCoordinator {
 
       if let specification = executionResult.demo,
         specification.presentation.kind == .browser
-          || specification.presentation.kind == .macApplication,
+          || specification.presentation.kind == .macApplication
+          || specification.presentation.kind == .terminalApplication,
         (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
       {
         let previousLatestCandidateID = AcceptedAppLaunchPolicy.latest(in: candidates)?.candidate.id
