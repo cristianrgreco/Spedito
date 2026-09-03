@@ -160,27 +160,32 @@ repeat work while the former shared database remains intact as a recovery
 backup. Runtime persistence contains no `schema_migrations` table or historical
 migration chain.
 
-Schema version 2 upgrades the released 0.1.0 database with imported-repository
-and repository-knowledge provenance, remote repository connections, safe
-synchronization attempts, immutable publication attempts and their pull-request
-snapshots, external comment provenance and GitHub review context, a non-null
-candidate delivery kind, durable owner notifications, and durable agent-run
-execution constraints. It generalizes demo sessions from accepted candidates
-to any launch source and clears the placeholder draft-sprint goal. Schema
-version 3 adds durable delivery-settlement operation and candidate-version
-identities, immutable candidate review bindings, and cumulative token usage
-that does not reset with context compaction. Status-specific compare-and-swap
-updates guard every remote transition, and active-operation partial indexes
-enforce one synchronization, one publication, and one repository-knowledge run
-at a time per Product. Each migration runs in one immediate transaction with
-foreign-key enforcement in force and the resulting version validated before
-commit.
+Schema version 2, shipped by 0.2.0, is the single upgrade a released database
+can need. It adds imported-repository and repository-knowledge provenance,
+remote repository connections, safe synchronization attempts, immutable
+publication attempts and their pull-request snapshots, external comment
+provenance and GitHub review context, a non-null candidate delivery kind,
+durable owner notifications, durable agent-run execution constraints,
+delivery-settlement operation and candidate-version identities, immutable
+candidate review bindings, cumulative token usage that does not reset with
+context compaction, the durable ticket key counter, and the owner-approved demo
+kind on proposals and tickets. It generalizes demo sessions from accepted
+candidates to any launch source, clears the placeholder draft-sprint goal, and
+re-keys still-proposed ticket suggestions from the new counter so the key a
+proposal shows is the key the accepted ticket keeps. Status-specific
+compare-and-swap updates guard every remote transition, and active-operation
+partial indexes enforce one synchronization, one publication, and one
+repository-knowledge run at a time per Product. The upgrade runs in one
+immediate transaction with foreign-key enforcement in force.
 
-Versions the application only ever used before its first release are not
-reproduced. Development databases that carry one of those versions cannot be
-upgraded and are rejected with an explanation rather than repaired, and a
-database written by a newer Spedito is rejected as well. A fresh install and an
-upgraded 0.1.0 database are held to producing byte-identical schemas by test.
+Every step of the upgrade checks for the object it creates first, so the
+upgrade is idempotent. Development builds between 0.1.0 and 0.2.0 stamped
+their databases with versions 3 through 6; those fold forward to version 2
+through the same upgrade without data loss. A database stamped with version 2
+that lacks the objects the version implies, any other unreleased version, and a
+database written by a newer Spedito are rejected with an explanation rather
+than repaired. A fresh install and an upgraded 0.1.0 database are held to
+producing identical schemas by test.
 
 The application catalog is the set of valid product workspace identifiers and
 their databases. Cross-product operations enumerate these stores; product

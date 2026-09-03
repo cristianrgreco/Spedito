@@ -277,14 +277,18 @@ struct ProductStoreRegistryTests {
 
   @Test("Unknown product database versions fail closed")
   func unknownSchemaVersionFailsClosed() async throws {
-    // A database from a newer Spedito, a pre-release development database, and a
-    // development database that reused the current version number but predates
-    // the tables it implies. None may be opened.
+    // A database from a newer Spedito, a development database that reused the
+    // current version number but predates the tables it implies, and the
+    // development version 2 that shared the current stamp but predates the
+    // ticket key counter. None may be opened.
     for regression in [
-      "PRAGMA user_version = \(ProductDatabaseSchema.version + 1);",
-      "PRAGMA user_version = 7;",
+      "PRAGMA user_version = \(ProductDatabaseSchema.upgradableVersions.upperBound + 1);",
       """
       DROP TABLE owner_notifications;
+      PRAGMA user_version = \(ProductDatabaseSchema.version);
+      """,
+      """
+      ALTER TABLE products DROP COLUMN next_ticket_key_number;
       PRAGMA user_version = \(ProductDatabaseSchema.version);
       """,
     ] {

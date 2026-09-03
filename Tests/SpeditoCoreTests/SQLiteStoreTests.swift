@@ -2272,13 +2272,11 @@ struct SQLiteStoreTests {
     await store.close()
   }
 
-  @Test("Migration re-keys pending proposals and preserves decided history")
+  @Test("The version two upgrade re-keys pending proposals and preserves decided history")
   func migrationAssignsDurableKeysToPendingProposals() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
     try createVersionOneDatabase(at: fixture.databaseURL)
-    try fixture.execute(ProductDatabaseSchema.migrationV1ToV2)
-    try fixture.execute(ProductDatabaseSchema.migrationV2ToV3)
 
     let productID = UUID()
     let acceptedItemID = UUID()
@@ -2376,14 +2374,11 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
-  @Test("Demo kind contracts migrate as NULL and round-trip every stored value")
+  @Test("Version one rows read back no demo kind and every stored kind round-trips")
   func demoKindContractsMigrateAndRoundTrip() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
     try createVersionOneDatabase(at: fixture.databaseURL)
-    try fixture.execute(ProductDatabaseSchema.migrationV1ToV2)
-    try fixture.execute(ProductDatabaseSchema.migrationV2ToV3)
-    try fixture.execute(ProductDatabaseSchema.migrationV3ToV4)
 
     let productID = UUID()
     let preContractItemID = UUID()
@@ -2394,7 +2389,6 @@ struct SQLiteStoreTests {
       """
       INSERT INTO products (id, name, instructions, status, color, created_at, updated_at)
       VALUES ('\(productID.uuidString)', 'Existing product', '', 'active', 'accent', \(now), \(now));
-      UPDATE products SET next_ticket_key_number = 3;
 
       INSERT INTO work_items (
         id, product_id, key_number, item_key, title, body, acceptance_criteria_json,
@@ -2415,7 +2409,7 @@ struct SQLiteStoreTests {
         suggested_role, priority, rationale, status, accepted_work_item_id,
         created_at, updated_at
       ) VALUES (
-        '\(preContractSuggestionID.uuidString)', '\(seededSessionID.uuidString)', 'T2', 0,
+        '\(preContractSuggestionID.uuidString)', '\(seededSessionID.uuidString)', 'S1', 0,
         'A pre-contract proposal', 'Deliver it.', '["The outcome is visible"]',
         'implementer', 2, 'It delivers the outcome.', 'proposed', NULL, \(now), \(now)
       );
@@ -2425,7 +2419,8 @@ struct SQLiteStoreTests {
     let store = try SQLiteStore(url: fixture.databaseURL)
     #expect(try fixture.scalarInt("PRAGMA user_version;") == ProductDatabaseSchema.version)
 
-    // Every pre-contract row reads back NULL: delivery still decides.
+    // Every pre-contract row reads back NULL: delivery still decides. The
+    // proposal gained its durable key T2 from the upgrade.
     let migratedItems = try await store.fetchWorkItems(productID: productID)
     #expect(migratedItems.first { $0.id == preContractItemID }?.demoKind == nil)
     let seededBatch = try await store.fetchTicketSuggestionBatch(sessionID: seededSessionID)
@@ -2495,20 +2490,36 @@ struct SQLiteStoreTests {
     await reopenedStore.close()
   }
 
-  /// Migration v6 replaces the enumerated `demo_kind` CHECK constraints with
-  /// plain columns through the add-copy-drop-rename sequence. The rows that
-  /// depend on `work_items` through cascading foreign keys must survive
-  /// untouched, every stored kind must read back unchanged, the new kind must
-  /// then be storable, and a database already at v6 must not migrate again.
-  @Test("Migration v6 drops the demo kind enumeration without touching dependent rows")
-  func demoKindMigrationV6DropsTheCheckWithoutLosingRows() async throws {
+  /// The unreleased version 5 declared both `demo_kind` columns with an
+  /// enumerated CHECK. The upgrade replaces them with plain columns through the
+  /// add-copy-drop-rename sequence. The rows that depend on `work_items`
+  /// through cascading foreign keys must survive untouched, every stored kind
+  /// must read back unchanged, the new kind must then be storable, and the
+  /// upgraded database must not migrate again. No fixture shipped for version
+  /// 5, so its shape is the current schema with the CHECK put back.
+  @Test("A version five database drops the demo kind enumeration without touching dependent rows")
+  func versionFiveDatabaseDropsTheDemoKindEnumerationWithoutLosingRows() async throws {
     let fixture = try DatabaseFixture()
     defer { fixture.remove() }
-    try createVersionOneDatabase(at: fixture.databaseURL)
-    try fixture.execute(ProductDatabaseSchema.migrationV1ToV2)
-    try fixture.execute(ProductDatabaseSchema.migrationV2ToV3)
-    try fixture.execute(ProductDatabaseSchema.migrationV3ToV4)
-    try fixture.execute(ProductDatabaseSchema.migrationV4ToV5)
+    let created = try SQLiteStore(url: fixture.databaseURL)
+    await created.close()
+    let enumeration = """
+      TEXT CHECK (
+        demo_kind IN (
+          'browser', 'static_web', 'mac_application', 'artifact',
+          'command_output', 'none'
+        )
+      )
+      """
+    try fixture.execute(
+      """
+      ALTER TABLE work_items DROP COLUMN demo_kind;
+      ALTER TABLE work_items ADD COLUMN demo_kind \(enumeration);
+      ALTER TABLE ticket_suggestions DROP COLUMN demo_kind;
+      ALTER TABLE ticket_suggestions ADD COLUMN demo_kind \(enumeration);
+      PRAGMA user_version = 5;
+      """
+    )
     #expect(try fixture.scalarInt("PRAGMA user_version;") == 5)
 
     let productID = UUID()
@@ -2636,10 +2647,11 @@ struct SQLiteStoreTests {
     #expect(countsBeforeMigration["work_items"] == Int32(existingKinds.count))
     #expect(countsBeforeMigration["ticket_comments"] == Int32(existingKinds.count))
 
-    // Run the migration with foreign keys enforced, as the store does, so a
-    // cascade would show up as a lost dependent row.
-    try fixture.execute("PRAGMA foreign_keys = ON;\n" + ProductDatabaseSchema.migrationV5ToV6)
-    #expect(try fixture.scalarInt("PRAGMA user_version;") == 6)
+    // The store runs the upgrade with foreign keys enforced, so a cascade would
+    // show up as a lost dependent row.
+    let upgraded = try SQLiteStore(url: fixture.databaseURL)
+    await upgraded.close()
+    #expect(try fixture.scalarInt("PRAGMA user_version;") == ProductDatabaseSchema.version)
     #expect(try counts() == countsBeforeMigration)
     #expect(try fixture.rows("PRAGMA foreign_key_check;").isEmpty)
     #expect(
@@ -2677,7 +2689,7 @@ struct SQLiteStoreTests {
     )
     let countsAfterInserts = try counts()
 
-    // A store opening the migrated database treats it as current: nothing
+    // A store opening the upgraded database treats it as current: nothing
     // migrates twice, and every kind decodes.
     let store = try SQLiteStore(url: fixture.databaseURL)
     let items = try await store.fetchWorkItems(productID: productID)
@@ -2687,7 +2699,7 @@ struct SQLiteStoreTests {
     let suggestions = try await store.fetchTicketSuggestionBatch(sessionID: sessionID)
     #expect(suggestions.suggestions.first { $0.reference == "T8" }?.demoKind == .terminalApplication)
     await store.close()
-    #expect(try fixture.scalarInt("PRAGMA user_version;") == 6)
+    #expect(try fixture.scalarInt("PRAGMA user_version;") == ProductDatabaseSchema.version)
     #expect(try counts() == countsAfterInserts)
     #expect(
       try fixture.rows("PRAGMA table_info(work_items);").compactMap { $0[1] }.last == "demo_kind"

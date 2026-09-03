@@ -202,9 +202,10 @@ public actor SQLiteStore {
     }
 
     let version = try integerPragma("user_version", database: database)
-    if version == ProductDatabaseSchema.version,
-      try tableExists("owner_notifications", schema: "main", database: database)
-    {
+    if version == ProductDatabaseSchema.version {
+      guard try schemaIsCurrent(database: database) else {
+        throw unsupportedSchemaError(version: version, url: url)
+      }
       return
     }
     if try tableExists("schema_migrations", schema: "main", database: database) {
@@ -212,33 +213,13 @@ public actor SQLiteStore {
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    guard (1...5).contains(version) else {
+    guard ProductDatabaseSchema.upgradableVersions.contains(version) else {
       throw unsupportedSchemaError(version: version, url: url)
     }
 
     try execute("BEGIN IMMEDIATE;", database: database)
     do {
-      if version == 1 {
-        try execute(ProductDatabaseSchema.migrationV1ToV2, database: database)
-      }
-      if version <= 2 {
-        try execute(ProductDatabaseSchema.migrationV2ToV3, database: database)
-      }
-      if version <= 3 {
-        try execute(ProductDatabaseSchema.migrationV3ToV4, database: database)
-        try assignDurableKeysToPendingSuggestions(database: database)
-      }
-      if version <= 4 {
-        try execute(ProductDatabaseSchema.migrationV4ToV5, database: database)
-      }
-      try execute(ProductDatabaseSchema.migrationV5ToV6, database: database)
-      let migrated = try integerPragma("user_version", database: database)
-      guard migrated == ProductDatabaseSchema.version else {
-        throw PersistenceError.corruptData(
-          "The product database upgrade finished at schema \(migrated); "
-            + "expected \(ProductDatabaseSchema.version)."
-        )
-      }
+      try upgradeToVersionTwo(database: database)
       try execute("COMMIT;", database: database)
     } catch {
       try? execute("ROLLBACK;", database: database)
@@ -246,12 +227,85 @@ public actor SQLiteStore {
     }
   }
 
-  /// Companion step to `migrationV3ToV4`, in the same transaction. Suggestions
-  /// that are still proposed were persisted with temporary `S` references, so
-  /// they are re-keyed from the new durable counter and their prose is
-  /// substituted exactly like a new batch persist. Decided suggestions keep
-  /// their `S` references as audit history. The `user_version` guard in
-  /// `initializeCurrentSchema` makes the step run at most once per database.
+  /// A database stamped with the current version is trusted only when it
+  /// carries the objects that version implies. The development version 2 that
+  /// preceded the consolidated upgrade shares the stamp but predates the ticket
+  /// key counter, and a development database can reuse the stamp ahead of the
+  /// tables it implies. Both fail closed at open instead of failing later.
+  private static func schemaIsCurrent(database: OpaquePointer) throws -> Bool {
+    try tableExists("owner_notifications", schema: "main", database: database)
+      && columnExists("next_ticket_key_number", table: "products", database: database)
+  }
+
+  /// Applies `ProductDatabaseSchema.VersionTwoUpgrade` inside the caller's
+  /// transaction. Every step checks for the object it creates first, so a
+  /// database at any upgradable version ends in the shape of a fresh install
+  /// and a second run changes nothing.
+  static func upgradeToVersionTwo(database: OpaquePointer) throws {
+    typealias Upgrade = ProductDatabaseSchema.VersionTwoUpgrade
+    try execute(Upgrade.tables, database: database)
+
+    for column in Upgrade.columns {
+      guard try !columnExists(column.name, table: column.table, database: database) else {
+        continue
+      }
+      try execute(
+        "ALTER TABLE \(column.table) ADD COLUMN \(column.name) \(column.definition);",
+        database: database
+      )
+    }
+
+    if try !columnExists("next_ticket_key_number", table: "products", database: database) {
+      try execute(Upgrade.ticketKeyCounter, database: database)
+      try assignDurableKeysToPendingSuggestions(database: database)
+    }
+
+    for table in ["work_items", "ticket_suggestions"] {
+      guard try tableDeclaresDemoKindEnumeration(table, database: database) else { continue }
+      try execute(Upgrade.demoKindEnumerationRemoval(table: table), database: database)
+    }
+
+    if try columnExists("candidate_revision_id", table: "demo_sessions", database: database) {
+      try execute(Upgrade.demoSessionsRebuild, database: database)
+    }
+
+    try execute(Upgrade.indexes, database: database)
+    try execute(Upgrade.fixups, database: database)
+    try execute(Upgrade.views, database: database)
+    try execute("PRAGMA user_version = \(ProductDatabaseSchema.version);", database: database)
+  }
+
+  /// The unreleased version 5 declared `demo_kind` with an enumerated CHECK,
+  /// which only the stored table definition reveals.
+  private static func tableDeclaresDemoKindEnumeration(
+    _ table: String,
+    database: OpaquePointer
+  ) throws -> Bool {
+    let rows = try queryRows(
+      "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?;",
+      bindings: [table],
+      database: database
+    )
+    guard let definition = rows.first?.first ?? nil else { return false }
+    return definition.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+      .contains("demo_kind IN (")
+  }
+
+  static func columnExists(
+    _ column: String,
+    table: String,
+    database: OpaquePointer
+  ) throws -> Bool {
+    try columnNames(table: table, schema: "main", database: database).contains(column)
+  }
+
+  /// Companion to `VersionTwoUpgrade.ticketKeyCounter`, in the same transaction
+  /// and only when the counter column was just added. Suggestions that are
+  /// still proposed were persisted with temporary `S` references, so they are
+  /// re-keyed from the new durable counter and their prose is substituted
+  /// exactly like a new batch persist. Decided suggestions keep their `S`
+  /// references as audit history. Proposals that already carry durable keys
+  /// never reach this step, so the key the product owner read is kept.
   static func assignDurableKeysToPendingSuggestions(database: OpaquePointer) throws {
     let sessions = try queryRows(
       """
@@ -440,9 +494,10 @@ public actor SQLiteStore {
     }
   }
 
-  /// Versions 1 through 3 are the released schemas this build can upgrade, so
-  /// anything else below the current version is an unsupported pre-release
-  /// development schema.
+  /// `ProductDatabaseSchema.upgradableVersions` names every schema this build
+  /// upgrades. Anything else below the current version, and a current stamp
+  /// that predates the objects it implies, is an unsupported development
+  /// schema; anything above it came from a newer Spedito.
   private static func unsupportedSchemaError(
     version: Int32,
     url: URL
