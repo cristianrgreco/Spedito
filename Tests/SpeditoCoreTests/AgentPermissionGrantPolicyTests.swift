@@ -350,6 +350,82 @@ struct AgentPermissionGrantPolicyTests {
     }
   }
 
+  @Test("A command bundling protected access is inspected, not waved through")
+  func commandBundledAccessIsInspected() throws {
+    let workspace = URL(
+      fileURLWithPath: "/Users/example/Library/Application Support/Spedito/Run Worktrees/product/t2"
+    )
+    let productWorkspaces = URL(
+      fileURLWithPath: "/Users/example/Library/Application Support/Spedito/Product Workspaces"
+    )
+    // The shape T3 sent: a command whose cwd is the ticket worktree, bundling a
+    // read of the product database far outside it.
+    let databaseRead = try #require(
+      try commandSignature(
+        command: "/usr/bin/sqlite3 -readonly product.sqlite \"SELECT 1\"",
+        cwd: workspace.path,
+        additionalPermissions: permissionValue(
+          paths: [
+            productWorkspaces
+              .appendingPathComponent("product/.spedito/product.sqlite")
+              .path
+          ]
+        )
+      )
+    )
+    let plainCommand = try #require(
+      try commandSignature(
+        command: "git status --short",
+        cwd: workspace.path,
+        additionalPermissions: nil
+      )
+    )
+    let configurationRoot = try #require(
+      try commandSignature(
+        command: "brew --prefix",
+        cwd: workspace.path,
+        additionalPermissions: permissionValue(paths: ["/opt/homebrew/etc"])
+      )
+    )
+
+    #expect(
+      AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
+        productGrantSignature: databaseRead,
+        kind: .command,
+        ticketWorkspaceRoot: workspace,
+        protectedStorageRoots: [productWorkspaces]
+      )
+    )
+    #expect(
+      AgentPermissionGrantPolicy.requestsProhibitedConfigurationRoot(
+        productGrantSignature: configurationRoot,
+        kind: .command
+      )
+    )
+    #expect(
+      !AgentPermissionGrantPolicy.isReusableProductGrant(
+        signature: configurationRoot,
+        kind: .command
+      )
+    )
+
+    // A command that bundles nothing keeps working exactly as before.
+    #expect(
+      !AgentPermissionGrantPolicy.requestsProtectedSpeditoStorage(
+        productGrantSignature: plainCommand,
+        kind: .command,
+        ticketWorkspaceRoot: workspace,
+        protectedStorageRoots: [productWorkspaces]
+      )
+    )
+    #expect(
+      AgentPermissionGrantPolicy.isReusableProductGrant(
+        signature: plainCommand,
+        kind: .command
+      )
+    )
+  }
+
   @Test("Broad configuration roots are denied while exact runtime configuration stays scoped")
   func broadConfigurationRootsAreRejected() throws {
     let broad = try #require(
@@ -518,6 +594,30 @@ struct AgentPermissionGrantPolicyTests {
 
   private func productSignature(for permissions: JSONValue) throws -> String? {
     try permissionPresentation(for: permissions).productGrantSignature
+  }
+
+  private func commandSignature(
+    command: String,
+    cwd: String,
+    additionalPermissions: JSONValue?
+  ) throws -> String? {
+    var params: [String: JSONValue] = [
+      "threadId": .string("thread"),
+      "turnId": .string("turn"),
+      "command": .string(command),
+      "cwd": .string(cwd),
+    ]
+    if let additionalPermissions {
+      params["additionalPermissions"] = additionalPermissions
+    }
+    return try CodexAppServerClient.productGrantSignature(
+      for: CodexServerRequest(
+        id: .integer(1),
+        method: "item/commandExecution/requestApproval",
+        params: .object(params)
+      ),
+      ticketWorkspaceRoot: URL(fileURLWithPath: cwd)
+    )
   }
 
   private func permissionPresentation(

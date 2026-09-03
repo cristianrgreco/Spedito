@@ -392,8 +392,33 @@ struct SprintTicketWorkLogHistoryTests {
 
     #expect(presentation.context == "The agent wants to run a local project command.")
     #expect(presentation.purpose == "Run the product's automated tests.")
-    #expect(presentation.detailTitle == "Exact command and access")
-    #expect(request.detail.contains("npm test"))
+    #expect(presentation.detailTitle == "Exact command")
+    #expect(presentation.detail == "npm test")
+    #expect(presentation.additionalAccessDetail == "Read /opt/homebrew")
+    #expect(SprintPermissionRequestPresentation.additionalAccessTitle == "Additional access")
+  }
+
+  @Test("A command request without bundled access presents the command alone")
+  func commandRequestPresentationWithoutAdditionalAccess() {
+    let request = AgentPermissionRequest(
+      productID: UUID(),
+      workItemID: UUID(),
+      agentRunID: UUID(),
+      threadID: "thread-command-plain",
+      turnID: "turn-command-plain",
+      serverRequestID: "request-command-plain",
+      method: "item/commandExecution/requestApproval",
+      kind: .command,
+      title: "Allow this command?",
+      detail: "swift build",
+      signature: "plain-command-signature"
+    )
+
+    let presentation = SprintPermissionRequestPresentation(request: request)
+
+    #expect(presentation.detailTitle == "Exact command")
+    #expect(presentation.detail == "swift build")
+    #expect(presentation.additionalAccessDetail == nil)
   }
 
   @Test("Permission request presentation supplies plain-language fallback copy")
@@ -416,6 +441,8 @@ struct SprintTicketWorkLogHistoryTests {
 
     #expect(presentation.purpose == "Use an additional capability needed to continue this ticket.")
     #expect(presentation.detailTitle == "Exact access")
+    #expect(presentation.detail == "Read /opt/homebrew/bin/node")
+    #expect(presentation.additionalAccessDetail == nil)
   }
 
   @Test("Existing access is non-actionable and says that permissions did not change")

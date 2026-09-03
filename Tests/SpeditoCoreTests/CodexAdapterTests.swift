@@ -1461,6 +1461,20 @@ struct CodexAdapterTests {
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew/opt"))
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew/Cellar"))
 
+    let runtimeSections = CodexAppServerClient.commandApprovalSections(
+      fromDetail: runtimePresentation.detail
+    )
+    #expect(runtimeSections.command == "node --test")
+    #expect(
+      runtimeSections.additionalAccess
+        == "Read /opt/homebrew/bin\nRead /opt/homebrew/opt\nRead /opt/homebrew/Cellar"
+    )
+    let unbundledSections = CodexAppServerClient.commandApprovalSections(
+      fromDetail: presentation.detail
+    )
+    #expect(unbundledSections.command == "docker compose up")
+    #expect(unbundledSections.additionalAccess == nil)
+
     let sameCapabilityInAnotherTicket = CodexServerRequest(
       id: .integer(94),
       method: "item/commandExecution/requestApproval",

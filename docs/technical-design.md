@@ -1220,8 +1220,13 @@ parent PreviewWorktrees denial with a child exception because ordinary recursive
 directory creation must be able to traverse the existing parent.
 
 The broad Foundation cache root has a more-specific delivery deny for Spedito's
-PreviewWorktrees. Structured delivery requests are also checked against canonical
-Spedito product, Run, Integration, and Preview workspace roots. Own-ticket descendants
+PreviewWorktrees. Delivery requests are also checked against canonical
+Spedito product, Run, Integration, and Preview workspace roots. A command
+approval is checked the same way as a structured permissions request: Codex
+bundles a command's extra access under `additionalPermissions`, so the capability
+rules read that field rather than treating a command as opaque. Leaving it
+unread previously let a command carry filesystem access that no policy
+inspected, and made any command eligible to become a saved reusable grant. Own-ticket descendants
 retain their assigned workspace access; overlapping parent, sibling, or managed
 execution paths are declined automatically and persisted with a policy-denied status.
 They render as a non-actionable **Protected Spedito storage** work log item authored

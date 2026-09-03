@@ -51,6 +51,7 @@ public struct AgentSavedAccessRevocationPlan: Equatable, Sendable {
 
 public enum AgentPermissionGrantPolicy {
   private static let permissionMethod = "item/permissions/requestApproval"
+  private static let commandMethod = "item/commandExecution/requestApproval"
   private static let unrestrictedNetworkScope = Capabilities.canonicalJSON(
     .object(["enabled": .bool(true)])
   )
@@ -102,8 +103,13 @@ public enum AgentPermissionGrantPolicy {
     signature: String,
     kind: CodexApprovalRequestKind
   ) -> Bool {
-    guard kind == .permissions else { return true }
-    guard let capabilities = capabilities(fromSignature: signature) else { return false }
+    guard kind == .permissions || kind == .command else { return true }
+    guard let capabilities = capabilities(fromSignature: signature) else {
+      // A command whose signature cannot be read keeps its historical
+      // treatment; a permissions request that cannot be read never becomes a
+      // saved grant.
+      return kind == .command
+    }
     return !capabilities.networkScopes.contains(unrestrictedNetworkScope)
       && !capabilities.fileSystemRules.contains(where: isProhibitedConfigurationRoot)
   }
@@ -113,7 +119,7 @@ public enum AgentPermissionGrantPolicy {
     kind: CodexApprovalRequestKind
   ) -> Bool {
     guard
-      kind == .permissions,
+      kind == .permissions || kind == .command,
       let requested = capabilities(fromSignature: signature)
     else {
       return false
@@ -171,7 +177,7 @@ public enum AgentPermissionGrantPolicy {
     protectedStorageRoots: [URL]
   ) -> Bool {
     guard
-      kind == .permissions,
+      kind == .permissions || kind == .command,
       let requested = capabilities(fromSignature: signature)
     else {
       return false
@@ -406,10 +412,16 @@ public enum AgentPermissionGrantPolicy {
     }
   }
 
+  /// Capabilities carried by a request signature.
+  ///
+  /// A command approval bundles its extra filesystem and network access under
+  /// `additionalPermissions`, in the same shape as a permissions request. Until
+  /// this read both methods, every capability rule below was blind to command
+  /// approvals, so a command could carry access that no policy inspected.
   private static func capabilities(fromSignature signature: String) -> Capabilities? {
     guard let separator = signature.firstIndex(of: "|") else { return nil }
     let method = String(signature[..<separator])
-    guard method == permissionMethod else { return nil }
+    guard method == permissionMethod || method == commandMethod else { return nil }
     let jsonStart = signature.index(after: separator)
     guard let data = String(signature[jsonStart...]).data(using: .utf8) else {
       return nil
@@ -417,7 +429,11 @@ public enum AgentPermissionGrantPolicy {
     guard let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
       return nil
     }
-    return capabilities(from: value)
+    guard method == commandMethod else { return capabilities(from: value) }
+    guard let bundled = value["additionalPermissions"], bundled != .null else {
+      return Capabilities()
+    }
+    return capabilities(from: bundled)
   }
 
   private static func capabilities(from value: JSONValue) -> Capabilities? {

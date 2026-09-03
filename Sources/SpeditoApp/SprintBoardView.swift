@@ -3166,7 +3166,7 @@ struct SprintTicketDetailView: View {
                 tint: .orange,
                 labelFont: .caption.weight(.semibold)
               ) {
-                Text(request.detail)
+                Text(presentation.detail)
                   .font(
                     request.kind == .command
                       ? .system(.callout, design: .monospaced)
@@ -3176,6 +3176,20 @@ struct SprintTicketDetailView: View {
                   .frame(maxWidth: .infinity, alignment: .leading)
               }
               .fixedSize(horizontal: false, vertical: true)
+
+              if let additionalAccess = presentation.additionalAccessDetail {
+                WorkLogDisclosure(
+                  collapsedTitle: SprintPermissionRequestPresentation.additionalAccessTitle,
+                  tint: .orange,
+                  labelFont: .caption.weight(.semibold)
+                ) {
+                  Text(additionalAccess)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+              }
 
               if isActionable {
                 HStack {

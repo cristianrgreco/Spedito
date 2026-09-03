@@ -891,11 +891,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       if let additionalPermissions = request.params["additionalPermissions"],
         additionalPermissions != .null
       {
-        detail = [
-          command,
-          "Additional access for this command:",
-          permissionDetail(additionalPermissions),
-        ].joined(separator: "\n\n")
+        detail =
+          command
+          + commandAdditionalAccessSeparator
+          + permissionDetail(additionalPermissions)
       } else {
         detail = command
       }
@@ -1260,6 +1259,26 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     encoder.outputFormatting = [.sortedKeys]
     let data = (try? encoder.encode(relevant)) ?? Data()
     return "\(method)|\(String(decoding: data, as: UTF8.self))"
+  }
+
+  private nonisolated static let commandAdditionalAccessSeparator =
+    "\n\nAdditional access for this command:\n\n"
+
+  /// Splits a stored command-approval detail back into its exact command and
+  /// the additional access Codex bundled with it. The detail string is the
+  /// durable audit record, so presentation derives its sections from it
+  /// instead of storing a second representation.
+  public nonisolated static func commandApprovalSections(
+    fromDetail detail: String
+  ) -> (command: String, additionalAccess: String?) {
+    guard let range = detail.range(of: commandAdditionalAccessSeparator) else {
+      return (detail, nil)
+    }
+    let additionalAccess = String(detail[range.upperBound...])
+    return (
+      String(detail[..<range.lowerBound]),
+      additionalAccess.isEmpty ? nil : additionalAccess
+    )
   }
 
   private nonisolated static func permissionDetail(_ value: JSONValue?) -> String {
