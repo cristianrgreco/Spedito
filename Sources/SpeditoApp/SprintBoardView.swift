@@ -5974,14 +5974,10 @@ private struct SprintTicketCommentRow: View {
                 labelFont: .caption.weight(.semibold)
               ) {
                 ScrollView(.vertical) {
-                  LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(
-                      Array(context.diffHunk.components(separatedBy: "\n").enumerated()),
-                      id: \.offset
-                    ) { _, line in
-                      UnifiedDiffLineRow(line: line)
-                    }
-                  }
+                  HighlightedDiffLinesView(
+                    unifiedDiff: context.diffHunk,
+                    defaultPath: context.path
+                  )
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .textSelection(.enabled)
                 }
