@@ -27,8 +27,8 @@ extension AppModel {
     epicPlanningWorkflowCoordinator.retryEpicPlanning(epic)
   }
 
-  func cancelEpicPlanning() {
-    epicPlanningWorkflowCoordinator.cancelEpicPlanning()
+  func cancelEpicPlanning(epicID: UUID) {
+    epicPlanningWorkflowCoordinator.cancelEpicPlanning(epicID: epicID)
   }
 
   func clearEpicPlanningConversation(for epicID: UUID) {

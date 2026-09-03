@@ -2129,6 +2129,7 @@ struct MultipleChoiceQuestionCards: View {
   private let accessibilityPrefix: String?
   @Binding private var selectedOptions: [Int: String]
   @Binding private var otherAnswers: [Int: String]
+  @FocusState private var focusedOtherQuestionIndex: Int?
 
   init(
     questions: [TicketRefinementQuestion],
@@ -2210,9 +2211,14 @@ struct MultipleChoiceQuestionCards: View {
               )
             )
             .textFieldStyle(.roundedBorder)
+            .focused($focusedOtherQuestionIndex, equals: index)
             .accessibilityIdentifier(
               accessibilityIdentifier("question.\(index).other")
             )
+            .task {
+              await Task.yield()
+              focusedOtherQuestionIndex = index
+            }
           }
         }
         .padding(11)

@@ -48,10 +48,20 @@ public enum CodexEpicClarificationGenerator {
     ])
   }
 
+  /// Degenerate constrained-decoding output (recorded 2026-08-29: a question
+  /// prompt of "x", an option of ":{") satisfies the JSON schema yet carries
+  /// nothing an owner can read. A minimally meaningful owner-facing field has
+  /// at least two characters, at least one of them a letter; anything below
+  /// that bar fails decoding so the ordinary repair turn corrects it.
+  static func meetsMinimumContent(_ value: String) -> Bool {
+    value.count >= 2 && value.contains(where: \.isLetter)
+  }
+
   /// Trims and validates owner-facing questions with the same rules whether
-  /// they arrive in a clarification reply or a final-plan escape. Returns nil
-  /// when any prompt is empty or duplicated, an option count is outside two to
-  /// four, or an option is empty, duplicated, or a literal "Other".
+  /// they arrive in a clarification reply, a final-plan escape, or a ticket
+  /// refinement. Returns nil when any prompt is duplicated or below the
+  /// minimum content bar, an option count is outside two to four, or an
+  /// option is duplicated, below the bar, or a literal "Other".
   static func normalizedQuestions(
     _ questions: [TicketRefinementQuestion]
   ) -> [TicketRefinementQuestion]? {
@@ -65,9 +75,9 @@ public enum CodexEpicClarificationGenerator {
     }
     guard
       normalized.allSatisfy({
-        !$0.prompt.isEmpty
+        meetsMinimumContent($0.prompt)
           && (2...4).contains($0.options.count)
-          && $0.options.allSatisfy { !$0.isEmpty && $0.lowercased() != "other" }
+          && $0.options.allSatisfy { meetsMinimumContent($0) && $0.lowercased() != "other" }
           && Set($0.options.map { $0.lowercased() }).count == $0.options.count
       }),
       Set(normalized.map { $0.prompt.lowercased() }).count == normalized.count

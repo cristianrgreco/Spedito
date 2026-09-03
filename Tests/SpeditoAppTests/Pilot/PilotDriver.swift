@@ -341,8 +341,8 @@ final class PilotDriver {
         "the follow-up plan",
         limit: .seconds(90)
       ) { model in
-        let conversation = model.epicPlanningFeature.snapshot.conversation
-        if let conversation, conversation.epicID == followUpEpic.id,
+        let conversation = model.epicPlanningFeature.snapshot.conversations[followUpEpic.id]
+        if let conversation,
           !conversation.questions.isEmpty || conversation.errorMessage != nil
         {
           return true
@@ -358,7 +358,7 @@ final class PilotDriver {
         suggested = true
         break
       }
-      let conversation = model.epicPlanningFeature.snapshot.conversation
+      let conversation = model.epicPlanningFeature.snapshot.conversations[followUpEpic.id]
       if let failure = conversation?.errorMessage {
         fileOnce(
           PilotJournal.Finding(

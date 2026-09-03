@@ -167,6 +167,31 @@ extension SQLiteStore {
         try bind(sessionID.uuidString, to: 2, in: statement)
         try stepDone(statement)
       }
+      if let epicID = session.epicID {
+        try withStatement(
+          """
+          UPDATE suggestion_sessions
+          SET status = 'cancelled', error_message = NULL, updated_at = ?
+          WHERE epic_id = ?
+            AND id != ?
+            AND status = 'failed'
+            AND source_work_item_id IS NULL;
+          """
+        ) { statement in
+          try bind(now.timeIntervalSince1970, to: 1, in: statement)
+          try bind(epicID.uuidString, to: 2, in: statement)
+          try bind(sessionID.uuidString, to: 3, in: statement)
+          try stepDone(statement)
+        }
+        if sqlite3_changes(try requiredDatabase) > 0 {
+          _ = try insertEvent(
+            productID: session.productID,
+            kind: "ticket_suggestions.superseded",
+            actor: "system",
+            detail: "A completed plan replaced an earlier failed proposal"
+          )
+        }
+      }
       _ = try insertEvent(
         productID: session.productID,
         kind: "ticket_suggestions.ready",

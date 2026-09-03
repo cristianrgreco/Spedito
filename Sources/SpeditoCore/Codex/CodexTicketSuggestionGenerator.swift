@@ -221,7 +221,12 @@ public enum CodexTicketSuggestionGenerator {
       product-behaviour decision only the product owner can make. A choice you can responsibly settle
       yourself — an internal implementation approach, a presentation detail, or an option with a
       sensible recommended default that commits no external service — belongs in the plan with your
-      recommendation recorded, not in a question. Never return a plan together with outstanding
+      recommendation recorded, not in a question. Where the outcome leaves such a choice unstated,
+      that default exists: for a webapp, what the user saves stays in the browser; for a native app,
+      on the device; the delivery and demo surface follows the product kind the outcome names. When a
+      committed default determines owner-visible behaviour, state that behaviour plainly in the epic
+      goal or a ticket's owner-facing scope — for example “what you save stays in this browser on
+      this device” — never commit it silently. Never return a plan together with outstanding
       questions, and never dilute the unresolved choice into ticket criteria instead of asking.
       A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
@@ -236,7 +241,14 @@ public enum CodexTicketSuggestionGenerator {
       valuable outcomes, genuine dependencies, and useful parallelism; do not default to a fixed research,
       design, implementation, and verification sequence. Make verification explicit in the relevant
       acceptance criteria and create a separate design or verification ticket only when it produces a
-      meaningful outcome that should be delivered, reviewed, or scheduled independently. Work that does
+      meaningful outcome that should be delivered, reviewed, or scheduled independently. Apply this test
+      before deciding: when the supplied evidence shows no user-facing surface delivered yet and none
+      planned in the existing backlog, an epic with a visible outcome is giving the product its first
+      visible experience, and that always warrants the separate UX design ticket — give it an
+      independently reviewable experience outcome covering the product's main states, and let it proceed
+      in parallel with environment establishment rather than depend on it. When the product's visible
+      experience already exists or is already planned in the backlog, keep design judgment inside the
+      feature ticket unless a separately reviewable design outcome is genuinely needed. Work that does
       not require the research conclusion may proceed in parallel, while work that does must depend on the
       approved output without guessing its conclusion. Never stop at a research ticket when the agreed
       outcome includes user-visible behaviour. Otherwise create tickets that deliver the agreed outcome.
@@ -256,15 +268,21 @@ public enum CodexTicketSuggestionGenerator {
       artefact that genuinely does not need the environment.
 
       An environment-establishment task is a concrete delivery outcome, not vague technical investigation.
-      Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
-      test, local-run, and demo entry points; run-private temporary and cache locations; the complete
-      filesystem, localhost, network, and service capability boundary; a successful managed readiness
-      check; limitations; and a verified Environments product knowledge update. Write every ticket's
-      owner-facing title, context, and acceptance criteria in plain product language the owner can read
-      at a glance — for the environment ticket say “the team can build, test, and demo the product on
-      this Mac, and the setup is written down”, and never put “repository”, “toolchain”, “localhost”,
-      “readiness check”, “capability boundary”, or cache paths in any owner-visible field; the technical
-      checklist above is coverage to satisfy, not wording to copy. Consider the intended
+      The delivering team member achieves and verifies: the approved toolchain and supported versions;
+      repository-owned build, test, local-run, and demo entry points; run-private temporary and cache
+      locations; the complete filesystem, localhost, network, and service capability boundary; a
+      successful managed readiness check; limitations; and a verified Environments product knowledge
+      update. That checklist is the ticket's technical contract, never wording the owner sees. Write
+      every ticket's owner-facing title, context, and acceptance criteria in plain product language the
+      owner can read at a glance. The environment ticket's owner-facing acceptance criteria are exactly
+      its observable results, phrased like “the team can build, test, and run the product on this Mac”,
+      “the product owner can open a working demo”, and “the setup is written down for the team and
+      verified” — never put “repository”, “toolchain”, “localhost”, “readiness check”, “capability
+      boundary”, or cache paths in any owner-visible field, and never paraphrase the checklist into
+      owner-visible text either directly or through substitutes: no internal check or gate names
+      (“managed check”, “automated checks”), no cache or build-artifact wording (“cached files”, “stored
+      build data”, “temporary files”, “working material”), and no tool, command, or entry-point wording
+      (“team-owned commands”, “entry points”, “development tools”, “workspace”). Consider the intended
       deployment destination early when it affects the stack, but leave production accounts, credentials,
       signing identities, and irreversible release access to separately authorised release work.
 
@@ -639,6 +657,13 @@ public enum CodexTicketSuggestionGenerator {
         throw TicketSuggestionGenerationError.invalidResponse(
           "Each ticket needs a reference, title, type, criteria, valid role, priority, "
             + "and environment relationship."
+        )
+      }
+      let trimmedTitle = suggestion.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard CodexEpicClarificationGenerator.meetsMinimumContent(trimmedTitle) else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "Ticket title “\(trimmedTitle)” carries no readable content; give every ticket "
+            + "a plain outcome title."
         )
       }
       let reference = normalizedReference(suggestion.reference)

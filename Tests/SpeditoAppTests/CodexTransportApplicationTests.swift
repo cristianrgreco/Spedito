@@ -605,8 +605,8 @@ struct CodexTransportApplicationTests {
     await recoveredModel.reload()
     await recoveredModel.restoreEpicPlanningConversation(for: epic)
 
-    #expect(recoveredModel.epicPlanningConversation?.messages == storedConversation.messages)
-    #expect(recoveredModel.epicPlanningConversation?.questions == [pendingQuestion])
+    #expect(recoveredModel.epicPlanningConversation(for: epic.id)?.messages == storedConversation.messages)
+    #expect(recoveredModel.epicPlanningConversation(for: epic.id)?.questions == [pendingQuestion])
     #expect(!recoveredModel.isEpicConversationMessageRunning)
     #expect(recoveredModel.epicConversationEpicID == nil)
 

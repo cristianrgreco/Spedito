@@ -2574,6 +2574,62 @@ struct SQLiteStoreTests {
     await reopened.close()
   }
 
+  @Test("A completed epic plan supersedes an earlier failed planning session")
+  func completedEpicPlanSupersedesEarlierFailedSession() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(
+      name: "Superseded suggestions"
+    )
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Customers can pin important notes"
+    )
+    let failedSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    try await store.failTicketSuggestionSession(
+      sessionID: failedSession.id,
+      message: "Epic planning was interrupted. You can safely try again."
+    )
+    let replacementSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: epic.id
+    )
+    _ = try await store.completeTicketSuggestionSession(
+      sessionID: replacementSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "S1",
+          title: "Pin a note",
+          type: .story,
+          body: "Persist a pinned note.",
+          acceptanceCriteria: ["A pinned note stays at the top"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "This creates the epic outcome."
+        )
+      ]
+    )
+    await store.close()
+
+    let reopened = try SQLiteStore(url: fixture.databaseURL)
+    let outstanding = try await reopened.fetchOutstandingTicketSuggestionBatches(
+      productID: product.id
+    )
+    #expect(outstanding.map(\.session.id) == [replacementSession.id])
+    #expect(outstanding.first?.session.status == .ready)
+    let superseded = try await reopened.fetchTicketSuggestionBatch(
+      sessionID: failedSession.id
+    )
+    #expect(superseded.session.status == .cancelled)
+    #expect(superseded.session.errorMessage == nil)
+    await reopened.close()
+  }
+
   @Test("Epic plans persist and accepted suggestions inherit their epic")
   func epicPlansOwnAcceptedTickets() async throws {
     let fixture = try DatabaseFixture()

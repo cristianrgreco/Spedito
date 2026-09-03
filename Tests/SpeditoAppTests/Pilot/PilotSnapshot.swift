@@ -91,8 +91,9 @@ enum PilotSnapshotRenderer {
     }
 
     let selectedProduct = model.products.first { $0.id == model.selectedProductID }
-    let conversation = model.epicPlanningFeature.snapshot.conversation
-    let openQuestions = (conversation?.questions ?? []).map { question in
+    let openQuestions = model.epicPlanningFeature.snapshot.conversations.values
+      .flatMap(\.questions)
+      .map { question in
       question.options.isEmpty
         ? question.prompt
         : "\(question.prompt) [\(question.options.joined(separator: " | "))]"
@@ -173,9 +174,17 @@ enum PilotSnapshotRenderer {
     ownerFacingText.append(contentsOf: tickets.map(\.title))
     ownerFacingText.append(contentsOf: model.sprintReadinessIssues.map(\.message))
     if let errorMessage = model.errorMessage { ownerFacingText.append(errorMessage) }
-    if let conversationError = conversation?.errorMessage {
-      ownerFacingText.append(conversationError)
+    // The board shows a held run's constraint title, explanation, and Codex
+    // detail, so all three are owner-facing text this loop must lint.
+    for constraint in model.runs.compactMap(\.executionConstraint) {
+      ownerFacingText.append(constraint.kind.ownerFacingTitle)
+      ownerFacingText.append(constraint.kind.ownerFacingExplanation)
+      if let evidence = constraint.technicalEvidence { ownerFacingText.append(evidence) }
     }
+    ownerFacingText.append(
+      contentsOf: model.epicPlanningFeature.snapshot.conversations.values
+        .compactMap(\.errorMessage)
+    )
     ownerFacingText.append(contentsOf: demoSummaries)
 
     return PilotSnapshot(

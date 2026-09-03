@@ -458,23 +458,15 @@ public enum CodexTicketRefinementGenerator {
       )
     }
 
-    let questions = proposal.missingQuestions.map { question in
-      TicketRefinementQuestion(
-        prompt: question.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-        options: question.options.map {
-          $0.trimmingCharacters(in: .whitespacesAndNewlines)
+    // The shared normaliser applies the same rules as clarification replies
+    // and final-plan escapes, including the minimum content bar that routes
+    // degenerate constrained-decoding output into the ordinary repair turn.
+    guard
+      let questions = CodexEpicClarificationGenerator.normalizedQuestions(
+        proposal.missingQuestions.map { question in
+          TicketRefinementQuestion(prompt: question.prompt, options: question.options)
         }
       )
-    }
-    guard
-      questions.allSatisfy({
-        !$0.prompt.isEmpty
-          && (2...4).contains($0.options.count)
-          && $0.options.allSatisfy { !$0.isEmpty }
-          && $0.options.allSatisfy { $0.lowercased() != "other" }
-          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
-      }),
-      Set(questions.map { $0.prompt.lowercased() }).count == questions.count
     else {
       throw TicketRefinementGenerationError.invalidResponse(
         "Every clarification needs a unique prompt and two to four distinct choices."
@@ -489,6 +481,13 @@ public enum CodexTicketRefinementGenerator {
       ?? (isAwaitingOwner
         ? "I need your input before I can complete this review."
         : "I completed the ticket refinement.")
+    guard
+      rawTitle.isEmpty || CodexEpicClarificationGenerator.meetsMinimumContent(rawTitle)
+    else {
+      throw TicketRefinementGenerationError.invalidResponse(
+        "The proposed title “\(rawTitle)” carries no readable content."
+      )
+    }
     let title = rawTitle.nilIfEmpty ?? currentItem.title
     let rationale =
       rawRationale.nilIfEmpty

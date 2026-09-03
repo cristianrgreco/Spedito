@@ -2377,6 +2377,79 @@ struct CodexAdapterTests {
     }
   }
 
+  @Test("Degenerate low-content fields fail decoding into the ordinary repair path")
+  func minimumContentDecodeBar() throws {
+    // The observed degenerate constrained-decoding shapes (2026-08-29): a
+    // one-character question prompt and letterless punctuation options that
+    // satisfy the schema yet carry nothing an owner can read.
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "x", "options": ["Keep notes in this browser", "Use an online account"]}]}"#
+        )
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "Where should notes be kept?", "options": [":{", "/?"]}]}"#
+        )
+      )
+    }
+    #expect(throws: EpicClarificationGenerationError.self) {
+      try CodexEpicClarificationGenerator.decode(
+        #"{"message": "One thing first.", "questions": [{"prompt": "x", "options": ["Keep it simple", "Add accounts"]}], "readyToPlan": false}"#
+      )
+    }
+
+    // A degenerate ticket title is the same defect on the plan branch.
+    let degenerateTitlePlan = #"""
+      {
+        "epic": {
+          "title": "Saved notes",
+          "goal": "A user keeps notes on this device.",
+          "successCriteria": ["A note can be reopened"],
+          "constraints": "",
+          "environmentAssessment": {
+            "readiness": "sufficient",
+            "rationale": "The verified environment covers this work.",
+            "foundationTicketReference": null
+          }
+        },
+        "suggestions": [
+          {
+            "reference": "S1",
+            "title": "x",
+            "type": "story",
+            "body": "Keep notes on the device.",
+            "acceptanceCriteria": ["A note can be reopened"],
+            "role": "implementer",
+            "priority": "normal",
+            "rationale": "This delivers the outcome.",
+            "dependsOn": [],
+            "environmentRelationship": "requires", "demoKind": "browser"
+          }
+        ]
+      }
+      """#
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(degenerateTitlePlan))
+    }
+
+    // A minimal legitimate escape still decodes: short prompts and short
+    // lettered options are fine; the bar only rejects unreadable fields.
+    guard
+      case .questions(_, let questions) = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "Keep notes only on this Mac?", "options": ["Yes", "No"]}]}"#
+        )
+      )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(questions.first?.options == ["Yes", "No"])
+  }
+
   @Test("Epic plan schema admits the questions escape in the clarification shape")
   func epicPlanSchemaCarriesEscapeBranch() throws {
     let schema = CodexTicketSuggestionGenerator.epicOutputSchema
@@ -2642,7 +2715,7 @@ struct CodexAdapterTests {
     #expect(prompt.contains("implementation-time selection without a separate recommendation"))
     #expect(prompt.contains("epic.environmentAssessment"))
     #expect(prompt.contains("foundation_required"))
-    #expect(prompt.contains("run-private temporary and cache locations"))
+    #expect(prompt.contains("run-private temporary and cache"))
     #expect(initial.contains("business analyst research ticket"))
     #expect(initial.contains("Do not offer a vague option"))
     #expect(initial.contains("implementation-time selection"))
@@ -3174,6 +3247,36 @@ struct CodexAdapterTests {
         """,
         currentItem: item,
         validRelatedItems: [prerequisite, archived, item]
+      )
+    }
+
+    // Degenerate constrained-decoding output (a letterless option) fails the
+    // refinement decode too, through the shared minimum content bar.
+    #expect(throws: TicketRefinementGenerationError.self) {
+      _ = try CodexTicketRefinementGenerator.decode(
+        """
+        {
+          "message": "I need one product decision before proposing changes.",
+          "proposal": {
+            "baseVersion": 1,
+            "title": "",
+            "type": "story",
+            "body": "",
+            "acceptanceCriteria": [],
+            "priority": "normal",
+            "role": "implementer",
+            "rationale": "",
+            "dependencies": [],
+            "potentialDuplicates": [],
+            "splitRecommendation": null,
+            "missingQuestions": [
+              {"prompt": "How should ambiguous locations be handled?", "options": [":{", "Use the closest match"]}
+            ]
+          }
+        }
+        """,
+        currentItem: item,
+        validRelatedItems: [prerequisite, item]
       )
     }
   }

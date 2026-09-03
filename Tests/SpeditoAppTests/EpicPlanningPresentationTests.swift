@@ -6,6 +6,41 @@ import Testing
 
 @Suite("Epic planning presentation")
 struct EpicPlanningPresentationTests {
+  @Test("Only a first transient generation failure retries automatically")
+  func autoRetryPolicyGatesOnTransience() {
+    #expect(
+      EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnTimedOut(seconds: 60),
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnEndedWithoutOutput,
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnTimedOut(seconds: 60),
+        hasAutoRetried: true
+      )
+    )
+    // A usage limit fails again immediately; the owner should hear about it.
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnFailed("You've hit your usage limit."),
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: PersistenceError.recordNotFound("epic"),
+        hasAutoRetried: false
+      )
+    )
+  }
+
   @Test("Ticket and epic conversation details share the same adaptive sheet size")
   func conversationDetailsShareSheetSize() {
     let laptopWorkspace = CGSize(width: 1_440, height: 900)

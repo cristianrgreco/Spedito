@@ -101,12 +101,14 @@ entries are therefore labelled **Composed**, not retroactively re-badged
 | E01 | `EpicPlanningJourneyTests.e01CreateEpicStartsClarificationWithoutInventedMetadata` | **Named:** the public create command persists only the owner's Epic scope and begins clarification without invented metadata. |
 | E02 | `EpicPlanningJourneyTests.e02ClarificationNeedsInputAcrossProducts`, `.clarificationAlertNamesTheEpicBeforeAnalysis`, `EpicOwnerNotificationUITests.testE02NeedsInputOpensTheExactEpicAcrossProducts` | **Named:** deterministic and launched-shell E02 journeys protect the original cross-Product defect, and the alert names the Epic by the owner's outcome before the analyst has titled it. |
 | E03 | `EpicPlanningPresentationTests.e03ListedAndCustomAnswersEnableSubmission` | **Named:** listed choice and **Other** answers remain mutually exclusive and enable only one **Submit answers** advancement. |
-| E05 | `EpicPlanningJourneyTests.e05PlanReadyAcrossProducts` | **Named:** E05 drives background completion and exact-Epic notification routing. |
+| E05 | `EpicPlanningJourneyTests.e05PlanReadyAcrossProducts`, `OwnerNotificationTrayPresentationTests.undecidedPlanBatchProducesRow`, `.planRowStaysUntilEveryProposalIsDecided`, `.planReviewCoversStoredNotificationForSameEpic` | **Named:** E05 drives background completion and exact-Epic notification routing; the bell keeps a derived plan-ready row for an undecided batch until every proposal is decided (asserted end to end in E10), while the stored one-shot notification only carries banner and system delivery. |
 | E06 | `EpicPlanningJourneyTests.e06ExpiredThreadRecovery` | **Named:** E06 recreates an expired thread from the durable transcript without repeating owner answers. |
 | E11 | `EpicPlanningPresentationTests.e11AcceptancePreviewsTransitivePrerequisites` | **Named:** the acceptance preview contains every transitive suggested prerequisite before any durable write. |
 | E12 | `SQLiteStoreTests.e12RejectingSuggestionPreservesDeliveredDependent` | **Named:** delivered dependants block an unsafe rejection cascade while open descendants are archived atomically. |
 | E14 | `SQLiteStoreTests.e14ArchivingEpicDisposesTicketsAndProposals` | **Named:** Epic archival atomically disposes unfinished tickets and every persisted proposal without touching completed history. |
 | E16 | `EpicPlanningJourneyTests.e16FinalPlanEscapesToQuestionsAndRecovers`, `CodexAdapterTests.epicPlanningEscapeExclusivity`, `.epicPlanSchemaCarriesEscapeBranch` | **Named:** a final-plan turn returning questions settles its suggestion session as cancelled without a suggestion set, resumes the durable clarification conversation with the exact questions and a needs-input notification, re-presents them from a fresh instance without an error state, and turns the owner's answers into a completed plan; decode enforces questions XOR plan, and the escape branch reuses the clarification question schema. |
+| E17 | `EpicPlanningJourneyTests.e17ConcurrentPlanningAcrossProducts` | **Named:** two Products plan Epics concurrently; each clarification completes into its own conversation with its own thread ID and durable questions, neither replaces or cancels the other, both post their needs-input notification, and a fresh instance restores both conversations. |
+| E18 | `EpicPlanningJourneyTests.e18ProductRoundTripKeepsLivePlanGeneration`, `TicketSuggestionRecoveryTests.liveRunIsNotRecovered`, `SQLiteStoreTests.completedEpicPlanSupersedesEarlierFailedSession` | **Named:** switching Products and returning while a plan generates leaves the preserved live run untouched — recovery resumes only orphaned sessions, no interruption failure is written, and the plan completes into the same durable session; durably, a completed epic plan supersedes any earlier failed planning session so a stale failure cannot outlive a success. |
 | B02 | `TicketAttentionTests.b02IncompleteTicketAttentionReturnsToExactTicket`, `PriorityZeroShellJourneyUITests.testB02ClosingIncompleteTicketReturnsToExactSourceTicket` | **Named:** the deterministic journey routes cross-Product attention to the exact editable ticket; the launched-process contract proves the source-Product switch and ticket sheet. |
 | B03 | `TicketConversationHistoryTests.b03RelaunchRestoresCompleteRefinementConversation` | **Named:** relaunch restores answered cards, pending cards, comments, and the complete refinement state together. |
 | B05 | `TicketRefinementApplicationTests.b05StaleCompletionPreservesNewerDraft` | **Named:** an in-flight stale completion presents the version conflict and preserves the newer owner draft. |
@@ -520,7 +522,7 @@ S08 describes a specification contract whose implementation must be confirmed be
 | R13 | P0 | With no active sprint, prepare incoming fast-forward changes for exact review; accept or reject them atomically and recover safely after interruption. | J | Y |
 | R14 | P0 | While a sprint is active, defer incoming history to ticket integration; disconnecting or signing out affects the intended Product/account set and remains correct after relaunch. | J | — |
 
-### 5.3 Epics, clarification, and ticket suggestions — 16
+### 5.3 Epics, clarification, and ticket suggestions — 18
 
 | ID | Priority | Owner journey contract | Proof | Shell |
 | --- | --- | --- | --- | --- |
@@ -540,6 +542,8 @@ S08 describes a specification contract whose implementation must be confirmed be
 | E14 | P0 | Archive an Epic; archive unfinished backlog tickets and proposals while preserving delivered tickets and historical links. | J | — |
 | E15 | P2 | Reorder Epics by drag or top/bottom actions, and preserve each Product's completed-Epic disclosure preference. | J | — |
 | E16 | P1 | When the final planning turn finds a consequential choice still unresolved, it returns questions instead of a plan; the clarification conversation resumes with the same question cards, the questions survive interruption and relaunch, and the owner's answers feed the next planning attempt. | J | — |
+| E17 | P1 | Plan Epics in two Products at the same time; each conversation keeps its own questions, thread, and durable record, and both survive relaunch. | J | — |
+| E18 | P1 | Switch Products and return while plan generation runs; the preserved run continues without an interruption failure or duplicate session, and its plan completes into the same durable session. A completed plan supersedes an earlier failed planning session for its Epic. | J+P | — |
 
 ### 5.4 Backlog and editable Ticket workflow — 11
 

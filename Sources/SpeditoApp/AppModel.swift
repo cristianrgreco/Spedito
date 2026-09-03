@@ -324,8 +324,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   var ticketConversationResults: [UUID: TicketConversationSessionResult] {
     planningConversationFeature.snapshot.ticketConversationResults
   }
-  var epicPlanningConversation: EpicPlanningConversationState? {
-    epicPlanningFeature.snapshot.conversation
+  func epicPlanningConversation(for epicID: UUID) -> EpicPlanningConversationState? {
+    epicPlanningFeature.snapshot.conversations[epicID]
   }
   @Published private(set) var isAskingKnowledge = false
   var refiningWorkItemID: UUID? {
@@ -587,8 +587,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         isTicketConversationRunning: isTicketConversationMessageRunning,
         isEpicConversationRunning: isEpicConversationMessageRunning,
         refiningWorkItemID: refiningWorkItemID,
-        isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
-        isEpicPlanGenerating: epicPlanningConversation?.isGeneratingPlan == true
+        isEpicPlanningRunning: epicPlanningFeature.snapshot.isAnyConversationRunning,
+        isEpicPlanGenerating: epicPlanningFeature.snapshot.isAnyPlanGenerating
       )
     },
     workspaceURLProvider: { productID in
@@ -667,8 +667,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           isSuggestionGenerationRunning: suggestionBatches.contains {
             $0.session.status == .generating
           },
-          isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
-          isEpicPlanGenerationRunning: epicPlanningConversation?.isGeneratingPlan == true
+          isEpicPlanningRunning: epicPlanningFeature.snapshot.isAnyConversationRunning,
+          isEpicPlanGenerationRunning: epicPlanningFeature.snapshot.isAnyPlanGenerating
         )
       },
       workspaceProvider: { productID in
@@ -1449,8 +1449,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   var canPlanEpic: Bool {
     canAutosuggestTickets
-      && epicPlanningConversation?.isRunning != true
-      && epicPlanningConversation?.isGeneratingPlan != true
   }
 
   var canRefineTicket: Bool {
