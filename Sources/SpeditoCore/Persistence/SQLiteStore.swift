@@ -212,7 +212,7 @@ public actor SQLiteStore {
         "This is a legacy shared Spedito database. Open it through the product importer."
       )
     }
-    guard (1...3).contains(version) else {
+    guard (1...5).contains(version) else {
       throw unsupportedSchemaError(version: version, url: url)
     }
 
@@ -224,8 +224,14 @@ public actor SQLiteStore {
       if version <= 2 {
         try execute(ProductDatabaseSchema.migrationV2ToV3, database: database)
       }
-      try execute(ProductDatabaseSchema.migrationV3ToV4, database: database)
-      try assignDurableKeysToPendingSuggestions(database: database)
+      if version <= 3 {
+        try execute(ProductDatabaseSchema.migrationV3ToV4, database: database)
+        try assignDurableKeysToPendingSuggestions(database: database)
+      }
+      if version <= 4 {
+        try execute(ProductDatabaseSchema.migrationV4ToV5, database: database)
+      }
+      try execute(ProductDatabaseSchema.migrationV5ToV6, database: database)
       let migrated = try integerPragma("user_version", database: database)
       guard migrated == ProductDatabaseSchema.version else {
         throw PersistenceError.corruptData(
@@ -1246,6 +1252,7 @@ public actor SQLiteStore {
     acceptanceCriteria: [String],
     priority: WorkItemPriority,
     epicID: UUID? = nil,
+    demoKind: TicketDemoKind? = nil,
     preassignedKeyNumber: Int? = nil
   ) throws -> WorkItem {
     if let epicID {
@@ -1273,7 +1280,8 @@ public actor SQLiteStore {
       acceptanceCriteria: acceptanceCriteria,
       priority: priority,
       rank: nextRank,
-      epicID: epicID
+      epicID: epicID,
+      demoKind: demoKind
     )
     let criteria = try encodeStringArray(acceptanceCriteria)
     try withStatement(
@@ -1282,8 +1290,8 @@ public actor SQLiteStore {
           id, product_id, key_number, item_key, title, body,
           acceptance_criteria_json, state, priority, version,
           created_at, updated_at, ticket_type, rank, custom_fields_json, owner_profile_id,
-          epic_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+          epic_id, demo_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       """
     ) { statement in
       try bind(workItem.id.uuidString, to: 1, in: statement)
@@ -1303,6 +1311,7 @@ public actor SQLiteStore {
       try bind("{}", to: 15, in: statement)
       try bindOptionalUUID(workItem.ownerProfileID, to: 16, in: statement)
       try bindOptionalUUID(workItem.epicID, to: 17, in: statement)
+      try bindOptionalString(workItem.demoKind?.rawValue, to: 18, in: statement)
       try stepDone(statement)
     }
     return workItem
@@ -1390,7 +1399,8 @@ public actor SQLiteStore {
       """
       SELECT id, session_id, reference, position, title, body,
              acceptance_criteria_json, suggested_role, priority, rationale,
-             status, accepted_work_item_id, created_at, updated_at, ticket_type
+             status, accepted_work_item_id, created_at, updated_at, ticket_type,
+             demo_kind
       FROM ticket_suggestions
       WHERE session_id = ?
       ORDER BY position ASC;
@@ -1421,7 +1431,8 @@ public actor SQLiteStore {
       """
       SELECT id, session_id, reference, position, title, body,
              acceptance_criteria_json, suggested_role, priority, rationale,
-             status, accepted_work_item_id, created_at, updated_at, ticket_type
+             status, accepted_work_item_id, created_at, updated_at, ticket_type,
+             demo_kind
       FROM ticket_suggestions WHERE id = ?;
       """
     ) { statement in
@@ -1464,6 +1475,7 @@ public actor SQLiteStore {
       suggestedRole: role,
       priority: priority,
       rationale: try text(statement, column: 9),
+      demoKind: try optionalText(statement, column: 15).flatMap(TicketDemoKind.init(rawValue:)),
       status: status,
       acceptedWorkItemID: try optionalText(statement, column: 11).flatMap(UUID.init(uuidString:)),
       createdAt: date(statement, column: 12),
@@ -1681,7 +1693,8 @@ public actor SQLiteStore {
       """
       SELECT id, product_id, item_key, title, ticket_type, body,
              acceptance_criteria_json, state, priority, version,
-             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id
+             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id,
+             demo_kind
       FROM work_items
       WHERE id = ?;
       """
@@ -1899,6 +1912,7 @@ public actor SQLiteStore {
       customFields: try decodeStringDictionary(try text(statement, column: 13)),
       ownerProfileID: try optionalText(statement, column: 14).flatMap(UUID.init(uuidString:)),
       epicID: try optionalText(statement, column: 15).flatMap(UUID.init(uuidString:)),
+      demoKind: try optionalText(statement, column: 16).flatMap(TicketDemoKind.init(rawValue:)),
       version: Int(sqlite3_column_int64(statement, 9)),
       createdAt: date(statement, column: 10),
       updatedAt: date(statement, column: 11)

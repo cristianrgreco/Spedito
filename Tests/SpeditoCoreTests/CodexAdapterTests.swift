@@ -1802,9 +1802,9 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":"T1","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T2","title":"Prototype","type":"task","body":"Design states","acceptanceCriteria":["Owner can review"],"role":"ux_designer","priority":"high","rationale":"Validates the experience","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T3","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T1","T2"],"environmentRelationship":"requires"}
+        {"reference":"T1","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T2","title":"Prototype","type":"task","body":"Design states","acceptanceCriteria":["Owner can review"],"role":"ux_designer","priority":"high","rationale":"Validates the experience","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T3","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T1","T2"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1824,8 +1824,8 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":" t-1 ","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T 2","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T-1"],"environmentRelationship":"requires"}
+        {"reference":" t-1 ","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T 2","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T-1"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1834,17 +1834,17 @@ struct CodexAdapterTests {
     #expect(normalized[1].dependsOnReferences == ["S1"])
 
     let minimal =
-      #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires"}]}"#
+      #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires","demoKind":"browser"}]}"#
     #expect(try CodexTicketSuggestionGenerator.decode(minimal).count == 1)
 
     let cyclic =
-      #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent"}]}"#
+      #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent","demoKind":"artifact"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent","demoKind":"artifact"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(cyclic)
     }
 
     let foundationWithoutDependency =
-      #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires"}]}"#
+      #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires","demoKind":"browser"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(foundationWithoutDependency)
     }
@@ -1858,7 +1858,7 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":"T1","title":"Add the missing integration","type":"story","body":"Use the existing contract","acceptanceCriteria":["The integration works"],"role":"implementer","priority":"normal","rationale":"Completes the flow","dependsOn":["T-7"],"environmentRelationship":"requires"}
+        {"reference":"T1","title":"Add the missing integration","type":"story","body":"Use the existing contract","acceptanceCriteria":["The integration works"],"role":"implementer","priority":"normal","rationale":"Completes the flow","dependsOn":["T-7"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1876,6 +1876,69 @@ struct CodexAdapterTests {
     #expect(repair.contains("Unknown dependency T-7."))
     #expect(repair.contains("T-7"))
     #expect(repair.contains("active backlog keys"))
+  }
+
+  @Test("Suggestion decoder requires a legal owner-approved demo kind")
+  func suggestionDemoKindDecoding() throws {
+    func response(demoKindField: String) -> String {
+      #"""
+        {
+          "environmentAssessment":{
+            "readiness":"sufficient",
+            "rationale":"The verified environment covers the work.",
+            "foundationTicketReference":null
+          },
+          "suggestions":[
+          {"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"Small product","dependsOn":[],"environmentRelationship":"requires"\#(demoKindField)}
+          ]
+        }
+        """#
+    }
+
+    for kind in TicketDemoKind.allCases {
+      let decoded = try CodexTicketSuggestionGenerator.decode(
+        response(demoKindField: #","demoKind":"\#(kind.rawValue)""#)
+      )
+      #expect(decoded[0].demoKind == kind)
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decode(
+        response(demoKindField: #","demoKind":"poster""#)
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decode(response(demoKindField: ""))
+    }
+
+    // The mechanical rule names all four product surfaces, identically in the
+    // planning prose and the schema description.
+    let description = try #require(
+      CodexTicketSuggestionGenerator.outputSchema["properties"]?["suggestions"]?["items"]?[
+        "properties"
+      ]?["demoKind"]?["description"]?.stringValue
+    )
+    for surface in ["mac_application", "browser", "terminal_application", "command_output"] {
+      #expect(description.contains(surface))
+    }
+    #expect(description.contains(CodexTicketSuggestionGenerator.productSurfaceRule))
+    #expect(description.contains(CodexTicketSuggestionGenerator.designMediumRule))
+    #expect(description.contains("static_web"))
+    #expect(
+      CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: "",
+        customInstructions: ""
+      ).contains(CodexTicketSuggestionGenerator.productSurfaceRule)
+    )
+
+    let suggestionItemSchema =
+      CodexTicketSuggestionGenerator.outputSchema["properties"]?["suggestions"]?["items"]
+    #expect(
+      suggestionItemSchema?["required"]?.arrayValue?.contains(.string("demoKind")) == true
+    )
+    #expect(
+      suggestionItemSchema?["properties"]?["demoKind"]?["enum"]?.arrayValue
+        == TicketDemoKind.allCases.map { .string($0.rawValue) }
+    )
   }
 
   @Test("Model catalog exposes only server-advertised efforts")
@@ -1993,7 +2056,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "The interaction needs an agreed direction.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T2",
@@ -2005,7 +2068,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "This delivers the customer outcome.",
             "dependsOn": ["T1"],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
@@ -2045,7 +2108,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "A material stack choice needs authorised evidence.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T2",
@@ -2061,7 +2124,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "Future delivery needs one reusable environment.",
             "dependsOn": ["T1"],
-            "environmentRelationship": "establishes"
+            "environmentRelationship": "establishes", "demoKind": "browser"
           },
           {
             "reference": "T3",
@@ -2073,7 +2136,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "The neutral artefact can proceed in parallel.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T4",
@@ -2085,7 +2148,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "This delivers the customer outcome.",
             "dependsOn": ["T2", "T3"],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
@@ -2135,7 +2198,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "Delivery needs an approved provider.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           }
         ]
       }
@@ -2178,7 +2241,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "One cohesive change delivers and verifies the complete outcome.",
             "dependsOn": [],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
@@ -2216,7 +2279,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "The visual contract is independently reviewable.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "BUILD",
@@ -2228,7 +2291,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "This delivers the owner-facing outcome.",
             "dependsOn": ["DESIGN"],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
@@ -2273,7 +2336,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "The epic is explicitly a provider decision.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           }
         ]
       }
@@ -2348,7 +2411,7 @@ struct CodexAdapterTests {
           "priority": "normal",
           "rationale": "This delivers the outcome.",
           "dependsOn": [],
-          "environmentRelationship": "requires"
+          "environmentRelationship": "requires", "demoKind": "browser"
         }
       ]
       """#
@@ -3750,6 +3813,57 @@ struct CodexAdapterTests {
     #expect(instructions.contains("ignored dependencies, build output, caches"))
   }
 
+  @Test("A proposed demo kind is only expressible while awaiting the owner")
+  func proposedDemoKindDecoding() throws {
+    func result(status: String, proposedDemoKind: String) -> String {
+      #"""
+      {
+        "status":"\#(status)",
+        "comment":"The contracted medium does not fit the delivered outcome.",
+        "question":\#(status == "completed" ? "null" : #""Change the review medium?""#),
+        "options":\#(status == "completed" ? "[]" : #"["Change it","Keep it"]"#),
+        "summary":\#(status == "completed" ? #""Done.""# : #""""#),
+        "changedFiles":[],
+        "tests":\#(status == "completed" ? #"["Checked"]"# : "[]"),
+        "knowledgeNotes":[],
+        "reviewInstructions":\#(status == "completed" ? #"["Review the handoff."]"# : "[]"),
+        "proposedDemoKind":\#(proposedDemoKind),
+        "retrospectiveWentWell":[],
+        "retrospectiveCouldImprove":[],
+        "retrospectiveActions":[],
+        "knowledgePageProposals":[],
+        "followUpTicketProposals":[]
+      }
+      """#
+    }
+
+    let contested = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: #""mac_application""#)
+    )
+    #expect(contested.proposedDemoKind == .macApplication)
+
+    let terminal = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: #""terminal_application""#)
+    )
+    #expect(terminal.proposedDemoKind == .terminalApplication)
+
+    let uncontested = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: "null")
+    )
+    #expect(uncontested.proposedDemoKind == nil)
+
+    #expect(throws: TicketExecutionGenerationError.self) {
+      try CodexTicketExecutor.decode(
+        result(status: "completed", proposedDemoKind: #""none""#)
+      )
+    }
+
+    let schema = CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)
+    #expect(
+      schema["required"]?.arrayValue?.contains(.string("proposedDemoKind")) == true
+    )
+  }
+
   @Test("Ticket execution and tech lead review results are validated")
   func ticketExecutionResults() throws {
     let completed = try CodexTicketExecutor.decode(
@@ -3833,9 +3947,18 @@ struct CodexAdapterTests {
     #expect(repairPrompt.contains("Correct only the rejected result contract"))
     #expect(repairPrompt.contains("reinspect the repository"))
     #expect(repairPrompt.contains("rerun a successful check"))
-    #expect(repairPrompt.contains("\"kind\":\"static_web\""))
     #expect(repairPrompt.contains("not artifact or command_output"))
+    #expect(repairPrompt.contains("data file, such as a delivered visual screen set — is artifact"))
+    #expect(repairPrompt.contains("a no-op placeholder such as true is not a"))
     #expect(repairPrompt.contains("empty command fields"))
+    // A live pilot copied the repair prompt's one literal recipe verbatim,
+    // placeholder path included. The prompt states each kind's contract and
+    // defers to the shapes in the delivery guidance instead of carrying a
+    // paste-ready recipe.
+    #expect(!repairPrompt.contains("{\"schemaVersion\""))
+    #expect(!repairPrompt.contains("\"kind\":\"static_web\""))
+    #expect(repairPrompt.contains("mac_application"))
+    #expect(repairPrompt.contains("presentation object and its kind before every other recipe field"))
 
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.decode(
@@ -4228,6 +4351,174 @@ struct CodexAdapterTests {
     )
     #expect(integration.status == .awaitingOwner)
     #expect(integration.workLogComment.contains("Question for you"))
+  }
+
+  @Test("Revision and recovery prompts carry the pinned demo recipe forward")
+  func promptsCarryPinnedDemoRecipe() {
+    let product = Product(name: "Weather")
+    let item = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Correct the setup documentation",
+      body: "Align the README with the delivered behavior.",
+      acceptanceCriteria: ["The README matches the shipped commands."]
+    )
+    let reviewer = AgentProfile(
+      productID: product.id,
+      name: "Riley Lead",
+      role: .lead
+    )
+    let pinnedRecipe = DemoLaunchSpecification(
+      title: "Forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+
+    let pinnedRevisionPrompt = CodexTicketExecutor.revisionPrompt(
+      item: item,
+      reviewer: reviewer,
+      feedback: "Fix the truncated Markdown command in README.md.",
+      recentComments: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(pinnedRevisionPrompt.contains("carried forward unchanged"))
+    #expect(pinnedRevisionPrompt.contains("Return exactly this demo object"))
+    #expect(pinnedRevisionPrompt.contains("\"static_web\""))
+    #expect(pinnedRevisionPrompt.contains("\"prototype\""))
+
+    let unpinnedRevisionPrompt = CodexTicketExecutor.revisionPrompt(
+      item: item,
+      reviewer: reviewer,
+      feedback: "The demo should present as mac_application.",
+      recentComments: []
+    )
+    #expect(!unpinnedRevisionPrompt.contains("carried forward unchanged"))
+    #expect(
+      unpinnedRevisionPrompt.contains(
+        "decided by this turn under the demo guidance"
+      )
+    )
+
+    let pinnedRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: item,
+      interruptedPermission: nil,
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(pinnedRecoveryPrompt.contains("carried forward unchanged"))
+    #expect(pinnedRecoveryPrompt.contains("\"static_web\""))
+
+    let unpinnedRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: item,
+      interruptedPermission: nil
+    )
+    #expect(!unpinnedRecoveryPrompt.contains("carried forward unchanged"))
+  }
+
+  @Test("Delivery and review prompts state the owner-approved review medium")
+  func promptsCarryTheDemoKindContract() {
+    let product = Product(name: "Weather")
+    var item = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Deliver the forecast surface",
+      body: "Build the approved experience.",
+      acceptanceCriteria: ["The forecast is visible."],
+      demoKind: .macApplication
+    )
+    let contracted = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .contracted(.macApplication)
+    )
+    #expect(contracted.contains("mac_application"))
+    #expect(contracted.contains("opens as a Mac app"))
+    #expect(contracted.contains("proposedDemoKind"))
+
+    item.demoKind = .terminalApplication
+    let terminal = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .contracted(.terminalApplication)
+    )
+    #expect(terminal.contains("terminal_application"))
+    #expect(terminal.contains("opens in Terminal"))
+
+    item.demoKind = .codeOnly
+    let codeOnly = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .codeOnly
+    )
+    #expect(codeOnly.contains("code change with no"))
+    #expect(codeOnly.contains("null demo"))
+
+    item.demoKind = nil
+    let preContract = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .anyKind
+    )
+    #expect(preContract.contains("none was approved at planning"))
+    #expect(!preContract.contains("review medium is"))
+
+    // A pre-contract design ticket that promises a prototype is contracted
+    // to static_web by the delivery policy, and the prompt says so, because
+    // the schema admits nothing else and the turn must not re-decide it.
+    let designer = AgentProfile(productID: product.id, name: "UX designer", role: .uxDesigner)
+    let prototypeTicket = WorkItem(
+      productID: product.id,
+      key: "T3",
+      title: "Design the forecast card",
+      body: "The card must be reviewable as an interactive prototype.",
+      acceptanceCriteria: ["The managed demo opens the prototype"]
+    )
+    let derived = CodexTicketExecutor.demoKindContractContext(
+      prototypeTicket,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: prototypeTicket)
+    )
+    #expect(derived.contains("none was approved at planning, but this design ticket promises"))
+    #expect(derived.contains("review medium is static_web"))
+    #expect(derived.contains("an interactive prototype"))
+    #expect(derived.contains("result schema admits no other"))
+    #expect(derived.contains("proposedDemoKind"))
+    let fullPrompt = CodexTicketExecutor.prompt(
+      product: product,
+      item: prototypeTicket,
+      assignee: designer,
+      prerequisites: [],
+      dependants: [],
+      prerequisiteComments: [:],
+      ticketComments: [],
+      knowledgeContext: []
+    )
+    #expect(fullPrompt.contains("review medium is static_web"))
+
+    item.demoKind = .macApplication
+    let reviewContext = CodexTechLeadReviewer.reviewMediumContractContext(item)
+    #expect(reviewContext.contains("mac_application"))
+    #expect(reviewContext.contains("material contract mismatch"))
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered.",
+      question: nil,
+      options: [],
+      summary: "Done.",
+      changedFiles: ["Sources/App.swift"],
+      tests: ["Checked"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Open the managed Demo."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let reviewPrompt = CodexTechLeadReviewer.prompt(
+      product: product,
+      item: item,
+      implementation: implementation,
+      knowledgePageProposals: [],
+      assignee: AgentProfile(
+        productID: product.id,
+        name: "Implementer",
+        role: .implementer
+      )
+    )
+    #expect(reviewPrompt.contains("Contracted review medium:"))
+    #expect(reviewPrompt.contains("opens as a Mac app"))
   }
 
   @Test("Tech lead review receives complete candidate-bound proposal contracts")

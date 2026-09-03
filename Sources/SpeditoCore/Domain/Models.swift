@@ -329,6 +329,7 @@ public struct WorkItem: Identifiable, Codable, Hashable, Sendable {
   public var customFields: [String: String]
   public var ownerProfileID: UUID?
   public var epicID: UUID?
+  public var demoKind: TicketDemoKind?
   public var version: Int
   public let createdAt: Date
   public var updatedAt: Date
@@ -347,6 +348,7 @@ public struct WorkItem: Identifiable, Codable, Hashable, Sendable {
     customFields: [String: String] = [:],
     ownerProfileID: UUID? = nil,
     epicID: UUID? = nil,
+    demoKind: TicketDemoKind? = nil,
     version: Int = 1,
     createdAt: Date = Date(),
     updatedAt: Date = Date()
@@ -364,6 +366,7 @@ public struct WorkItem: Identifiable, Codable, Hashable, Sendable {
     self.customFields = customFields
     self.ownerProfileID = ownerProfileID
     self.epicID = epicID
+    self.demoKind = demoKind
     self.version = version
     self.createdAt = createdAt
     self.updatedAt = updatedAt
@@ -502,6 +505,7 @@ public struct TicketSuggestion: Identifiable, Codable, Hashable, Sendable {
   public var rationale: String
   public var dependencyIDs: [UUID]
   public var existingDependencyWorkItemIDs: [UUID]
+  public var demoKind: TicketDemoKind?
   public var status: TicketSuggestionStatus
   public var acceptedWorkItemID: UUID?
   public let createdAt: Date
@@ -521,6 +525,7 @@ public struct TicketSuggestion: Identifiable, Codable, Hashable, Sendable {
     rationale: String,
     dependencyIDs: [UUID] = [],
     existingDependencyWorkItemIDs: [UUID] = [],
+    demoKind: TicketDemoKind? = nil,
     status: TicketSuggestionStatus = .proposed,
     acceptedWorkItemID: UUID? = nil,
     createdAt: Date = Date(),
@@ -539,6 +544,7 @@ public struct TicketSuggestion: Identifiable, Codable, Hashable, Sendable {
     self.rationale = rationale
     self.dependencyIDs = dependencyIDs
     self.existingDependencyWorkItemIDs = existingDependencyWorkItemIDs
+    self.demoKind = demoKind
     self.status = status
     self.acceptedWorkItemID = acceptedWorkItemID
     self.createdAt = createdAt
@@ -558,6 +564,7 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
   public let dependsOnReferences: [String]
   public let dependsOnExistingWorkItemKeys: [String]
   public let environmentRelationship: TicketEnvironmentRelationship
+  public let demoKind: TicketDemoKind?
 
   public init(
     reference: String,
@@ -570,7 +577,8 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
     rationale: String,
     dependsOnReferences: [String] = [],
     dependsOnExistingWorkItemKeys: [String] = [],
-    environmentRelationship: TicketEnvironmentRelationship = .independent
+    environmentRelationship: TicketEnvironmentRelationship = .independent,
+    demoKind: TicketDemoKind? = nil
   ) {
     self.reference = reference
     self.title = title
@@ -583,6 +591,7 @@ public struct TicketSuggestionDraft: Codable, Hashable, Sendable {
     self.dependsOnReferences = dependsOnReferences
     self.dependsOnExistingWorkItemKeys = dependsOnExistingWorkItemKeys
     self.environmentRelationship = environmentRelationship
+    self.demoKind = demoKind
   }
 }
 

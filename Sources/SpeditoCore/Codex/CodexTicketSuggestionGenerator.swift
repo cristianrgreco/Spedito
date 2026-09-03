@@ -21,6 +21,26 @@ public enum EpicPlanReply: Equatable, Sendable {
 }
 
 public enum CodexTicketSuggestionGenerator {
+  /// The mechanical product-surface rule for setup and story tickets. Stated
+  /// once and interpolated into the planning prose, the schema description,
+  /// and the repair prompt so the three copies cannot drift; the product
+  /// specification and technical design repeat it word for word.
+  public static let productSurfaceRule =
+    "mac_application for a native macOS app, browser for a webapp, terminal_application only "
+    + "for a program the user keeps interacting with while it runs in a terminal (a TUI, a "
+    + "menu, a prompt loop), command_output for a program that is started once with its inputs "
+    + "and prints a result, even when the user starts it from a terminal"
+
+  /// The mechanical medium for design and research tickets, stated once for
+  /// the same three copies. Design work reviews as an HTML screen set or
+  /// clickable prototype Spedito serves in the browser, never a PDF, unless
+  /// the outcome is explicitly document-first.
+  public static let designMediumRule =
+    "design tickets about a visible interface use static_web, a self-contained HTML screen set or "
+    + "clickable prototype Spedito serves in the browser; research tickets and explicitly "
+    + "document-first design outcomes such as copy reviews, service blueprints, and accessibility "
+    + "audits use artifact"
+
   private static let platformInstructions = """
     You are the single business analyst responsible for proposing a coherent delivery backlog from the
     product owner's outcome. A role on a ticket is a recommended future owner, not another agent producing
@@ -61,6 +81,11 @@ public enum CodexTicketSuggestionGenerator {
     make an ordinary feature ticket rediscover or establish its environment incidentally.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
+    Give every proposal its demoKind — the review medium the product owner approves with the plan and
+    the accepted ticket keeps through delivery. The rule is mechanical: setup and story tickets use the
+    product surface the clarification round fixed — \(productSurfaceRule); \(designMediumRule); a
+    ticket whose outcome is code or data behaviour with no owner-visible surface uses none. Do not vary
+    the kind per ticket on taste.
     Temporary proposal references belong only in the reference field. Never repeat one at the start
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
     Do not modify files, browse the web, inspect repository source or Git history, or make product
@@ -394,7 +419,8 @@ public enum CodexTicketSuggestionGenerator {
       \(existingKeys.isEmpty ? "none" : existingKeys).
       Preserve or correct environmentAssessment and every environmentRelationship. If the assessment says
       foundation_required, its foundation ticket must exist and every requires ticket must depend on it
-      directly or transitively.
+      directly or transitively. Preserve each ticket's demoKind under the mechanical product-surface rule:
+      \(productSurfaceRule); \(designMediumRule).
       """
   }
 
@@ -520,6 +546,7 @@ public enum CodexTicketSuggestionGenerator {
           .string("reference"), .string("title"), .string("body"),
           .string("type"), .string("acceptanceCriteria"), .string("role"), .string("priority"),
           .string("rationale"), .string("dependsOn"), .string("environmentRelationship"),
+          .string("demoKind"),
         ]),
         "properties": .object([
           "reference": .object(["type": .string("string")]),
@@ -558,6 +585,15 @@ public enum CodexTicketSuggestionGenerator {
             "enum": .array(
               TicketEnvironmentRelationship.allCases.map { .string($0.rawValue) }
             ),
+          ]),
+          "demoKind": .object([
+            "type": .string("string"),
+            "description": .string(
+              "The review medium the product owner approves with the plan. Mechanical rule: "
+                + "setup and story tickets use the product surface the clarification round fixed "
+                + "(\(productSurfaceRule)); \(designMediumRule); code-only tickets use none."
+            ),
+            "enum": .array(TicketDemoKind.allCases.map { .string($0.rawValue) }),
           ]),
         ]),
       ]),
@@ -652,11 +688,12 @@ public enum CodexTicketSuggestionGenerator {
         let priority = priority(named: suggestion.priority),
         let environmentRelationship = TicketEnvironmentRelationship(
           rawValue: suggestion.environmentRelationship
-        )
+        ),
+        let demoKind = TicketDemoKind(rawValue: suggestion.demoKind)
       else {
         throw TicketSuggestionGenerationError.invalidResponse(
           "Each ticket needs a reference, title, type, criteria, valid role, priority, "
-            + "and environment relationship."
+            + "environment relationship, and demo kind."
         )
       }
       let trimmedTitle = suggestion.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -742,7 +779,8 @@ public enum CodexTicketSuggestionGenerator {
             dependencyReferences.compactMap { existingItemByReference[$0]?.key }
           )
         ).sorted(),
-        environmentRelationship: environmentRelationship
+        environmentRelationship: environmentRelationship,
+        demoKind: demoKind
       )
     }
   }
@@ -1065,4 +1103,5 @@ private struct GeneratedSuggestion: Decodable {
   let rationale: String
   let dependsOn: [String]
   let environmentRelationship: String
+  let demoKind: String
 }

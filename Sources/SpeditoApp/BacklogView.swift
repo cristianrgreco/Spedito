@@ -3237,6 +3237,26 @@ enum TicketSuggestionDependencyPresentation {
   }
 }
 
+/// Projects the owner-approved review medium into the "You'll review this
+/// as:" line on the proposal card and the stored ticket. Accepting the plan
+/// accepts the review medium, so the owner must see it before deciding; a
+/// pre-contract record (nil) shows no line. Pure presentation — no view
+/// decides or mutates the contract.
+enum TicketReviewMediumPresentation {
+  static let title = "You'll review this as"
+
+  static func metadata(for demoKind: TicketDemoKind?) -> TicketDetailMetadataValue? {
+    guard let demoKind else { return nil }
+    return TicketDetailMetadataValue(
+      id: "review-medium",
+      title: title,
+      value: demoKind.ownerFacingReviewMedium,
+      symbol: "play.rectangle",
+      tint: .blue
+    )
+  }
+}
+
 struct InlineTicketSuggestionRow: View {
   @EnvironmentObject private var model: AppModel
   let suggestion: TicketSuggestion
@@ -3624,7 +3644,9 @@ struct TicketSuggestionDetailView: View {
                 symbol: "flag.fill",
                 tint: suggestion.priority.tint
               ),
-            ],
+            ]
+              + [TicketReviewMediumPresentation.metadata(for: suggestion.demoKind)]
+              .compactMap { $0 },
             epic: epic,
             acceptanceCriteria: suggestion.acceptanceCriteria,
             emptyAcceptanceCriteriaText: "No acceptance criteria proposed",

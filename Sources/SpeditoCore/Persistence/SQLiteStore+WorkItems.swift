@@ -52,7 +52,8 @@ extension SQLiteStore {
       """
       SELECT id, product_id, item_key, title, ticket_type, body,
              acceptance_criteria_json, state, priority, version,
-             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id
+             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id,
+             demo_kind
       FROM work_items
       WHERE product_id = ?
       ORDER BY rank ASC, key_number ASC;
@@ -75,7 +76,8 @@ extension SQLiteStore {
       """
       SELECT id, product_id, item_key, title, ticket_type, body,
              acceptance_criteria_json, state, priority, version,
-             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id
+             created_at, updated_at, rank, custom_fields_json, owner_profile_id, epic_id,
+             demo_kind
       FROM work_items
       WHERE product_id = ?
         AND id IN (
@@ -240,6 +242,43 @@ extension SQLiteStore {
       )
     }
     return workItem
+  }
+
+  /// Applies a product owner decision that changes the ticket's contracted
+  /// review medium. Only the contested-kind answer or an owner edit reaches
+  /// this operation; a delivery turn can never change the contract itself.
+  public func updateWorkItemDemoKind(
+    id: UUID,
+    demoKind: TicketDemoKind?
+  ) throws -> WorkItem {
+    let workItem = try fetchWorkItem(id: id)
+    guard workItem.demoKind != demoKind else { return workItem }
+    let now = Date()
+    try transaction {
+      try withStatement(
+        """
+        UPDATE work_items
+        SET demo_kind = ?, version = version + 1, updated_at = ?
+        WHERE id = ?;
+        """
+      ) { statement in
+        try bindOptionalString(demoKind?.rawValue, to: 1, in: statement)
+        try bind(now.timeIntervalSince1970, to: 2, in: statement)
+        try bind(id.uuidString, to: 3, in: statement)
+        try stepDone(statement)
+      }
+      let previous =
+        workItem.demoKind?.ownerFacingReviewMedium ?? "decided by delivery"
+      let current = demoKind?.ownerFacingReviewMedium ?? "decided by delivery"
+      _ = try insertEvent(
+        productID: workItem.productID,
+        workItemID: workItem.id,
+        kind: "work_item.demo_kind_changed",
+        actor: "Product owner",
+        detail: "Review medium \(previous) → \(current)"
+      )
+    }
+    return try fetchWorkItem(id: id)
   }
 
   public func assignWorkItemOwner(id: UUID, profileID: UUID?) throws -> WorkItem {

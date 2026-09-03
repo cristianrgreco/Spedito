@@ -354,8 +354,9 @@ extension SQLiteStore {
         INSERT INTO ticket_suggestions (
             id, session_id, reference, position, title, body,
             acceptance_criteria_json, suggested_role, priority, rationale,
-            status, accepted_work_item_id, created_at, updated_at, ticket_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            status, accepted_work_item_id, created_at, updated_at, ticket_type,
+            demo_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(suggestionID.uuidString, to: 1, in: statement)
@@ -373,6 +374,7 @@ extension SQLiteStore {
         try bind(now.timeIntervalSince1970, to: 13, in: statement)
         try bind(now.timeIntervalSince1970, to: 14, in: statement)
         try bind(draft.type.rawValue, to: 15, in: statement)
+        try bindOptionalString(draft.demoKind?.rawValue, to: 16, in: statement)
         try stepDone(statement)
       }
     }
@@ -746,6 +748,7 @@ extension SQLiteStore {
           acceptanceCriteria: affected.acceptanceCriteria,
           priority: affected.priority,
           epicID: session.epicID,
+          demoKind: affected.demoKind,
           preassignedKeyNumber: keyNumber
         )
         _ = try insertEvent(

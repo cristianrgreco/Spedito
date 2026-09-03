@@ -29,8 +29,8 @@ struct DemoGuidanceTests {
     #expect(instructions.contains("presentation may support several ordered reviewInstructions"))
     #expect(instructions.contains("accepts the app-supplied port"))
     #expect(instructions.contains("documented readiness check"))
-    #expect(instructions.contains("Use static_web for a self-contained interactive prototype"))
-    #expect(instructions.contains("static_web has no preparationCommands"))
+    #expect(instructions.contains("static_web: a self-contained interactive prototype"))
+    #expect(instructions.contains("every command, port, and readiness field is null or empty"))
   }
 
   @Test("Tech lead guidance rejects developer-oriented or secondary demos")

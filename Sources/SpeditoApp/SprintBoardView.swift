@@ -3319,12 +3319,11 @@ struct SprintTicketDetailView: View {
         tint: demoTint,
         headerAccessory: {
           HStack(spacing: 8) {
-            if canOpenDemo,
-              session?.status == .ready,
-              specification?.presentation.kind == .browser
-                || specification?.presentation.kind == .staticWeb
-                || specification?.presentation.kind == .macApplication
-            {
+            if SprintBoardDemoPresentation.showsStopDemo(
+              specification: specification,
+              session: session,
+              canOpenDemo: canOpenDemo
+            ) {
               Button("Stop demo") {
                 stopDemo(candidate)
               }
@@ -3332,7 +3331,13 @@ struct SprintTicketDetailView: View {
               .disabled(isDemoActionRunning)
             }
             if canOpenDemo {
-              Button(demoButtonTitle(specification: specification, session: session)) {
+              Button(
+                SprintBoardDemoPresentation.buttonTitle(
+                  specification: specification,
+                  session: session,
+                  isActionRunning: isDemoActionRunning
+                )
+              ) {
                 launchDemo(candidate)
               }
               .buttonStyle(.borderedProminent)
@@ -3352,8 +3357,8 @@ struct SprintTicketDetailView: View {
 
             Text(
               localOutcomePresentation?.explanation
-                ?? demoExplanation(
-                  candidate: candidate,
+                ?? SprintBoardDemoPresentation.explanation(
+                  candidateStatus: candidate.status,
                   specification: specification,
                   session: session,
                   canOpenDemo: canOpenDemo
@@ -3436,25 +3441,6 @@ struct SprintTicketDetailView: View {
     }
   }
 
-  private func demoButtonTitle(
-    specification: DemoLaunchSpecification?,
-    session: DemoSession?
-  ) -> String {
-    if isDemoActionRunning {
-      return session?.status == .starting ? "Starting…" : "Preparing…"
-    }
-    switch session?.status {
-    case .ready:
-      return specification?.presentation.kind == .commandOutput
-        ? "Run demo again"
-        : "Open demo"
-    case .failed:
-      return "Retry demo"
-    default:
-      return "Demo"
-    }
-  }
-
   private func demoStatusTitle(_ status: CandidateRevisionStatus) -> String {
     switch status {
     case .accepted: "Approved"
@@ -3472,48 +3458,6 @@ struct SprintTicketDetailView: View {
     case .readyForDemo: .blue
     case .changesRequested, .failed: .red
     default: .secondary
-    }
-  }
-
-  private func demoExplanation(
-    candidate: CandidateRevision,
-    specification: DemoLaunchSpecification?,
-    session: DemoSession?,
-    canOpenDemo: Bool
-  ) -> String {
-    guard let specification else {
-      return
-        "This candidate predates managed demos. Request changes so the assigned team member can add a one-click demo."
-    }
-    guard canOpenDemo else {
-      return candidate.status == .accepted
-        ? "The product owner approved this reviewed demo and promoted its integrated revision."
-        : "This earlier demo submission remains in the work log as delivery history."
-    }
-    switch session?.status {
-    case .preparing:
-      return "Spedito is preparing the exact reviewed revision."
-    case .starting:
-      return "Spedito is starting the demo and waiting until it is ready."
-    case .ready:
-      switch specification.presentation.kind {
-      case .browser:
-        return "The local web demo is running. Open demo reuses it without starting a duplicate."
-      case .staticWeb:
-        return "The interactive prototype is running on Spedito’s managed local server."
-      case .macApplication:
-        return "The reviewed macOS app is running in its managed demo session."
-      case .artifact:
-        return "The reviewed artifact has been opened."
-      case .commandOutput:
-        return "The reviewed scenario completed and its result is shown below."
-      }
-    case .failed:
-      return "The demo could not open. Retry it or describe what happened and request changes."
-    case .stopped:
-      return "The reviewed demo is ready. Spedito will manage its setup and cleanup."
-    case nil:
-      return "Spedito will open the exact reviewed result and manage any local processes it needs."
     }
   }
 

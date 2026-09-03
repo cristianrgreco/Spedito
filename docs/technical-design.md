@@ -275,17 +275,89 @@ was running.
 
 Before candidate creation, `TicketDeliveryWorkflowCoordinator` validates the structured execution
 result and its Demo recipe against the actual ticket-workspace changes. The model-facing JSON schema
-rejects empty command, title, and presentation-path fields. The demo kind enum is itself derived per
-delivery turn from a demo policy: a UX designer ticket whose contract promises a reviewable prototype
-receives a schema admitting only `static_web`, `browser`, and `mac_application`, so a
-contract-forbidden kind is structurally inexpressible instead of a repair turn; every other delivery
-turn keeps the full enum. A validation failure receives at most two
+is a discriminated union on `presentation.kind` that mirrors
+`DemoLaunchSpecificationValidator`'s structural rules per branch: `artifact` forbids commands and
+takes an inert workspace-relative file path; `mac_application` takes a `.app` path with null launch
+command, port, and readiness; `command_output` requires a launch command and no path; `static_web`
+takes a non-root workspace-relative directory with no commands, port, or readiness; `browser`
+requires a launch command and an HTTP readiness check with loopback paths beginning with `/`;
+`terminal_application` requires a launch command whose executable is a workspace-relative path
+containing `/` (a bare tool name such as `go` or `python3` is rejected) with null path, port, and
+readiness, and its command timeout is ignored at launch because the session is interactive. Path
+content rules are stated in the branch descriptions but enforced only by the validator's hard-stops
+inside the turn's repair loop: schema `pattern` constraints were tried live and rejected
+(2026-08-29) because constrained decoding then fabricates conforming-but-false paths and
+mis-selects kinds. Empty
+command, title, and presentation-path fields stay inexpressible. The demo kind enum is itself derived per
+delivery turn from a demo policy. A ticket that stores an owner-approved demo kind — one of the six
+presentation kinds, `none` for code-only work, or SQL `NULL` for a pre-contract ticket — is the
+primary source: a contracted kind receives a schema admitting only that kind's branch, and a `none`
+contract admits only a null demo, so a contract-breaking recipe is structurally inexpressible instead
+of a repair turn. The suggestion generator requires the kind on every proposal under a mechanical
+product-surface rule — setup and story tickets take the product surface, design tickets about a
+visible interface take `static_web` (an HTML screen set or prototype), research and document-first
+design outcomes take `artifact` — persistence copies it from the accepted proposal onto the work item, and only
+the product owner — through the contested-kind question or an owner decision — may change it; a
+contracted delivery that concludes the kind is genuinely wrong returns `awaiting_owner` with
+`proposedDemoKind`, Spedito stores the question with its own canonical decision options, and the
+owner's exact answer option updates the work item durably before the continuation turn runs
+(`DemoKindContestPolicy`, `SQLiteStore.updateWorkItemDemoKind`). For a `NULL` contract the role
+heuristic survives as the fallback: a UX designer ticket whose contract promises a reviewable
+prototype is contracted by `DeliveryDemoPolicy` to `static_web` alone, exactly as a planned design
+ticket is, so the schema admits nothing else; the prompt states that derived medium, and a contest
+from such a ticket uses the derived kind as the "keep" option. Until 2 September 2026 that fallback
+admitted `browser` and `mac_application` too, and measured pre-contract UX turns committed to
+`browser` whenever the model emitted `launchCommand` or `readiness` before `presentation`, a key
+order the grammar does not fix and no wording controls; the product owner chose the structural
+narrowing. Every other pre-contract delivery turn keeps the full enum. A validation failure receives
+at most two
 focused repair turns on the same thread, each constrained by the same schema — including the
 delivering turn's narrowed demo policy — and the latest exact
 failure. Demo-specific repair guidance distinguishes a Spedito-hosted `static_web` directory from an
-inert artifact, bounded command output, and a product-owned browser service. Repair never discards the
+inert artifact, bounded command output, an interactive terminal program (`terminal_application`,
+whose launch command names the built workspace-relative executable), and a product-owned browser
+service. Delivery and review guidance both forbid wrapping the product in another surface — a Cocoa
+window around a terminal program, a web page that embeds or launches a Mac app, a bundle around a
+script — to satisfy a contracted medium; the delivery contests the medium and the tech lead returns
+a wrapper with changes requested. A design prototype is not a wrapper: an HTML mock of a native
+window or of a web screen is `static_web`, never `mac_application` or `browser`. The delivery
+guidance carries one literal, validator-passing recipe shape per kind, presentation object first,
+and the catalogue is role-specific (`CodexLifecycleGuidance.ticketDeliveryInstructions(mode:role:)`):
+implementation roles read all six shapes, while the UX designer reads a two-shape design catalogue
+— `static_web` for a prototype or HTML screen set, `artifact` only for an explicitly document-first
+contract — followed by the rule that a design delivery never returns `browser`, `mac_application`,
+`command_output`, or `terminal_application`. Pre-contract UX delivery samples copied the shared
+catalogue's `browser` shape verbatim, placeholder path included, or handed the HTML directory over
+as a bundle whenever those shapes were in the designer's instructions. Repair never discards the
 workspace or repeats successful checks; a second invalid repair settles as a reviewable failed run
 whose existing thread and workspace remain available to **Retry work**.
+
+Acceptance of a repository-changing candidate also publishes or updates the
+product's canonical demo recipe knowledge page for that recipe's presentation
+kind (`SQLiteStore.upsertCanonicalDemoRecipePage`, rendered by
+`CanonicalDemoRecipeKnowledge` with the exact recipe JSON and a plain-language
+summary, under the canonical Operations section). The page is durable domain
+state derived at acceptance: owner-visible, included in every delivery run's
+context for the ticket's contracted kind with the instruction to reuse it and
+extend it only for a genuinely new surface, authoritative over README wording
+for how the demo runs, and idempotent under re-acceptance after a preserved
+interruption. It is never read back as authority for launching accepted
+versions — `AcceptedAppLaunchPolicy` still reads candidate rows — and no
+delivery run may update it directly. Within a ticket's revisions the Layer 1
+recipe pin wins; the canonical page seeds the first turn of a new ticket.
+
+A revision or continuation turn does not re-decide a demo contract its feedback
+did not name. When tech lead feedback requests no demo change,
+`DemoRecipeRevisionPolicy` pins the prior candidate's validated demo recipe: the
+revision prompt states the pinned recipe, and the coordinator replaces the
+turn's returned demo with it before validation, so an unrelated fix can neither
+change a working recipe nor fail a demo hard-stop it was not asked to touch. A
+result awaiting the product owner keeps its contractual null demo. Recovered
+continuations derive the same pin from durable state — the sent-back candidate
+row and the ticket comments made since it by anyone other than the implementer —
+so a demo-failure send-back or a reviewer naming the demo re-opens the recipe
+while unrelated direction does not. Only feedback that names the demo may change
+it.
 
 Every consequential state transition and its audit event are written in one
 transaction. Source, worktrees, previews, screenshots, build outputs, and large

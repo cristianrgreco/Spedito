@@ -898,11 +898,50 @@ proposal is:
 For visible interface or interaction work, the business analyst makes the
 primary review medium explicit in the UX designer ticket's acceptance criteria.
 The managed Demo presents a working surface, interactive prototype, or visual
-screen set covering the material states; Markdown may explain the journey and
-decisions but is not the primary deliverable. A self-contained static web
-prototype does not require an established product runtime. Explicitly
+screen set covering the material states. The default design medium is a
+self-contained HTML screen set or clickable prototype that Spedito serves in the
+browser (`static_web`): real markup and CSS, one page per screen or state with
+an index page linking them, so typography, spacing, and alignment are the
+browser's rather than a rasteriser's. A PDF or image screen set is reserved for
+explicitly document-first outcomes, because a rendered document loses
+typography, alignment, and interaction and the sandbox cannot check it. A
+screen set of any form is a high-fidelity design
+document with realistic renders set in real typefaces, never a schematic or
+pixel-font approximation; Markdown may explain the journey and decisions but is
+not the primary deliverable. A self-contained static web
+prototype does not require an established product runtime. A design ticket
+created before its review medium was planned, whose contract promises a
+prototype, also reviews as an interactive prototype; if that medium cannot show
+the delivered design truthfully, the team member asks the product owner to
+change it rather than substituting another. Explicitly
 document-first UX outcomes such as copy reviews, service blueprints, and
 accessibility audits may remain document-led.
+
+Every proposal also carries its review medium, decided at planning by a
+mechanical rule: setup and story tickets demo as the product surface the
+clarification round fixed — mac_application for a native macOS app, browser for
+a webapp, terminal_application only for a program the user keeps interacting
+with while it runs in a terminal (a TUI, a menu, a prompt loop), command_output
+for a program that is started once with its inputs and prints a result, even
+when the user starts it from a terminal — design tickets about a visible interface review as an
+HTML screen set or prototype in the browser (static_web), research tickets and
+explicitly document-first design outcomes review as a file the owner reads, and
+code-only work states plainly that it has no demo. A terminal
+program's proposal card and ticket read "Opens in Terminal". The proposal card shows the medium as "You'll review this
+as:" in plain language, so accepting the plan accepts the review medium, and
+the stored ticket keeps showing it. Delivery must present exactly that medium.
+If delivery concludes the approved medium is genuinely wrong, it pauses and
+asks the product owner one question proposing the change; only the owner's
+answer — or an owner decision — changes a stored ticket's review medium, never
+a delivery turn. Tickets created before this contract existed carry no medium,
+and their delivery decides the demo as before.
+
+When the owner accepts a delivered ticket, Spedito also records the accepted
+way to demo the product as a verified knowledge page — one per review medium
+the product has shipped, a terminal app's page being "Demo recipe: terminal
+app". Later tickets reuse that established recipe instead
+of rediscovering it, and the page, not README wording, is the authority for
+how the demo runs.
 
 The **Lead** reviews the resulting delivery against the approved ticket
 contract. Higher-risk work can add a separate Security Auditor or specialist
@@ -1355,6 +1394,9 @@ Completion creates one of two immutable candidate kinds:
    Spedito smoke-tests and serves only that directory on its own loopback server,
    blocks prototype network connections, and stops the server with the Demo
    session.
+   A revision keeps the prior candidate's validated demo recipe unless the
+   feedback that caused it names the demo. How the product owner reviews a
+   ticket does not change as a side effect of an unrelated correction.
 2. A business analyst research or investigation ticket may complete with no actual
    repository changes. Its completion handoff, reported checks, review instructions,
    and proposed product knowledge are the durable outcome in SQLite. Spedito records

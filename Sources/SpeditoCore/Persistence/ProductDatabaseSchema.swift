@@ -1,7 +1,7 @@
 import Foundation
 
 enum ProductDatabaseSchema {
-  static let version: Int32 = 4
+  static let version: Int32 = 6
 
   static let sql = """
     CREATE TABLE products (
@@ -65,6 +65,7 @@ enum ProductDatabaseSchema {
         version INTEGER NOT NULL,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
+        demo_kind TEXT,
         UNIQUE(product_id, key_number),
         UNIQUE(product_id, item_key)
     );
@@ -184,6 +185,7 @@ enum ProductDatabaseSchema {
         ticket_type TEXT NOT NULL DEFAULT 'story',
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
+        demo_kind TEXT,
         UNIQUE(session_id, reference),
         UNIQUE(session_id, position)
     );
@@ -1163,7 +1165,7 @@ enum ProductDatabaseSchema {
       JOIN sprints AS sprint ON sprint.id = note.sprint_id
       LEFT JOIN work_items AS item ON item.id = note.work_item_id;
 
-    PRAGMA user_version = 4;
+    PRAGMA user_version = 6;
     """
 
   static let migrationV1ToV2 = """
@@ -1776,6 +1778,51 @@ enum ProductDatabaseSchema {
         0
     ) + 1;
     PRAGMA user_version = 4;
+    """
+
+  /// Adds the owner-approved demo kind contract to proposals and tickets.
+  /// Every existing row reads back NULL — the pre-contract state in which
+  /// delivery still decides the kind, protected only by the recipe pin.
+  /// ALTER TABLE ... ADD COLUMN with a CHECK is durable and idempotent under
+  /// the `user_version` guard in `initializeCurrentSchema`, matching the v4
+  /// migration's shape.
+  static let migrationV4ToV5 = """
+    ALTER TABLE ticket_suggestions ADD COLUMN demo_kind TEXT
+      CHECK (
+        demo_kind IN (
+          'browser', 'static_web', 'mac_application', 'artifact',
+          'command_output', 'none'
+        )
+      );
+    ALTER TABLE work_items ADD COLUMN demo_kind TEXT
+      CHECK (
+        demo_kind IN (
+          'browser', 'static_web', 'mac_application', 'artifact',
+          'command_output', 'none'
+        )
+      );
+    PRAGMA user_version = 5;
+    """
+
+  /// Removes the enumerated CHECK constraint from both `demo_kind` columns so
+  /// a new demo kind needs no schema migration; the `TicketDemoKind` decode
+  /// is the authority for legal values. SQLite cannot alter a CHECK in place,
+  /// so each column is copied into a fresh unconstrained column, dropped, and
+  /// the copy renamed. ADD COLUMN splices the new column in before the table
+  /// constraints, which is exactly where the declarative schema declares
+  /// `demo_kind`, so a migrated database and a fresh install stay identical.
+  /// No foreign key, index, trigger, or view names either column, so no
+  /// cascade fires and DROP COLUMN is legal.
+  static let migrationV5ToV6 = """
+    ALTER TABLE work_items ADD COLUMN demo_kind_migrated TEXT;
+    UPDATE work_items SET demo_kind_migrated = demo_kind;
+    ALTER TABLE work_items DROP COLUMN demo_kind;
+    ALTER TABLE work_items RENAME COLUMN demo_kind_migrated TO demo_kind;
+    ALTER TABLE ticket_suggestions ADD COLUMN demo_kind_migrated TEXT;
+    UPDATE ticket_suggestions SET demo_kind_migrated = demo_kind;
+    ALTER TABLE ticket_suggestions DROP COLUMN demo_kind;
+    ALTER TABLE ticket_suggestions RENAME COLUMN demo_kind_migrated TO demo_kind;
+    PRAGMA user_version = 6;
     """
 
   static let legacyCopyTableOrder = [

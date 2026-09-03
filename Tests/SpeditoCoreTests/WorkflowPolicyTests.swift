@@ -172,9 +172,13 @@ struct WorkflowPolicyTests {
       acceptanceCriteria: ["The revised copy is recorded with its rationale"]
     )
 
+    // A pre-contract design ticket that promises a prototype is contracted
+    // to static_web by the policy itself: the schema admits nothing else, so
+    // a browser or mac_application recipe cannot be emitted, however the
+    // turn orders its keys.
     #expect(
       DeliveryDemoPolicy(assignee: designer, item: prototypeContract)
-        == .reviewablePrototype
+        == .contracted(.staticWeb)
     )
     #expect(
       DeliveryDemoPolicy(assignee: designer, item: documentFirstContract)
@@ -184,6 +188,55 @@ struct WorkflowPolicyTests {
       DeliveryDemoPolicy(assignee: implementer, item: prototypeContract)
         == .anyKind
     )
+  }
+
+  @Test("A stored demo-kind contract overrides every role heuristic")
+  func deliveryDemoPolicyHonoursTheStoredContract() throws {
+    let productID = UUID()
+    let designer = AgentProfile(
+      productID: productID,
+      name: "UX designer",
+      role: .uxDesigner
+    )
+    let implementer = AgentProfile(
+      productID: productID,
+      name: "Implementer",
+      role: .implementer
+    )
+    func item(_ demoKind: TicketDemoKind?) -> WorkItem {
+      WorkItem(
+        productID: productID,
+        key: "T-1",
+        title: "Deliver the contracted outcome",
+        body: "A self-contained prototype demonstrates every named state",
+        acceptanceCriteria: ["The prototype is reviewable"],
+        demoKind: demoKind
+      )
+    }
+
+    // Every stored kind, named explicitly so a new kind cannot pass this test
+    // until its policy is written down here.
+    let expectations: [TicketDemoKind: DeliveryDemoPolicy] = [
+      .browser: .contracted(.browser),
+      .staticWeb: .contracted(.staticWeb),
+      .macApplication: .contracted(.macApplication),
+      .artifact: .contracted(.artifact),
+      .commandOutput: .contracted(.commandOutput),
+      .terminalApplication: .contracted(.terminalApplication),
+      .codeOnly: .codeOnly,
+    ]
+    #expect(Set(expectations.keys) == Set(TicketDemoKind.allCases))
+    for kind in TicketDemoKind.allCases {
+      let expected = try #require(expectations[kind])
+      #expect(DeliveryDemoPolicy(assignee: implementer, item: item(kind)) == expected)
+      // The contract also outranks the UX prototype heuristic.
+      #expect(DeliveryDemoPolicy(assignee: designer, item: item(kind)) == expected)
+    }
+    #expect(
+      DeliveryDemoPolicy(assignee: designer, item: item(nil)) == .contracted(.staticWeb),
+      "a pre-contract prototype ticket derives the static_web contract from its role"
+    )
+    #expect(DeliveryDemoPolicy(assignee: implementer, item: item(nil)) == .anyKind)
   }
 
   @Test("[D02] Scheduler runs independent tickets before their direct dependant")

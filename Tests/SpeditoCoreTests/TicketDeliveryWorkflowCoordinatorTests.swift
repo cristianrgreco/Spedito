@@ -415,6 +415,186 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await store.close()
   }
 
+  @Test("[D10] A pinned demo recipe survives a revision that re-decides the kind")
+  func d10PinnedDemoRecipeSurvivesKindFlippingRevision() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-demo-recipe-pin-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Demo recipe pin")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let designer = try #require(profiles.first { $0.role == .uxDesigner })
+    let workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Design an interactive forecast",
+      type: .task,
+      body: "Create a self-contained browser prototype.",
+      acceptanceCriteria: ["The managed Demo opens the interactive prototype."],
+      priority: .high
+    )
+    let runID = UUID()
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: runID,
+      authorName: designer.name
+    )
+    let prototype = workspace.url.appendingPathComponent("prototype", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: prototype,
+      withIntermediateDirectories: true
+    )
+    try Data("<!doctype html><title>Forecast prototype</title>".utf8).write(
+      to: prototype.appendingPathComponent("index.html")
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        id: runID,
+        productID: product.id,
+        workItemID: workItem.id,
+        profileID: designer.id,
+        status: .running,
+        codexThreadID: "thread-demo-pin",
+        worktreePath: workspace.url.path
+      )
+    )
+
+    func executionResponse(_ result: TicketExecutionResult) throws -> String {
+      String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    }
+
+    let pinnedRecipe = DemoLaunchSpecification(
+      title: "Forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    // The revision answers an unrelated documentation finding but re-decides
+    // the demo as a kind whose shape would hard-stop before any repair could
+    // help: mac_application with a shell launch command fails static recipe
+    // validation, not just the workspace checks.
+    let kindFlippingRevision = try executionResponse(
+      TicketExecutionResult(
+        status: .completed,
+        comment: "Fixed the truncated Markdown command.",
+        question: nil,
+        options: [],
+        summary: "The reviewed city-search journey is available.",
+        changedFiles: ["prototype/index.html"],
+        tests: ["Prototype source check passed"],
+        knowledgeNotes: [],
+        reviewInstructions: ["Open the managed Demo."],
+        demo: DemoLaunchSpecification(
+          title: "Forecast prototype",
+          launchCommand: DemoCommand(executable: "sh", arguments: ["run.sh"]),
+          presentation: DemoPresentation(kind: .macApplication, path: ".build/Forecast.app")
+        ),
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+    )
+
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/demo-pin"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        )
+      ],
+      inboundMessages: []
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+
+    let validated = try await coordinator.validatedExecutionResult(
+      kindFlippingRevision,
+      client: client,
+      threadID: "thread-demo-pin",
+      runID: run.id,
+      productID: product.id,
+      assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
+      workspaceURL: workspace.url,
+      canonicalKnowledgePages: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+
+    // The carried-forward recipe replaces the re-decided demo before
+    // validation, so no repair turn is spent on it and the contract survives.
+    #expect(validated.deliveryKind == .repositoryChange)
+    #expect(validated.result.demo == pinnedRecipe)
+    #expect(validated.result.comment == "Fixed the truncated Markdown command.")
+    #expect(
+      await transport.recordedRequests().filter { $0.method == "turn/start" }.isEmpty
+    )
+
+    // A revision that stops for the product owner keeps its contractual null
+    // demo; the pin only applies to completed results.
+    let awaitingOwner = try executionResponse(
+      TicketExecutionResult(
+        status: .awaitingOwner,
+        comment: "The review finding conflicts with the accepted scope.",
+        question: "Should the prototype adopt the reviewer's alternative layout?",
+        options: ["Keep the accepted layout", "Adopt the alternative layout"],
+        summary: "",
+        changedFiles: [],
+        tests: [],
+        knowledgeNotes: [],
+        reviewInstructions: [],
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+    )
+    let validatedAwaiting = try await coordinator.validatedExecutionResult(
+      awaitingOwner,
+      client: client,
+      threadID: "thread-demo-pin",
+      runID: run.id,
+      productID: product.id,
+      assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
+      workspaceURL: workspace.url,
+      canonicalKnowledgePages: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(validatedAwaiting.result.status == .awaitingOwner)
+    #expect(validatedAwaiting.result.demo == nil)
+
+    await client.disconnect()
+    await store.close()
+  }
+
   @Test("Clean reintegration retains approval for the unchanged candidate")
   func cleanReintegrationRetainsCandidateApproval() async throws {
     let harness = try await makeAcceptanceHarness(
@@ -1036,6 +1216,89 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     #expect(acceptedSHA == harness.candidate.integratedSHA)
     #expect(
       comments.filter { $0.body.contains("is now the accepted trunk") }.count == 1
+    )
+
+    await harness.store.close()
+  }
+
+  @Test("Acceptance establishes the canonical demo recipe page idempotently")
+  @MainActor
+  func acceptanceEstablishesTheCanonicalDemoRecipe() async throws {
+    let demo = DemoLaunchSpecification(
+      title: "Reviewed forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: demo
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    #expect(harness.delegate.errorMessage == nil)
+
+    let pages = try await harness.store.fetchKnowledgePages(productID: harness.product.id)
+    let recipePage = try #require(
+      pages.first { $0.slug == CanonicalDemoRecipeKnowledge.slug(for: .staticWeb) }
+    )
+    #expect(recipePage.kind == .page)
+    #expect(recipePage.verificationStatus == .verified)
+    #expect(
+      pages.first { $0.id == recipePage.parentID }?.slug == "operations"
+    )
+    // The exact accepted recipe is recoverable from the page body, so
+    // downstream context inherits the recipe itself, not a paraphrase.
+    #expect(
+      CanonicalDemoRecipeKnowledge.specification(fromBody: recipePage.bodyMarkdown) == demo
+    )
+    let revisionsAfterFirst = try await harness.store.fetchKnowledgePageRevisions(
+      pageID: recipePage.id
+    )
+
+    // A resumed acceptance after a preserved interruption republishes the
+    // same recipe; the page and its history must not grow.
+    _ = try await harness.store.upsertCanonicalDemoRecipePage(
+      productID: harness.product.id,
+      specification: demo
+    )
+    let pagesAfterResume = try await harness.store.fetchKnowledgePages(
+      productID: harness.product.id
+    )
+    #expect(
+      pagesAfterResume.filter {
+        $0.slug == CanonicalDemoRecipeKnowledge.slug(for: .staticWeb)
+      }.count == 1
+    )
+    #expect(
+      try await harness.store.fetchKnowledgePageRevisions(pageID: recipePage.id).count
+        == revisionsAfterFirst.count
+    )
+
+    // A later accepted candidate with a changed recipe updates the page in
+    // place with one new revision.
+    let changed = DemoLaunchSpecification(
+      title: "Reviewed forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype/v2")
+    )
+    _ = try await harness.store.upsertCanonicalDemoRecipePage(
+      productID: harness.product.id,
+      specification: changed
+    )
+    let updated = try #require(
+      try await harness.store.fetchKnowledgePages(productID: harness.product.id)
+        .first { $0.id == recipePage.id }
+    )
+    #expect(
+      CanonicalDemoRecipeKnowledge.specification(fromBody: updated.bodyMarkdown) == changed
+    )
+    #expect(
+      try await harness.store.fetchKnowledgePageRevisions(pageID: recipePage.id).count
+        == revisionsAfterFirst.count + 1
     )
 
     await harness.store.close()
@@ -2062,6 +2325,216 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// A pre-contract design ticket that promises a prototype is contracted to
+  /// static_web by the delivery policy rather than by a stored kind (owner
+  /// decision, 2 September 2026). Its contest must therefore offer Spedito's
+  /// canonical options with that derived kind as the "keep" choice, and the
+  /// owner's change must land on the ticket exactly as for a stored contract.
+  @Test("A pre-contract design prototype contests its derived static_web medium")
+  @MainActor
+  func preContractPrototypeContestUsesTheDerivedKind() async throws {
+    let harness = try await makeRecoveryHarness(
+      workspaceExists: true,
+      assigneeRole: .uxDesigner,
+      acceptanceCriteria: ["A self-contained prototype demonstrates every named state"]
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    #expect(harness.workItem.demoKind == nil)
+
+    let contest = TicketExecutionResult(
+      status: .awaitingOwner,
+      comment: "The design is a screen recording the owner watches, not a page.",
+      question: "Should this design be reviewed as a file you read instead of a prototype?",
+      options: ["Review it as a file", "Keep the prototype"],
+      summary: "",
+      changedFiles: [],
+      tests: [],
+      knowledgeNotes: [],
+      reviewInstructions: [],
+      proposedDemoKind: .artifact,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    await harness.coordinator.processExecutionResult(
+      contest,
+      deliveryKind: .repositoryChange,
+      implementationRunID: harness.run.id,
+      reviewCycle: 0,
+      plan: harness.plan
+    )
+
+    let question = try #require(
+      try await harness.store.fetchComments(workItemID: harness.workItem.id)
+        .last?.ownerQuestion
+    )
+    #expect(
+      question.options == [
+        DemoKindContestPolicy.changeOption(to: .artifact),
+        DemoKindContestPolicy.keepOption(current: .staticWeb),
+      ],
+      "the derived static_web contract is the keep option, not the agent's own wording"
+    )
+
+    _ = try await harness.store.appendComment(
+      workItemID: harness.workItem.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: DemoKindContestPolicy.changeOption(to: .artifact),
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: question.prompt,
+            options: question.options
+          ),
+          selectedOption: DemoKindContestPolicy.changeOption(to: .artifact),
+          answer: DemoKindContestPolicy.changeOption(to: .artifact)
+        )
+      ]
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    let updated = try await harness.coordinator.applyContestedDemoKindDecision(
+      item: harness.workItem,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(updated.demoKind == .artifact)
+    let persisted = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(persisted.demoKind == .artifact)
+    await harness.client.disconnect()
+    await harness.store.close()
+  }
+
+  @Test("A contested review medium asks the owner and the answer changes the contract")
+  @MainActor
+  func contestedDemoKindAsksTheOwnerAndAppliesTheAnswer() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let contracted = try await harness.store.updateWorkItemDemoKind(
+      id: harness.workItem.id,
+      demoKind: .browser
+    )
+    #expect(contracted.demoKind == .browser)
+
+    // The contracted turn cannot emit another kind, so it contests through
+    // awaiting_owner with proposedDemoKind.
+    let contest = TicketExecutionResult(
+      status: .awaitingOwner,
+      comment: "The delivered outcome is a built Mac app, not a web service.",
+      question: "Should this ticket be reviewed as a Mac app instead of in the browser?",
+      options: ["Review it as a Mac app", "Keep the browser demo"],
+      summary: "",
+      changedFiles: [],
+      tests: [],
+      knowledgeNotes: [],
+      reviewInstructions: [],
+      proposedDemoKind: .macApplication,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    await harness.coordinator.processExecutionResult(
+      contest,
+      deliveryKind: .repositoryChange,
+      implementationRunID: harness.run.id,
+      reviewCycle: 0,
+      plan: harness.plan
+    )
+
+    let question = try #require(
+      try await harness.store.fetchComments(workItemID: harness.workItem.id)
+        .last?.ownerQuestion
+    )
+    #expect(question.prompt == contest.question)
+    #expect(
+      question.options == [
+        DemoKindContestPolicy.changeOption(to: .macApplication),
+        DemoKindContestPolicy.keepOption(current: .browser),
+      ],
+      "Spedito, not the agent, authors the contested-kind decision options"
+    )
+    #expect(
+      try await harness.store.fetchAgentRun(id: harness.run.id).status == .awaitingOwner
+    )
+
+    // The owner accepts the change through the question card, which resumes
+    // the run the way the app does.
+    _ = try await harness.store.appendComment(
+      workItemID: harness.workItem.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: DemoKindContestPolicy.changeOption(to: .macApplication),
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: question.prompt,
+            options: question.options
+          ),
+          selectedOption: DemoKindContestPolicy.changeOption(to: .macApplication),
+          answer: DemoKindContestPolicy.changeOption(to: .macApplication)
+        )
+      ]
+    )
+    await harness.coordinator.handleSprintOwnerComment(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id,
+      body: DemoKindContestPolicy.changeOption(to: .macApplication)
+    )
+    #expect(try await harness.store.fetchAgentRun(id: harness.run.id).status == .queued)
+
+    // A fresh coordinator instance applies the durable answer exactly as the
+    // continuation turn's preparation does after a relaunch.
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    let updated = try await relaunched.applyContestedDemoKindDecision(
+      item: contracted,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(updated.demoKind == .macApplication)
+    let persisted = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(persisted.demoKind == .macApplication)
+    #expect(persisted.version == contracted.version + 1)
+    #expect(
+      try await harness.store.fetchActivity(workItemID: harness.workItem.id)
+        .contains { $0.kind == "work_item.demo_kind_changed" }
+    )
+
+    // The continuation turn's result schema is built from the new contract.
+    let implementer = try #require(
+      try await harness.store.fetchAgentProfiles(productID: harness.product.id)
+        .first { $0.role == .implementer }
+    )
+    #expect(
+      DeliveryDemoPolicy(assignee: implementer, item: persisted)
+        == .contracted(.macApplication)
+    )
+
+    // Re-applying the same durable answer is a no-op, so recovery can repeat.
+    let reapplied = try await relaunched.applyContestedDemoKindDecision(
+      item: persisted,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(reapplied.version == persisted.version)
+
+    await harness.store.close()
+  }
+
   /// Existing partial coverage:
   /// - `SprintWorkRecoveryTests.failedPostReviewDemoIsRecoverable`
   /// - `MacOSDemoLauncherTests.hostFailureDisposition`
@@ -2342,7 +2815,9 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   @MainActor
   private func makeRecoveryHarness(
     workspaceExists: Bool,
-    recoversCompletedResponse: Bool = false
+    recoversCompletedResponse: Bool = false,
+    assigneeRole: AgentRole = .implementer,
+    acceptanceCriteria: [String] = ["Recovery reuses the durable run."]
   ) async throws -> RecoveryHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-recovery-coordinator-\(UUID())",
@@ -2353,11 +2828,11 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let store = try SQLiteStore(url: databaseURL)
     let product = try await store.createProduct(name: "Recovery authority")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
-    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let implementer = try #require(profiles.first { $0.role == assigneeRole })
     var workItem = try await store.createWorkItem(
       productID: product.id,
       title: "Resume preserved delivery",
-      acceptanceCriteria: ["Recovery reuses the durable run."]
+      acceptanceCriteria: acceptanceCriteria
     )
     workItem = try await store.transitionWorkItem(
       id: workItem.id,
@@ -2707,7 +3182,6 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   }
 
 
-
   @MainActor
   private struct AcceptanceHarness {
     let root: URL
@@ -2734,6 +3208,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let runtimeCoordinator: TicketDeliveryRuntimeCoordinator
     let coordinator: TicketDeliveryWorkflowCoordinator
   }
+
   @MainActor
   private struct ReviewRecoveryHarness {
     let root: URL

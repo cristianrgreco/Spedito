@@ -1778,7 +1778,8 @@ struct EpicPlanningJourneyTests {
           "priority": "high",
           "rationale": "This delivers the agreed owner outcome.",
           "dependsOn": [],
-          "environmentRelationship": "independent"
+          "environmentRelationship": "independent",
+          "demoKind": "mac_application"
         }
       ]
       }

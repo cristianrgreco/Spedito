@@ -771,6 +771,28 @@ struct EpicPlanningPresentationTests {
     #expect([prerequisite, target].allSatisfy { $0.status == .proposed })
   }
 
+  @Test("The proposal card states the review medium before acceptance")
+  func proposalCardStatesTheReviewMedium() {
+    let expectedLines: [TicketDemoKind: String] = [
+      .browser: "Opens in your browser",
+      .staticWeb: "An interactive prototype",
+      .macApplication: "Opens as a Mac app",
+      .artifact: "A file you read",
+      .commandOutput: "Command output",
+      .terminalApplication: "Opens in Terminal",
+      .codeOnly: "A code change with no demo",
+    ]
+    for kind in TicketDemoKind.allCases {
+      let metadata = TicketReviewMediumPresentation.metadata(for: kind)
+      #expect(metadata?.title == "You'll review this as")
+      #expect(metadata?.value == expectedLines[kind])
+    }
+    #expect(
+      TicketReviewMediumPresentation.metadata(for: nil) == nil,
+      "a pre-contract proposal shows no review-medium line"
+    )
+  }
+
   @Test("E10 all-suggestion confirmations state exact scope and no sprint effect")
   func e10AllSuggestionConfirmationsStateScope() {
     let sessionID = UUID()

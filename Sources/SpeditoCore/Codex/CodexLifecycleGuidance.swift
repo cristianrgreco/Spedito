@@ -16,20 +16,39 @@ enum CodexTicketDeliveryMode: Equatable, Sendable {
 public enum DeliveryDemoPolicy: Equatable, Sendable {
   /// Every validator-supported presentation kind.
   case anyKind
-  /// A UX ticket whose contract promises a reviewable prototype: the demo
-  /// must open as an interactive surface, so only static_web, browser, and
-  /// mac_application are expressible.
-  case reviewablePrototype
+  /// The ticket carries an owner-approved demo kind, or a pre-contract UX
+  /// designer ticket promises a reviewable prototype: only that kind's branch
+  /// is expressible, so a contract-breaking recipe is rejected inside the
+  /// turn where structured-output retries are cheap.
+  case contracted(DemoPresentationKind)
+  /// The ticket is contracted as code-only work: the demo must be null.
+  case codeOnly
 
   public init(assignee: AgentProfile, item: WorkItem) {
+    if let contract = item.demoKind {
+      self = contract.presentationKind.map(DeliveryDemoPolicy.contracted) ?? .codeOnly
+      return
+    }
     guard assignee.role == .uxDesigner else {
       self = .anyKind
       return
     }
+    // A pre-contract design ticket that promises a prototype delivers it as
+    // static_web, exactly as a planned design ticket is contracted. Measured
+    // pre-contract UX turns admitted browser and mac_application as well and
+    // committed to browser by emitting launchCommand before presentation, a
+    // key order no wording controls; the owner chose the structural fix
+    // (2 September 2026). A design ticket that genuinely needs a working
+    // product surface contests the medium through proposedDemoKind.
     let contract = ([item.title, item.body] + item.acceptanceCriteria)
       .joined(separator: " ")
       .lowercased()
-    self = contract.contains("prototype") ? .reviewablePrototype : .anyKind
+    self = contract.contains("prototype") ? .contracted(.staticWeb) : .anyKind
+  }
+
+  /// The single kind this policy admits, when it admits exactly one.
+  public var contractedKind: DemoPresentationKind? {
+    if case .contracted(let kind) = self { kind } else { nil }
   }
 }
 
@@ -235,7 +254,7 @@ enum CodexLifecycleGuidance {
     splitting, or changing it.
     """
 
-  private static let productChangeDelivery = """
+  private static let productChangeDeliveryPreamble = """
     DELIVERY MODE: PRODUCT CHANGE
 
     Implement or design the authorised product outcome in the smallest maintainable change. Inspect
@@ -276,19 +295,106 @@ enum CodexLifecycleGuidance {
     states in the completion handoff why no demo applies. One
     presentation may support several ordered reviewInstructions.
 
-    Use static_web for a self-contained interactive prototype in a workspace-relative directory
-    containing index.html. Spedito serves that exact directory on a host-owned loopback server, so
-    static_web has no preparationCommands, launchCommand, port environment variable, or readiness
-    declaration. Use browser for a product-owned loopback web service, mac_application for a built
-    app, artifact for a workspace-relative reviewable file, and command_output for a bounded
-    demonstration command. Choose the kind mechanically from what the owner will open: a prototype
-    or page directory is static_web, never mac_application, command_output, or artifact; a library
-    or logic change with no owner-visible surface returns a null demo rather than inventing a
-    surface. An artifact path must point at an existing reviewable file in an inert text, data,
-    image, or PDF format — an HTML page is a static_web prototype, not an artifact. For browser and command_output, launchCommand is the foreground service
-    or bounded scenario; use executable and argument arrays, never a shell, pipeline, redirection,
-    or compound command. Spedito supplies {{PORT}} and the configured port environment variable to a
-    browser service. Browser readiness and presentation paths begin with "/" and contain no host.
+    When the ticket contract in your prompt names an owner-approved review medium, that medium was
+    accepted with the plan and is not yours to re-decide: return exactly that kind's recipe shape
+    (the result schema admits only it), or a null demo when the contract says the work is code-only.
+    If the delivered outcome genuinely cannot be presented as the contracted medium, do not work
+    around the contract or silently substitute a kind. Return awaiting_owner with one concise
+    question explaining why the contracted medium does not fit, and set proposedDemoKind to the
+    medium you believe correct; Spedito presents the decision options to the product owner, and
+    the changed contract reaches your continuation turn only after the owner accepts it.
+    Write that question in the product owner's words: say what the product is (for example "a
+    program you use in a terminal window"), why the approved medium cannot show it truthfully, and
+    what you propose instead; never put an internal identifier such as terminal_application or
+    mac_application in the question, and do not offer scope changes such as building a Mac app.
+    Never wrap the product in another surface to satisfy a contracted medium —
+    a Cocoa window around a terminal program, a web page that embeds or launches a Mac app, a
+    bundle around a script; contest the medium instead. A design prototype is not a wrapper: an
+    HTML mock of a native window or of a web screen is the prototype medium and is static_web,
+    never mac_application (which is only a built .app bundle) and never browser.
+    Without a contracted medium, choose the kind mechanically from what the owner will open, then
+    follow that kind's exact
+    shape below, replacing every placeholder with the real evidence from this delivery. Emit the
+    presentation object, with its kind, before every other recipe field, exactly as these shapes
+    do.
+    """
+
+  /// One literal recipe shape per kind an implementation role may return. A live pilot's
+  /// implementer guessed the recipe structure for four turns, so the catalogue teaches
+  /// the exact shape instead.
+  private static let implementerDemoCatalogue = """
+    - static_web: a self-contained interactive prototype or HTML screen set in a workspace-relative
+      directory containing index.html. Spedito serves that exact directory on a host-owned loopback
+      server, so every command, port, and readiness field is null or empty:
+      {"presentation":{"kind":"static_web","path":"your/prototype/directory"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null}
+    - mac_application: a built macOS app bundle. Preparation commands may build the bundle;
+      Spedito opens it directly itself, so launchCommand, port, and readiness are null:
+      {"presentation":{"kind":"mac_application","path":"path/to/YourApp.app"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[{"executable":"scripts/your-prepare-script.sh","arguments":[],"workingDirectory":".","timeoutSeconds":300}],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null}
+    - browser: a product-owned loopback web service. launchCommand is the foreground service;
+      Spedito supplies {{PORT}} and the configured port environment variable. Readiness and
+      presentation paths begin with "/" and contain no host:
+      {"presentation":{"kind":"browser","path":"/"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":{"executable":"path/to/your-service","arguments":[],"workingDirectory":".","timeoutSeconds":120},"portEnvironmentVariable":"PORT","readiness":{"kind":"http","path":"/","timeoutSeconds":60}}
+    - artifact: an existing reviewable file in an inert text, data, image, or PDF format
+      (accepted: csv, gif, jpeg, jpg, json, log, markdown, md, pdf, png, txt, webp — an SVG can
+      contain active content and is never accepted) — an
+      HTML page is a static_web prototype, not an artifact, while a static visual screen set
+      delivered as one PDF or image file is an artifact, never static_web or mac_application;
+      deliver a design screen set as HTML under static_web and use a PDF or image only when the
+      ticket contract is explicitly document-first:
+      {"presentation":{"kind":"artifact","path":"path/to/your-report.md"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null}
+    - command_output: a bounded demonstration command whose captured output is shown:
+      {"presentation":{"kind":"command_output","path":null},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":{"executable":"path/to/your-command","arguments":[],"workingDirectory":".","timeoutSeconds":120},"portEnvironmentVariable":null,"readiness":null}
+    - terminal_application: an interactive terminal program the product owner drives — a TUI, a
+      menu, a prompt loop. Preparation commands build it inside the workspace; launchCommand names
+      the built workspace-relative executable (a path containing "/", never a bare tool such as go,
+      python3, or sh) and path, port, and readiness are null. Spedito opens the program in a
+      Terminal window and its timeout is ignored:
+      {"presentation":{"kind":"terminal_application","path":null},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[{"executable":"scripts/build.sh","arguments":[],"workingDirectory":".","timeoutSeconds":300}],"launchCommand":{"executable":"bin/your-program","arguments":[],"workingDirectory":".","timeoutSeconds":120},"portEnvironmentVariable":null,"readiness":null}
+
+    A prototype or page directory is static_web, never mac_application, command_output, or
+    artifact; a program the owner drives interactively in a terminal is terminal_application,
+    never command_output or a Mac app that wraps it, while a program run once for its printed
+    result is command_output; a library or logic change with no owner-visible surface returns a
+    null demo rather than inventing a surface. Use executable and argument arrays, never a shell,
+    pipeline, redirection, or compound command.
+    """
+
+  /// The design catalogue: the two shapes a design ticket can truthfully return. A designer
+  /// never needs a service, bundle, or command shape, and measured UX delivery samples copied
+  /// the implementer catalogue's browser shape verbatim (placeholder path included) or handed
+  /// the HTML directory over as a mac_application bundle whenever those shapes were present.
+  private static let designerDemoCatalogue = """
+    - static_web: a self-contained interactive prototype or HTML screen set in a workspace-relative
+      directory containing index.html. Spedito serves that exact directory on a host-owned loopback
+      server, so every command, port, and readiness field is null or empty:
+      {"presentation":{"kind":"static_web","path":"your/prototype/directory"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null}
+    - artifact: only for an explicitly document-first contract such as a copy review, service
+      blueprint, or accessibility audit — one existing reviewable file in an inert text, data,
+      image, or PDF format (accepted: csv, gif, jpeg, jpg, json, log, markdown, md, pdf, png, txt,
+      webp — an SVG can contain active content and is never accepted). A screen set of a visible
+      interface is never an artifact: deliver a design screen set as HTML under static_web:
+      {"presentation":{"kind":"artifact","path":"path/to/your-report.md"},"schemaVersion":1,"title":"Owner-facing title","preparationCommands":[],"launchCommand":null,"portEnvironmentVariable":null,"readiness":null}
+
+    A design delivery never returns browser, mac_application, command_output, or
+    terminal_application; a working product surface is a delivery ticket's demo, not a design
+    ticket's.
+    """
+
+  private static let productChangeDeliveryFidelity = """
+    An HTML screen set is real markup and CSS in a static_web directory. It is never a browser
+    recipe: it has no service of its own, Spedito serves the directory itself, and its launchCommand,
+    port, and readiness are null. Use system font stacks such as -apple-system, "Helvetica Neue",
+    Helvetica, Arial; a consistent spacing scale; aligned layouts; realistic content; every named
+    state reachable from index.html; and no external network resources, because outbound requests
+    are blocked. Never draw text into images. A static visual screen set is a design document the product owner reads
+    at full size, so it must look like one: realistic screen renders set in real typefaces. The standard PDF fonts
+    Helvetica, Courier, and Times need no embedding and render on the owner's Mac, and the system
+    font directories are readable in this sandbox for CoreText, `sips`, and `qlmanage`. Never
+    replace text with a hand-drawn glyph alphabet, pixel font, bitmap letters, or an all-capitals
+    approximation, and never lower the artefact's fidelity to make it easier to inspect inside the
+    sandbox. If your own rasterised check shows blank or missing text, that is a limitation of the
+    check, not of the artefact: verify the file structurally, report the limitation in the
+    completion handoff, and keep the real typefaces.
     Spedito smoke-tests the recipe from a clean detached checkout containing only version-controlled
     candidate files: ignored dependencies, build output, caches, and state left by earlier
     implementation checks will not exist. Demo preparation must recreate everything the launch needs
@@ -298,12 +404,23 @@ enum CodexLifecycleGuidance {
     repository build, generation, or other preparation command that the README, Environments
     knowledge, or completion handoff presents as required before the product runs must appear in
     preparationCommands in the documented order, so the managed smoke test proves the same claim
-    the documentation makes. Document a check the product does not need before it runs as a test
+    the documentation makes. When verified knowledge contains the canonical demo recipe page for
+    the delivered kind, that page — not README prose — is authoritative for how the demo runs:
+    reuse its recipe, and align documentation with the recipe rather than re-deriving a sequence
+    from wording. Document a check the product does not need before it runs as a test
     entry point and report it in tests; do not present it as a readiness step unless the recipe
     runs it. Do not document a readiness step, build, or check as established or verified unless
     this delivery ran it successfully in this workspace and reports it in tests; a documented
     sequence that the recipe does not run is a false operational instruction.
     """
+
+  private static func productChangeDelivery(role: AgentRole) -> String {
+    [
+      productChangeDeliveryPreamble,
+      role == .uxDesigner ? designerDemoCatalogue : implementerDemoCatalogue,
+      productChangeDeliveryFidelity,
+    ].joined(separator: "\n\n")
+  }
 
   private static let knowledgeDelivery = """
     DURABLE PRODUCT KNOWLEDGE
@@ -426,6 +543,15 @@ enum CodexLifecycleGuidance {
     other preparation step that the documentation presents as required before the product runs but
     preparationCommands omit is a materially false operational instruction: the managed smoke test
     can no longer prove the documented claim, so it blocks even when the recipe alone looks valid.
+    The canonical demo recipe knowledge page, when verified knowledge contains one for the
+    delivered kind, is authoritative over README wording for how the demo runs: a recipe matching
+    the canonical page is not blocked by differing README phrasing.
+
+    A candidate that wraps the product in another surface to satisfy the contracted medium — a
+    Cocoa window around a terminal program, a page around a Mac app, a bundle around a script — is
+    returned with changes requested even when the wrapper works: the finding names the contest
+    path, which is for the delivery to return awaiting_owner with proposedDemoKind so the product
+    owner changes the medium, and never accepts the wrapper as the product.
 
     A repository-free local outcome correctly has no demo recipe. Its product owner review
     instructions must begin from the clearly identified completion handoff and in-app product

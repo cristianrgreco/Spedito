@@ -738,7 +738,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
 
-      let currentItem = workItems.first(where: { $0.id == item.id }) ?? item
+      var currentItem = workItems.first(where: { $0.id == item.id }) ?? item
       let prerequisiteIDs = Set(
         dependencies.filter { $0.workItemID == item.id }.map(\.dependsOnWorkItemID)
       )
@@ -756,6 +756,15 @@ public final class TicketDeliveryWorkflowCoordinator {
         )
       }
       let comments = try await store.fetchComments(workItemID: item.id)
+      let contractBeforeContest = currentItem.demoKind
+      currentItem = try await applyContestedDemoKindDecision(
+        item: currentItem,
+        comments: comments,
+        store: store
+      )
+      if currentItem.demoKind != contractBeforeContest {
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      }
       let knowledgeSelection = KnowledgeContextSelector.select(
         pages: knowledgePages,
         item: currentItem,
@@ -781,18 +790,35 @@ public final class TicketDeliveryWorkflowCoordinator {
         for: run.id,
         permissionRequests: permissionRequests
       )
+      let pinnedDemoRecipe =
+        isContinuation
+        ? DemoRecipeRevisionPolicy.pinnedRecipeForContinuation(
+          latestCandidate: latestCandidate,
+          runID: run.id,
+          implementerName: assignee.name,
+          comments: comments
+        )
+        : nil
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: assignee,
+        item: currentItem
+      )
       let continuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
         recentComments: comments,
-        adoptedBaseline: adoptedBaseline
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       let replacementContinuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
         recentComments: [],
         conversationIsAvailable: false,
-        adoptedBaseline: adoptedBaseline
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       let executionPrompt = CodexTicketExecutor.prompt(
         product: product,
@@ -809,10 +835,6 @@ public final class TicketDeliveryWorkflowCoordinator {
         continuationMessage: isContinuation
           ? replacementContinuationPrompt
           : nil
-      )
-      let deliveryDemoPolicy = DeliveryDemoPolicy(
-        assignee: assignee,
-        item: currentItem
       )
       var activeThreadID = threadID
       var turnPrompt =
@@ -909,7 +931,9 @@ public final class TicketDeliveryWorkflowCoordinator {
         assignee: assignee,
         deliveryDemoPolicy: deliveryDemoPolicy,
         workspaceURL: workspace,
-        canonicalKnowledgePages: knowledgeSelection.directoryPages
+        canonicalKnowledgePages: knowledgeSelection.directoryPages,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        demoKindContract: currentItem.demoKind
       )
       await processExecutionResult(
         validated.result,
@@ -1008,6 +1032,28 @@ public final class TicketDeliveryWorkflowCoordinator {
     }
   }
 
+  /// Applies the product owner's contested-kind answer to the ticket durably,
+  /// before any continuation turn runs, so the turn's schema and prompts are
+  /// built from the new contract even after a relaunch between the answer and
+  /// the turn. The answer is matched by its exact canonical option text, and
+  /// re-applying the same answer is a no-op, which keeps recovery idempotent.
+  func applyContestedDemoKindDecision(
+    item: WorkItem,
+    comments: [TicketComment],
+    store: SQLiteStore
+  ) async throws -> WorkItem {
+    guard
+      let acceptedKind = DemoKindContestPolicy.acceptedKindChange(comments: comments),
+      item.demoKind != acceptedKind
+    else {
+      return item
+    }
+    return try await store.updateWorkItemDemoKind(
+      id: item.id,
+      demoKind: acceptedKind
+    )
+  }
+
   public func validatedExecutionResult(
     _ response: String,
     client: CodexAppServerClient,
@@ -1017,7 +1063,9 @@ public final class TicketDeliveryWorkflowCoordinator {
     assignee: AgentProfile,
     deliveryDemoPolicy: DeliveryDemoPolicy,
     workspaceURL: URL,
-    canonicalKnowledgePages: [KnowledgePage]
+    canonicalKnowledgePages: [KnowledgePage],
+    pinnedDemoRecipe: DemoLaunchSpecification? = nil,
+    demoKindContract: TicketDemoKind? = nil
   ) async throws -> (result: TicketExecutionResult, deliveryKind: CandidateDeliveryKind) {
     guard let validationStore = store(for: productID) else {
       throw PersistenceError.recordNotFound("knowledge destinations for agent run \(runID)")
@@ -1033,7 +1081,10 @@ public final class TicketDeliveryWorkflowCoordinator {
 
     for repairAttempt in 0...maximumRepairAttempts {
       do {
-        let result = try CodexTicketExecutor.decode(responseToValidate)
+        let result = try CodexTicketExecutor.decode(
+          responseToValidate,
+          pinnedDemoRecipe: pinnedDemoRecipe
+        )
         try CodexTicketExecutor.validateKnowledgePageProposals(
           in: result,
           canonicalPages: canonicalKnowledgePages,
@@ -1046,7 +1097,8 @@ public final class TicketDeliveryWorkflowCoordinator {
         let deliveryKind = try await validateDeliveryEvidence(
           result,
           assignee: assignee,
-          workspaceURL: workspaceURL
+          workspaceURL: workspaceURL,
+          demoKindContract: demoKindContract
         )
         return (result, deliveryKind)
       } catch let validationError as TicketExecutionGenerationError {
@@ -1109,7 +1161,8 @@ public final class TicketDeliveryWorkflowCoordinator {
   public func validateDeliveryEvidence(
     _ result: TicketExecutionResult,
     assignee: AgentProfile,
-    workspaceURL: URL
+    workspaceURL: URL,
+    demoKindContract: TicketDemoKind? = nil
   ) async throws -> CandidateDeliveryKind {
     let actualChangePaths: [String]
     if result.status == .completed || result.decisionArtifact != nil {
@@ -1159,9 +1212,28 @@ public final class TicketDeliveryWorkflowCoordinator {
       }
       return deliveryKind
     }
+    if demoKindContract == .codeOnly {
+      // The owner approved this ticket as a code change with no demo, so the
+      // null demo is the contracted result for repository-changing work.
+      guard result.demo == nil else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "This ticket is contracted as a code change with no demo; the result must not supply a recipe."
+        )
+      }
+      return deliveryKind
+    }
     guard let demo = result.demo else {
       throw TicketExecutionGenerationError.invalidResponse(
         "Repository-changing work needs a managed demo recipe for the product owner."
+      )
+    }
+    if let contractedKind = demoKindContract?.presentationKind,
+      demo.presentation.kind != contractedKind
+    {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "The demo recipe uses \(demo.presentation.kind.rawValue), but the owner-approved review "
+          + "medium for this ticket is \(contractedKind.rawValue). Return that kind, or contest it "
+          + "with awaiting_owner and proposedDemoKind."
       )
     }
     do {
@@ -1210,18 +1282,43 @@ public final class TicketDeliveryWorkflowCoordinator {
     let productID = context.product.id
 
     if result.status == .awaitingOwner {
+      // A contested review medium gets Spedito's canonical decision options,
+      // not the agent's: the owner's exact answer is then the durable record
+      // the continuation applies to the ticket before its next turn.
+      // A pre-contract design ticket is contracted by the delivery policy
+      // itself, so its contest keeps that derived kind as the "keep" option.
+      let effectiveContract =
+        item.demoKind
+        ?? DeliveryDemoPolicy(assignee: assignee, item: item).contractedKind
+        .flatMap { TicketDemoKind(rawValue: $0.rawValue) }
+      let contestedKindQuestion: TicketOwnerQuestion? =
+        if let question = result.question,
+          let proposed = result.proposedDemoKind,
+          let contracted = effectiveContract,
+          proposed != contracted
+        {
+          DemoKindContestPolicy.question(
+            prompt: question,
+            current: contracted,
+            proposed: proposed,
+            decisionArtifact: result.decisionArtifact
+          )
+        } else {
+          nil
+        }
       _ = try? await store.appendComment(
         workItemID: item.id,
         authorKind: .agent,
         authorName: assignee.name,
         body: result.workLogComment,
-        ownerQuestion: result.question.map {
-          TicketOwnerQuestion(
-            prompt: $0,
-            options: result.options,
-            decisionArtifact: result.decisionArtifact
-          )
-        }
+        ownerQuestion: contestedKindQuestion
+          ?? result.question.map {
+            TicketOwnerQuestion(
+              prompt: $0,
+              options: result.options,
+              decisionArtifact: result.decisionArtifact
+            )
+          }
       )
     }
 
@@ -2446,16 +2543,22 @@ public final class TicketDeliveryWorkflowCoordinator {
         assignee: implementer,
         savedPermissionGrants: context.permissionGrants
       )
+      let pinnedDemoRecipe = DemoRecipeRevisionPolicy.pinnedRecipeForRevision(
+        reviewFeedback: review.workLogComment,
+        priorDemo: implementation.demo
+      )
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: implementer,
+        item: item
+      )
       let revisionPrompt = CodexTicketExecutor.revisionPrompt(
         item: item,
         reviewer: techLead,
         feedback: review.workLogComment,
         recentComments: comments,
-        adoptedBaseline: adoptedBaseline
-      )
-      let deliveryDemoPolicy = DeliveryDemoPolicy(
-        assignee: implementer,
-        item: item
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       var revisionThreadID: String
       if let existingThreadID = implementationRun.codexThreadID {
@@ -2601,7 +2704,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           assignee: implementer,
           deliveryDemoPolicy: deliveryDemoPolicy,
           workspaceURL: revisionWorkspace,
-          canonicalKnowledgePages: context.knowledgePages
+          canonicalKnowledgePages: context.knowledgePages,
+          pinnedDemoRecipe: pinnedDemoRecipe,
+          demoKindContract: item.demoKind
         )
         await processExecutionResult(
           revision.result,
@@ -4003,6 +4108,19 @@ public final class TicketDeliveryWorkflowCoordinator {
         )
       }
       _ = try await store.updateCandidateRevision(id: candidate.id, status: .accepted)
+      // Acceptance establishes the product's canonical demo recipe for this
+      // presentation kind in verified knowledge, so every later delivery turn
+      // inherits it instead of re-deriving one. The accepted candidate row
+      // remains the audit source and the only launch authority.
+      if candidate.deliveryKind.changesRepository,
+        let specification = executionResult.demo,
+        (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
+      {
+        _ = try await store.upsertCanonicalDemoRecipePage(
+          productID: productID,
+          specification: specification
+        )
+      }
 
       var latest = try await store.fetchWorkItems(productID: productID)
         .first(where: { $0.id == current.id })
