@@ -20,8 +20,8 @@ The right shape is layered:
 
 This follows the repository's architecture and verification rules in `AGENTS.md`. It does not replace strong policy, persistence, Git, adapter, and recovery tests with broad but shallow UI tests.
 
-The inventory below defines **124 owner journey contracts**. The executable
-ledger in section 3 records all 124: 94 have row-named evidence, 29 use
+The inventory below defines **128 owner journey contracts**. The executable
+ledger in section 3 records all 128: 99 have row-named evidence, 28 use
 non-duplicative composed evidence, and S08 remains explicitly blocked on an
 unimplemented product authority rather than receiving false coverage.
 Parameterized and interruption variants make the executable test-method count
@@ -477,7 +477,7 @@ Priority meanings:
 - **P1:** primary product workflow and recovery.
 - **P2:** secondary navigation, filtering, display preference, or low-risk convenience behavior.
 
-## 5. Comprehensive owner journey inventory — 125
+## 5. Comprehensive owner journey inventory — 128
 
 Two rules apply to every row before it is scheduled.
 
@@ -938,8 +938,8 @@ Every full-app UI test must:
 
 ## 10. Decision
 
-The owner journey program is complete. Section 3 records every one of the 124
-inventory rows: 94 are **Named**, 29 are **Composed**, and S08 is the sole
+The owner journey program is complete. Section 3 records every one of the 128
+inventory rows: 99 are **Named**, 28 are **Composed**, and S08 is the sole
 **Blocked on product** row. All 19 `Shell = Y` rows have launched-process
 coverage in a 20-test serialized target, including its bundle-launch guard.
 The deterministic close-out suite exposes 580 tests; the final validation
