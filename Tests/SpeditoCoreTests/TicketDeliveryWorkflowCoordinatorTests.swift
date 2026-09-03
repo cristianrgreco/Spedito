@@ -1948,7 +1948,8 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     deliveryKind: CandidateDeliveryKind,
     demo: DemoLaunchSpecification? = nil,
     epicOutcome: String? = nil,
-    followUpTicketProposals: [FollowUpTicketProposalDraft] = []
+    followUpTicketProposals: [FollowUpTicketProposalDraft] = [],
+    assignsSettlementIdentity: Bool = false
   ) async throws -> AcceptanceHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-acceptance-coordinator-\(UUID())",
@@ -2140,6 +2141,14 @@ struct TicketDeliveryWorkflowCoordinatorTests {
         commitCount: 0,
         executionResultJSON: resultJSON
       )
+    }
+    if assignsSettlementIdentity {
+      // Production settles a delivery under a prepared identity, so the run
+      // row carries the candidate version it settled until it is released.
+      let preparation = try await store.prepareCompletedDeliverySettlement(
+        runID: implementationRun.id
+      )
+      #expect(preparation.candidateVersion == candidate.version)
     }
     _ = try await store.createCandidateRevision(candidate)
     _ = try await store.appendComment(
@@ -2645,6 +2654,59 @@ struct TicketDeliveryWorkflowCoordinatorTests {
         .first { $0.id == harness.workItem.id }?.state == .acceptance
     )
     #expect(try await harness.store.fetchAgentRuns(productID: harness.product.id).count == 2)
+    await harness.store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `SprintTicketWorkLogHistoryTests.d15ReadyForDemoCommentPreservesCandidate`
+  /// - `SQLiteStoreTests.sentBackCandidateDoesNotSwallowResumedDelivery`
+  /// This test covers only D15's Request-changes boundary: demo feedback supersedes the
+  /// reviewed candidate, requeues the exact run, and leaves the revision loop able to
+  /// settle its result as the next candidate version instead of silently discarding it.
+  @Test("D15 demo feedback revision settles as the next candidate version")
+  @MainActor
+  func d15DemoFeedbackRevisionSettlesAsNextCandidate() async throws {
+    let demo = DemoLaunchSpecification(
+      title: "Reviewed screen set",
+      presentation: DemoPresentation(kind: .artifact, path: "feature.txt")
+    )
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: demo,
+      assignsSettlementIdentity: true
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let runID = harness.candidate.implementationRunID
+    _ = try await harness.store.updateAgentRun(
+      id: runID,
+      status: .running,
+      codexThreadID: "thread-d15",
+      eventActor: "Spedito",
+      eventDetail: "Delivery thread preserved for the revision loop"
+    )
+
+    await harness.coordinator.handleSprintOwnerComment(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id,
+      body: "The screenshot is garbled; fix the overlapping lines."
+    )
+
+    let superseded = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    #expect(superseded.status == .superseded)
+    let item = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(item.state == .running)
+    let requeuedRun = try await harness.store.fetchAgentRun(id: runID)
+    #expect(requeuedRun.status == .queued)
+    #expect(harness.delegate.scheduledProductIDs == [harness.product.id])
+
+    // The revision loop's completed result must settle as candidate v2; the
+    // superseded candidate must not be reported as that result already settled.
+    let preparation = try await harness.store.prepareCompletedDeliverySettlement(runID: runID)
+    #expect(preparation.candidateVersion == harness.candidate.version + 1)
+    #expect(preparation.existingCandidate == nil)
     await harness.store.close()
   }
 

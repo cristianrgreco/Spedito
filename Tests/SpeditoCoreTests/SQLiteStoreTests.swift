@@ -5044,6 +5044,138 @@ struct SQLiteStoreTests {
     #expect(revision.operationID != first.operationID)
   }
 
+  /// The demo-feedback and candidate-failure paths mark a settled candidate
+  /// superseded or failed directly, without the fused identity release that
+  /// `requestCandidateChanges` performs. Preparation must still treat the
+  /// run's identity as stale — the sent-back candidate ended the attempt it
+  /// recorded — or the resumed run's finished revision is discarded in
+  /// silence and its ticket shows an agent at work indefinitely.
+  @Test("A sent-back candidate cannot swallow the resumed delivery after it")
+  func sentBackCandidateDoesNotSwallowResumedDelivery() async throws {
+    let fixture = try DatabaseFixture()
+    defer { fixture.remove() }
+    let store = try SQLiteStore(url: fixture.databaseURL)
+    let product = try await store.createProduct(name: "Demo feedback delivery")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let item = try await readyItem(
+      in: store,
+      productID: product.id,
+      title: "Deliver, demo, then revise"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Deliver and revise after demo feedback",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: item.id,
+          implementerProfileID: implementer.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let active = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(active.items.first)
+    let queuedRun = try #require(try await store.fetchAgentRuns(productID: product.id).first)
+    let run = try await store.updateAgentRun(
+      id: queuedRun.id,
+      status: .running,
+      worktreePath: "/tmp/demo-feedback-delivery"
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+
+    func settle(version: Int, operationID: UUID) async throws -> CompletedDeliverySettlement {
+      try await store.settleCompletedDelivery(
+        candidate: CandidateRevision(
+          productID: product.id,
+          sprintID: active.sprint.id,
+          sprintItemID: sprintItem.id,
+          workItemID: item.id,
+          implementationRunID: run.id,
+          version: version,
+          branchName: "ticket/\(item.key)",
+          baseSHA: "base",
+          headSHA: "head-v\(version)",
+          worktreePath: "/tmp/demo-feedback-delivery",
+          commitCount: 1,
+          executionResultJSON: "{}"
+        ),
+        operationID: operationID,
+        comment: TicketComment(
+          workItemID: item.id,
+          authorKind: .agent,
+          authorName: implementer.name,
+          body: "Attempt v\(version) delivered."
+        ),
+        deliveryNoteMarkdown: "Attempt v\(version).",
+        sprint: active.sprint,
+        knowledgePageProposals: [],
+        retrospectiveNotes: [],
+        eventActor: implementer.name,
+        eventDetail: "Candidate v\(version) queued for integration"
+      )
+    }
+
+    let first = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    let settled = try await settle(version: first.candidateVersion, operationID: first.operationID)
+
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .verifying,
+      actor: "Tech lead",
+      reason: "Independent tech lead review started"
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .acceptance,
+      actor: "Tech lead",
+      reason: "Reviewed candidate integrated; ready for product owner demo"
+    )
+
+    // Demo feedback supersedes the candidate directly and resumes the run;
+    // nothing releases the run's settlement identity.
+    _ = try await store.updateCandidateRevision(
+      id: settled.candidate.id,
+      status: .superseded
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: "Product owner",
+      reason: "Demo feedback: the screen set is garbled"
+    )
+    _ = try await store.updateAgentRun(id: run.id, status: .running)
+    let rework = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    #expect(rework.candidateVersion == 2)
+    #expect(rework.existingCandidate == nil)
+    #expect(rework.operationID != first.operationID)
+
+    // A review or integration failure marks the candidate failed, again
+    // without a release, and a retried run must settle the next version.
+    let second = try await settle(version: rework.candidateVersion, operationID: rework.operationID)
+    _ = try await store.updateCandidateRevision(
+      id: second.candidate.id,
+      status: .failed
+    )
+    _ = try await store.transitionWorkItem(
+      id: item.id,
+      to: .running,
+      actor: "Spedito",
+      reason: "Preserving the ticket after a review failure"
+    )
+    _ = try await store.updateAgentRun(id: run.id, status: .running)
+    let retried = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+    #expect(retried.candidateVersion == 3)
+    #expect(retried.existingCandidate == nil)
+    #expect(retried.operationID != rework.operationID)
+  }
+
   @Test("Completed delivery settlement is atomic and idempotent")
   func completedDeliverySettlementIsAtomicAndIdempotent() async throws {
     let fixture = try DatabaseFixture()

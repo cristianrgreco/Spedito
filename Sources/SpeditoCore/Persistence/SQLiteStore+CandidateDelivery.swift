@@ -175,6 +175,16 @@ extension SQLiteStore {
     }
   }
 
+  /// Binds a completed delivery to the candidate version it settles as.
+  ///
+  /// The persisted identity is an idempotency token for one delivery attempt:
+  /// a completion prepared under an identity whose candidate already exists is
+  /// a recovered replay and must not settle a duplicate. A candidate that was
+  /// sent back for rework ends the attempt its identity recorded, so a
+  /// completion arriving under that identity is the next attempt's result, not
+  /// a replay. Reporting the sent-back candidate as already existing would
+  /// discard that result in silence, which is how a finished revision once
+  /// left its ticket showing an agent at work for the rest of the sprint.
   public func prepareCompletedDeliverySettlement(
     runID: UUID,
     operationID: UUID = UUID()
@@ -186,27 +196,28 @@ extension SQLiteStore {
 
       switch persisted {
       case (nil, nil):
-        let version = try nextCandidateRevisionVersion(workItemID: run.workItemID)
-        try withStatement(
-          """
-          UPDATE agent_runs
-          SET settlement_operation_id = ?,
-              settlement_candidate_version = ?,
-              updated_at = ?
-          WHERE id = ?
-            AND settlement_operation_id IS NULL
-            AND settlement_candidate_version IS NULL;
-          """
-        ) { statement in
-          try bind(operationID.uuidString, to: 1, in: statement)
-          try bind(Int64(version), to: 2, in: statement)
-          try bind(Date().timeIntervalSince1970, to: 3, in: statement)
-          try bind(runID.uuidString, to: 4, in: statement)
-          try stepDone(statement)
-        }
-        identity = (operationID, version)
+        identity = try assignDeliverySettlementIdentity(
+          run: run,
+          operationID: operationID
+        )
       case let (.some(persistedOperationID), .some(version)):
-        identity = (persistedOperationID, version)
+        let settledCandidate = try fetchCandidateRevision(
+          implementationRunID: runID,
+          version: version
+        )
+        if let settledCandidate, settledCandidate.status.sendsRunBackForRework {
+          try releaseDeliverySettlementIdentity(runID: runID)
+          identity = try assignDeliverySettlementIdentity(
+            run: run,
+            operationID: operationID
+          )
+        } else {
+          return DeliveryResultSettlementPreparation(
+            operationID: persistedOperationID,
+            candidateVersion: version,
+            existingCandidate: settledCandidate
+          )
+        }
       default:
         throw PersistenceError.corruptData(
           "Agent run \(runID) has an incomplete delivery settlement identity."
@@ -222,6 +233,31 @@ extension SQLiteStore {
         )
       )
     }
+  }
+
+  private func assignDeliverySettlementIdentity(
+    run: AgentRun,
+    operationID: UUID
+  ) throws -> (operationID: UUID, version: Int) {
+    let version = try nextCandidateRevisionVersion(workItemID: run.workItemID)
+    try withStatement(
+      """
+      UPDATE agent_runs
+      SET settlement_operation_id = ?,
+          settlement_candidate_version = ?,
+          updated_at = ?
+      WHERE id = ?
+        AND settlement_operation_id IS NULL
+        AND settlement_candidate_version IS NULL;
+      """
+    ) { statement in
+      try bind(operationID.uuidString, to: 1, in: statement)
+      try bind(Int64(version), to: 2, in: statement)
+      try bind(Date().timeIntervalSince1970, to: 3, in: statement)
+      try bind(run.id.uuidString, to: 4, in: statement)
+      try stepDone(statement)
+    }
+    return (operationID, version)
   }
 
   /// Sends a candidate back to its implementer for another attempt.
@@ -260,6 +296,11 @@ extension SQLiteStore {
   /// Three live runs ended that way: the agent finished, nothing was recorded,
   /// and the board told the product owner an agent was still working for the
   /// rest of the sprint.
+  ///
+  /// Settlement preparation also treats an identity whose candidate was sent
+  /// back as stale, so a send-back path that misses this release cannot
+  /// discard the rework; releasing here still keeps the run row truthful the
+  /// moment the candidate is sent back.
   public func releaseDeliverySettlementIdentity(runID: UUID) throws {
     try withStatement(
       """
@@ -870,5 +911,22 @@ extension AgentRun {
       createdAt: date,
       updatedAt: date
     )
+  }
+}
+
+extension CandidateRevisionStatus {
+  /// True when the candidate was sent back to its implementation run for
+  /// another attempt — a tech lead requesting changes, the product owner
+  /// requesting changes from a demo, or a review or integration failure — so
+  /// the run's settlement identity for it is stale and the next completed
+  /// delivery settles as a new version.
+  var sendsRunBackForRework: Bool {
+    switch self {
+    case .changesRequested, .superseded, .failed:
+      true
+    case .queuedForReview, .reviewing, .queuedForIntegration, .integrating,
+      .resolvingConflict, .readyForDemo, .promoting, .accepted:
+      false
+    }
   }
 }
