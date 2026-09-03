@@ -143,7 +143,7 @@ struct KnowledgeBaseView: View {
   }
 
   private var header: some View {
-    HStack(alignment: .firstTextBaseline) {
+    HStack(alignment: .center) {
       VStack(alignment: .leading, spacing: 4) {
         Text("Product")
           .font(.largeTitle.bold())

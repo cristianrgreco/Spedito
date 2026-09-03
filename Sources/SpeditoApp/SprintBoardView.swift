@@ -75,6 +75,7 @@ struct SprintBoardView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .background(sprintPhaseTint(for: plan).opacity(0.1), in: Capsule())
+              SprintBoardGoalView(plan: plan)
             }
             if let attentionWorkItemIDs, !attentionWorkItemIDs.isEmpty {
               Button {
@@ -217,12 +218,7 @@ struct SprintBoardView: View {
           }
         }
       }
-      .workspaceHeaderLayout {
-        if let plan = selectedPlan {
-          SprintBoardGoalView(plan: plan)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-      }
+      .workspaceHeaderLayout()
 
       Divider()
 
@@ -523,7 +519,7 @@ private struct SprintBoardGoalView: View {
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
-        .frame(maxWidth: 420, alignment: .trailing)
+        .layoutPriority(-1)
         .help("Sprint goal: \(goal)")
         .accessibilityLabel("Sprint goal")
         .accessibilityValue(goal)

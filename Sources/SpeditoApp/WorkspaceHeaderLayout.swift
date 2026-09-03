@@ -6,7 +6,7 @@ extension View {
   /// view without per-view wiring.
   ///
   /// The bell centres on the title row alone. Content that belongs beneath
-  /// that row, such as an ask field or a sprint goal, goes in `below` so it
+  /// that row, such as the Product ask field, goes in `below` so it
   /// spans the full header width without pushing the bell off the title row.
   func workspaceHeaderLayout<Below: View>(
     @ViewBuilder below: () -> Below = { EmptyView() }

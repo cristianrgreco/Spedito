@@ -198,7 +198,7 @@ they drive the shared GUI session.
       helper is layout only, and SwiftUI geometry is not asserted in this
       repository's policy or coordinator suites.
 
-- [ ] Relaunch with `./scripts/relaunch.sh` and leave the app running.
+- [x] Relaunch with `./scripts/relaunch.sh` and leave the app running.
 
 - [ ] Owner inspection script, in light and dark appearance, at a 14-inch
       window width and at full width:
@@ -282,3 +282,48 @@ child, and the relaunch kills it. Run `./scripts/relaunch.sh` from this
 worktree when convenient.
 
 Owner inspection: pending the relaunch.
+
+## Owner inspection feedback and follow-up (2026-09-03)
+
+The owner inspected the relaunched build and reported two defects:
+
+1. Product: the bell was not level with New page. The title row used
+   `HStack(alignment: .firstTextBaseline)`, so the button rode the title's
+   baseline while the bell centred on the two-line block.
+2. Sprint board: the header was too tall with a goal. The owner asked for the
+   goal inline on the left instead of a row below, and after a second look
+   asked for it to the right of the phase pill.
+
+Changes, superseding the "Behavior to preserve or add" section for the goal:
+
+- `KnowledgeBaseView.header` aligns its title row `.center`, matching
+  Backlog, Codebase, Retrospectives, and Demos.
+- `SprintBoardView` renders `SprintBoardGoalView` inside the title
+  `HStack(spacing: 9)` after the phase pill, and calls
+  `.workspaceHeaderLayout()` with the default empty slot.
+- `SprintBoardGoalView` drops the 420pt trailing frame, which would expand
+  and push the pill right, and takes `.layoutPriority(-1)` so a long goal
+  truncates before the title when the row is narrow. Flag icon, single line,
+  help text, accessibility label and value, and generation triggers are
+  unchanged.
+- The helper's doc comment names the Product ask field as the `below` user.
+
+Evidence:
+
+- `swift test -Xswiftc -warnings-as-errors`: `Test run with 767 tests in 79
+  suites passed after 30.399 seconds`, exit 0.
+- `git diff --check`: clean. Ratchets: `match all 6 baselines`.
+- Headless `NSHostingView.fittingSize` probe of the title row shape:
+
+  | Row | Size |
+  | --- | --- |
+  | Title and pill, no goal | 213 × 31 |
+  | With a short goal | 311 × 31, exactly the goal's own 89pt plus spacing |
+  | With a 1,170pt goal, unconstrained | 1383 × 31 |
+  | With that goal at 420pt | 420 × 31, one line, same height as no goal |
+
+  So the goal never expands past its text, and it truncates rather than
+  wrapping or raising the row.
+
+Pending: K05, A02, and E02 launched-process runs, and owner inspection of
+Product and Sprint board.
