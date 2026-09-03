@@ -15,7 +15,8 @@ enum ProductDatabaseSchema {
             color IN ('accent', 'blue', 'teal', 'green', 'orange', 'pink', 'indigo')
           ),
         created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
+        updated_at REAL NOT NULL,
+        next_ticket_key_number INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE agent_profiles (
@@ -64,6 +65,7 @@ enum ProductDatabaseSchema {
         version INTEGER NOT NULL,
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
+        demo_kind TEXT,
         UNIQUE(product_id, key_number),
         UNIQUE(product_id, item_key)
     );
@@ -183,6 +185,7 @@ enum ProductDatabaseSchema {
         ticket_type TEXT NOT NULL DEFAULT 'story',
         created_at REAL NOT NULL,
         updated_at REAL NOT NULL,
+        demo_kind TEXT,
         UNIQUE(session_id, reference),
         UNIQUE(session_id, position)
     );
@@ -238,7 +241,10 @@ enum ProductDatabaseSchema {
         execution_constraint_kind TEXT,
         execution_constraint_observed_at REAL,
         execution_constraint_retry_at REAL,
-        execution_constraint_evidence TEXT
+        execution_constraint_evidence TEXT,
+        settlement_operation_id TEXT,
+        settlement_candidate_version INTEGER,
+        cumulative_used_tokens INTEGER
     );
 
     CREATE TABLE candidate_revisions (
@@ -263,6 +269,8 @@ enum ProductDatabaseSchema {
         updated_at REAL NOT NULL,
         delivery_kind TEXT NOT NULL DEFAULT 'repository_change'
           CHECK (delivery_kind IN ('repository_change', 'local_outcome')),
+        reviewed_head_sha TEXT,
+        review_run_id TEXT REFERENCES agent_runs(id),
         UNIQUE(work_item_id, version)
     );
 
@@ -915,6 +923,8 @@ enum ProductDatabaseSchema {
       WHERE sprint_item_id IS NOT NULL;
     CREATE INDEX idx_candidate_revisions_sprint_status
       ON candidate_revisions(sprint_id, status, created_at);
+    CREATE UNIQUE INDEX idx_candidate_revisions_implementation_version
+      ON candidate_revisions(implementation_run_id, version);
     CREATE INDEX idx_candidate_revisions_work_item
       ON candidate_revisions(work_item_id, version DESC);
     CREATE INDEX idx_demo_sessions_product_status
@@ -952,9 +962,7 @@ enum ProductDatabaseSchema {
     CREATE INDEX idx_agent_permission_grants_product_created
       ON agent_permission_grants(product_id, created_at);
     CREATE UNIQUE INDEX idx_retrospective_note_evidence
-      ON retrospective_notes(
-        sprint_id, work_item_id, profile_id, category, body
-      );
+      ON retrospective_notes(sprint_id, work_item_id, profile_id, category, body);
     CREATE INDEX idx_retrospective_notes_sprint
       ON retrospective_notes(sprint_id, category, created_at);
     CREATE INDEX idx_conversation_threads_product_updated
@@ -1160,586 +1168,672 @@ enum ProductDatabaseSchema {
     PRAGMA user_version = 2;
     """
 
-  static let migrationV1ToV2 = """
-    -- Spedito 0.1.0 shipped PRAGMA user_version = 1. This single migration carries a
-    -- 0.1.0 database to the current schema; the pre-release chain it replaces is not
-    -- reproduced here because no released build ever wrote versions 2 through 14.
-    --
-    -- Statement order is load-bearing:
-    --   1. tables that do not exist at v1, created in their final shape;
-    --   2. ALTER TABLE ... ADD COLUMN on tables that do exist at v1;
-    --   3. the demo_sessions rebuild;
-    --   4. indexes;
-    --   5. data fix-ups;
-    --   6. views last.
-    -- ALTER TABLE ... RENAME reparses every view and fails on an unresolvable one,
-    -- while CREATE VIEW accepts a missing column silently. The new view definitions
-    -- must therefore come after both the ALTERs they depend on and the rebuild.
+  /// The versions `SQLiteStore` upgrades. Version 1 is the schema Spedito
+  /// 0.1.0 shipped. Versions 3 through 6 were written only by development
+  /// builds between 0.1.0 and 0.2.0; the upgrade below is idempotent, so they
+  /// fold forward to version 2 as well. A database already stamped with
+  /// version 2 is current when it carries the objects that version implies.
+  static let upgradableVersions: ClosedRange<Int32> = 1...6
 
-    CREATE TABLE product_repositories (
-        product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
-        origin_url TEXT NOT NULL,
-        source_default_branch TEXT NOT NULL,
-        imported_sha TEXT NOT NULL,
-        protected_knowledge_paths_json TEXT NOT NULL,
-        blocks_knowledge_export INTEGER NOT NULL DEFAULT 0
-          CHECK (blocks_knowledge_export IN (0, 1)),
-        imported_at REAL NOT NULL
-    );
+  /// A column the version 2 upgrade adds to a table that exists at version 1.
+  struct AddedColumn {
+    let table: String
+    let name: String
+    let definition: String
+  }
 
-    CREATE TABLE repository_knowledge_runs (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-        attempt INTEGER NOT NULL CHECK (attempt > 0),
-        purpose TEXT NOT NULL DEFAULT 'knowledge'
-          CHECK (purpose IN ('knowledge', 'imported_app_launch')),
-        analyzed_sha TEXT NOT NULL,
-        analyzer_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE RESTRICT,
-        reviewer_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE RESTRICT,
-        analyzer_thread_id TEXT,
-        analyzer_turn_id TEXT,
-        reviewer_thread_id TEXT,
-        reviewer_turn_id TEXT,
-        status TEXT NOT NULL
+  /// Spedito 0.1.0 shipped `PRAGMA user_version = 1`; 0.2.0 ships version 2
+  /// and this single upgrade carries a released database to it.
+  /// `SQLiteStore.upgradeToVersionTwo` applies the pieces below in order inside
+  /// one transaction. Every piece checks for the object it creates first:
+  /// tables and indexes are created only if missing, columns only when
+  /// `PRAGMA table_info` lacks them, and the two rebuilds only while
+  /// `sqlite_master` still shows the shape they replace. A second run therefore
+  /// changes nothing, and a development database at any of the unreleased
+  /// versions between 1 and 6 ends in the same shape as a fresh install.
+  ///
+  /// Statement order is load-bearing:
+  ///   1. tables that do not exist at v1, created in their final shape;
+  ///   2. ALTER TABLE ... ADD COLUMN on tables that do exist at v1;
+  ///   3. the ticket key counter and the demo kind rebuild;
+  ///   4. the demo_sessions rebuild;
+  ///   5. indexes;
+  ///   6. data fix-ups;
+  ///   7. views last.
+  /// ALTER TABLE ... RENAME reparses every view and fails on an unresolvable
+  /// one, while CREATE VIEW accepts a missing column silently. The new view
+  /// definitions must therefore come after both the ALTERs they depend on and
+  /// the rebuilds.
+  enum VersionTwoUpgrade {
+    static let tables = """
+      CREATE TABLE IF NOT EXISTS product_repositories (
+          product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+          origin_url TEXT NOT NULL,
+          source_default_branch TEXT NOT NULL,
+          imported_sha TEXT NOT NULL,
+          protected_knowledge_paths_json TEXT NOT NULL,
+          blocks_knowledge_export INTEGER NOT NULL DEFAULT 0
+            CHECK (blocks_knowledge_export IN (0, 1)),
+          imported_at REAL NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS repository_knowledge_runs (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          attempt INTEGER NOT NULL CHECK (attempt > 0),
+          purpose TEXT NOT NULL DEFAULT 'knowledge'
+            CHECK (purpose IN ('knowledge', 'imported_app_launch')),
+          analyzed_sha TEXT NOT NULL,
+          analyzer_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE RESTRICT,
+          reviewer_profile_id TEXT NOT NULL REFERENCES agent_profiles(id) ON DELETE RESTRICT,
+          analyzer_thread_id TEXT,
+          analyzer_turn_id TEXT,
+          reviewer_thread_id TEXT,
+          reviewer_turn_id TEXT,
+          status TEXT NOT NULL
+            CHECK (
+              status IN (
+                'pending_analysis', 'analyzing', 'reviewing', 'publishing',
+                'completed', 'failed', 'interrupted', 'stale'
+              )
+            ),
+          analysis_summary TEXT,
+          review_summary TEXT,
+          error_message TEXT,
+          knowledge_export_paths_json TEXT NOT NULL DEFAULT '[]',
+          knowledge_commit_sha TEXT,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          UNIQUE(product_id, attempt)
+      );
+
+      CREATE TABLE IF NOT EXISTS repository_knowledge_drafts (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL
+            REFERENCES repository_knowledge_runs(id) ON DELETE CASCADE,
+          operation TEXT NOT NULL CHECK (operation IN ('update', 'create')),
+          target_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
+          parent_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
+          base_page_title TEXT,
+          base_page_body_markdown TEXT,
+          base_page_updated_at REAL,
+          title TEXT NOT NULL,
+          proposed_body_markdown TEXT NOT NULL,
+          rationale TEXT NOT NULL,
+          evidence_json TEXT NOT NULL,
+          status TEXT NOT NULL
+            CHECK (
+              status IN ('proposed', 'approved', 'published', 'rejected', 'superseded')
+            ),
+          review_explanation TEXT,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
           CHECK (
-            status IN (
-              'pending_analysis', 'analyzing', 'reviewing', 'publishing',
-              'completed', 'failed', 'interrupted', 'stale'
+            (
+              operation = 'update'
+              AND target_page_id IS NOT NULL
+              AND parent_page_id IS NULL
+              AND base_page_title IS NOT NULL
+              AND base_page_body_markdown IS NOT NULL
+              AND base_page_updated_at IS NOT NULL
+            )
+            OR
+            (
+              operation = 'create'
+              AND target_page_id IS NULL
+              AND parent_page_id IS NOT NULL
+              AND base_page_title IS NULL
+              AND base_page_body_markdown IS NULL
+              AND base_page_updated_at IS NULL
+            )
+          )
+      );
+
+      CREATE TABLE IF NOT EXISTS repository_launch_proposals (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL UNIQUE
+            REFERENCES repository_knowledge_runs(id) ON DELETE CASCADE,
+          specification_json TEXT NOT NULL,
+          evidence_json TEXT NOT NULL,
+          status TEXT NOT NULL
+            CHECK (status IN ('proposed', 'approved', 'published', 'rejected')),
+          review_explanation TEXT,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_repository_connections (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+          version INTEGER NOT NULL CHECK (version > 0),
+          kind TEXT NOT NULL CHECK (kind IN ('imported_source', 'local_empty_repository')),
+          account_id TEXT,
+          installation_id INTEGER CHECK (installation_id IS NULL OR installation_id > 0),
+          repository_id INTEGER CHECK (repository_id IS NULL OR repository_id > 0),
+          owner TEXT,
+          name TEXT,
+          full_name TEXT,
+          canonical_https_url TEXT,
+          is_private INTEGER CHECK (is_private IS NULL OR is_private IN (0, 1)),
+          default_branch TEXT,
+          metadata_read INTEGER NOT NULL CHECK (metadata_read IN (0, 1)),
+          contents_write INTEGER NOT NULL CHECK (contents_write IN (0, 1)),
+          pull_requests_write INTEGER NOT NULL CHECK (pull_requests_write IN (0, 1)),
+          workflows_write INTEGER NOT NULL CHECK (workflows_write IN (0, 1)),
+          status TEXT NOT NULL
+            CHECK (
+              status IN (
+                'selecting_repository', 'initializing_remote', 'connected',
+                'disconnected', 'needs_authorization', 'needs_installation',
+                'needs_target_review', 'unavailable'
+              )
+            ),
+          error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
+          latest_local_sha TEXT,
+          latest_local_tree TEXT,
+          latest_remote_sha TEXT,
+          latest_remote_tree TEXT,
+          latest_relationship TEXT
+            CHECK (
+              latest_relationship IS NULL OR latest_relationship IN (
+                'aligned', 'local_ahead', 'remote_ahead',
+                'history_alignment_available', 'diverged', 'unrelated'
+              )
+            ),
+          latest_ahead_count INTEGER CHECK (latest_ahead_count IS NULL OR latest_ahead_count >= 0),
+          latest_behind_count INTEGER CHECK (latest_behind_count IS NULL OR latest_behind_count >= 0),
+          latest_checked_at REAL,
+          pending_repository_id INTEGER CHECK (pending_repository_id IS NULL OR pending_repository_id > 0),
+          pending_full_name TEXT,
+          pending_canonical_https_url TEXT,
+          pending_default_branch TEXT,
+          pending_observed_at REAL,
+          bootstrap_root_sha TEXT,
+          bootstrap_root_tree TEXT,
+          initialization_attempt_count INTEGER CHECK (
+            initialization_attempt_count IS NULL OR initialization_attempt_count >= 0
+          ),
+          seeded_sha TEXT,
+          origin_verified INTEGER CHECK (origin_verified IS NULL OR origin_verified IN (0, 1)),
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          CHECK (
+            kind != 'imported_source'
+            OR (
+              bootstrap_root_sha IS NULL
+              AND bootstrap_root_tree IS NULL
+              AND initialization_attempt_count IS NULL
+              AND seeded_sha IS NULL
+              AND origin_verified IS NULL
+              AND status NOT IN ('selecting_repository', 'initializing_remote')
             )
           ),
-        analysis_summary TEXT,
-        review_summary TEXT,
-        error_message TEXT,
-        knowledge_export_paths_json TEXT NOT NULL DEFAULT '[]',
-        knowledge_commit_sha TEXT,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        UNIQUE(product_id, attempt)
-    );
-
-    CREATE TABLE repository_knowledge_drafts (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL
-          REFERENCES repository_knowledge_runs(id) ON DELETE CASCADE,
-        operation TEXT NOT NULL CHECK (operation IN ('update', 'create')),
-        target_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
-        parent_page_id TEXT REFERENCES knowledge_pages(id) ON DELETE RESTRICT,
-        base_page_title TEXT,
-        base_page_body_markdown TEXT,
-        base_page_updated_at REAL,
-        title TEXT NOT NULL,
-        proposed_body_markdown TEXT NOT NULL,
-        rationale TEXT NOT NULL,
-        evidence_json TEXT NOT NULL,
-        status TEXT NOT NULL
           CHECK (
-            status IN ('proposed', 'approved', 'published', 'rejected', 'superseded')
-          ),
-        review_explanation TEXT,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        CHECK (
-          (
-            operation = 'update'
-            AND target_page_id IS NOT NULL
-            AND parent_page_id IS NULL
-            AND base_page_title IS NOT NULL
-            AND base_page_body_markdown IS NOT NULL
-            AND base_page_updated_at IS NOT NULL
-          )
-          OR
-          (
-            operation = 'create'
-            AND target_page_id IS NULL
-            AND parent_page_id IS NOT NULL
-            AND base_page_title IS NULL
-            AND base_page_body_markdown IS NULL
-            AND base_page_updated_at IS NULL
-          )
-        )
-    );
-
-    CREATE TABLE repository_launch_proposals (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL UNIQUE
-          REFERENCES repository_knowledge_runs(id) ON DELETE CASCADE,
-        specification_json TEXT NOT NULL,
-        evidence_json TEXT NOT NULL,
-        status TEXT NOT NULL
-          CHECK (status IN ('proposed', 'approved', 'published', 'rejected')),
-        review_explanation TEXT,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL
-    );
-
-    CREATE TABLE remote_repository_connections (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
-        version INTEGER NOT NULL CHECK (version > 0),
-        kind TEXT NOT NULL CHECK (kind IN ('imported_source', 'local_empty_repository')),
-        account_id TEXT,
-        installation_id INTEGER CHECK (installation_id IS NULL OR installation_id > 0),
-        repository_id INTEGER CHECK (repository_id IS NULL OR repository_id > 0),
-        owner TEXT,
-        name TEXT,
-        full_name TEXT,
-        canonical_https_url TEXT,
-        is_private INTEGER CHECK (is_private IS NULL OR is_private IN (0, 1)),
-        default_branch TEXT,
-        metadata_read INTEGER NOT NULL CHECK (metadata_read IN (0, 1)),
-        contents_write INTEGER NOT NULL CHECK (contents_write IN (0, 1)),
-        pull_requests_write INTEGER NOT NULL CHECK (pull_requests_write IN (0, 1)),
-        workflows_write INTEGER NOT NULL CHECK (workflows_write IN (0, 1)),
-        status TEXT NOT NULL
-          CHECK (
-            status IN (
-              'selecting_repository', 'initializing_remote', 'connected',
-              'disconnected', 'needs_authorization', 'needs_installation',
-              'needs_target_review', 'unavailable'
+            status != 'selecting_repository'
+            OR (
+              kind = 'local_empty_repository'
+              AND account_id IS NOT NULL
+              AND installation_id IS NOT NULL
             )
           ),
-        error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
-        latest_local_sha TEXT,
-        latest_local_tree TEXT,
-        latest_remote_sha TEXT,
-        latest_remote_tree TEXT,
-        latest_relationship TEXT
           CHECK (
-            latest_relationship IS NULL OR latest_relationship IN (
-              'aligned', 'local_ahead', 'remote_ahead',
-              'history_alignment_available', 'diverged', 'unrelated'
+            status != 'initializing_remote'
+            OR (
+              kind = 'local_empty_repository'
+              AND account_id IS NOT NULL
+              AND installation_id IS NOT NULL
+              AND repository_id IS NOT NULL
+              AND owner IS NOT NULL
+              AND name IS NOT NULL
+              AND full_name IS NOT NULL
+              AND canonical_https_url IS NOT NULL
+              AND is_private IS NOT NULL
+              AND default_branch IS NOT NULL
+              AND bootstrap_root_sha IS NOT NULL
+              AND bootstrap_root_tree IS NOT NULL
+              AND initialization_attempt_count > 0
             )
           ),
-        latest_ahead_count INTEGER CHECK (latest_ahead_count IS NULL OR latest_ahead_count >= 0),
-        latest_behind_count INTEGER CHECK (latest_behind_count IS NULL OR latest_behind_count >= 0),
-        latest_checked_at REAL,
-        pending_repository_id INTEGER CHECK (pending_repository_id IS NULL OR pending_repository_id > 0),
-        pending_full_name TEXT,
-        pending_canonical_https_url TEXT,
-        pending_default_branch TEXT,
-        pending_observed_at REAL,
-        bootstrap_root_sha TEXT,
-        bootstrap_root_tree TEXT,
-        initialization_attempt_count INTEGER CHECK (
-          initialization_attempt_count IS NULL OR initialization_attempt_count >= 0
-        ),
-        seeded_sha TEXT,
-        origin_verified INTEGER CHECK (origin_verified IS NULL OR origin_verified IN (0, 1)),
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        CHECK (
-          kind != 'imported_source'
-          OR (
-            bootstrap_root_sha IS NULL
-            AND bootstrap_root_tree IS NULL
-            AND initialization_attempt_count IS NULL
-            AND seeded_sha IS NULL
-            AND origin_verified IS NULL
-            AND status NOT IN ('selecting_repository', 'initializing_remote')
-          )
-        ),
-        CHECK (
-          status != 'selecting_repository'
-          OR (
-            kind = 'local_empty_repository'
-            AND account_id IS NOT NULL
-            AND installation_id IS NOT NULL
-          )
-        ),
-        CHECK (
-          status != 'initializing_remote'
-          OR (
-            kind = 'local_empty_repository'
-            AND account_id IS NOT NULL
-            AND installation_id IS NOT NULL
-            AND repository_id IS NOT NULL
-            AND owner IS NOT NULL
-            AND name IS NOT NULL
-            AND full_name IS NOT NULL
-            AND canonical_https_url IS NOT NULL
-            AND is_private IS NOT NULL
-            AND default_branch IS NOT NULL
-            AND bootstrap_root_sha IS NOT NULL
-            AND bootstrap_root_tree IS NOT NULL
-            AND initialization_attempt_count > 0
-          )
-        ),
-        CHECK (
-          kind != 'local_empty_repository'
-          OR status != 'connected'
-          OR (
-            bootstrap_root_sha IS NOT NULL
-            AND bootstrap_root_tree IS NOT NULL
-            AND seeded_sha = bootstrap_root_sha
-            AND origin_verified = 1
-          )
-        ),
-        CHECK (
-          status NOT IN ('connected', 'needs_target_review', 'unavailable')
-          OR (
-            account_id IS NOT NULL
-            AND installation_id IS NOT NULL
-            AND repository_id IS NOT NULL
-            AND owner IS NOT NULL
-            AND name IS NOT NULL
-            AND full_name IS NOT NULL
-            AND canonical_https_url IS NOT NULL
-            AND is_private IS NOT NULL
-            AND default_branch IS NOT NULL
-          )
-        ),
-        CHECK (
-          (
-            status = 'needs_target_review'
-            AND pending_repository_id IS NOT NULL
-            AND pending_full_name IS NOT NULL
-            AND pending_canonical_https_url IS NOT NULL
-            AND pending_default_branch IS NOT NULL
-            AND pending_observed_at IS NOT NULL
-          )
-          OR
-          (
-            status != 'needs_target_review'
-            AND pending_repository_id IS NULL
-            AND pending_full_name IS NULL
-            AND pending_canonical_https_url IS NULL
-            AND pending_default_branch IS NULL
-            AND pending_observed_at IS NULL
-          )
-        )
-    );
-
-    CREATE TABLE remote_publications (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-        connection_id TEXT NOT NULL
-          REFERENCES remote_repository_connections(id) ON DELETE RESTRICT,
-        work_item_id TEXT
-          REFERENCES work_items(id) ON DELETE RESTRICT,
-        candidate_revision_id TEXT
-          REFERENCES candidate_revisions(id) ON DELETE RESTRICT,
-        purpose TEXT NOT NULL DEFAULT 'legacy_manual'
-          CHECK (purpose IN ('legacy_manual', 'existing_product_history', 'ticket')),
-        version INTEGER NOT NULL CHECK (version > 0),
-        push_attempt_count INTEGER NOT NULL CHECK (push_attempt_count >= 0),
-        pull_request_attempt_count INTEGER NOT NULL CHECK (pull_request_attempt_count >= 0),
-        account_id TEXT NOT NULL,
-        repository_id INTEGER NOT NULL CHECK (repository_id > 0),
-        owner TEXT NOT NULL,
-        name TEXT NOT NULL,
-        full_name TEXT NOT NULL,
-        canonical_https_url TEXT NOT NULL,
-        is_private INTEGER NOT NULL CHECK (is_private IN (0, 1)),
-        metadata_read INTEGER NOT NULL CHECK (metadata_read IN (0, 1)),
-        contents_write INTEGER NOT NULL CHECK (contents_write IN (0, 1)),
-        pull_requests_write INTEGER NOT NULL CHECK (pull_requests_write IN (0, 1)),
-        workflows_write INTEGER NOT NULL CHECK (workflows_write IN (0, 1)),
-        captured_local_sha TEXT NOT NULL,
-        captured_local_tree TEXT NOT NULL,
-        remote_base_sha TEXT NOT NULL,
-        remote_base_tree TEXT NOT NULL,
-        target_branch TEXT NOT NULL,
-        publication_branch TEXT NOT NULL,
-        manifest_digest TEXT NOT NULL,
-        manifest_object_count INTEGER NOT NULL CHECK (manifest_object_count >= 0),
-        manifest_commit_count INTEGER NOT NULL CHECK (manifest_commit_count >= 0),
-        manifest_path_count INTEGER NOT NULL CHECK (manifest_path_count >= 0),
-        commits_json TEXT NOT NULL,
-        paths_json TEXT NOT NULL,
-        title TEXT NOT NULL CHECK (length(title) > 0),
-        body TEXT NOT NULL,
-        text_revision INTEGER NOT NULL CHECK (text_revision > 0),
-        status TEXT NOT NULL
           CHECK (
-            status IN (
-              'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
-              'creating_pull_request', 'open', 'open_outdated', 'open_stale',
-              'merged', 'closed', 'cancelled', 'stale', 'failed'
+            kind != 'local_empty_repository'
+            OR status != 'connected'
+            OR (
+              bootstrap_root_sha IS NOT NULL
+              AND bootstrap_root_tree IS NOT NULL
+              AND seeded_sha = bootstrap_root_sha
+              AND origin_verified = 1
             )
           ),
-        pushed_sha TEXT,
-        pull_request_number INTEGER CHECK (
-          pull_request_number IS NULL OR pull_request_number > 0
-        ),
-        pull_request_node_id TEXT,
-        pull_request_url TEXT,
-        pull_request_state TEXT CHECK (
-          pull_request_state IS NULL OR pull_request_state IN ('open', 'closed', 'merged')
-        ),
-        pull_request_is_draft INTEGER CHECK (
-          pull_request_is_draft IS NULL OR pull_request_is_draft IN (0, 1)
-        ),
-        pull_request_head_sha TEXT,
-        pull_request_base_branch TEXT,
-        pull_request_base_sha TEXT,
-        pull_request_merged_sha TEXT,
-        pull_request_updated_at REAL,
-        error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
-        remote_branch_deleted_at REAL,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        CHECK (
-          status NOT IN (
-            'branch_published', 'creating_pull_request', 'open', 'open_outdated',
-            'open_stale', 'merged', 'closed'
-          )
-          OR pushed_sha = captured_local_sha
-        ),
-        CHECK (
-          (
-            status IN ('open', 'open_outdated', 'open_stale', 'merged', 'closed')
-            AND pull_request_number IS NOT NULL
-            AND pull_request_node_id IS NOT NULL
-            AND pull_request_url IS NOT NULL
-            AND pull_request_state IS NOT NULL
-            AND pull_request_is_draft IS NOT NULL
-            AND pull_request_head_sha IS NOT NULL
-            AND pull_request_base_branch IS NOT NULL
-            AND pull_request_base_sha IS NOT NULL
-            AND pull_request_updated_at IS NOT NULL
-          )
-          OR
-          (
-            status NOT IN ('open', 'open_outdated', 'open_stale', 'merged', 'closed')
-            AND pull_request_number IS NULL
-            AND pull_request_node_id IS NULL
-            AND pull_request_url IS NULL
-            AND pull_request_state IS NULL
-            AND pull_request_is_draft IS NULL
-            AND pull_request_head_sha IS NULL
-            AND pull_request_base_branch IS NULL
-            AND pull_request_base_sha IS NULL
-            AND pull_request_merged_sha IS NULL
-            AND pull_request_updated_at IS NULL
-          )
-        )
-    );
-
-    CREATE TABLE remote_safe_syncs (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-        connection_id TEXT NOT NULL
-          REFERENCES remote_repository_connections(id) ON DELETE RESTRICT,
-        version INTEGER NOT NULL CHECK (version > 0),
-        connection_version INTEGER NOT NULL CHECK (connection_version > 0),
-        kind TEXT NOT NULL CHECK (kind IN ('fast_forward', 'history_alignment')),
-        status TEXT NOT NULL
           CHECK (
-            status IN (
-              'awaiting_confirmation', 'accepting', 'accepted', 'rejected',
-              'stale', 'failed'
+            status NOT IN ('connected', 'needs_target_review', 'unavailable')
+            OR (
+              account_id IS NOT NULL
+              AND installation_id IS NOT NULL
+              AND repository_id IS NOT NULL
+              AND owner IS NOT NULL
+              AND name IS NOT NULL
+              AND full_name IS NOT NULL
+              AND canonical_https_url IS NOT NULL
+              AND is_private IS NOT NULL
+              AND default_branch IS NOT NULL
             )
           ),
-        observation_ref TEXT NOT NULL,
-        local_sha TEXT NOT NULL,
-        local_tree TEXT NOT NULL,
-        remote_sha TEXT NOT NULL,
-        remote_tree TEXT NOT NULL,
-        merge_base_sha TEXT,
-        candidate_sha TEXT NOT NULL,
-        candidate_tree TEXT NOT NULL,
-        proving_publication_id TEXT
-          REFERENCES remote_publications(id) ON DELETE RESTRICT,
-        published_sha TEXT,
-        commits_json TEXT NOT NULL,
-        paths_json TEXT NOT NULL,
-        error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        CHECK (
-          (
-            kind = 'fast_forward'
-            AND candidate_sha = remote_sha
-            AND candidate_tree = remote_tree
-            AND proving_publication_id IS NULL
-            AND published_sha IS NULL
+          CHECK (
+            (
+              status = 'needs_target_review'
+              AND pending_repository_id IS NOT NULL
+              AND pending_full_name IS NOT NULL
+              AND pending_canonical_https_url IS NOT NULL
+              AND pending_default_branch IS NOT NULL
+              AND pending_observed_at IS NOT NULL
+            )
+            OR
+            (
+              status != 'needs_target_review'
+              AND pending_repository_id IS NULL
+              AND pending_full_name IS NULL
+              AND pending_canonical_https_url IS NULL
+              AND pending_default_branch IS NULL
+              AND pending_observed_at IS NULL
+            )
           )
-          OR
-          (
-            kind = 'history_alignment'
-            AND candidate_tree = local_tree
-            AND proving_publication_id IS NOT NULL
-            AND published_sha IS NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS remote_publications (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          connection_id TEXT NOT NULL
+            REFERENCES remote_repository_connections(id) ON DELETE RESTRICT,
+          work_item_id TEXT
+            REFERENCES work_items(id) ON DELETE RESTRICT,
+          candidate_revision_id TEXT
+            REFERENCES candidate_revisions(id) ON DELETE RESTRICT,
+          purpose TEXT NOT NULL DEFAULT 'legacy_manual'
+            CHECK (purpose IN ('legacy_manual', 'existing_product_history', 'ticket')),
+          version INTEGER NOT NULL CHECK (version > 0),
+          push_attempt_count INTEGER NOT NULL CHECK (push_attempt_count >= 0),
+          pull_request_attempt_count INTEGER NOT NULL CHECK (pull_request_attempt_count >= 0),
+          account_id TEXT NOT NULL,
+          repository_id INTEGER NOT NULL CHECK (repository_id > 0),
+          owner TEXT NOT NULL,
+          name TEXT NOT NULL,
+          full_name TEXT NOT NULL,
+          canonical_https_url TEXT NOT NULL,
+          is_private INTEGER NOT NULL CHECK (is_private IN (0, 1)),
+          metadata_read INTEGER NOT NULL CHECK (metadata_read IN (0, 1)),
+          contents_write INTEGER NOT NULL CHECK (contents_write IN (0, 1)),
+          pull_requests_write INTEGER NOT NULL CHECK (pull_requests_write IN (0, 1)),
+          workflows_write INTEGER NOT NULL CHECK (workflows_write IN (0, 1)),
+          captured_local_sha TEXT NOT NULL,
+          captured_local_tree TEXT NOT NULL,
+          remote_base_sha TEXT NOT NULL,
+          remote_base_tree TEXT NOT NULL,
+          target_branch TEXT NOT NULL,
+          publication_branch TEXT NOT NULL,
+          manifest_digest TEXT NOT NULL,
+          manifest_object_count INTEGER NOT NULL CHECK (manifest_object_count >= 0),
+          manifest_commit_count INTEGER NOT NULL CHECK (manifest_commit_count >= 0),
+          manifest_path_count INTEGER NOT NULL CHECK (manifest_path_count >= 0),
+          commits_json TEXT NOT NULL,
+          paths_json TEXT NOT NULL,
+          title TEXT NOT NULL CHECK (length(title) > 0),
+          body TEXT NOT NULL,
+          text_revision INTEGER NOT NULL CHECK (text_revision > 0),
+          status TEXT NOT NULL
+            CHECK (
+              status IN (
+                'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
+                'creating_pull_request', 'open', 'open_outdated', 'open_stale',
+                'merged', 'closed', 'cancelled', 'stale', 'failed'
+              )
+            ),
+          pushed_sha TEXT,
+          pull_request_number INTEGER CHECK (
+            pull_request_number IS NULL OR pull_request_number > 0
+          ),
+          pull_request_node_id TEXT,
+          pull_request_url TEXT,
+          pull_request_state TEXT CHECK (
+            pull_request_state IS NULL OR pull_request_state IN ('open', 'closed', 'merged')
+          ),
+          pull_request_is_draft INTEGER CHECK (
+            pull_request_is_draft IS NULL OR pull_request_is_draft IN (0, 1)
+          ),
+          pull_request_head_sha TEXT,
+          pull_request_base_branch TEXT,
+          pull_request_base_sha TEXT,
+          pull_request_merged_sha TEXT,
+          pull_request_updated_at REAL,
+          error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
+          remote_branch_deleted_at REAL,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          CHECK (
+            status NOT IN (
+              'branch_published', 'creating_pull_request', 'open', 'open_outdated',
+              'open_stale', 'merged', 'closed'
+            )
+            OR pushed_sha = captured_local_sha
+          ),
+          CHECK (
+            (
+              status IN ('open', 'open_outdated', 'open_stale', 'merged', 'closed')
+              AND pull_request_number IS NOT NULL
+              AND pull_request_node_id IS NOT NULL
+              AND pull_request_url IS NOT NULL
+              AND pull_request_state IS NOT NULL
+              AND pull_request_is_draft IS NOT NULL
+              AND pull_request_head_sha IS NOT NULL
+              AND pull_request_base_branch IS NOT NULL
+              AND pull_request_base_sha IS NOT NULL
+              AND pull_request_updated_at IS NOT NULL
+            )
+            OR
+            (
+              status NOT IN ('open', 'open_outdated', 'open_stale', 'merged', 'closed')
+              AND pull_request_number IS NULL
+              AND pull_request_node_id IS NULL
+              AND pull_request_url IS NULL
+              AND pull_request_state IS NULL
+              AND pull_request_is_draft IS NULL
+              AND pull_request_head_sha IS NULL
+              AND pull_request_base_branch IS NULL
+              AND pull_request_base_sha IS NULL
+              AND pull_request_merged_sha IS NULL
+              AND pull_request_updated_at IS NULL
+            )
           )
-        )
-    );
+      );
 
-    CREATE TABLE owner_notifications (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-        kind TEXT NOT NULL
-          CHECK (kind IN ('needs_input', 'refinement_complete', 'new_reply')),
-        target_kind TEXT NOT NULL
-          CHECK (target_kind IN ('ticket', 'epic', 'conversation_thread')),
-        target_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        body TEXT NOT NULL,
-        created_at REAL NOT NULL,
-        read_at REAL,
-        resolved_at REAL,
-        CHECK (
-          resolved_at IS NULL
-          OR (kind = 'needs_input' AND read_at IS NOT NULL)
-        )
-    );
+      CREATE TABLE IF NOT EXISTS remote_safe_syncs (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          connection_id TEXT NOT NULL
+            REFERENCES remote_repository_connections(id) ON DELETE RESTRICT,
+          version INTEGER NOT NULL CHECK (version > 0),
+          connection_version INTEGER NOT NULL CHECK (connection_version > 0),
+          kind TEXT NOT NULL CHECK (kind IN ('fast_forward', 'history_alignment')),
+          status TEXT NOT NULL
+            CHECK (
+              status IN (
+                'awaiting_confirmation', 'accepting', 'accepted', 'rejected',
+                'stale', 'failed'
+              )
+            ),
+          observation_ref TEXT NOT NULL,
+          local_sha TEXT NOT NULL,
+          local_tree TEXT NOT NULL,
+          remote_sha TEXT NOT NULL,
+          remote_tree TEXT NOT NULL,
+          merge_base_sha TEXT,
+          candidate_sha TEXT NOT NULL,
+          candidate_tree TEXT NOT NULL,
+          proving_publication_id TEXT
+            REFERENCES remote_publications(id) ON DELETE RESTRICT,
+          published_sha TEXT,
+          commits_json TEXT NOT NULL,
+          paths_json TEXT NOT NULL,
+          error_code TEXT CHECK (error_code IS NULL OR length(error_code) <= 128),
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          CHECK (
+            (
+              kind = 'fast_forward'
+              AND candidate_sha = remote_sha
+              AND candidate_tree = remote_tree
+              AND proving_publication_id IS NULL
+              AND published_sha IS NULL
+            )
+            OR
+            (
+              kind = 'history_alignment'
+              AND candidate_tree = local_tree
+              AND proving_publication_id IS NOT NULL
+              AND published_sha IS NOT NULL
+            )
+          )
+      );
 
-    -- Columns added to tables that already exist at v1. Their order fixes the final
-    -- column ordinals, so it matches the order the replaced chain applied them in.
-    ALTER TABLE knowledge_pages
-      ADD COLUMN source_repository_knowledge_run_id TEXT
-      REFERENCES repository_knowledge_runs(id) ON DELETE SET NULL;
+      CREATE TABLE IF NOT EXISTS owner_notifications (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL
+            CHECK (kind IN ('needs_input', 'refinement_complete', 'new_reply')),
+          target_kind TEXT NOT NULL
+            CHECK (target_kind IN ('ticket', 'epic', 'conversation_thread')),
+          target_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          body TEXT NOT NULL,
+          created_at REAL NOT NULL,
+          read_at REAL,
+          resolved_at REAL,
+          CHECK (
+            resolved_at IS NULL
+            OR (kind = 'needs_input' AND read_at IS NOT NULL)
+          )
+      );
+      """
 
-    ALTER TABLE ticket_comments
-      ADD COLUMN author_avatar_url TEXT;
-    ALTER TABLE ticket_comments
-      ADD COLUMN external_url TEXT;
-    ALTER TABLE ticket_comments
-      ADD COLUMN external_id TEXT;
-    ALTER TABLE ticket_comments
-      ADD COLUMN github_review_context_json TEXT;
+    /// Columns added to tables that already exist at v1. Their order fixes the
+    /// final column ordinals, so it matches the declarative schema above.
+    static let columns: [AddedColumn] = [
+      AddedColumn(
+        table: "knowledge_pages",
+        name: "source_repository_knowledge_run_id",
+        definition: "TEXT REFERENCES repository_knowledge_runs(id) ON DELETE SET NULL"
+      ),
+      AddedColumn(table: "ticket_comments", name: "author_avatar_url", definition: "TEXT"),
+      AddedColumn(table: "ticket_comments", name: "external_url", definition: "TEXT"),
+      AddedColumn(table: "ticket_comments", name: "external_id", definition: "TEXT"),
+      AddedColumn(
+        table: "ticket_comments",
+        name: "github_review_context_json",
+        definition: "TEXT"
+      ),
+      AddedColumn(
+        table: "candidate_revisions",
+        name: "delivery_kind",
+        definition: "TEXT NOT NULL DEFAULT 'repository_change' "
+          + "CHECK (delivery_kind IN ('repository_change', 'local_outcome'))"
+      ),
+      AddedColumn(table: "candidate_revisions", name: "reviewed_head_sha", definition: "TEXT"),
+      AddedColumn(
+        table: "candidate_revisions",
+        name: "review_run_id",
+        definition: "TEXT REFERENCES agent_runs(id)"
+      ),
+      AddedColumn(table: "agent_runs", name: "execution_constraint_kind", definition: "TEXT"),
+      AddedColumn(table: "agent_runs", name: "execution_constraint_observed_at", definition: "REAL"),
+      AddedColumn(table: "agent_runs", name: "execution_constraint_retry_at", definition: "REAL"),
+      AddedColumn(table: "agent_runs", name: "execution_constraint_evidence", definition: "TEXT"),
+      AddedColumn(table: "agent_runs", name: "settlement_operation_id", definition: "TEXT"),
+      AddedColumn(table: "agent_runs", name: "settlement_candidate_version", definition: "INTEGER"),
+      AddedColumn(table: "agent_runs", name: "cumulative_used_tokens", definition: "INTEGER"),
+      // The owner-approved demo kind contract. Existing rows read back NULL:
+      // the pre-contract state in which delivery still decides the kind. The
+      // column carries no enumeration; `TicketDemoKind` decides legal values.
+      AddedColumn(table: "work_items", name: "demo_kind", definition: "TEXT"),
+      AddedColumn(table: "ticket_suggestions", name: "demo_kind", definition: "TEXT"),
+    ]
 
-    ALTER TABLE candidate_revisions
-      ADD COLUMN delivery_kind TEXT NOT NULL DEFAULT 'repository_change'
-      CHECK (delivery_kind IN ('repository_change', 'local_outcome'));
+    /// The durable ticket key counter, derived from the highest key already
+    /// allocated so the next ticket cannot reuse a taken key. Proposals stored
+    /// from this version on carry final `T` keys from this counter, so the
+    /// reference the product owner reads is the key the accepted ticket keeps.
+    /// `SQLiteStore.assignDurableKeysToPendingSuggestions` follows this step in
+    /// the same transaction, and only when the column was just added, so
+    /// proposals that already carry durable keys keep them.
+    static let ticketKeyCounter = """
+      ALTER TABLE products
+        ADD COLUMN next_ticket_key_number INTEGER NOT NULL DEFAULT 1;
+      UPDATE products
+      SET next_ticket_key_number = COALESCE(
+          (
+            SELECT MAX(key_number) FROM work_items
+            WHERE work_items.product_id = products.id
+          ),
+          0
+      ) + 1;
+      """
 
-    ALTER TABLE agent_runs ADD COLUMN execution_constraint_kind TEXT;
-    ALTER TABLE agent_runs ADD COLUMN execution_constraint_observed_at REAL;
-    ALTER TABLE agent_runs ADD COLUMN execution_constraint_retry_at REAL;
-    ALTER TABLE agent_runs ADD COLUMN execution_constraint_evidence TEXT;
+    /// The unreleased version 5 declared `demo_kind` with an enumerated CHECK.
+    /// SQLite cannot alter a CHECK in place, so the column is copied into a
+    /// fresh unconstrained column, dropped, and the copy renamed. ADD COLUMN
+    /// splices the new column in before the table constraints, which is where
+    /// the declarative schema declares `demo_kind`, so the result matches a
+    /// fresh install. No foreign key, index, trigger, or view names the column,
+    /// so no cascade fires and DROP COLUMN is legal.
+    static func demoKindEnumerationRemoval(table: String) -> String {
+      """
+      ALTER TABLE \(table) ADD COLUMN demo_kind_migrated TEXT;
+      UPDATE \(table) SET demo_kind_migrated = demo_kind;
+      ALTER TABLE \(table) DROP COLUMN demo_kind;
+      ALTER TABLE \(table) RENAME COLUMN demo_kind_migrated TO demo_kind;
+      """
+    }
 
-    -- demo_sessions is generalized from accepted candidates to any launch source.
-    -- Nothing references demo_sessions, so the rename is safe; note that RENAME does
-    -- rewrite the referencing text of inbound foreign keys, so a future table
-    -- pointing here would need this block revisited.
-    ALTER TABLE demo_sessions RENAME TO demo_sessions_v2;
+    /// demo_sessions is generalized from accepted candidates to any launch
+    /// source. Nothing references demo_sessions, so the rename is safe; note
+    /// that RENAME does rewrite the referencing text of inbound foreign keys,
+    /// so a future table pointing here would need this block revisited.
+    static let demoSessionsRebuild = """
+      ALTER TABLE demo_sessions RENAME TO demo_sessions_v2;
 
-    CREATE TABLE demo_sessions (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-        source_kind TEXT NOT NULL
-          CHECK (source_kind IN ('accepted_candidate', 'imported_repository')),
-        launch_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        preview_worktree_path TEXT,
-        allocated_port INTEGER,
-        output TEXT,
-        error_message TEXT,
-        created_at REAL NOT NULL,
-        updated_at REAL NOT NULL,
-        UNIQUE(source_kind, launch_id)
-    );
+      CREATE TABLE demo_sessions (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          source_kind TEXT NOT NULL
+            CHECK (source_kind IN ('accepted_candidate', 'imported_repository')),
+          launch_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          preview_worktree_path TEXT,
+          allocated_port INTEGER,
+          output TEXT,
+          error_message TEXT,
+          created_at REAL NOT NULL,
+          updated_at REAL NOT NULL,
+          UNIQUE(source_kind, launch_id)
+      );
 
-    INSERT INTO demo_sessions (
-        id, product_id, source_kind, launch_id, status, preview_worktree_path,
-        allocated_port, output, error_message, created_at, updated_at
-    )
-    SELECT
-        id, product_id, 'accepted_candidate', candidate_revision_id, status,
-        preview_worktree_path, allocated_port, output, error_message, created_at, updated_at
-    FROM demo_sessions_v2;
-
-    DROP TABLE demo_sessions_v2;
-
-    CREATE INDEX idx_product_repositories_imported
-      ON product_repositories(imported_at);
-    CREATE INDEX idx_repository_knowledge_runs_product_status
-      ON repository_knowledge_runs(product_id, status, attempt DESC);
-    CREATE INDEX idx_repository_knowledge_drafts_run_status
-      ON repository_knowledge_drafts(run_id, status, created_at);
-    CREATE UNIQUE INDEX idx_repository_knowledge_runs_one_active
-      ON repository_knowledge_runs(product_id)
-      WHERE status IN ('pending_analysis', 'analyzing', 'reviewing', 'publishing');
-
-    -- The v1 index on demo_sessions followed the renamed table and died with it.
-    CREATE INDEX idx_demo_sessions_product_status
-      ON demo_sessions(product_id, status, updated_at);
-    CREATE INDEX idx_repository_launch_proposals_status
-      ON repository_launch_proposals(status, updated_at);
-
-    CREATE INDEX idx_remote_repository_connections_product_status
-      ON remote_repository_connections(product_id, status, updated_at);
-    CREATE INDEX idx_remote_safe_syncs_product_status
-      ON remote_safe_syncs(product_id, status, updated_at);
-    CREATE INDEX idx_remote_publications_product_status
-      ON remote_publications(product_id, status, updated_at);
-    CREATE UNIQUE INDEX idx_remote_safe_syncs_one_active
-      ON remote_safe_syncs(product_id)
-      WHERE status IN ('awaiting_confirmation', 'accepting');
-    CREATE UNIQUE INDEX idx_remote_publications_one_active_legacy
-      ON remote_publications(product_id)
-      WHERE work_item_id IS NULL
-        AND status IN (
-          'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
-          'creating_pull_request', 'open', 'open_outdated', 'open_stale'
-        );
-    CREATE UNIQUE INDEX idx_remote_publications_one_active_ticket
-      ON remote_publications(work_item_id)
-      WHERE work_item_id IS NOT NULL
-        AND status IN (
-          'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
-          'creating_pull_request', 'open', 'open_outdated', 'open_stale'
-        );
-    CREATE UNIQUE INDEX idx_ticket_comments_external_id
-      ON ticket_comments(external_id)
-      WHERE external_id IS NOT NULL;
-
-    CREATE INDEX idx_owner_notifications_product_active
-      ON owner_notifications(product_id, created_at DESC)
-      WHERE read_at IS NULL
-        OR (kind = 'needs_input' AND resolved_at IS NULL);
-    CREATE INDEX idx_owner_notifications_target
-      ON owner_notifications(product_id, target_kind, target_id, created_at DESC);
-
-    -- The only data fix-up that can still match on a 0.1.0 database. The replaced
-    -- chain also cleaned up remote_publications rows (twice), unfinished
-    -- repository_knowledge_runs, and empty GitHub review ticket_comments; every one
-    -- of those targets a table or column that does not exist at v1, so none of them
-    -- can affect a single row here.
-    UPDATE sprints
-    SET goal = ''
-    WHERE state = 'draft' AND trim(goal) = 'Next valuable increment';
-
-    DROP VIEW agent_verified_knowledge;
-    CREATE VIEW agent_verified_knowledge AS
+      INSERT INTO demo_sessions (
+          id, product_id, source_kind, launch_id, status, preview_worktree_path,
+          allocated_port, output, error_message, created_at, updated_at
+      )
       SELECT
-        page.id,
-        page.product_id,
-        page.parent_id,
-        page.title,
-        page.slug,
-        page.body_markdown,
-        page.kind,
-        page.source_work_item_id,
-        item.item_key AS source_item_key,
-        page.source_repository_knowledge_run_id,
-        page.updated_at
-      FROM knowledge_pages AS page
-      LEFT JOIN work_items AS item ON item.id = page.source_work_item_id
-      WHERE page.verification_status = 'verified';
+          id, product_id, 'accepted_candidate', candidate_revision_id, status,
+          preview_worktree_path, allocated_port, output, error_message, created_at, updated_at
+      FROM demo_sessions_v2;
 
-    DROP VIEW agent_delivery_provenance;
-    CREATE VIEW agent_delivery_provenance AS
-      SELECT
-        candidate.id AS candidate_id,
-        candidate.product_id,
-        candidate.work_item_id,
-        item.item_key,
-        item.title AS ticket_title,
-        candidate.version AS candidate_version,
-        candidate.delivery_kind,
-        candidate.branch_name,
-        candidate.base_sha,
-        candidate.head_sha,
-        candidate.integrated_sha,
-        candidate.status,
-        candidate.commit_count,
-        candidate.created_at,
-        candidate.updated_at
-      FROM candidate_revisions AS candidate
-      JOIN work_items AS item ON item.id = candidate.work_item_id;
+      DROP TABLE demo_sessions_v2;
+      """
 
-    PRAGMA user_version = 2;
-    """
+    static let indexes = """
+      CREATE INDEX IF NOT EXISTS idx_product_repositories_imported
+        ON product_repositories(imported_at);
+      CREATE INDEX IF NOT EXISTS idx_repository_knowledge_runs_product_status
+        ON repository_knowledge_runs(product_id, status, attempt DESC);
+      CREATE INDEX IF NOT EXISTS idx_repository_knowledge_drafts_run_status
+        ON repository_knowledge_drafts(run_id, status, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_repository_knowledge_runs_one_active
+        ON repository_knowledge_runs(product_id)
+        WHERE status IN ('pending_analysis', 'analyzing', 'reviewing', 'publishing');
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_revisions_implementation_version
+        ON candidate_revisions(implementation_run_id, version);
+
+      -- The v1 index on demo_sessions followed the renamed table and died with it.
+      CREATE INDEX IF NOT EXISTS idx_demo_sessions_product_status
+        ON demo_sessions(product_id, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_repository_launch_proposals_status
+        ON repository_launch_proposals(status, updated_at);
+
+      CREATE INDEX IF NOT EXISTS idx_remote_repository_connections_product_status
+        ON remote_repository_connections(product_id, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_remote_safe_syncs_product_status
+        ON remote_safe_syncs(product_id, status, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_remote_publications_product_status
+        ON remote_publications(product_id, status, updated_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_safe_syncs_one_active
+        ON remote_safe_syncs(product_id)
+        WHERE status IN ('awaiting_confirmation', 'accepting');
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_publications_one_active_legacy
+        ON remote_publications(product_id)
+        WHERE work_item_id IS NULL
+          AND status IN (
+            'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
+            'creating_pull_request', 'open', 'open_outdated', 'open_stale'
+          );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_publications_one_active_ticket
+        ON remote_publications(work_item_id)
+        WHERE work_item_id IS NOT NULL
+          AND status IN (
+            'awaiting_confirmation', 'checking', 'pushing', 'branch_published',
+            'creating_pull_request', 'open', 'open_outdated', 'open_stale'
+          );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_comments_external_id
+        ON ticket_comments(external_id)
+        WHERE external_id IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_owner_notifications_product_active
+        ON owner_notifications(product_id, created_at DESC)
+        WHERE read_at IS NULL
+          OR (kind = 'needs_input' AND resolved_at IS NULL);
+      CREATE INDEX IF NOT EXISTS idx_owner_notifications_target
+        ON owner_notifications(product_id, target_kind, target_id, created_at DESC);
+      """
+
+    /// The only data fix-up that can still match on a 0.1.0 database. The
+    /// development chain this upgrade replaces also cleaned up
+    /// remote_publications rows, unfinished repository_knowledge_runs, and
+    /// empty GitHub review ticket_comments; every one of those targets a table
+    /// or column that does not exist at v1, so none of them can affect a row.
+    static let fixups = """
+      UPDATE sprints
+      SET goal = ''
+      WHERE state = 'draft' AND trim(goal) = 'Next valuable increment';
+      """
+
+    static let views = """
+      DROP VIEW IF EXISTS agent_verified_knowledge;
+      CREATE VIEW agent_verified_knowledge AS
+        SELECT
+          page.id,
+          page.product_id,
+          page.parent_id,
+          page.title,
+          page.slug,
+          page.body_markdown,
+          page.kind,
+          page.source_work_item_id,
+          item.item_key AS source_item_key,
+          page.source_repository_knowledge_run_id,
+          page.updated_at
+        FROM knowledge_pages AS page
+        LEFT JOIN work_items AS item ON item.id = page.source_work_item_id
+        WHERE page.verification_status = 'verified';
+
+      DROP VIEW IF EXISTS agent_delivery_provenance;
+      CREATE VIEW agent_delivery_provenance AS
+        SELECT
+          candidate.id AS candidate_id,
+          candidate.product_id,
+          candidate.work_item_id,
+          item.item_key,
+          item.title AS ticket_title,
+          candidate.version AS candidate_version,
+          candidate.delivery_kind,
+          candidate.branch_name,
+          candidate.base_sha,
+          candidate.head_sha,
+          candidate.integrated_sha,
+          candidate.status,
+          candidate.commit_count,
+          candidate.created_at,
+          candidate.updated_at
+        FROM candidate_revisions AS candidate
+        JOIN work_items AS item ON item.id = candidate.work_item_id;
+      """
+  }
 
   static let legacyCopyTableOrder = [
     "products",

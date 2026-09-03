@@ -396,6 +396,60 @@ extension SQLiteStore {
     return page
   }
 
+  /// Publishes or updates the canonical demo recipe page for the accepted
+  /// candidate's presentation kind — one verified page per kind the product
+  /// has shipped, under the Operations section next to Environments. The
+  /// operation is idempotent: re-acceptance with the same recipe body leaves
+  /// the page and its revision history untouched, so a preserved interruption
+  /// cannot duplicate it.
+  @discardableResult
+  public func upsertCanonicalDemoRecipePage(
+    productID: UUID,
+    specification: DemoLaunchSpecification
+  ) throws -> KnowledgePage {
+    let kind = specification.presentation.kind
+    let slug = CanonicalDemoRecipeKnowledge.slug(for: kind)
+    let title = CanonicalDemoRecipeKnowledge.title(for: kind)
+    let body = KnowledgeMarkdown.normalizedBody(
+      try CanonicalDemoRecipeKnowledge.bodyMarkdown(for: specification)
+    )
+    _ = try seedKnowledgeBase(productID: productID)
+    let pages = try fetchKnowledgePages(productID: productID)
+    if let existing = pages.first(where: { $0.slug == slug && $0.kind == .page }) {
+      guard existing.bodyMarkdown != body || existing.verificationStatus != .verified
+      else {
+        return existing
+      }
+      return try updateKnowledgePage(
+        id: existing.id,
+        title: existing.title,
+        bodyMarkdown: body,
+        authorName: "Spedito",
+        changeSummary: "Updated the canonical demo recipe from the accepted candidate"
+      )
+    }
+    guard
+      let operations = pages.first(where: { $0.parentID == nil && $0.slug == "operations" })
+    else {
+      throw PersistenceError.corruptData("The canonical Operations section is missing")
+    }
+    let page = KnowledgePage(
+      productID: productID,
+      parentID: operations.id,
+      title: title,
+      slug: slug,
+      bodyMarkdown: body,
+      sortOrder: (pages.filter { $0.parentID == operations.id }.map(\.sortOrder).max() ?? -1)
+        + 1
+    )
+    try insertKnowledgePage(
+      page,
+      authorName: "Spedito",
+      changeSummary: "Published the canonical demo recipe from the accepted candidate"
+    )
+    return page
+  }
+
   public func upsertDeliveryNote(
     productID: UUID,
     sprint: Sprint,

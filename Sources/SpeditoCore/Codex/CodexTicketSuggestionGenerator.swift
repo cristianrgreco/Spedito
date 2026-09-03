@@ -11,13 +11,44 @@ public enum TicketSuggestionGenerationError: Error, Equatable, LocalizedError, S
   }
 }
 
+/// The outcome of a final epic-plan turn: either a complete plan, or — as a
+/// sanctioned last resort when a consequential product choice survived
+/// clarification unresolved — the remaining questions for the product owner.
+/// Decoding enforces the exclusivity: never both, never neither.
+public enum EpicPlanReply: Equatable, Sendable {
+  case plan(EpicPlanDraft)
+  case questions(message: String, questions: [TicketRefinementQuestion])
+}
+
 public enum CodexTicketSuggestionGenerator {
+  /// The mechanical product-surface rule for setup and story tickets. Stated
+  /// once and interpolated into the planning prose, the schema description,
+  /// and the repair prompt so the three copies cannot drift; the product
+  /// specification and technical design repeat it word for word.
+  public static let productSurfaceRule =
+    "mac_application for a native macOS app, browser for a webapp, terminal_application only "
+    + "for a program the user keeps interacting with while it runs in a terminal (a TUI, a "
+    + "menu, a prompt loop), command_output for a program that is started once with its inputs "
+    + "and prints a result, even when the user starts it from a terminal"
+
+  /// The mechanical medium for design and research tickets, stated once for
+  /// the same three copies. Design work reviews as an HTML screen set or
+  /// clickable prototype Spedito serves in the browser, never a PDF, unless
+  /// the outcome is explicitly document-first.
+  public static let designMediumRule =
+    "design tickets about a visible interface use static_web, a self-contained HTML screen set or "
+    + "clickable prototype Spedito serves in the browser; research tickets and explicitly "
+    + "document-first design outcomes such as copy reviews, service blueprints, and accessibility "
+    + "audits use artifact"
+
   private static let platformInstructions = """
     You are the single business analyst responsible for proposing a coherent delivery backlog from the
     product owner's outcome. A role on a ticket is a recommended future owner, not another agent producing
     the suggestion and not a quota. Roles may repeat for any number of tickets. Use the UX designer for
     experience/prototype work and the generic implementer for approved software changes, whether the
     ticket concerns UI, local logic, or a service.
+    \(CodexLifecycleGuidance.uxTicketContractGuidance)
+
     Propose backend work only when it is actually justified; do not invent it merely because it is a
     familiar architecture layer. The tech lead reviews delivery and dependency decisions. Identify genuine
     dependency edges without serialising work that can proceed with mocks or agreed contracts.
@@ -50,13 +81,18 @@ public enum CodexTicketSuggestionGenerator {
     make an ordinary feature ticket rediscover or establish its environment incidentally.
     Classify user-visible outcomes as stories, supporting delivery or research work as tasks, and only
     classify a ticket as a bug when it corrects behaviour that should already work.
+    Give every proposal its demoKind — the review medium the product owner approves with the plan and
+    the accepted ticket keeps through delivery. The rule is mechanical: setup and story tickets use the
+    product surface the clarification round fixed — \(productSurfaceRule); \(designMediumRule); a
+    ticket whose outcome is code or data behaviour with no owner-visible surface uses none. Do not vary
+    the kind per ticket on taste.
     Temporary proposal references belong only in the reference field. Never repeat one at the start
     of the owner-facing title; for example, use title "Choose a provider", not "S1 - Choose a provider".
     Do not modify files, browse the web, inspect repository source or Git history, or make product
-    decisions on the owner's behalf. The supplied planning evidence is the primary context. You may query
-    the live product database views read-only only when a mutable ticket or product knowledge detail must
-    be refreshed. Return only the JSON requested by the output schema. Every proposal must explain why it
-    belongs in the backlog.
+    decisions on the owner's behalf. The supplied planning evidence is your complete context. If a
+    ticket or product knowledge detail you need is missing from it, say so in your result instead of
+    searching for it. Return only the JSON requested by the output schema. Every proposal must explain
+    why it belongs in the backlog.
     """
 
   public static func developerInstructions(
@@ -188,8 +224,35 @@ public enum CodexTicketSuggestionGenerator {
       Previously rejected proposals for this epic:
       \(rejectedScope)
 
-      Use the decisions resolved in the preceding clarification conversation. Do not
-      invent product decisions or disguise an unresolved product owner choice as a backlog ticket.
+      Use the decisions resolved in the preceding clarification conversation. Do not invent product
+      decisions or disguise an unresolved product owner choice as a backlog ticket. Every acceptance
+      criterion must be concrete and grounded in the outcome and the supplied evidence; do not add
+      behaviour, states, or data — retries, extra fields, test accounts, unrequested settings — that
+      the owner did not ask for and the evidence does not require. An implementation ticket must not
+      silently embed an unapproved choice of a real external service, provider, or delivery mechanism;
+      surface that choice to the product owner, or through authorised research, before committing the
+      implementation as scope. If a prerequisite research or design ticket will supply a decision,
+      cite that exact ticket reference in the dependant criterion; never use vague “agreed”, “approved”,
+      “chosen”, or “to be decided” placeholders without that provenance.
+      Clarification normally settles every consequential product choice before this turn. If one is
+      still genuinely unresolved — neither decided by the product owner, explicitly delegated, nor
+      covered by an authorised research ticket — return the questions form of the output schema instead
+      of a plan: one to three concise questions, each with two to four mutually exclusive,
+      business-friendly choices, your recommended choice first suffixed with "(Recommended)", and no
+      "Other" option — nor any option that refers to Other or its text field — because the interface
+      adds the Other choice itself. This escape is a last resort after clarification,
+      not an invitation to defer: each question must name a consequential choice the plan cannot
+      responsibly proceed without — a real external service or source, material spend, or
+      product-behaviour decision only the product owner can make. A choice you can responsibly settle
+      yourself — an internal implementation approach, a presentation detail, or an option with a
+      sensible recommended default that commits no external service — belongs in the plan with your
+      recommendation recorded, not in a question. Where the outcome leaves such a choice unstated,
+      that default exists: for a webapp, what the user saves stays in the browser; for a native app,
+      on the device; the delivery and demo surface follows the product kind the outcome names. When a
+      committed default determines owner-visible behaviour, state that behaviour plainly in the epic
+      goal or a ticket's owner-facing scope — for example “what you save stays in this browser on
+      this device” — never commit it silently. Never return a plan together with outstanding
+      questions, and never dilute the unresolved choice into ticket criteria instead of asking.
       A research or discovery ticket is valid only when the product owner explicitly requested research
       or agreed during clarification that external evidence is needed. Give such a ticket a time-bounded,
       decision-enabling output. An instruction for the business analyst or team to identify, compare,
@@ -203,7 +266,14 @@ public enum CodexTicketSuggestionGenerator {
       valuable outcomes, genuine dependencies, and useful parallelism; do not default to a fixed research,
       design, implementation, and verification sequence. Make verification explicit in the relevant
       acceptance criteria and create a separate design or verification ticket only when it produces a
-      meaningful outcome that should be delivered, reviewed, or scheduled independently. Work that does
+      meaningful outcome that should be delivered, reviewed, or scheduled independently. Apply this test
+      before deciding: when the supplied evidence shows no user-facing surface delivered yet and none
+      planned in the existing backlog, an epic with a visible outcome is giving the product its first
+      visible experience, and that always warrants the separate UX design ticket — give it an
+      independently reviewable experience outcome covering the product's main states, and let it proceed
+      in parallel with environment establishment rather than depend on it. When the product's visible
+      experience already exists or is already planned in the backlog, keep design judgment inside the
+      feature ticket unless a separately reviewable design outcome is genuinely needed. Work that does
       not require the research conclusion may proceed in parallel, while work that does must depend on the
       approved output without guessing its conclusion. Never stop at a research ticket when the agreed
       outcome includes user-visible behaviour. Otherwise create tickets that deliver the agreed outcome.
@@ -223,17 +293,30 @@ public enum CodexTicketSuggestionGenerator {
       artefact that genuinely does not need the environment.
 
       An environment-establishment task is a concrete delivery outcome, not vague technical investigation.
-      Its acceptance criteria cover the approved toolchain and supported versions; repository-owned build,
-      test, local-run, and demo entry points; run-private temporary and cache locations; the complete
-      filesystem, localhost, network, and service capability boundary; a successful managed readiness
-      check; limitations; and a verified Environments product knowledge update. Consider the intended
+      The delivering team member achieves and verifies: the approved toolchain and supported versions;
+      repository-owned build, test, local-run, and demo entry points; run-private temporary and cache
+      locations; the complete filesystem, localhost, network, and service capability boundary; a
+      successful managed readiness check; limitations; and a verified Environments product knowledge
+      update. That checklist is the ticket's technical contract, never wording the owner sees. Write
+      every ticket's owner-facing title, context, and acceptance criteria in plain product language the
+      owner can read at a glance. The environment ticket's owner-facing acceptance criteria are exactly
+      its observable results, phrased like “the team can build, test, and run the product on this Mac”,
+      “the product owner can open a working demo”, and “the setup is written down for the team and
+      verified” — never put “repository”, “toolchain”, “localhost”, “readiness check”, “capability
+      boundary”, or cache paths in any owner-visible field, and never paraphrase the checklist into
+      owner-visible text either directly or through substitutes: no internal check or gate names
+      (“managed check”, “automated checks”), no cache or build-artifact wording (“cached files”, “stored
+      build data”, “temporary files”, “working material”), and no tool, command, or entry-point wording
+      (“team-owned commands”, “entry points”, “development tools”, “workspace”). Consider the intended
       deployment destination early when it affects the stack, but leave production accounts, credentials,
       signing identities, and irreversible release access to separately authorised release work.
 
       Use temporary proposal references such as S1, S2, and S3. Return between 1 and 24 tickets. Split work
       where it creates an independently understandable, reviewable, or parallelizable outcome. Include
-      testable acceptance criteria, genuine dependencies, suitable ticket types, priorities, and future
-      owners. Before returning, trace every epic success criterion to at least one delivery ticket and make
+      testable acceptance criteria that state exactly what they verify — never “the relevant states”,
+      “states that matter”, or “ready for build hand-off” — while still verifying only behaviour the
+      owner asked for or the evidence requires. Include genuine dependencies, suitable ticket types,
+      priorities, and future owners. Before returning, trace every epic success criterion to at least one delivery ticket and make
       sure the dependency graph reaches the agreed product outcome rather than ending at analysis. Every
       dependsOn entry must reference either another ticket in this response or an exact active ticket key
       shown above.
@@ -336,7 +419,8 @@ public enum CodexTicketSuggestionGenerator {
       \(existingKeys.isEmpty ? "none" : existingKeys).
       Preserve or correct environmentAssessment and every environmentRelationship. If the assessment says
       foundation_required, its foundation ticket must exist and every requires ticket must depend on it
-      directly or transitively.
+      directly or transitively. Preserve each ticket's demoKind under the mechanical product-surface rule:
+      \(productSurfaceRule); \(designMediumRule).
       """
   }
 
@@ -352,7 +436,23 @@ public enum CodexTicketSuggestionGenerator {
     ])
   }
 
+  /// The structured-output endpoint requires a root of type object, so the
+  /// plan-or-questions alternative lives one level down in a single required
+  /// `reply` property; the two branches stay structurally exclusive there.
   public static var epicOutputSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([.string("reply")]),
+      "properties": .object([
+        "reply": .object([
+          "anyOf": .array([epicPlanSchema, epicEscapeSchema])
+        ])
+      ]),
+    ])
+  }
+
+  private static var epicPlanSchema: JSONValue {
     .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -378,6 +478,32 @@ public enum CodexTicketSuggestionGenerator {
           ]),
         ]),
         "suggestions": suggestionArraySchema,
+      ]),
+    ])
+  }
+
+  /// The sanctioned last-resort alternative to a plan: when a consequential
+  /// product choice survived clarification unresolved, the reply carries the
+  /// remaining questions in the same shape ordinary clarification uses, so
+  /// the conversation resumes with the existing question cards.
+  private static var epicEscapeSchema: JSONValue {
+    .object([
+      "type": .string("object"),
+      "additionalProperties": .bool(false),
+      "required": .array([.string("message"), .string("questions")]),
+      "properties": .object([
+        "message": .object([
+          "type": .string("string"),
+          "description": .string(
+            "A short owner-facing explanation of why the plan cannot proceed yet."
+          ),
+        ]),
+        "questions": .object([
+          "type": .string("array"),
+          "minItems": .integer(1),
+          "maxItems": .integer(3),
+          "items": CodexEpicClarificationGenerator.questionSchema,
+        ]),
       ]),
     ])
   }
@@ -420,6 +546,7 @@ public enum CodexTicketSuggestionGenerator {
           .string("reference"), .string("title"), .string("body"),
           .string("type"), .string("acceptanceCriteria"), .string("role"), .string("priority"),
           .string("rationale"), .string("dependsOn"), .string("environmentRelationship"),
+          .string("demoKind"),
         ]),
         "properties": .object([
           "reference": .object(["type": .string("string")]),
@@ -458,6 +585,15 @@ public enum CodexTicketSuggestionGenerator {
             "enum": .array(
               TicketEnvironmentRelationship.allCases.map { .string($0.rawValue) }
             ),
+          ]),
+          "demoKind": .object([
+            "type": .string("string"),
+            "description": .string(
+              "The review medium the product owner approves with the plan. Mechanical rule: "
+                + "setup and story tickets use the product surface the clarification round fixed "
+                + "(\(productSurfaceRule)); \(designMediumRule); code-only tickets use none."
+            ),
+            "enum": .array(TicketDemoKind.allCases.map { .string($0.rawValue) }),
           ]),
         ]),
       ]),
@@ -552,11 +688,19 @@ public enum CodexTicketSuggestionGenerator {
         let priority = priority(named: suggestion.priority),
         let environmentRelationship = TicketEnvironmentRelationship(
           rawValue: suggestion.environmentRelationship
-        )
+        ),
+        let demoKind = TicketDemoKind(rawValue: suggestion.demoKind)
       else {
         throw TicketSuggestionGenerationError.invalidResponse(
           "Each ticket needs a reference, title, type, criteria, valid role, priority, "
-            + "and environment relationship."
+            + "environment relationship, and demo kind."
+        )
+      }
+      let trimmedTitle = suggestion.title.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard CodexEpicClarificationGenerator.meetsMinimumContent(trimmedTitle) else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "Ticket title “\(trimmedTitle)” carries no readable content; give every ticket "
+            + "a plain outcome title."
         )
       }
       let reference = normalizedReference(suggestion.reference)
@@ -574,15 +718,55 @@ public enum CodexTicketSuggestionGenerator {
           "Every proposed ticket needs a temporary reference."
         )
       }
+      let unresolvedDecisionTerms = [
+        "agreed ", "approved design", "approved approach", "chosen provider", "chosen service",
+        "as decided", "to be decided", "tbd",
+      ]
+      let explicitDependencyReferences = Set(
+        dependencyReferences
+          + dependencyReferences.compactMap { proposalReferenceByGeneratedReference[$0] }
+      )
+      let vagueDecisionCriterion = suggestion.acceptanceCriteria.first { criterion in
+        let normalized = criterion.lowercased()
+        let reliesOnUnresolvedDecision = unresolvedDecisionTerms.contains {
+          normalized.contains($0)
+        }
+        guard reliesOnUnresolvedDecision else { return false }
+        return !explicitDependencyReferences.contains {
+          normalizedReferenceTokens(in: criterion).contains($0)
+        }
+      }
+      guard vagueDecisionCriterion == nil else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A ticket criterion relies on an unresolved product decision without naming "
+            + "the prerequisite ticket that will supply it. Resolve the decision during "
+            + "refinement or cite its exact dependency reference."
+        )
+      }
+      // Prose cites the model's own temporary references. Rewriting them to
+      // the canonical position-ordered `S` references here keeps every draft
+      // self-consistent, so the store can substitute the final durable keys
+      // at persist time from the draft references alone.
       return TicketSuggestionDraft(
         reference: proposalReference,
         title: suggestion.title,
         type: type,
-        body: suggestion.body,
-        acceptanceCriteria: suggestion.acceptanceCriteria,
+        body: TicketSuggestionKeySubstitution.substitute(
+          suggestion.body,
+          keysByBatchReference: proposalReferenceByGeneratedReference
+        ),
+        acceptanceCriteria: suggestion.acceptanceCriteria.map {
+          TicketSuggestionKeySubstitution.substitute(
+            $0,
+            keysByBatchReference: proposalReferenceByGeneratedReference
+          )
+        },
         suggestedRole: role,
         priority: priority,
-        rationale: suggestion.rationale,
+        rationale: TicketSuggestionKeySubstitution.substitute(
+          suggestion.rationale,
+          keysByBatchReference: proposalReferenceByGeneratedReference
+        ),
         dependsOnReferences: Array(
           Set(
             dependencyReferences.compactMap {
@@ -595,7 +779,8 @@ public enum CodexTicketSuggestionGenerator {
             dependencyReferences.compactMap { existingItemByReference[$0]?.key }
           )
         ).sorted(),
-        environmentRelationship: environmentRelationship
+        environmentRelationship: environmentRelationship,
+        demoKind: demoKind
       )
     }
   }
@@ -603,19 +788,50 @@ public enum CodexTicketSuggestionGenerator {
   public static func decodeEpicPlan(
     _ text: String,
     existingItems: [WorkItem] = []
-  ) throws -> EpicPlanDraft {
+  ) throws -> EpicPlanReply {
     guard let data = text.data(using: .utf8) else {
       throw TicketSuggestionGenerationError.invalidResponse("The response was not UTF-8.")
     }
     let response: GeneratedEpicResponse
     do {
-      response = try JSONDecoder().decode(GeneratedEpicResponse.self, from: data)
+      response = try JSONDecoder()
+        .decode(GeneratedEpicReplyEnvelope.self, from: data).reply
     } catch {
       throw TicketSuggestionGenerationError.invalidResponse(error.localizedDescription)
     }
-    let title = response.epic.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    let goal = response.epic.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-    let criteria = response.epic.successCriteria
+
+    if let rawQuestions = response.questions {
+      guard response.epic == nil, response.suggestions == nil else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "A plan and outstanding questions cannot be returned together."
+        )
+      }
+      guard
+        (1...3).contains(rawQuestions.count),
+        let questions = CodexEpicClarificationGenerator.normalizedQuestions(rawQuestions)
+      else {
+        throw TicketSuggestionGenerationError.invalidResponse(
+          "An escaped plan needs one to three questions, each with a unique prompt "
+            + "and two to four distinct choices."
+        )
+      }
+      let message = response.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return .questions(
+        message: message.isEmpty
+          ? "I need your decision on the following before I can prepare the epic plan."
+          : message,
+        questions: questions
+      )
+    }
+
+    guard let epic = response.epic, let suggestions = response.suggestions else {
+      throw TicketSuggestionGenerationError.invalidResponse(
+        "The reply must contain either a complete plan or outstanding questions."
+      )
+    }
+    let title = epic.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let goal = epic.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+    let criteria = epic.successCriteria
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     guard !title.isEmpty, !goal.isEmpty, !criteria.isEmpty else {
@@ -624,12 +840,12 @@ public enum CodexTicketSuggestionGenerator {
       )
     }
     let ticketSuggestions = try decodeSuggestions(
-      response.suggestions,
+      suggestions,
       existingItems: existingItems
     )
     let environmentAssessment = try decodeEnvironmentAssessment(
-      response.epic.environmentAssessment,
-      suggestions: response.suggestions,
+      epic.environmentAssessment,
+      suggestions: suggestions,
       ticketSuggestions: ticketSuggestions,
       existingItems: existingItems
     )
@@ -650,13 +866,15 @@ public enum CodexTicketSuggestionGenerator {
           + "Include the downstream delivery tickets needed to achieve it."
       )
     }
-    return EpicPlanDraft(
-      title: title,
-      goal: goal,
-      successCriteria: criteria,
-      constraints: response.epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
-      environmentAssessment: environmentAssessment,
-      ticketSuggestions: ticketSuggestions
+    return .plan(
+      EpicPlanDraft(
+        title: title,
+        goal: goal,
+        successCriteria: criteria,
+        constraints: epic.constraints.trimmingCharacters(in: .whitespacesAndNewlines),
+        environmentAssessment: environmentAssessment,
+        ticketSuggestions: ticketSuggestions
+      )
     )
   }
 
@@ -790,6 +1008,15 @@ public enum CodexTicketSuggestionGenerator {
     )
   }
 
+  private static func normalizedReferenceTokens(in value: String) -> Set<String> {
+    Set(
+      value
+        .uppercased()
+        .split { !$0.isLetter && !$0.isNumber }
+        .map(String.init)
+    )
+  }
+
   private static func priority(named value: String) -> WorkItemPriority? {
     switch value {
     case "urgent": .urgent
@@ -840,9 +1067,15 @@ private struct GeneratedResponse: Decodable {
   let suggestions: [GeneratedSuggestion]
 }
 
+private struct GeneratedEpicReplyEnvelope: Decodable {
+  let reply: GeneratedEpicResponse
+}
+
 private struct GeneratedEpicResponse: Decodable {
-  let epic: GeneratedEpic
-  let suggestions: [GeneratedSuggestion]
+  let epic: GeneratedEpic?
+  let suggestions: [GeneratedSuggestion]?
+  let message: String?
+  let questions: [TicketRefinementQuestion]?
 }
 
 private struct GeneratedEpic: Decodable {
@@ -870,4 +1103,5 @@ private struct GeneratedSuggestion: Decodable {
   let rationale: String
   let dependsOn: [String]
   let environmentRelationship: String
+  let demoKind: String
 }

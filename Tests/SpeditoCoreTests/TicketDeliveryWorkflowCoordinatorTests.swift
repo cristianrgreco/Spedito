@@ -215,12 +215,688 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     #expect(persistedCandidate.headSHA == reviewedSHA)
     #expect(persistedCandidate.integratedSHA == reviewedSHA)
     #expect(persistedCandidate.integrationWorktreePath == reviewWorkspace.path)
+    #expect(persistedCandidate.reviewedHeadSHA == reviewedSHA)
+    #expect(persistedCandidate.reviewRunID == reviewRun.id)
     #expect(persistedItem.state == .acceptance)
     #expect(reviewRun.status == .completed)
     #expect(reviewRun.worktreePath == reviewWorkspace.path)
     #expect(comments.contains { $0.authorName == techLead.name && $0.body == "Approved the exact candidate." })
     #expect(delegate.presentedRuns.contains { $0.id == reviewRun.id && $0.status == .completed })
     #expect(await transport.remainingResponseCount() == 0)
+
+    await client.disconnect()
+    await store.close()
+  }
+
+  @Test("[D10] Sequential demo contract errors repair to the existing static prototype")
+  func d10SequentialDemoContractErrorsRepairToStaticPrototype() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-demo-contract-repair-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Demo contract repair")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let designer = try #require(profiles.first { $0.role == .uxDesigner })
+    let workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Design an interactive forecast",
+      type: .task,
+      body: "Create a self-contained browser prototype.",
+      acceptanceCriteria: ["The managed Demo opens the interactive prototype."],
+      priority: .high
+    )
+    let runID = UUID()
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: runID,
+      authorName: designer.name
+    )
+    let prototype = workspace.url.appendingPathComponent("prototype", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: prototype,
+      withIntermediateDirectories: true
+    )
+    try Data("<!doctype html><title>Forecast prototype</title>".utf8).write(
+      to: prototype.appendingPathComponent("index.html")
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        id: runID,
+        productID: product.id,
+        workItemID: workItem.id,
+        profileID: designer.id,
+        status: .running,
+        codexThreadID: "thread-demo-repair",
+        worktreePath: workspace.url.path
+      )
+    )
+
+    func executionResponse(demo: DemoLaunchSpecification) throws -> String {
+      let result = TicketExecutionResult(
+        status: .completed,
+        comment: "Created the interactive forecast prototype.",
+        question: nil,
+        options: [],
+        summary: "The reviewed city-search journey is available.",
+        changedFiles: ["prototype/index.html"],
+        tests: ["Prototype source check passed"],
+        knowledgeNotes: [],
+        reviewInstructions: ["Open the managed Demo."],
+        demo: demo,
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+      return String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    }
+
+    let initialResponse = try executionResponse(
+      demo: DemoLaunchSpecification(
+        title: "Forecast prototype",
+        presentation: DemoPresentation(kind: .artifact, path: ".")
+      )
+    )
+    let firstRepair = try executionResponse(
+      demo: DemoLaunchSpecification(
+        title: "Forecast prototype",
+        launchCommand: DemoCommand(
+          executable: "/bin/sh",
+          arguments: ["scripts/run.sh"]
+        ),
+        readiness: DemoReadinessCheck(kind: .http, path: "/"),
+        presentation: DemoPresentation(kind: .browser, path: "/")
+      )
+    )
+    let secondRepair = try executionResponse(
+      demo: DemoLaunchSpecification(
+        title: "Forecast prototype",
+        presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+      )
+    )
+
+    func completedTurn(id: String, response: String) -> CodexInboundMessage {
+      .notification(
+        CodexNotification(
+          method: "turn/completed",
+          params: .object([
+            "threadId": .string("thread-demo-repair"),
+            "turn": .object([
+              "id": .string(id),
+              "status": .string("completed"),
+              "items": .array([
+                .object([
+                  "id": .string("message-\(id)"),
+                  "type": .string("agentMessage"),
+                  "text": .string(response),
+                ])
+              ]),
+            ]),
+          ])
+        )
+      )
+    }
+
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/demo-repair"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("repair-one")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("repair-two")])])
+        ),
+      ],
+      inboundMessages: [
+        completedTurn(id: "repair-one", response: firstRepair),
+        completedTurn(id: "repair-two", response: secondRepair),
+      ]
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+
+    let validated = try await coordinator.validatedExecutionResult(
+      initialResponse,
+      client: client,
+      threadID: "thread-demo-repair",
+      runID: run.id,
+      productID: product.id,
+      assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
+      workspaceURL: workspace.url,
+      canonicalKnowledgePages: []
+    )
+
+    #expect(validated.deliveryKind == .repositoryChange)
+    #expect(validated.result.demo?.presentation.kind == .staticWeb)
+    #expect(validated.result.demo?.presentation.path == "prototype")
+    #expect(
+      await transport.recordedRequests().filter { $0.method == "turn/start" }.count == 2
+    )
+    #expect(await transport.remainingResponseCount() == 0)
+
+    await client.disconnect()
+    await store.close()
+  }
+
+  @Test("[D10] A pinned demo recipe survives a revision that re-decides the kind")
+  func d10PinnedDemoRecipeSurvivesKindFlippingRevision() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-demo-recipe-pin-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Demo recipe pin")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let designer = try #require(profiles.first { $0.role == .uxDesigner })
+    let workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Design an interactive forecast",
+      type: .task,
+      body: "Create a self-contained browser prototype.",
+      acceptanceCriteria: ["The managed Demo opens the interactive prototype."],
+      priority: .high
+    )
+    let runID = UUID()
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: runID,
+      authorName: designer.name
+    )
+    let prototype = workspace.url.appendingPathComponent("prototype", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: prototype,
+      withIntermediateDirectories: true
+    )
+    try Data("<!doctype html><title>Forecast prototype</title>".utf8).write(
+      to: prototype.appendingPathComponent("index.html")
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        id: runID,
+        productID: product.id,
+        workItemID: workItem.id,
+        profileID: designer.id,
+        status: .running,
+        codexThreadID: "thread-demo-pin",
+        worktreePath: workspace.url.path
+      )
+    )
+
+    func executionResponse(_ result: TicketExecutionResult) throws -> String {
+      String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    }
+
+    let pinnedRecipe = DemoLaunchSpecification(
+      title: "Forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    // The revision answers an unrelated documentation finding but re-decides
+    // the demo as a kind whose shape would hard-stop before any repair could
+    // help: mac_application with a shell launch command fails static recipe
+    // validation, not just the workspace checks.
+    let kindFlippingRevision = try executionResponse(
+      TicketExecutionResult(
+        status: .completed,
+        comment: "Fixed the truncated Markdown command.",
+        question: nil,
+        options: [],
+        summary: "The reviewed city-search journey is available.",
+        changedFiles: ["prototype/index.html"],
+        tests: ["Prototype source check passed"],
+        knowledgeNotes: [],
+        reviewInstructions: ["Open the managed Demo."],
+        demo: DemoLaunchSpecification(
+          title: "Forecast prototype",
+          launchCommand: DemoCommand(executable: "sh", arguments: ["run.sh"]),
+          presentation: DemoPresentation(kind: .macApplication, path: ".build/Forecast.app")
+        ),
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+    )
+
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/demo-pin"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        )
+      ],
+      inboundMessages: []
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+
+    let validated = try await coordinator.validatedExecutionResult(
+      kindFlippingRevision,
+      client: client,
+      threadID: "thread-demo-pin",
+      runID: run.id,
+      productID: product.id,
+      assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
+      workspaceURL: workspace.url,
+      canonicalKnowledgePages: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+
+    // The carried-forward recipe replaces the re-decided demo before
+    // validation, so no repair turn is spent on it and the contract survives.
+    #expect(validated.deliveryKind == .repositoryChange)
+    #expect(validated.result.demo == pinnedRecipe)
+    #expect(validated.result.comment == "Fixed the truncated Markdown command.")
+    #expect(
+      await transport.recordedRequests().filter { $0.method == "turn/start" }.isEmpty
+    )
+
+    // A revision that stops for the product owner keeps its contractual null
+    // demo; the pin only applies to completed results.
+    let awaitingOwner = try executionResponse(
+      TicketExecutionResult(
+        status: .awaitingOwner,
+        comment: "The review finding conflicts with the accepted scope.",
+        question: "Should the prototype adopt the reviewer's alternative layout?",
+        options: ["Keep the accepted layout", "Adopt the alternative layout"],
+        summary: "",
+        changedFiles: [],
+        tests: [],
+        knowledgeNotes: [],
+        reviewInstructions: [],
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+    )
+    let validatedAwaiting = try await coordinator.validatedExecutionResult(
+      awaitingOwner,
+      client: client,
+      threadID: "thread-demo-pin",
+      runID: run.id,
+      productID: product.id,
+      assignee: designer,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: workItem),
+      workspaceURL: workspace.url,
+      canonicalKnowledgePages: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(validatedAwaiting.result.status == .awaitingOwner)
+    #expect(validatedAwaiting.result.demo == nil)
+
+    await client.disconnect()
+    await store.close()
+  }
+
+  @Test("Clean reintegration retains approval for the unchanged candidate")
+  func cleanReintegrationRetainsCandidateApproval() async throws {
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: DemoLaunchSpecification(
+        title: "Reviewed product change",
+        presentation: DemoPresentation(kind: .artifact, path: "feature.txt")
+      )
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .readyForDemo,
+      reviewedHeadSHA: harness.candidate.headSHA
+    )
+    let runCountBeforeReintegration = try await harness.store.fetchAgentRuns(
+      productID: harness.product.id
+    ).count
+    let repository = harness.root.appendingPathComponent("product", isDirectory: true)
+    try Data("accepted parallel change\n".utf8).write(
+      to: repository.appendingPathComponent("parallel.txt")
+    )
+    _ = try await harness.gitWorkspaceManager.checkpointTrunk(
+      at: repository,
+      message: "Advance accepted trunk without touching the reviewed candidate"
+    )
+
+    #expect(
+      !(await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      ))
+    )
+    let queued = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    #expect(queued.status == .queuedForIntegration)
+    #expect(queued.reviewedHeadSHA == harness.candidate.headSHA)
+
+    let context = try #require(await harness.coordinator.context(productID: harness.product.id))
+    #expect(await harness.coordinator.processIntegrationCandidates(context: context))
+    await harness.delegate.waitForReadyCandidate(id: harness.candidate.id)
+
+    let reintegrated = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    let item = try await harness.store.fetchWorkItem(id: harness.workItem.id)
+    #expect(reintegrated.status == .readyForDemo)
+    #expect(reintegrated.reviewedHeadSHA == harness.candidate.headSHA)
+    #expect(reintegrated.integratedSHA != harness.candidate.integratedSHA)
+    #expect(item.state == .acceptance)
+    #expect(
+      try await harness.store.fetchAgentRuns(productID: harness.product.id).count
+        == runCountBeforeReintegration
+    )
+    #expect(harness.delegate.errorMessage == nil)
+
+    await harness.store.close()
+  }
+
+  /// The changes-requested path had no coverage at all, which is why two
+  /// separate defects lived in it. This one: a revision the agent cannot get
+  /// right is thrown past a review flow that has already moved its candidate on,
+  /// where the failure is dropped as stale — leaving the run `running` with
+  /// nothing to move it and the board telling the product owner an agent is
+  /// still working. A live run spent the rest of its sprint that way.
+  @Test("A revision that never validates leaves the ticket with the owner, not running")
+  func failedRevisionReachesTheProductOwner() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-failed-revision-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(to: repository.appendingPathComponent("shared.txt"))
+
+    let gitWorkspaceManager = GitWorkspaceManager()
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Failed revision")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Deliver something the tech lead will send back",
+      type: .story,
+      body: "The revision never validates.",
+      acceptanceCriteria: ["The product owner is left with something to do."],
+      priority: .normal
+    )
+    for state in [WorkItemState.refining, .ready] {
+      workItem = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: state,
+        actor: "Product owner",
+        reason: "Ready for delivery"
+      )
+    }
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Send one candidate back",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    var implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: implementationRun.id,
+      authorName: implementer.name
+    )
+    try Data("ticket behavior\n".utf8).write(
+      to: workspace.url.appendingPathComponent("shared.txt")
+    )
+    let snapshot = try await gitWorkspaceManager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: workItem.key,
+      version: 1,
+      authorName: implementer.name,
+      summary: "Delivered the candidate."
+    )
+    implementationRun = try await store.updateAgentRun(
+      id: implementationRun.id,
+      status: .running,
+      worktreePath: workspace.url.path,
+      eventActor: implementer.name,
+      eventDetail: "Implementation started"
+    )
+    for state in [WorkItemState.running, .integrating] {
+      workItem = try await store.transitionWorkItem(
+        id: workItem.id,
+        to: state,
+        actor: implementer.name,
+        reason: "Candidate prepared"
+      )
+    }
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the candidate.",
+      question: nil,
+      options: [],
+      summary: "The candidate is complete.",
+      changedFiles: ["shared.txt"],
+      tests: ["Checks passed"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the candidate."],
+      demo: DemoLaunchSpecification(
+        title: "Candidate evidence",
+        presentation: DemoPresentation(kind: .artifact, path: "shared.txt")
+      ),
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        worktreePath: workspace.url.path,
+        status: .queuedForIntegration,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: String(
+          decoding: try JSONEncoder().encode(implementation),
+          as: UTF8.self
+        )
+      )
+    )
+
+    func completedTurn(thread: String, turn: String, text: String) -> CodexInboundMessage {
+      .notification(
+        CodexNotification(
+          method: "turn/completed",
+          params: .object([
+            "threadId": .string(thread),
+            "turn": .object([
+              "id": .string(turn),
+              "status": .string("completed"),
+              "items": .array([
+                .object([
+                  "id": .string("message-\(turn)"),
+                  "type": .string("agentMessage"),
+                  "text": .string(text),
+                ])
+              ]),
+            ]),
+          ])
+        )
+      )
+    }
+
+    // The tech lead sends it back, and then every revision the implementer
+    // returns is unusable — the shape a live run hit three times over.
+    let unusable = "This is not the structured result Spedito asked for."
+    let transport = ScriptedCodexTransport(
+      responses: [
+        .init(
+          method: "initialize",
+          result: .object([
+            "userAgent": .string("codex-cli/failed-revision"),
+            "codexHome": .string("/private/tmp/codex"),
+            "platformFamily": .string("unix"),
+            "platformOs": .string("macos"),
+          ])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("thread-review")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-review")])])
+        ),
+        .init(
+          method: "thread/start",
+          result: .object(["thread": .object(["id": .string("thread-revision")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-revision")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-repair-1")])])
+        ),
+        .init(
+          method: "turn/start",
+          result: .object(["turn": .object(["id": .string("turn-repair-2")])])
+        ),
+      ],
+      inboundMessages: [
+        completedTurn(
+          thread: "thread-review",
+          turn: "turn-review",
+          text:
+            #"{"decision":"changes_requested","comment":"Please correct the delivery.","findings":["The shared file needs the agreed behaviour."],"retrospectiveWentWell":[],"retrospectiveCouldImprove":[],"retrospectiveActions":[]}"#
+        ),
+        completedTurn(thread: "thread-revision", turn: "turn-revision", text: unusable),
+        completedTurn(thread: "thread-revision", turn: "turn-repair-1", text: unusable),
+        completedTurn(thread: "thread-revision", turn: "turn-repair-2", text: unusable),
+      ]
+    )
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: try await store.fetchAgentRuns(productID: product.id)
+    )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let context = try #require(await coordinator.context(productID: product.id))
+    #expect(await coordinator.processIntegrationCandidates(context: context))
+    #expect(
+      await delegate.waitForRun(id: implementationRun.id, toReach: .awaitingOwner),
+      "The ticket never came back to the product owner."
+    )
+
+    let settledRun = try await store.fetchAgentRun(id: implementationRun.id)
+    let comments = try await store.fetchComments(workItemID: workItem.id)
+    let settledCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+
+    // The owner is left with something to do rather than an agent that is
+    // permanently working.
+    #expect(settledRun.status == .awaitingOwner)
+    #expect(settledRun.status != .running)
+    #expect(
+      comments.contains {
+        $0.authorKind == .system
+          && $0.body.contains("Applying the tech lead's feedback stopped unexpectedly")
+      }
+    )
+    #expect(settledCandidate.status == .changesRequested)
 
     await client.disconnect()
     await store.close()
@@ -545,6 +1221,89 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  @Test("Acceptance establishes the canonical demo recipe page idempotently")
+  @MainActor
+  func acceptanceEstablishesTheCanonicalDemoRecipe() async throws {
+    let demo = DemoLaunchSpecification(
+      title: "Reviewed forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: demo
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    #expect(
+      await harness.coordinator.completeSprintTicketAcceptance(
+        workItemID: harness.workItem.id,
+        productID: harness.product.id
+      )
+    )
+    #expect(harness.delegate.errorMessage == nil)
+
+    let pages = try await harness.store.fetchKnowledgePages(productID: harness.product.id)
+    let recipePage = try #require(
+      pages.first { $0.slug == CanonicalDemoRecipeKnowledge.slug(for: .staticWeb) }
+    )
+    #expect(recipePage.kind == .page)
+    #expect(recipePage.verificationStatus == .verified)
+    #expect(
+      pages.first { $0.id == recipePage.parentID }?.slug == "operations"
+    )
+    // The exact accepted recipe is recoverable from the page body, so
+    // downstream context inherits the recipe itself, not a paraphrase.
+    #expect(
+      CanonicalDemoRecipeKnowledge.specification(fromBody: recipePage.bodyMarkdown) == demo
+    )
+    let revisionsAfterFirst = try await harness.store.fetchKnowledgePageRevisions(
+      pageID: recipePage.id
+    )
+
+    // A resumed acceptance after a preserved interruption republishes the
+    // same recipe; the page and its history must not grow.
+    _ = try await harness.store.upsertCanonicalDemoRecipePage(
+      productID: harness.product.id,
+      specification: demo
+    )
+    let pagesAfterResume = try await harness.store.fetchKnowledgePages(
+      productID: harness.product.id
+    )
+    #expect(
+      pagesAfterResume.filter {
+        $0.slug == CanonicalDemoRecipeKnowledge.slug(for: .staticWeb)
+      }.count == 1
+    )
+    #expect(
+      try await harness.store.fetchKnowledgePageRevisions(pageID: recipePage.id).count
+        == revisionsAfterFirst.count
+    )
+
+    // A later accepted candidate with a changed recipe updates the page in
+    // place with one new revision.
+    let changed = DemoLaunchSpecification(
+      title: "Reviewed forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype/v2")
+    )
+    _ = try await harness.store.upsertCanonicalDemoRecipePage(
+      productID: harness.product.id,
+      specification: changed
+    )
+    let updated = try #require(
+      try await harness.store.fetchKnowledgePages(productID: harness.product.id)
+        .first { $0.id == recipePage.id }
+    )
+    #expect(
+      CanonicalDemoRecipeKnowledge.specification(fromBody: updated.bodyMarkdown) == changed
+    )
+    #expect(
+      try await harness.store.fetchKnowledgePageRevisions(pageID: recipePage.id).count
+        == revisionsAfterFirst.count + 1
+    )
+
+    await harness.store.close()
+  }
+
   @Test("[D18] Failed acceptance preserves one reviewed result and retries once")
   @MainActor
   func failedAcceptanceRetriesWithoutDuplicateCompletion() async throws {
@@ -736,7 +1495,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     #expect(batch.session.sourceWorkItemID == harness.workItem.id)
     #expect(batch.session.epicID == harness.workItem.epicID)
     #expect(batch.suggestions.map(\.status).allSatisfy { $0 == .proposed })
-    #expect(batch.suggestions.map(\.reference) == ["S1", "S2"])
+    #expect(batch.suggestions.map(\.reference) == ["T2", "T3"])
     #expect(batch.suggestions[0].existingDependencyWorkItemIDs == [harness.workItem.id])
     #expect(batch.suggestions[1].existingDependencyWorkItemIDs == [harness.workItem.id])
     #expect(batch.suggestions[1].dependencyIDs == [batch.suggestions[0].id])
@@ -830,6 +1589,182 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// A scheduler is prepared every time one is created, not only at launch, so
+  /// recovery runs repeatedly while delivery is live. A live pilot run recorded
+  /// 46 requeues in eight minutes after a tech lead requested changes, each one
+  /// interrupting the turn the previous one had just started, until the sprint
+  /// stopped progressing at all.
+  /// A scheduler is created and retired constantly while a sprint is live, and
+  /// `prepareScheduler` recovers every time one is created. A live pilot run
+  /// turned that into a loop: recovery requeued the run, the drain restarted it,
+  /// the turn finished, and the next scheduler recovered it again — 64 times in
+  /// eight minutes, each pass also resuming the agent's thread at roughly
+  /// 175,000 input tokens.
+  @Test("Delivery is recovered once per product, not once per scheduler")
+  @MainActor
+  func recoveryRunsOncePerProduct() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+    let adopted = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(adopted.status == .queued)
+
+    // The drain starts the queued run, exactly as it does in a live sprint.
+    let restarted = try await harness.store.updateAgentRun(
+      id: harness.run.id,
+      status: .running
+    )
+    #expect(restarted.status == .running)
+
+    // Every later scheduler prepares again. None of them may adopt live work.
+    for _ in 0..<3 {
+      await harness.coordinator.recoverDelivery(productID: harness.product.id)
+    }
+    let afterLaterSchedulers = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(afterLaterSchedulers.status == .running)
+    #expect(afterLaterSchedulers.updatedAt == restarted.updatedAt)
+
+    // A genuine relaunch builds a new coordinator, which still recovers.
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    await relaunched.recoverDelivery(productID: harness.product.id)
+    #expect(try await harness.store.fetchAgentRun(id: harness.run.id).status == .queued)
+
+    await harness.store.close()
+  }
+
+  @Test("Recovery leaves a run this process is executing alone")
+  @MainActor
+  func recoveryDoesNotRequeueItsOwnLiveRun() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    let running = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(running.status == .running)
+
+    // Hold an implementation task open for the run, which is what executing it
+    // looks like to the runtime coordinator.
+    let release = AsyncStream<Void>.makeStream()
+    harness.runtimeCoordinator.startImplementation(
+      runID: harness.run.id,
+      productID: harness.product.id
+    ) {
+      var iterator = release.stream.makeAsyncIterator()
+      _ = await iterator.next()
+    }
+    #expect(
+      harness.runtimeCoordinator.executingRunIDs(productID: harness.product.id)
+        .contains(harness.run.id)
+    )
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+
+    let afterRecovery = try await harness.store.fetchAgentRun(id: harness.run.id)
+    #expect(afterRecovery.status == .running)
+    #expect(afterRecovery.updatedAt == running.updatedAt)
+
+    release.continuation.finish()
+    await harness.runtimeCoordinator.cancel(productID: harness.product.id)
+    await harness.store.close()
+  }
+
+  /// A live pilot run left T2 at "queued for review" forever: recovery
+  /// refreshed the unchanged candidate row, which advanced its updatedAt past
+  /// the review run's createdAt, so `latestReviewRun` never matched the run
+  /// again and no drain could dispatch it.
+  @Test("[D12] Repeated recovery keeps the interrupted tech lead review dispatchable")
+  @MainActor
+  func repeatedRecoveryKeepsReviewRunDispatchable() async throws {
+    let harness = try await makeReviewRecoveryHarness()
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    for _ in 0..<2 {
+      let relaunched = TicketDeliveryWorkflowCoordinator(
+        delegate: harness.delegate,
+        gitWorkspaceManager: harness.gitWorkspaceManager,
+        runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+          prepareScheduler: { _ in },
+          drainScheduler: { _ in .finished }
+        ),
+        recoveryPolicy: SprintWorkRecoveryPolicy()
+      )
+      await relaunched.recoverDelivery(productID: harness.product.id)
+
+      let runs = try await harness.store.fetchAgentRuns(productID: harness.product.id)
+      let recovered = try #require(runs.first { $0.id == harness.reviewRun.id })
+      #expect(recovered.status == .queued)
+      let candidate = try #require(
+        try await harness.store.fetchCandidateRevisions(productID: harness.product.id)
+          .first { $0.id == harness.candidate.id }
+      )
+      #expect(candidate.status == .reviewing)
+      #expect(
+        SprintWorkRecoveryPolicy().latestReviewRun(
+          for: candidate,
+          runs: runs,
+          reviewerProfileIDs: [harness.techLead.id]
+        )?.id == harness.reviewRun.id
+      )
+      #expect(runs.filter { $0.profileID == harness.techLead.id }.count == 1)
+    }
+    await harness.store.close()
+  }
+
+  @Test("[D12] Recovery replaces a review run orphaned by an earlier candidate refresh")
+  @MainActor
+  func recoveryReplacesOrphanedQueuedReviewRun() async throws {
+    let harness = try await makeReviewRecoveryHarness()
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    // Reproduce the damage an earlier release left durable: the candidate row
+    // was refreshed after its review run was created, so the run can never
+    // match the dispatch guard again.
+    _ = try await harness.store.updateAgentRun(
+      id: harness.reviewRun.id,
+      status: .queued
+    )
+    _ = try await harness.store.updateCandidateRevision(
+      id: harness.candidate.id,
+      status: .reviewing,
+      integratedSHA: harness.candidate.integratedSHA,
+      integrationWorktreePath: harness.candidate.integrationWorktreePath
+    )
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+
+    let runs = try await harness.store.fetchAgentRuns(productID: harness.product.id)
+    let orphan = try #require(runs.first { $0.id == harness.reviewRun.id })
+    #expect(orphan.status == .cancelled)
+    let candidate = try #require(
+      try await harness.store.fetchCandidateRevisions(productID: harness.product.id)
+        .first { $0.id == harness.candidate.id }
+    )
+    let replacement = try #require(
+      SprintWorkRecoveryPolicy().latestReviewRun(
+        for: candidate,
+        runs: runs,
+        reviewerProfileIDs: [harness.techLead.id]
+      )
+    )
+    #expect(replacement.id != harness.reviewRun.id)
+    #expect(replacement.status == .queued)
+    #expect(replacement.worktreePath == harness.candidate.integrationWorktreePath)
+    #expect(
+      runs.filter {
+        $0.profileID == harness.techLead.id && $0.status == .queued
+      }.count == 1
+    )
+    await harness.store.close()
+  }
+
   @Test("[D05] Stopping delivery supersedes the unaccepted candidate")
   @MainActor
   func stoppedDeliveryPreservesAuditAndReturnsTicketToReady() async throws {
@@ -905,13 +1840,116 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  @Test("Recovery accepts a run that completed while its stale snapshot was being reconciled")
+  @MainActor
+  func completedRunRecoveryDoesNotPresentAStaleConflict() async throws {
+    let harness = try await makeRecoveryHarness(
+      workspaceExists: true,
+      recoversCompletedResponse: true
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+
+    await harness.coordinator.recoverDelivery(productID: harness.product.id)
+
+    let recoveredRun = try await harness.store.fetchAgentRun(id: harness.run.id)
+    let candidates = try await harness.store.fetchCandidateRevisions(
+      productID: harness.product.id
+    )
+    let recoveredItem = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first(where: { $0.id == harness.workItem.id })
+    )
+    #expect(recoveredRun.status == .completed)
+    #expect(candidates.count == 1)
+    #expect(candidates.first?.implementationRunID == recoveredRun.id)
+    #expect(candidates.first?.status == .queuedForIntegration)
+    #expect(recoveredItem.state == .integrating)
+    #expect(harness.delegate.errorMessage == nil)
+
+    await harness.client.disconnect()
+    await harness.store.close()
+  }
+
+  @Test("Completed run conflicts require a matching active delivery candidate")
+  func completedRunConflictPolicyRequiresValidCandidate() throws {
+    let productID = UUID()
+    let workItemID = UUID()
+    let run = AgentRun(
+      productID: productID,
+      workItemID: workItemID,
+      profileID: UUID(),
+      status: .completed
+    )
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "Completed.",
+      question: nil,
+      options: [],
+      summary: "Completed delivery.",
+      changedFiles: ["result.txt"],
+      tests: ["Verified"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the recovered result."],
+      demo: DemoLaunchSpecification(
+        title: "Result",
+        presentation: DemoPresentation(kind: .artifact, path: "result.txt")
+      ),
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    var candidate = CandidateRevision(
+      productID: productID,
+      sprintID: UUID(),
+      sprintItemID: UUID(),
+      workItemID: workItemID,
+      implementationRunID: run.id,
+      version: 1,
+      branchName: "ticket/T1",
+      baseSHA: "base",
+      headSHA: "head",
+      worktreePath: "/tmp/T1",
+      status: .queuedForIntegration,
+      commitCount: 1,
+      executionResultJSON: String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    )
+
+    #expect(
+      TicketDeliveryRecoveryRunConflictPolicy.disposition(
+        run: run,
+        productID: productID,
+        workItemID: workItemID,
+        candidates: [candidate]
+      ) == .alreadyRecovered
+    )
+    #expect(
+      TicketDeliveryRecoveryRunConflictPolicy.disposition(
+        run: run,
+        productID: productID,
+        workItemID: workItemID,
+        candidates: []
+      ) == .failure(.contradictoryRunState)
+    )
+
+    candidate.status = .failed
+    #expect(
+      TicketDeliveryRecoveryRunConflictPolicy.disposition(
+        run: run,
+        productID: productID,
+        workItemID: workItemID,
+        candidates: [candidate]
+      ) == .failure(.contradictoryRunState)
+    )
+  }
+
 
   @MainActor
   private func makeAcceptanceHarness(
     deliveryKind: CandidateDeliveryKind,
     demo: DemoLaunchSpecification? = nil,
     epicOutcome: String? = nil,
-    followUpTicketProposals: [FollowUpTicketProposalDraft] = []
+    followUpTicketProposals: [FollowUpTicketProposalDraft] = [],
+    assignsSettlementIdentity: Bool = false
   ) async throws -> AcceptanceHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-acceptance-coordinator-\(UUID())",
@@ -1104,6 +2142,14 @@ struct TicketDeliveryWorkflowCoordinatorTests {
         executionResultJSON: resultJSON
       )
     }
+    if assignsSettlementIdentity {
+      // Production settles a delivery under a prepared identity, so the run
+      // row carries the candidate version it settled until it is released.
+      let preparation = try await store.prepareCompletedDeliverySettlement(
+        runID: implementationRun.id
+      )
+      #expect(preparation.candidateVersion == candidate.version)
+    }
     _ = try await store.createCandidateRevision(candidate)
     _ = try await store.appendComment(
       workItemID: workItem.id,
@@ -1288,6 +2334,216 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     await harness.store.close()
   }
 
+  /// A pre-contract design ticket that promises a prototype is contracted to
+  /// static_web by the delivery policy rather than by a stored kind (owner
+  /// decision, 2 September 2026). Its contest must therefore offer Spedito's
+  /// canonical options with that derived kind as the "keep" choice, and the
+  /// owner's change must land on the ticket exactly as for a stored contract.
+  @Test("A pre-contract design prototype contests its derived static_web medium")
+  @MainActor
+  func preContractPrototypeContestUsesTheDerivedKind() async throws {
+    let harness = try await makeRecoveryHarness(
+      workspaceExists: true,
+      assigneeRole: .uxDesigner,
+      acceptanceCriteria: ["A self-contained prototype demonstrates every named state"]
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    #expect(harness.workItem.demoKind == nil)
+
+    let contest = TicketExecutionResult(
+      status: .awaitingOwner,
+      comment: "The design is a screen recording the owner watches, not a page.",
+      question: "Should this design be reviewed as a file you read instead of a prototype?",
+      options: ["Review it as a file", "Keep the prototype"],
+      summary: "",
+      changedFiles: [],
+      tests: [],
+      knowledgeNotes: [],
+      reviewInstructions: [],
+      proposedDemoKind: .artifact,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    await harness.coordinator.processExecutionResult(
+      contest,
+      deliveryKind: .repositoryChange,
+      implementationRunID: harness.run.id,
+      reviewCycle: 0,
+      plan: harness.plan
+    )
+
+    let question = try #require(
+      try await harness.store.fetchComments(workItemID: harness.workItem.id)
+        .last?.ownerQuestion
+    )
+    #expect(
+      question.options == [
+        DemoKindContestPolicy.changeOption(to: .artifact),
+        DemoKindContestPolicy.keepOption(current: .staticWeb),
+      ],
+      "the derived static_web contract is the keep option, not the agent's own wording"
+    )
+
+    _ = try await harness.store.appendComment(
+      workItemID: harness.workItem.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: DemoKindContestPolicy.changeOption(to: .artifact),
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: question.prompt,
+            options: question.options
+          ),
+          selectedOption: DemoKindContestPolicy.changeOption(to: .artifact),
+          answer: DemoKindContestPolicy.changeOption(to: .artifact)
+        )
+      ]
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    let updated = try await harness.coordinator.applyContestedDemoKindDecision(
+      item: harness.workItem,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(updated.demoKind == .artifact)
+    let persisted = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(persisted.demoKind == .artifact)
+    await harness.client.disconnect()
+    await harness.store.close()
+  }
+
+  @Test("A contested review medium asks the owner and the answer changes the contract")
+  @MainActor
+  func contestedDemoKindAsksTheOwnerAndAppliesTheAnswer() async throws {
+    let harness = try await makeRecoveryHarness(workspaceExists: true)
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let contracted = try await harness.store.updateWorkItemDemoKind(
+      id: harness.workItem.id,
+      demoKind: .browser
+    )
+    #expect(contracted.demoKind == .browser)
+
+    // The contracted turn cannot emit another kind, so it contests through
+    // awaiting_owner with proposedDemoKind.
+    let contest = TicketExecutionResult(
+      status: .awaitingOwner,
+      comment: "The delivered outcome is a built Mac app, not a web service.",
+      question: "Should this ticket be reviewed as a Mac app instead of in the browser?",
+      options: ["Review it as a Mac app", "Keep the browser demo"],
+      summary: "",
+      changedFiles: [],
+      tests: [],
+      knowledgeNotes: [],
+      reviewInstructions: [],
+      proposedDemoKind: .macApplication,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    await harness.coordinator.processExecutionResult(
+      contest,
+      deliveryKind: .repositoryChange,
+      implementationRunID: harness.run.id,
+      reviewCycle: 0,
+      plan: harness.plan
+    )
+
+    let question = try #require(
+      try await harness.store.fetchComments(workItemID: harness.workItem.id)
+        .last?.ownerQuestion
+    )
+    #expect(question.prompt == contest.question)
+    #expect(
+      question.options == [
+        DemoKindContestPolicy.changeOption(to: .macApplication),
+        DemoKindContestPolicy.keepOption(current: .browser),
+      ],
+      "Spedito, not the agent, authors the contested-kind decision options"
+    )
+    #expect(
+      try await harness.store.fetchAgentRun(id: harness.run.id).status == .awaitingOwner
+    )
+
+    // The owner accepts the change through the question card, which resumes
+    // the run the way the app does.
+    _ = try await harness.store.appendComment(
+      workItemID: harness.workItem.id,
+      authorKind: .owner,
+      authorName: "Product owner",
+      body: DemoKindContestPolicy.changeOption(to: .macApplication),
+      answeredQuestions: [
+        TicketAnsweredQuestion(
+          question: TicketRefinementQuestion(
+            prompt: question.prompt,
+            options: question.options
+          ),
+          selectedOption: DemoKindContestPolicy.changeOption(to: .macApplication),
+          answer: DemoKindContestPolicy.changeOption(to: .macApplication)
+        )
+      ]
+    )
+    await harness.coordinator.handleSprintOwnerComment(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id,
+      body: DemoKindContestPolicy.changeOption(to: .macApplication)
+    )
+    #expect(try await harness.store.fetchAgentRun(id: harness.run.id).status == .queued)
+
+    // A fresh coordinator instance applies the durable answer exactly as the
+    // continuation turn's preparation does after a relaunch.
+    let relaunched = TicketDeliveryWorkflowCoordinator(
+      delegate: harness.delegate,
+      gitWorkspaceManager: harness.gitWorkspaceManager,
+      runtimeCoordinator: TicketDeliveryRuntimeCoordinator(
+        prepareScheduler: { _ in },
+        drainScheduler: { _ in .finished }
+      ),
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    let comments = try await harness.store.fetchComments(workItemID: harness.workItem.id)
+    let updated = try await relaunched.applyContestedDemoKindDecision(
+      item: contracted,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(updated.demoKind == .macApplication)
+    let persisted = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(persisted.demoKind == .macApplication)
+    #expect(persisted.version == contracted.version + 1)
+    #expect(
+      try await harness.store.fetchActivity(workItemID: harness.workItem.id)
+        .contains { $0.kind == "work_item.demo_kind_changed" }
+    )
+
+    // The continuation turn's result schema is built from the new contract.
+    let implementer = try #require(
+      try await harness.store.fetchAgentProfiles(productID: harness.product.id)
+        .first { $0.role == .implementer }
+    )
+    #expect(
+      DeliveryDemoPolicy(assignee: implementer, item: persisted)
+        == .contracted(.macApplication)
+    )
+
+    // Re-applying the same durable answer is a no-op, so recovery can repeat.
+    let reapplied = try await relaunched.applyContestedDemoKindDecision(
+      item: persisted,
+      comments: comments,
+      store: harness.store
+    )
+    #expect(reapplied.version == persisted.version)
+
+    await harness.store.close()
+  }
+
   /// Existing partial coverage:
   /// - `SprintWorkRecoveryTests.failedPostReviewDemoIsRecoverable`
   /// - `MacOSDemoLauncherTests.hostFailureDisposition`
@@ -1398,6 +2654,59 @@ struct TicketDeliveryWorkflowCoordinatorTests {
         .first { $0.id == harness.workItem.id }?.state == .acceptance
     )
     #expect(try await harness.store.fetchAgentRuns(productID: harness.product.id).count == 2)
+    await harness.store.close()
+  }
+
+  /// Existing partial coverage:
+  /// - `SprintTicketWorkLogHistoryTests.d15ReadyForDemoCommentPreservesCandidate`
+  /// - `SQLiteStoreTests.sentBackCandidateDoesNotSwallowResumedDelivery`
+  /// This test covers only D15's Request-changes boundary: demo feedback supersedes the
+  /// reviewed candidate, requeues the exact run, and leaves the revision loop able to
+  /// settle its result as the next candidate version instead of silently discarding it.
+  @Test("D15 demo feedback revision settles as the next candidate version")
+  @MainActor
+  func d15DemoFeedbackRevisionSettlesAsNextCandidate() async throws {
+    let demo = DemoLaunchSpecification(
+      title: "Reviewed screen set",
+      presentation: DemoPresentation(kind: .artifact, path: "feature.txt")
+    )
+    let harness = try await makeAcceptanceHarness(
+      deliveryKind: .repositoryChange,
+      demo: demo,
+      assignsSettlementIdentity: true
+    )
+    defer { try? FileManager.default.removeItem(at: harness.root) }
+    let runID = harness.candidate.implementationRunID
+    _ = try await harness.store.updateAgentRun(
+      id: runID,
+      status: .running,
+      codexThreadID: "thread-d15",
+      eventActor: "Spedito",
+      eventDetail: "Delivery thread preserved for the revision loop"
+    )
+
+    await harness.coordinator.handleSprintOwnerComment(
+      productID: harness.product.id,
+      workItemID: harness.workItem.id,
+      body: "The screenshot is garbled; fix the overlapping lines."
+    )
+
+    let superseded = try await harness.store.fetchCandidateRevision(id: harness.candidate.id)
+    #expect(superseded.status == .superseded)
+    let item = try #require(
+      try await harness.store.fetchWorkItems(productID: harness.product.id)
+        .first { $0.id == harness.workItem.id }
+    )
+    #expect(item.state == .running)
+    let requeuedRun = try await harness.store.fetchAgentRun(id: runID)
+    #expect(requeuedRun.status == .queued)
+    #expect(harness.delegate.scheduledProductIDs == [harness.product.id])
+
+    // The revision loop's completed result must settle as candidate v2; the
+    // superseded candidate must not be reported as that result already settled.
+    let preparation = try await harness.store.prepareCompletedDeliverySettlement(runID: runID)
+    #expect(preparation.candidateVersion == harness.candidate.version + 1)
+    #expect(preparation.existingCandidate == nil)
     await harness.store.close()
   }
 
@@ -1566,7 +2875,12 @@ struct TicketDeliveryWorkflowCoordinatorTests {
   }
 
   @MainActor
-  private func makeRecoveryHarness(workspaceExists: Bool) async throws -> RecoveryHarness {
+  private func makeRecoveryHarness(
+    workspaceExists: Bool,
+    recoversCompletedResponse: Bool = false,
+    assigneeRole: AgentRole = .implementer,
+    acceptanceCriteria: [String] = ["Recovery reuses the durable run."]
+  ) async throws -> RecoveryHarness {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "spedito-recovery-coordinator-\(UUID())",
       isDirectory: true
@@ -1576,11 +2890,11 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let store = try SQLiteStore(url: databaseURL)
     let product = try await store.createProduct(name: "Recovery authority")
     let profiles = try await store.seedDefaultProfiles(productID: product.id)
-    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let implementer = try #require(profiles.first { $0.role == assigneeRole })
     var workItem = try await store.createWorkItem(
       productID: product.id,
       title: "Resume preserved delivery",
-      acceptanceCriteria: ["Recovery reuses the durable run."]
+      acceptanceCriteria: acceptanceCriteria
     )
     workItem = try await store.transitionWorkItem(
       id: workItem.id,
@@ -1607,12 +2921,30 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       try await store.fetchAgentRuns(productID: product.id)
         .first(where: { $0.workItemID == workItem.id })
     )
-    let ticketWorkspace = root.appendingPathComponent("ticket", isDirectory: true)
-    if workspaceExists {
-      try FileManager.default.createDirectory(
-        at: ticketWorkspace,
-        withIntermediateDirectories: true
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let productWorkspace = root.appendingPathComponent("product", isDirectory: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: productWorkspace)
+    let ticketWorkspace: URL
+    if recoversCompletedResponse {
+      let prepared = try await gitWorkspaceManager.prepareTicketWorkspace(
+        repositoryURL: productWorkspace,
+        worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+        ticketKey: workItem.key,
+        runID: run.id,
+        authorName: implementer.name
       )
+      ticketWorkspace = prepared.url
+      try Data("Recovered delivery evidence.\n".utf8).write(
+        to: ticketWorkspace.appendingPathComponent("recovered.txt")
+      )
+    } else {
+      ticketWorkspace = root.appendingPathComponent("ticket", isDirectory: true)
+      if workspaceExists {
+        try FileManager.default.createDirectory(
+          at: ticketWorkspace,
+          withIntermediateDirectories: true
+        )
+      }
     }
     run = try await store.updateAgentRun(
       id: run.id,
@@ -1628,10 +2960,254 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       actor: implementer.name,
       reason: "Delivery started"
     )
-    let gitWorkspaceManager = GitWorkspaceManager()
-    _ = try await gitWorkspaceManager.ensureRepository(
-      at: root.appendingPathComponent("product", isDirectory: true)
+    let transport: ScriptedCodexTransport
+    if recoversCompletedResponse {
+      let result = TicketExecutionResult(
+        status: .completed,
+        comment: "Recovered the completed delivery.",
+        question: nil,
+        options: [],
+        summary: "The preserved implementation completed successfully.",
+        changedFiles: ["recovered.txt"],
+        tests: ["Recovery fixture verified"],
+        knowledgeNotes: [],
+        reviewInstructions: ["Review the recovered candidate."],
+        demo: DemoLaunchSpecification(
+          title: "Recovered result",
+          presentation: DemoPresentation(kind: .artifact, path: "recovered.txt")
+        ),
+        retrospectiveWentWell: [],
+        retrospectiveCouldImprove: [],
+        retrospectiveActions: []
+      )
+      let resultJSON = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+      transport = ScriptedCodexTransport(
+        responses: [
+          .init(
+            method: "initialize",
+            result: .object([
+              "userAgent": .string("codex-cli/recovery-journey"),
+              "codexHome": .string("/private/tmp/codex"),
+              "platformFamily": .string("unix"),
+              "platformOs": .string("macos"),
+            ])
+          ),
+          .init(
+            method: "thread/resume",
+            result: .object([
+              "thread": .object(["id": .string("thread-recovery")])
+            ])
+          ),
+          .init(
+            method: "thread/read",
+            result: .object([
+              "thread": .object([
+                "id": .string("thread-recovery"),
+                "turns": .array([
+                  .object([
+                    "id": .string("turn-recovery"),
+                    "status": .string("completed"),
+                    "items": .array([
+                      .object([
+                        "id": .string("message-recovery"),
+                        "type": .string("agentMessage"),
+                        "phase": .string("final_answer"),
+                        "text": .string(resultJSON),
+                      ])
+                    ]),
+                  ])
+                ]),
+              ])
+            ])
+          ),
+        ]
+      )
+    } else {
+      transport = ScriptedCodexTransport(responses: [])
+    }
+    let client = CodexAppServerClient(transport: transport)
+    if recoversCompletedResponse {
+      _ = try await client.connect()
+    }
+    let delegate = CandidateReviewDelegate(
+      store: store,
+      client: client,
+      productID: product.id,
+      databaseURL: databaseURL,
+      rootURL: root,
+      runs: [run]
     )
+    let runtimeCoordinator = TicketDeliveryRuntimeCoordinator(
+      prepareScheduler: { _ in },
+      drainScheduler: { _ in .finished }
+    )
+    let coordinator = TicketDeliveryWorkflowCoordinator(
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      recoveryPolicy: SprintWorkRecoveryPolicy()
+    )
+    return RecoveryHarness(
+      root: root,
+      store: store,
+      product: product,
+      plan: plan,
+      workItem: workItem,
+      run: run,
+      client: client,
+      delegate: delegate,
+      gitWorkspaceManager: gitWorkspaceManager,
+      runtimeCoordinator: runtimeCoordinator,
+      coordinator: coordinator
+    )
+  }
+
+  /// Seeds the durable state of a tech lead review interrupted mid-turn: a
+  /// reviewing candidate whose exact revision is integrated in a real Git
+  /// worktree, and a running review run created after the candidate row.
+  private func makeReviewRecoveryHarness() async throws -> ReviewRecoveryHarness {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-review-recovery-\(UUID())",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let databaseURL = root.appendingPathComponent("product.sqlite")
+    let store = try SQLiteStore(url: databaseURL)
+    let product = try await store.createProduct(name: "Review recovery authority")
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let implementer = try #require(profiles.first { $0.role == .implementer })
+    let techLead = try #require(profiles.first { $0.role == .lead })
+    var workItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Resume the interrupted review",
+      acceptanceCriteria: ["The interrupted review continues after relaunch."]
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .refining,
+      actor: "Product owner",
+      reason: "Refined"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .ready,
+      actor: "Product owner",
+      reason: "Ready"
+    )
+    let draft = try await store.saveDraftSprint(
+      productID: product.id,
+      goal: "Continue the same review after restart",
+      tokenBudgetLimit: nil,
+      items: [
+        SprintDraftItemInput(
+          workItemID: workItem.id,
+          implementerProfileID: implementer.id,
+          reviewerProfileID: techLead.id,
+          estimatedTokens: 1
+        )
+      ]
+    )
+    let plan = try await store.startSprint(id: draft.sprint.id)
+    let sprintItem = try #require(plan.items.first)
+    let implementationRun = try #require(
+      try await store.fetchAgentRuns(productID: product.id).first
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .running,
+      actor: implementer.name,
+      reason: "Implementation started"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .integrating,
+      actor: implementer.name,
+      reason: "Candidate queued for integration"
+    )
+    workItem = try await store.transitionWorkItem(
+      id: workItem.id,
+      to: .verifying,
+      actor: techLead.name,
+      reason: "Independent tech lead review started"
+    )
+
+    let result = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered the reviewed change.",
+      question: nil,
+      options: [],
+      summary: "The candidate is ready for review.",
+      changedFiles: ["feature.txt"],
+      tests: ["Review recovery fixture"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Review the integrated revision."],
+      demo: nil,
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let resultJSON = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    let gitWorkspaceManager = GitWorkspaceManager()
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    _ = try await gitWorkspaceManager.ensureRepository(at: repository)
+    let workspace = try await gitWorkspaceManager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: root.appendingPathComponent("tickets", isDirectory: true),
+      ticketKey: workItem.key,
+      runID: implementationRun.id,
+      authorName: implementer.name
+    )
+    try Data("reviewed change\n".utf8).write(
+      to: workspace.url.appendingPathComponent("feature.txt")
+    )
+    let snapshot = try await gitWorkspaceManager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: workItem.key,
+      version: 1,
+      authorName: implementer.name,
+      summary: "Deliver the reviewed change"
+    )
+    let candidateID = UUID()
+    let integration = try await gitWorkspaceManager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: root.appendingPathComponent("integrations", isDirectory: true),
+      candidateID: candidateID,
+      headSHA: snapshot.headSHA
+    )
+    let candidate = try await store.createCandidateRevision(
+      CandidateRevision(
+        id: candidateID,
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        implementationRunID: implementationRun.id,
+        version: 1,
+        branchName: snapshot.branchName,
+        baseSHA: snapshot.baseSHA,
+        headSHA: snapshot.headSHA,
+        integratedSHA: integration.integratedSHA,
+        worktreePath: workspace.url.path,
+        integrationWorktreePath: integration.url.path,
+        status: .reviewing,
+        commitCount: snapshot.commitCount,
+        executionResultJSON: resultJSON
+      )
+    )
+    let reviewRun = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        sprintID: plan.sprint.id,
+        sprintItemID: sprintItem.id,
+        workItemID: workItem.id,
+        profileID: techLead.id,
+        status: .running,
+        codexThreadID: "review-thread-recovery",
+        worktreePath: integration.url.path
+      )
+    )
+
     let client = CodexAppServerClient(
       transport: ScriptedCodexTransport(responses: [])
     )
@@ -1641,7 +3217,7 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       productID: product.id,
       databaseURL: databaseURL,
       rootURL: root,
-      runs: [run]
+      runs: [implementationRun, reviewRun]
     )
     let coordinator = TicketDeliveryWorkflowCoordinator(
       delegate: delegate,
@@ -1652,13 +3228,15 @@ struct TicketDeliveryWorkflowCoordinatorTests {
       ),
       recoveryPolicy: SprintWorkRecoveryPolicy()
     )
-    return RecoveryHarness(
+    return ReviewRecoveryHarness(
       root: root,
       store: store,
       product: product,
       plan: plan,
       workItem: workItem,
-      run: run,
+      candidate: candidate,
+      reviewRun: reviewRun,
+      techLead: techLead,
       delegate: delegate,
       gitWorkspaceManager: gitWorkspaceManager,
       coordinator: coordinator
@@ -1686,6 +3264,23 @@ struct TicketDeliveryWorkflowCoordinatorTests {
     let plan: SprintPlan
     let workItem: WorkItem
     let run: AgentRun
+    let client: CodexAppServerClient
+    let delegate: CandidateReviewDelegate
+    let gitWorkspaceManager: GitWorkspaceManager
+    let runtimeCoordinator: TicketDeliveryRuntimeCoordinator
+    let coordinator: TicketDeliveryWorkflowCoordinator
+  }
+
+  @MainActor
+  private struct ReviewRecoveryHarness {
+    let root: URL
+    let store: SQLiteStore
+    let product: Product
+    let plan: SprintPlan
+    let workItem: WorkItem
+    let candidate: CandidateRevision
+    let reviewRun: AgentRun
+    let techLead: AgentProfile
     let delegate: CandidateReviewDelegate
     let gitWorkspaceManager: GitWorkspaceManager
     let coordinator: TicketDeliveryWorkflowCoordinator
@@ -1728,6 +3323,8 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
   var preparedDemoCandidateIDs: [UUID] = []
   private let readyCandidateIDs: AsyncStream<UUID>
   private let readyCandidateContinuation: AsyncStream<UUID>.Continuation
+  private let runUpdates: AsyncStream<AgentRun>
+  private let runUpdatesContinuation: AsyncStream<AgentRun>.Continuation
 
   init(
     store: SQLiteStore,
@@ -1740,6 +3337,9 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     let readyCandidatePair = AsyncStream<UUID>.makeStream()
     readyCandidateIDs = readyCandidatePair.stream
     readyCandidateContinuation = readyCandidatePair.continuation
+    let runUpdatePair = AsyncStream<AgentRun>.makeStream()
+    runUpdates = runUpdatePair.stream
+    runUpdatesContinuation = runUpdatePair.continuation
     self.store = store
     self.client = client
     self.productID = productID
@@ -1754,6 +3354,33 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
       return
     }
     preconditionFailure("The candidate update stream ended before ready for demo")
+  }
+
+  /// Observes run updates rather than sleeping on them. The deadline is a
+  /// failure bound, not an observation: a test whose expectation never arrives
+  /// has to fail rather than hang, which is what makes it usable as a
+  /// regression test for a defect whose symptom is waiting forever.
+  func waitForRun(
+    id: UUID,
+    toReach status: AgentRunStatus,
+    orFailAfter deadline: Duration = .seconds(30)
+  ) async -> Bool {
+    if runs.contains(where: { $0.id == id && $0.status == status }) { return true }
+    return await withTaskGroup(of: Bool.self) { group in
+      group.addTask { [runUpdates] in
+        for await run in runUpdates where run.id == id && run.status == status {
+          return true
+        }
+        return false
+      }
+      group.addTask {
+        try? await Task.sleep(for: deadline)
+        return false
+      }
+      let reached = await group.next() ?? false
+      group.cancelAll()
+      return reached
+    }
   }
 
   func deliveryStore(for productID: UUID) -> SQLiteStore? {
@@ -1889,10 +3516,7 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
 
   func deliveryScheduleRetrospectiveSyntheses() {}
 
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String {
+  func deliveryInheritedAgentInstructions(for product: Product) -> String {
     "Review only the supplied candidate."
   }
 
@@ -1900,6 +3524,7 @@ private final class CandidateReviewDelegate: TicketDeliveryWorkflowDelegate {
     runs.removeAll { $0.id == updated.id }
     runs.append(updated)
     presentedRuns.append(updated)
+    runUpdatesContinuation.yield(updated)
   }
 
   func deliveryReloadSelectedProductIfCurrent(productID: UUID) async {

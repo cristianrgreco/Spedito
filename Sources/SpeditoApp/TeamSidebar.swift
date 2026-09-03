@@ -51,6 +51,44 @@ private struct SidebarCountBadge: View {
   }
 }
 
+/// The established purple treatment for an AI action, painted rather than tinted.
+///
+/// Every other AI action reaches this look with `.borderedProminent` and a purple tint, which
+/// leaves both the fill and the label colour to the surrounding context. That context differs
+/// here: this is the only prominent button inside the vibrant sidebar list, which blends the
+/// tint darker than the same purple elsewhere and re-colours a `Label`'s icon away from the
+/// button's white title. Painting the fill and the foreground keeps this action the same purple
+/// with a white icon and title as the rest of the app.
+struct SidebarAIActionButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    Surface(configuration: configuration)
+  }
+
+  private struct Surface: View {
+    @Environment(\.isEnabled) private var isEnabled
+    let configuration: ButtonStyleConfiguration
+
+    var body: some View {
+      configuration.label
+        .symbolRenderingMode(.monochrome)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+          Color.purple.opacity(configuration.isPressed ? 0.78 : 1),
+          in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .opacity(isEnabled ? 1 : 0.5)
+    }
+  }
+}
+
+extension ButtonStyle where Self == SidebarAIActionButtonStyle {
+  /// Prominent purple treatment for an AI action inside the sidebar list.
+  static var sidebarAIAction: SidebarAIActionButtonStyle { SidebarAIActionButtonStyle() }
+}
+
 struct TeamSidebar: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selection: WorkspaceDestination
@@ -355,8 +393,8 @@ struct TeamSidebar: View {
                   )
                   .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.purple)
+                .buttonStyle(.sidebarAIAction)
+                .accessibilityIdentifier("nav.product-setup-retry")
               }
             }
             .padding(.vertical, 4)
@@ -395,7 +433,7 @@ struct TeamSidebar: View {
           }
           .tag(WorkspaceDestination.sprint)
           .accessibilityIdentifier("nav.sprint")
-          Label("App versions", systemImage: "macwindow")
+          Label("Demos", systemImage: "macwindow")
             .tag(WorkspaceDestination.app)
             .accessibilityIdentifier("nav.app")
         }

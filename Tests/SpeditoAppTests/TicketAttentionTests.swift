@@ -342,10 +342,25 @@ struct TicketAttentionTests {
 
     coordinator.dismissPresented(id: foreground.id)
     await coordinator.setApplicationActive(false)
+    // The question row needs a real unanswered wait to survive the load sweep.
+    let questionItem = try await store.createWorkItem(
+      productID: product.id,
+      title: "Choose the delivery behavior"
+    )
+    _ = try await store.appendComment(
+      workItemID: questionItem.id,
+      authorKind: .agent,
+      authorName: "Implementer",
+      body: "I need one decision.",
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: "Which delivery behavior applies?",
+        options: ["Keep the current result", "Use the reviewed fallback"]
+      )
+    )
     let background = OwnerNotification(
       productID: product.id,
       kind: .needsInput,
-      target: OwnerNotificationTarget(kind: .ticket, id: UUID()),
+      target: OwnerNotificationTarget(kind: .ticket, id: questionItem.id),
       title: "T8 needs your input",
       body: "Choose the delivery behavior."
     )
@@ -398,10 +413,29 @@ struct TicketAttentionTests {
       soundPlayer: firstSound,
       systemNotifier: declinedSystem
     )
+    // The question row needs a real unanswered wait to survive the load sweep.
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Answer the declined clarification"
+    )
+    try await store.saveEpicPlanningConversation(
+      EpicPlanningConversationSnapshot(
+        epicID: epic.id,
+        messages: [],
+        questions: [
+          TicketRefinementQuestion(
+            prompt: "Which outcome should the epic deliver?",
+            options: ["Keep drafts local", "Publish drafts"]
+          )
+        ],
+        isComplete: false,
+        threadID: nil
+      )
+    )
     let notification = OwnerNotification(
       productID: product.id,
       kind: .needsInput,
-      target: OwnerNotificationTarget(kind: .epic, id: UUID()),
+      target: OwnerNotificationTarget(kind: .epic, id: epic.id),
       title: "Epic needs your input",
       body: "The macOS notification was declined."
     )
@@ -875,6 +909,410 @@ struct TicketAttentionTests {
 
     for productStore in registry.allStores {
       await productStore.close()
+    }
+  }
+
+  @Test("Acceptance entry and approval keep selected-product attention fresh without a product switch")
+  func acceptanceApprovalRefreshesSelectedProductAttention() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Fresh attention")
+    let store = try #require(registry.store(for: product.id))
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Demo the completed ticket"
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+    await model.reload()
+    #expect(model.ticketAttentionCount(for: product.id) == 0)
+
+    // Delivery finalization transitions the ticket into acceptance, then
+    // reloads through the same delegate hook the coordinator uses.
+    _ = try await moveToAcceptance(item, in: store)
+    await model.deliveryReloadSelectedProductIfCurrent(productID: product.id)
+
+    #expect(model.selectedProductID == product.id)
+    let attention = try #require(model.ticketAttentionsByProductID[product.id]?.first)
+    #expect(attention.workItemID == item.id)
+    #expect(attention.summary == "Ready for demo")
+
+    // Owner approval promotes the ticket out of acceptance, same hook.
+    for state: WorkItemState in [.readyToRelease, .released] {
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: state,
+        actor: "Product owner",
+        reason: "Demo approved"
+      )
+    }
+    await model.deliveryReloadSelectedProductIfCurrent(productID: product.id)
+
+    #expect(model.selectedProductID == product.id)
+    #expect(model.ticketAttentionCount(for: product.id) == 0)
+
+    // A fresh instance derives the same attention state from durable records.
+    let recovered = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+    await recovered.reload()
+    #expect(recovered.ticketAttentionCount(for: product.id) == 0)
+
+    await model.shutdown()
+    await recovered.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("A stale ready-for-demo click refreshes and drops instead of navigating")
+  func staleAcceptanceAttentionClickDropsNavigation() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Stale attention")
+    let store = try #require(registry.store(for: product.id))
+    let item = try await moveToAcceptance(
+      try await store.createWorkItem(
+        productID: product.id,
+        title: "Approve elsewhere before clicking"
+      ),
+      in: store
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id
+    )
+    await model.reload()
+    let attention = try #require(model.ticketAttentionsByProductID[product.id]?.first)
+    #expect(attention.summary == "Ready for demo")
+
+    // The ticket is approved while the cached row is still on screen.
+    for state: WorkItemState in [.readyToRelease, .released] {
+      _ = try await store.transitionWorkItem(
+        id: item.id,
+        to: state,
+        actor: "Product owner",
+        reason: "Demo approved"
+      )
+    }
+
+    await model.openOwnerNotification(
+      try #require(
+        OwnerNotificationRoute(
+          userInfo: OwnerNotificationRoute.userInfo(
+            for: OwnerNotificationPresentation(attention: attention)
+          )
+        )
+      )
+    )
+
+    #expect(model.ownerNotificationNavigationRequest == nil)
+    #expect(model.ticketAttentionNavigationRequest == nil)
+    #expect(model.ticketAttentionCount(for: product.id) == 0)
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("A ticket question resolves when its run stops awaiting the owner")
+  func runLeavingAwaitingOwnerResolvesTicketQuestion() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Run resolution")
+    let store = try #require(registry.store(for: product.id))
+    let profile = try #require(
+      try await store.seedDefaultProfiles(productID: product.id).first
+    )
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Answer the delivery question"
+    )
+    let run = try await store.createAgentRun(
+      AgentRun(
+        productID: product.id,
+        workItemID: item.id,
+        profileID: profile.id,
+        status: .awaitingOwner
+      )
+    )
+    let questionRow = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id),
+      title: "\(item.key) needs your input",
+      body: "Choose the delivery behavior."
+    )
+    #expect(try await store.createOwnerNotification(questionRow))
+    let system = NotificationSystemSpy()
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: NotificationSoundSpy(),
+      ownerNotificationSystemNotifier: system
+    )
+    await model.reload()
+    // The load sweep keeps the question while the run awaits the owner.
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id)
+        .map(\.id) == [questionRow.id]
+    )
+
+    let updated = try await store.updateAgentRun(id: run.id, status: .completed)
+    await model.deliveryAgentRunDidUpdate(previous: run, updated: updated)
+
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).isEmpty
+    )
+    #expect(system.dismissedIDs.contains(questionRow.id))
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("The load sweep retires ended waits and keeps owed decisions")
+  func loadSweepRetiresEndedWaitsIdempotently() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Sweep product")
+    let store = try #require(registry.store(for: product.id))
+
+    // A plan landed while this epic's question row stayed active.
+    let landedEpic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Land the plan while the question row is stuck"
+    )
+    let landedSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: landedEpic.id
+    )
+    _ = try await store.completeTicketSuggestionSession(
+      sessionID: landedSession.id,
+      drafts: [
+        TicketSuggestionDraft(
+          reference: "T1",
+          title: "Deliver the landed plan",
+          body: "The plan landed without resolving the question row.",
+          acceptanceCriteria: ["The stale row retires on load"],
+          suggestedRole: .implementer,
+          priority: .normal,
+          rationale: "This fixture reproduces the stuck epic row."
+        )
+      ]
+    )
+    let stuckEpicRow = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .epic, id: landedEpic.id),
+      title: "Epic needs your input",
+      body: "This wait ended when the plan landed."
+    )
+    #expect(try await store.createOwnerNotification(stuckEpicRow))
+
+    // A failed plan still owes the owner a retry decision.
+    let failedEpic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Keep the retry decision visible"
+    )
+    let failedSession = try await store.beginTicketSuggestionSession(
+      productID: product.id,
+      epicID: failedEpic.id
+    )
+    try await store.failTicketSuggestionSession(
+      sessionID: failedSession.id,
+      message: "Planning timed out."
+    )
+    let retryRow = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .epic, id: failedEpic.id),
+      title: "Planning needs another try",
+      body: "Planning timed out."
+    )
+    #expect(try await store.createOwnerNotification(retryRow))
+
+    // An unanswered refinement question keeps its row.
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Answer the refinement question"
+    )
+    _ = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .agent,
+      authorName: "Business analyst",
+      body: "I need one decision.",
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: "Which boundary applies?",
+        options: ["Local", "Repository"]
+      )
+    )
+    let questionRow = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id),
+      title: "\(item.key) needs your input",
+      body: "Which boundary applies?"
+    )
+    #expect(try await store.createOwnerNotification(questionRow))
+
+    let coordinator = OwnerNotificationCoordinator(
+      storeProvider: { productID in
+        productID == product.id ? store : nil
+      },
+      soundPlayer: NotificationSoundSpy(),
+      systemNotifier: NotificationSystemSpy()
+    )
+    await coordinator.load(products: [product])
+
+    let expectedActiveIDs: Set<UUID> = [retryRow.id, questionRow.id]
+    #expect(
+      Set(
+        try await store.fetchActiveOwnerNotifications(productID: product.id)
+          .map(\.id)
+      ) == expectedActiveIDs
+    )
+    #expect(
+      Set(coordinator.notifications(productID: product.id).map(\.id))
+        == expectedActiveIDs
+    )
+
+    // The sweep is idempotent: a repeat load changes nothing.
+    await coordinator.load(products: [product])
+    #expect(
+      Set(
+        try await store.fetchActiveOwnerNotifications(productID: product.id)
+          .map(\.id)
+      ) == expectedActiveIDs
+    )
+
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("Making a ticket target visible marks its pending updates read")
+  func visibleTicketTargetMarksExistingUpdatesRead() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Sheet visibility")
+    let store = try #require(registry.store(for: product.id))
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Read the reply from the sprint board"
+    )
+    let reply = OwnerNotification(
+      productID: product.id,
+      kind: .newReply,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id),
+      title: "Implementer replied on \(item.key)",
+      body: "The requested change is ready."
+    )
+    #expect(try await store.createOwnerNotification(reply))
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: NotificationSoundSpy(),
+      ownerNotificationSystemNotifier: NotificationSystemSpy()
+    )
+    await model.reload()
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id)
+        .map(\.id) == [reply.id]
+    )
+
+    // The sprint ticket sheet registers the same visibility as the backlog
+    // ticket sheet, so reading a ticket anywhere counts as reading it.
+    await model.setOwnerNotificationTargetVisible(
+      productID: product.id,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id)
+    )
+
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id).isEmpty
+    )
+    model.clearOwnerNotificationTargetVisible(
+      productID: product.id,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id)
+    )
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
+    }
+  }
+
+  @Test("A system notification click refreshes stale caches before deciding")
+  func staleSystemNotificationClickRefreshesBeforeGuard() async throws {
+    let fixture = try TicketAttentionFixture()
+    defer { fixture.remove() }
+    let registry = try ProductStoreRegistry(
+      productWorkspacesRootURL: fixture.workspacesURL
+    )
+    let product = try await registry.createProduct(name: "Stale cache click")
+    let store = try #require(registry.store(for: product.id))
+    let epic = try await store.createEpic(
+      productID: product.id,
+      outcome: "Open the plan from a cold notification"
+    )
+    let model = AppModel(
+      storeRegistry: registry,
+      selectedProductID: product.id,
+      ownerNotificationSoundPlayer: NotificationSoundSpy(),
+      ownerNotificationSystemNotifier: NotificationSystemSpy()
+    )
+    await model.reload()
+
+    // The notification lands after the caches loaded, so the click arrives
+    // with a stale in-memory view.
+    let notification = OwnerNotification(
+      productID: product.id,
+      kind: .refinementComplete,
+      target: OwnerNotificationTarget(kind: .epic, id: epic.id),
+      title: "Plan ready for review",
+      body: "The proposed tickets are ready."
+    )
+    #expect(try await store.createOwnerNotification(notification))
+
+    await model.openOwnerNotification(
+      try #require(
+        OwnerNotificationRoute(
+          userInfo: OwnerNotificationRoute.userInfo(
+            for: OwnerNotificationPresentation(
+              notification: notification,
+              productName: product.name
+            )
+          )
+        )
+      )
+    )
+
+    let request = try #require(model.ownerNotificationNavigationRequest)
+    #expect(request.target == notification.target)
+
+    await model.shutdown()
+    for store in registry.allStores {
+      await store.close()
     }
   }
 

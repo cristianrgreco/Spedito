@@ -159,7 +159,7 @@ public enum CodexTicketRefinementGenerator {
     You are the single business analyst reviewing one saved backlog ticket with the product owner.
     Turn the owner's intent into a clear, executable delivery contract without silently making product
     decisions. This is analysis only: do not modify files, browse the web, or apply changes. You may use
-    read-only local tools to query the live product database and inspect product Git history.
+    read-only local tools to inspect product Git history.
 
     Return a complete refined ticket snapshot. Once all product owner questions are resolved, the
     application applies that snapshot and any new prerequisite relationships together as one
@@ -170,6 +170,8 @@ public enum CodexTicketRefinementGenerator {
     and no more than three focused questions whose answers materially affect scope. Recommend the future
     delivery owner as business analyst for agreed research, UX designer for experience or prototype work,
     or implementer for approved product changes and other general delivery.
+    \(CodexLifecycleGuidance.uxTicketContractGuidance)
+
 
     For a ticket that will build, test, prototype, demo, locally run, or prepare a deployable product,
     inspect verified Environments knowledge and repository-owned manifests, scripts, CI, and documentation.
@@ -202,8 +204,10 @@ public enum CodexTicketRefinementGenerator {
     one selection per question, so every option must be a self-contained description of the complete
     resulting scope. Never make later options incremental with wording such as “add … as well,” “include
     … too,” or “also”; restate the full outcome in each alternative. Do not include an "Other" option
-    because the application adds it. When an unlisted constraint may be the answer, tell the owner in the
-    question to choose Other and describe it in the interface's text field. Distinguish a recommendation
+    because the application adds it, and never write an option that refers to Other or its text field,
+    such as “choose Other and name it” or “named in the Other field”. When an unlisted constraint may
+    be the answer, the question prompt — never an option — may tell the owner to
+    choose Other and describe it in the interface's text field. Distinguish a recommendation
     made from existing product and repository evidence without a research ticket from time-boxed external
     research that creates a separate business analyst ticket. Do not add a preamble such as "a material
     choice remains" to the prompt or message. The message, title, and rationale must never be empty.
@@ -324,7 +328,8 @@ public enum CodexTicketRefinementGenerator {
       ask the material owner-facing preference question first, then recommend a separate foundation ticket
       in splitRecommendation rather than folding machine setup into this feature.
       If a material question remains unanswered, ask it in missingQuestions with two to four concise,
-      mutually exclusive options. Do not include "Other"; the application adds it. Preserve the exact
+      mutually exclusive options. Do not include "Other", or any option that refers to Other or its
+      text field; the application adds the Other choice itself. Preserve the exact
       saved snapshot above and return no dependencies. Only refine the snapshot when missingQuestions is
       empty; the application will apply the completed refinement as one version-checked ticket update.
       """
@@ -453,23 +458,15 @@ public enum CodexTicketRefinementGenerator {
       )
     }
 
-    let questions = proposal.missingQuestions.map { question in
-      TicketRefinementQuestion(
-        prompt: question.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-        options: question.options.map {
-          $0.trimmingCharacters(in: .whitespacesAndNewlines)
+    // The shared normaliser applies the same rules as clarification replies
+    // and final-plan escapes, including the minimum content bar that routes
+    // degenerate constrained-decoding output into the ordinary repair turn.
+    guard
+      let questions = CodexEpicClarificationGenerator.normalizedQuestions(
+        proposal.missingQuestions.map { question in
+          TicketRefinementQuestion(prompt: question.prompt, options: question.options)
         }
       )
-    }
-    guard
-      questions.allSatisfy({
-        !$0.prompt.isEmpty
-          && (2...4).contains($0.options.count)
-          && $0.options.allSatisfy { !$0.isEmpty }
-          && $0.options.allSatisfy { $0.lowercased() != "other" }
-          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
-      }),
-      Set(questions.map { $0.prompt.lowercased() }).count == questions.count
     else {
       throw TicketRefinementGenerationError.invalidResponse(
         "Every clarification needs a unique prompt and two to four distinct choices."
@@ -484,6 +481,13 @@ public enum CodexTicketRefinementGenerator {
       ?? (isAwaitingOwner
         ? "I need your input before I can complete this review."
         : "I completed the ticket refinement.")
+    guard
+      rawTitle.isEmpty || CodexEpicClarificationGenerator.meetsMinimumContent(rawTitle)
+    else {
+      throw TicketRefinementGenerationError.invalidResponse(
+        "The proposed title “\(rawTitle)” carries no readable content."
+      )
+    }
     let title = rawTitle.nilIfEmpty ?? currentItem.title
     let rationale =
       rawRationale.nilIfEmpty

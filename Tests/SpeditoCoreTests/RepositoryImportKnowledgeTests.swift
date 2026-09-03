@@ -413,6 +413,105 @@ struct RepositoryImportKnowledgeTests {
     await reopened.close()
   }
 
+  @Test("Analyzer evidence line ranges are bounded to the cited file instead of failing the run")
+  func analyzerEvidenceLineRangesAreBounded() throws {
+    let root = temporaryDirectory(named: "evidence-bounds")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sources = root.appendingPathComponent("src", isDirectory: true)
+    try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+    let shortFile = "export const one = 1\nexport const two = 2\n"
+    try Data(shortFile.utf8).write(to: sources.appendingPathComponent("paths.ts"))
+
+    let productID = UUID()
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: 1,
+      analyzedSHA: String(repeating: "d", count: 40),
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID()
+    )
+    let architecture = KnowledgePage(
+      productID: productID,
+      title: "Architecture",
+      slug: "architecture",
+      bodyMarkdown: "# Architecture\n"
+    )
+    let features = KnowledgePage(
+      productID: productID,
+      title: "Features",
+      slug: "features",
+      kind: .section
+    )
+    let snapshot = RepositoryAnalysisSnapshot(
+      url: root,
+      analyzedSHA: run.analyzedSHA,
+      allowedPaths: ["src/paths.ts"],
+      integrityDigest: "digest"
+    )
+    func response(path: String, startLine: Int, endLine: Int) -> String {
+      """
+      {
+        "summary": "Bounded architecture update",
+        "drafts": [{
+          "operation": "update",
+          "targetPageID": "\(architecture.id.uuidString)",
+          "parentPageID": null,
+          "title": "Architecture",
+          "bodyMarkdown": "# Architecture\\n\\nTwo exported helpers.\\n",
+          "rationale": "The helper module names both exports",
+          "evidence": [{
+            "path": "\(path)",
+            "startLine": \(startLine),
+            "endLine": \(endLine)
+          }]
+        }],
+        "launchProposal": null
+      }
+      """
+    }
+
+    // The file has two lines and a trailing newline, so the numbered excerpt the analyzer was
+    // shown ends at line 3. An overstated end line keeps the draft and narrows the citation.
+    let overstated = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(path: "src/paths.ts", startLine: 1, endLine: 11),
+      run: run,
+      pages: [architecture, features],
+      snapshot: snapshot
+    )
+    #expect(overstated.drafts.count == 1)
+    #expect(
+      overstated.drafts.first?.evidence == [.init(path: "src/paths.ts", startLine: 1, endLine: 3)]
+    )
+
+    // A start line past the end of the file cannot be narrowed to a truthful range, so the
+    // citation degrades to the file itself rather than inventing one.
+    let unreachable = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(path: "src/paths.ts", startLine: 40, endLine: 50),
+      run: run,
+      pages: [architecture, features],
+      snapshot: snapshot
+    )
+    #expect(unreachable.drafts.first?.evidence == [.init(path: "src/paths.ts")])
+
+    // A path outside the sanitized snapshot remains a hard failure.
+    #expect(throws: RepositoryAnalysisSnapshotError.self) {
+      try CodexRepositoryKnowledgeAnalyzer.decode(
+        response(path: "src/absent.ts", startLine: 1, endLine: 2),
+        run: run,
+        pages: [architecture, features],
+        snapshot: snapshot
+      )
+    }
+    #expect(throws: RepositoryAnalysisSnapshotError.self) {
+      try CodexRepositoryKnowledgeAnalyzer.decode(
+        response(path: "src/paths.ts", startLine: 3, endLine: 2),
+        run: run,
+        pages: [architecture, features],
+        snapshot: snapshot
+      )
+    }
+  }
+
   @Test("Analyzer and reviewer reject unknown fields and incomplete independent decisions")
   func strictStructuredResponses() throws {
     let productID = UUID()
@@ -473,6 +572,149 @@ struct RepositoryImportKnowledgeTests {
         drafts: [draft]
       )
     }
+  }
+
+  @Test("A terminal app launch proposal imports; artifact and command-output proposals do not")
+  func terminalLaunchProposalImportsWhileArtifactsDoNot() throws {
+    let root = temporaryDirectory(named: "terminal-launch-contract")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    try Data("#!/bin/sh\nswiftc -o bin/menu Sources/main.swift\n".utf8).write(
+      to: scripts.appendingPathComponent("build.sh")
+    )
+    let productID = UUID()
+    let run = RepositoryKnowledgeRun(
+      productID: productID,
+      attempt: 1,
+      analyzedSHA: String(repeating: "d", count: 40),
+      analyzerProfileID: UUID(),
+      reviewerProfileID: UUID()
+    )
+    let architecture = KnowledgePage(
+      productID: productID,
+      title: "Architecture",
+      slug: "architecture",
+      bodyMarkdown: "# Architecture\n"
+    )
+    let features = KnowledgePage(
+      productID: productID,
+      title: "Features",
+      slug: "features",
+      kind: .section
+    )
+    let pages = [architecture, features]
+    let snapshot = RepositoryAnalysisSnapshot(
+      url: root,
+      analyzedSHA: run.analyzedSHA,
+      allowedPaths: ["scripts/build.sh"],
+      integrityDigest: "digest"
+    )
+    func response(
+      presentation: String,
+      launchCommand: String,
+      preparation: String = """
+        [{
+          "executable": "scripts/build.sh",
+          "arguments": [],
+          "workingDirectory": ".",
+          "timeoutSeconds": 300
+        }]
+        """
+    ) -> String {
+      """
+        {
+          "summary": "Found a documented terminal program build",
+          "drafts": [{
+            "operation": "update",
+            "targetPageID": "\(architecture.id.uuidString)",
+            "parentPageID": null,
+            "title": "Architecture",
+            "bodyMarkdown": "# Architecture\\n\\nSwift terminal program.\\n",
+            "rationale": "The build script identifies the terminal target",
+            "evidence": [{
+              "path": "scripts/build.sh",
+              "startLine": 1,
+              "endLine": 2
+            }]
+          }],
+          "launchProposal": {
+            "specification": {
+              "schemaVersion": 1,
+              "title": "Imported menu",
+              "preparationCommands": \(preparation),
+              "launchCommand": \(launchCommand),
+              "portEnvironmentVariable": null,
+              "readiness": null,
+              "presentation": \(presentation)
+            },
+            "evidence": [{
+              "path": "scripts/build.sh",
+              "startLine": 1,
+              "endLine": 2
+            }]
+          }
+        }
+        """
+    }
+
+    let terminal = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(
+        presentation: #"{"kind": "terminal_application", "path": null}"#,
+        launchCommand: #"{"executable": "bin/menu", "arguments": [], "workingDirectory": ".", "timeoutSeconds": 120}"#
+      ),
+      run: run,
+      pages: pages,
+      snapshot: snapshot
+    )
+    #expect(terminal.launchProposal?.specification.presentation.kind == .terminalApplication)
+    #expect(terminal.launchProposal?.specification.launchCommand?.executable == "bin/menu")
+    #expect(terminal.launchProposalIssue == nil)
+
+    // A bare tool name is not the reviewed program, so Core rejects it.
+    let toolName = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(
+        presentation: #"{"kind": "terminal_application", "path": null}"#,
+        launchCommand: #"{"executable": "swift", "arguments": ["run"], "workingDirectory": ".", "timeoutSeconds": 120}"#
+      ),
+      run: run,
+      pages: pages,
+      snapshot: snapshot
+    )
+    #expect(toolName.launchProposal == nil)
+    #expect(toolName.launchProposalIssue?.contains("workspace-relative path") == true)
+
+    let artifact = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(
+        presentation: #"{"kind": "artifact", "path": "README.md"}"#,
+        launchCommand: "null",
+        preparation: "[]"
+      ),
+      run: run,
+      pages: pages,
+      snapshot: snapshot
+    )
+    #expect(artifact.launchProposal == nil)
+    #expect(artifact.launchProposalIssue?.contains("terminal app") == true)
+
+    let commandOutput = try CodexRepositoryKnowledgeAnalyzer.decode(
+      response(
+        presentation: #"{"kind": "command_output", "path": null}"#,
+        launchCommand: #"{"executable": "bin/menu", "arguments": ["--version"], "workingDirectory": ".", "timeoutSeconds": 120}"#
+      ),
+      run: run,
+      pages: pages,
+      snapshot: snapshot
+    )
+    #expect(commandOutput.launchProposal == nil)
+    #expect(commandOutput.launchProposalIssue?.contains("terminal app") == true)
+    #expect(
+      CodexRepositoryKnowledgeAnalyzer.developerInstructions.contains("terminal_application")
+    )
+    #expect(
+      CodexRepositoryKnowledgeAnalyzer.launchCorrectionPrompt(reason: "x")
+        .contains("terminal_application")
+    )
   }
 
   @Test("Imported app launch recipes require exact analyzer evidence and independent approval")
@@ -696,7 +938,7 @@ struct RepositoryImportKnowledgeTests {
     #expect(missingLaunchAnalysis.launchProposal == nil)
     #expect(
       missingLaunchAnalysis.launchProposalIssue
-        == "The imported source check did not return a complete browser or macOS app recipe."
+        == "The imported source check did not return a complete browser, macOS app, or terminal app recipe."
     )
     let launchOnlyProposal = try #require(launchOnlyAnalysis.launchProposal)
     let launchOnlyReview = try CodexRepositoryKnowledgeReviewer.decode(

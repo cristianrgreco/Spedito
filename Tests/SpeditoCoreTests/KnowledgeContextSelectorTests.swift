@@ -52,6 +52,136 @@ struct KnowledgeContextSelectorTests {
     #expect(selection.directoryPages.map(\.id).contains(architecture.id))
   }
 
+  @Test("The contracted kind's canonical demo recipe always reaches the run")
+  func canonicalDemoRecipeReachesTheContractedRun() throws {
+    let productID = UUID()
+    let operations = KnowledgePage(
+      productID: productID,
+      title: "Operations",
+      slug: "operations",
+      kind: .section
+    )
+    let recipe = DemoLaunchSpecification(
+      title: "Forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+    let recipePage = KnowledgePage(
+      productID: productID,
+      parentID: operations.id,
+      title: CanonicalDemoRecipeKnowledge.title(for: .staticWeb),
+      slug: CanonicalDemoRecipeKnowledge.slug(for: .staticWeb),
+      bodyMarkdown: try CanonicalDemoRecipeKnowledge.bodyMarkdown(for: recipe)
+    )
+    let otherRecipePage = KnowledgePage(
+      productID: productID,
+      parentID: operations.id,
+      title: CanonicalDemoRecipeKnowledge.title(for: .browser),
+      slug: CanonicalDemoRecipeKnowledge.slug(for: .browser),
+      bodyMarkdown: "The accepted browser recipe."
+    )
+    let contracted = WorkItem(
+      productID: productID,
+      key: "T2",
+      title: "Refine the saved locations list",
+      demoKind: .staticWeb
+    )
+
+    let selection = KnowledgeContextSelector.select(
+      pages: [operations, recipePage, otherRecipePage],
+      item: contracted,
+      prerequisites: []
+    )
+    #expect(selection.referencePages.map(\.id).contains(recipePage.id))
+    #expect(!selection.referencePages.map(\.id).contains(otherRecipePage.id))
+    // The page is acceptance-derived truth; no run may update it directly.
+    #expect(!selection.writablePageIDs.contains(recipePage.id))
+    // The inherited body carries the exact recipe, not a paraphrase.
+    #expect(
+      selection.referencePages
+        .first { $0.id == recipePage.id }
+        .flatMap { CanonicalDemoRecipeKnowledge.specification(fromBody: $0.bodyMarkdown) }
+        == recipe
+    )
+
+    let preContract = WorkItem(
+      productID: productID,
+      key: "T3",
+      title: "Refine the saved locations list"
+    )
+    let preContractSelection = KnowledgeContextSelector.select(
+      pages: [operations, recipePage, otherRecipePage],
+      item: preContract,
+      prerequisites: []
+    )
+    #expect(!preContractSelection.referencePages.map(\.id).contains(recipePage.id))
+  }
+
+  @Test("The terminal app recipe reaches a terminal-contracted run and no other")
+  func terminalCanonicalRecipeFollowsTheContract() throws {
+    let productID = UUID()
+    let operations = KnowledgePage(
+      productID: productID,
+      title: "Operations",
+      slug: "operations",
+      kind: .section
+    )
+    let recipe = DemoLaunchSpecification(
+      title: "Dog finder",
+      preparationCommands: [DemoCommand(executable: "scripts/build.sh")],
+      launchCommand: DemoCommand(executable: "bin/tui"),
+      presentation: DemoPresentation(kind: .terminalApplication)
+    )
+    let terminalPage = KnowledgePage(
+      productID: productID,
+      parentID: operations.id,
+      title: CanonicalDemoRecipeKnowledge.title(for: .terminalApplication),
+      slug: CanonicalDemoRecipeKnowledge.slug(for: .terminalApplication),
+      bodyMarkdown: try CanonicalDemoRecipeKnowledge.bodyMarkdown(for: recipe)
+    )
+    #expect(terminalPage.slug == "demo-recipe-terminal-application")
+    #expect(terminalPage.title == "Demo recipe: terminal app")
+    let browserPage = KnowledgePage(
+      productID: productID,
+      parentID: operations.id,
+      title: CanonicalDemoRecipeKnowledge.title(for: .browser),
+      slug: CanonicalDemoRecipeKnowledge.slug(for: .browser),
+      bodyMarkdown: "The accepted browser recipe."
+    )
+
+    let terminalRun = KnowledgeContextSelector.select(
+      pages: [operations, terminalPage, browserPage],
+      item: WorkItem(
+        productID: productID,
+        key: "T4",
+        title: "Browse available dogs by breed",
+        demoKind: .terminalApplication
+      ),
+      prerequisites: []
+    )
+    #expect(terminalRun.referencePages.map(\.id).contains(terminalPage.id))
+    #expect(!terminalRun.referencePages.map(\.id).contains(browserPage.id))
+    #expect(!terminalRun.writablePageIDs.contains(terminalPage.id))
+    #expect(
+      terminalRun.referencePages
+        .first { $0.id == terminalPage.id }
+        .flatMap { CanonicalDemoRecipeKnowledge.specification(fromBody: $0.bodyMarkdown) }
+        == recipe
+    )
+
+    let browserRun = KnowledgeContextSelector.select(
+      pages: [operations, terminalPage, browserPage],
+      item: WorkItem(
+        productID: productID,
+        key: "T5",
+        title: "Browse available dogs by breed",
+        demoKind: .browser
+      ),
+      prerequisites: []
+    )
+    #expect(browserRun.referencePages.map(\.id).contains(browserPage.id))
+    #expect(!browserRun.referencePages.map(\.id).contains(terminalPage.id))
+  }
+
   @Test("Title and taxonomy relevance outrank repeated terms in a long catch-all page")
   func boundedBodyScoring() throws {
     let productID = UUID()

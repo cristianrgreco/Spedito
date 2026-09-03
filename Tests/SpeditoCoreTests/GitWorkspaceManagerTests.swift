@@ -356,6 +356,34 @@ struct GitWorkspaceManagerTests {
     try Data("cached build\n".utf8).write(
       to: preview.appendingPathComponent(".demo-cache")
     )
+    let servingPreview = try await manager.preparePreviewWorkspace(
+      repositoryURL: repository,
+      previewsRootURL: preview.deletingLastPathComponent(),
+      candidateID: previewCandidateID,
+      integratedSHA: integration.integratedSHA,
+      resetsExistingCheckout: false
+    )
+    #expect(servingPreview == preview)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: servingPreview.appendingPathComponent(".demo-cache").path
+      )
+    )
+
+    // A reused preview is reset to a clean detached checkout by default, so
+    // artifacts a previous preparation could not delete never poison the next
+    // demo attempt.
+    let strandedBundle = preview.appendingPathComponent(
+      ".demo/App.app/Contents/MacOS",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: strandedBundle,
+      withIntermediateDirectories: true
+    )
+    try Data("modified\n".utf8).write(
+      to: preview.appendingPathComponent("feature.txt")
+    )
     let reusedPreview = try await manager.preparePreviewWorkspace(
       repositoryURL: repository,
       previewsRootURL: preview.deletingLastPathComponent(),
@@ -363,10 +391,22 @@ struct GitWorkspaceManagerTests {
       integratedSHA: integration.integratedSHA
     )
     #expect(reusedPreview == preview)
+    #expect(try await manager.currentSHA(at: reusedPreview) == integration.integratedSHA)
     #expect(
-      FileManager.default.fileExists(
+      !FileManager.default.fileExists(
+        atPath: reusedPreview.appendingPathComponent(".demo").path
+      )
+    )
+    #expect(
+      !FileManager.default.fileExists(
         atPath: reusedPreview.appendingPathComponent(".demo-cache").path
       )
+    )
+    #expect(
+      try String(
+        contentsOf: reusedPreview.appendingPathComponent("feature.txt"),
+        encoding: .utf8
+      ) == "first implementation\n"
     )
 
     try await manager.promote(
@@ -633,6 +673,88 @@ struct GitWorkspaceManagerTests {
         contentsOf: secondIntegration.url.appendingPathComponent("shared.txt"),
         encoding: .utf8
       ) == "accepted trunk behavior\nticket behavior\nreview correction\n"
+    )
+  }
+
+  @Test("An unchanged revision reuses its prior integration instead of duplicating the merge")
+  func unchangedRevisionReusesPriorIntegration() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent(
+        "spedito-git-reuse-integration-\(UUID().uuidString)",
+        isDirectory: true
+      )
+    let repository = root.appendingPathComponent("product", isDirectory: true)
+    let ticketWorktrees = root.appendingPathComponent("tickets", isDirectory: true)
+    let integrations = root.appendingPathComponent("integrations", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+    try Data("baseline\n".utf8).write(
+      to: repository.appendingPathComponent("README.md")
+    )
+    let manager = GitWorkspaceManager()
+    _ = try await manager.ensureRepository(at: repository)
+    let workspace = try await manager.prepareTicketWorkspace(
+      repositoryURL: repository,
+      worktreesRootURL: ticketWorktrees,
+      ticketKey: "T90",
+      runID: UUID(),
+      authorName: "Implementer"
+    )
+    try Data("ticket change\n".utf8).write(
+      to: workspace.url.appendingPathComponent("ticket.txt")
+    )
+    let candidate = try await manager.createCandidate(
+      ticketWorkspaceURL: workspace.url,
+      ticketKey: "T90",
+      version: 1,
+      authorName: "Implementer"
+    )
+    let firstIntegration = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: candidate.headSHA,
+      commitMessage: "Integrate T90: Deliver the ticket"
+    )
+
+    let reused = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: firstIntegration.integratedSHA,
+      commitMessage: "Integrate T90: Deliver the ticket",
+      reusableIntegratedSHA: firstIntegration.integratedSHA
+    )
+    #expect(reused.integratedSHA == firstIntegration.integratedSHA)
+    #expect(try await manager.currentSHA(at: reused.url) == firstIntegration.integratedSHA)
+
+    try Data("accepted follow-up\n".utf8).write(
+      to: repository.appendingPathComponent("accepted.txt")
+    )
+    _ = try await manager.checkpointTrunk(at: repository)
+    let merged = try await manager.integrateCandidate(
+      repositoryURL: repository,
+      integrationsRootURL: integrations,
+      candidateID: UUID(),
+      headSHA: firstIntegration.integratedSHA,
+      commitMessage: "Integrate T90: Deliver the ticket",
+      reusableIntegratedSHA: firstIntegration.integratedSHA
+    )
+    #expect(merged.integratedSHA != firstIntegration.integratedSHA)
+    #expect(
+      try runGit(["rev-parse", "\(merged.integratedSHA)^1"], at: repository)
+        == runGit(["rev-parse", "refs/heads/trunk"], at: repository)
+    )
+    #expect(
+      FileManager.default.fileExists(
+        atPath: merged.url.appendingPathComponent("ticket.txt").path
+      )
+    )
+    #expect(
+      FileManager.default.fileExists(
+        atPath: merged.url.appendingPathComponent("accepted.txt").path
+      )
     )
   }
 

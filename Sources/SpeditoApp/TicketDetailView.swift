@@ -336,6 +336,25 @@ struct TicketDetailView: View {
     item.map(TicketEditorPresentationState.needsInitialRefinement(for:)) ?? false
   }
 
+  /// The owner-approved review medium, read-only: the contract changes only
+  /// through the contested-kind question or an owner decision, never here.
+  @ViewBuilder
+  private var reviewMediumSummary: some View {
+    if let reviewMedium = item?.demoKind {
+      VStack(alignment: .leading, spacing: 7) {
+        Text(TicketReviewMediumPresentation.title)
+          .font(.subheadline.weight(.semibold))
+        Text(reviewMedium.ownerFacingReviewMedium)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .padding(.vertical, 5)
+          .help(
+            "The review medium approved with the plan. Delivery asks you before changing it."
+          )
+      }
+    }
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       HStack(spacing: 12) {
@@ -430,6 +449,8 @@ struct TicketDetailView: View {
                 .disabled(deliveryProfiles.isEmpty)
                 .help("Choose the team member who will deliver this ticket.")
               }
+
+              reviewMediumSummary
 
               Spacer()
 
@@ -2129,6 +2150,7 @@ struct MultipleChoiceQuestionCards: View {
   private let accessibilityPrefix: String?
   @Binding private var selectedOptions: [Int: String]
   @Binding private var otherAnswers: [Int: String]
+  @FocusState private var focusedOtherQuestionIndex: Int?
 
   init(
     questions: [TicketRefinementQuestion],
@@ -2210,9 +2232,14 @@ struct MultipleChoiceQuestionCards: View {
               )
             )
             .textFieldStyle(.roundedBorder)
+            .focused($focusedOtherQuestionIndex, equals: index)
             .accessibilityIdentifier(
               accessibilityIdentifier("question.\(index).other")
             )
+            .task {
+              await Task.yield()
+              focusedOtherQuestionIndex = index
+            }
           }
         }
         .padding(11)

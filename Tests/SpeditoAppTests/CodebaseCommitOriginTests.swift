@@ -170,6 +170,129 @@ struct CodebaseCommitOriginTests {
     #expect(setupPresentation.state == .onTrunk)
   }
 
+  @Test("Trunk scope shows only each ticket's current integration merge")
+  func trunkScopeCollapsesSupersededIntegrations() {
+    let ticketID = UUID()
+    let root = commit("root", parents: [], isOnTrunk: true)
+    let work1 = commit("work1", parents: [root.sha], isOnTrunk: true)
+    let integration1 = commit(
+      "integration1",
+      parents: [root.sha, work1.sha],
+      subject: "Integrate T1: Establish the build",
+      isOnTrunk: true
+    )
+    let work2 = commit("work2", parents: [integration1.sha], isOnTrunk: true)
+    let integration2 = commit(
+      "integration2",
+      parents: [root.sha, work2.sha],
+      subject: "Integrate T1: Establish the build",
+      isOnTrunk: true
+    )
+    let integration3 = commit(
+      "integration3",
+      parents: [root.sha, integration2.sha],
+      subject: "Integrate T1: Establish the build",
+      isOnTrunk: true
+    )
+    let snapshot = GitRepositorySnapshot(
+      trunkSHA: integration3.sha,
+      branches: [],
+      commits: [integration3, integration2, work2, integration1, work1, root]
+    )
+    let revisions = [
+      revision(
+        workItemID: ticketID,
+        version: 1,
+        baseSHA: root.sha,
+        headSHA: work1.sha,
+        integratedSHA: integration1.sha,
+        status: .changesRequested
+      ),
+      revision(
+        workItemID: ticketID,
+        version: 2,
+        baseSHA: root.sha,
+        headSHA: work2.sha,
+        integratedSHA: integration2.sha,
+        status: .changesRequested
+      ),
+      revision(
+        workItemID: ticketID,
+        version: 3,
+        baseSHA: root.sha,
+        headSHA: integration2.sha,
+        integratedSHA: integration3.sha,
+        status: .accepted
+      ),
+    ]
+
+    #expect(
+      shas(
+        CodebaseHistoryFilter.commits(
+          in: snapshot,
+          scope: .trunk,
+          revisions: revisions,
+          branchWorkItemIDs: [:]
+        )
+      ) == [integration3.sha, work2.sha, work1.sha, root.sha]
+    )
+    #expect(
+      CodebaseHistoryFilter.commits(
+        in: snapshot,
+        scope: .allActivity,
+        revisions: revisions,
+        branchWorkItemIDs: [:]
+      ) == snapshot.commits
+    )
+  }
+
+  @Test("A reused integration merge stays visible for the current revision")
+  func reusedIntegrationRemainsVisible() {
+    let ticketID = UUID()
+    let root = commit("root", parents: [], isOnTrunk: true)
+    let work1 = commit("work1", parents: [root.sha], isOnTrunk: true)
+    let integration1 = commit(
+      "integration1",
+      parents: [root.sha, work1.sha],
+      subject: "Integrate T1: Establish the build",
+      isOnTrunk: true
+    )
+    let snapshot = GitRepositorySnapshot(
+      trunkSHA: integration1.sha,
+      branches: [],
+      commits: [integration1, work1, root]
+    )
+    let revisions = [
+      revision(
+        workItemID: ticketID,
+        version: 1,
+        baseSHA: root.sha,
+        headSHA: work1.sha,
+        integratedSHA: integration1.sha,
+        status: .changesRequested
+      ),
+      revision(
+        workItemID: ticketID,
+        version: 2,
+        baseSHA: root.sha,
+        headSHA: integration1.sha,
+        integratedSHA: integration1.sha,
+        status: .accepted
+      ),
+    ]
+
+    #expect(
+      shas(
+        CodebaseHistoryFilter.commits(
+          in: snapshot,
+          scope: .trunk,
+          revisions: revisions,
+          branchWorkItemIDs: [:]
+        )
+      ) == [integration1.sha, work1.sha, root.sha]
+    )
+  }
+
   @Test("A truncated integration history does not leak trunk commits into a ticket")
   func truncatedIntegrationHistory() {
     let ticketID = UUID()
@@ -320,6 +443,7 @@ struct CodebaseCommitOriginTests {
 
   private func revision(
     workItemID: UUID,
+    version: Int = 1,
     baseSHA: String,
     headSHA: String,
     integratedSHA: String?,
@@ -328,7 +452,7 @@ struct CodebaseCommitOriginTests {
     CodebaseTicketRevision(
       candidateID: UUID(),
       workItemID: workItemID,
-      version: 1,
+      version: version,
       branchName: "ticket/T2",
       baseSHA: baseSHA,
       headSHA: headSHA,

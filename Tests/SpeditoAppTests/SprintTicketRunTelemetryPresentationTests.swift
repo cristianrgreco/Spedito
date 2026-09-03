@@ -141,7 +141,7 @@ struct SprintTicketRunTelemetryPresentationTests {
       )
     )
 
-    #expect(presentation.title == "Waiting for Codex capacity")
+    #expect(presentation.title == "Usage limit reached")
     #expect(presentation.explanation.contains("continue automatically"))
     #expect(presentation.retryAt == retryAt)
     #expect(presentation.technicalEvidence == "primary")
@@ -182,7 +182,7 @@ struct SprintTicketRunTelemetryPresentationTests {
           )
         ),
         itemState: .queued
-      ) == "Waiting for Codex capacity"
+      ) == "Usage limit reached"
     )
     #expect(
       activityTitle(
@@ -197,6 +197,13 @@ struct SprintTicketRunTelemetryPresentationTests {
         itemState: .verifying,
         candidateStatus: .reviewing
       ) == "Reviewing"
+    )
+    #expect(
+      activityTitle(
+        run: run(status: .completed),
+        itemState: .verifying,
+        candidateStatus: .reviewing
+      ) == "Preparing demo"
     )
     #expect(
       activityTitle(

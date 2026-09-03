@@ -147,13 +147,44 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
     case .invalidInitializeResponse: "Codex App Server returned an invalid handshake."
     case .invalidThreadResponse: "Codex App Server returned an invalid thread."
     case .invalidTurnResponse: "Codex App Server returned an invalid turn."
-    case .turnFailed(let message): "The Codex turn failed: \(message)"
+    case .turnFailed(let message):
+      CodexTurnFailureText.ownerFacingDescription(for: message)
     case .turnEndedWithoutOutput: "The Codex turn finished without a proposal."
     case .turnTimedOut(let seconds):
       "The Codex turn had no activity for \(seconds) seconds."
     case .unsupportedPlatform(let platform):
       "This Spedito build cannot use a Codex runtime for \(platform)."
     }
+  }
+}
+
+/// Owner-facing text for a failed Codex turn.
+///
+/// Codex reports account capacity failures with upgrade and billing links. The
+/// product owner cannot act on those inside Spedito, so a capacity failure
+/// collapses to one plain explanation that keeps the reset time when Codex
+/// names one. Every other failure message passes through unchanged.
+public enum CodexTurnFailureText {
+  public static func ownerFacingDescription(for message: String) -> String {
+    let lowered = message.lowercased()
+    guard lowered.contains("usage limit") || lowered.contains("rate limit") else {
+      return "The Codex turn failed: \(message)"
+    }
+    guard let resetTime = resetTime(in: message) else {
+      return "Codex has reached its usage limit. Work continues automatically when the limit resets."
+    }
+    return "Codex has reached its usage limit. Work continues automatically "
+      + "after the limit resets, around \(resetTime)."
+  }
+
+  /// The reset time Codex names after "try again at", without the sentence tail.
+  private static func resetTime(in message: String) -> String? {
+    guard let marker = message.range(of: "try again at ", options: .caseInsensitive)
+    else { return nil }
+    let tail = message[marker.upperBound...]
+    let time = tail.prefix { $0 != "." && $0 != "," && $0 != "\n" }
+      .trimmingCharacters(in: .whitespaces)
+    return time.isEmpty ? nil : time
   }
 }
 
@@ -313,7 +344,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     allowsApprovals: Bool = false,
-    readOnlyProductDirectory: URL? = nil,
     ephemeral: Bool = false,
     responseTimeout: Duration? = nil
   ) async throws -> String {
@@ -325,10 +355,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "ephemeral": .bool(ephemeral),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array(
-        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
-          .map { .string($0.standardizedFileURL.path) }
-      ),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
       "serviceName": .string("Spedito"),
     ]
     if let model, model != "default" {
@@ -356,18 +385,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil,
     writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
-    let productDirectory =
-      readOnlyProductDirectory
-      ?? readOnlyGitDirectory?
-      .deletingLastPathComponent()
-      .appendingPathComponent(
-        ProductStoreRegistry.controlDirectoryName,
-        isDirectory: true
-      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -382,7 +402,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
       readOnlyGitDirectory: readOnlyGitDirectory,
-      readOnlyProductDirectory: productDirectory,
       writableTransientStorageRoots: writableTransientStorageRoots
     )
     if let model, model != "default" {
@@ -401,8 +420,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     workingDirectory: URL,
     developerInstructions: String,
     model: String? = nil,
-    allowsApprovals: Bool = false,
-    readOnlyProductDirectory: URL? = nil
+    allowsApprovals: Bool = false
   ) async throws -> String {
     var params: [String: JSONValue] = [
       "approvalPolicy": .string(allowsApprovals ? "on-request" : "never"),
@@ -410,10 +428,9 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       "developerInstructions": .string(developerInstructions),
       "permissions": .string(CodexPermissionProfiles.readOnly),
       "personality": .string("pragmatic"),
-      "runtimeWorkspaceRoots": .array(
-        ([workingDirectory] + (readOnlyProductDirectory.map { [$0] } ?? []))
-          .map { .string($0.standardizedFileURL.path) }
-      ),
+      "runtimeWorkspaceRoots": .array([
+        .string(workingDirectory.standardizedFileURL.path)
+      ]),
       "threadId": .string(threadID),
     ]
     if let model, model != "default" {
@@ -428,17 +445,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     developerInstructions: String,
     model: String? = nil,
     readOnlyGitDirectory: URL? = nil,
-    readOnlyProductDirectory: URL? = nil,
     writableTransientStorageRoots: [URL] = CodexPermissionProfiles.macOSUserTransientStorageRoots
   ) async throws -> String {
-    let productDirectory =
-      readOnlyProductDirectory
-      ?? readOnlyGitDirectory?
-      .deletingLastPathComponent()
-      .appendingPathComponent(
-        ProductStoreRegistry.controlDirectoryName,
-        isDirectory: true
-      )
     var params: [String: JSONValue] = [
       "approvalPolicy": .string("on-request"),
       "cwd": .string(workingDirectory.path),
@@ -452,7 +460,6 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     ]
     params["config"] = CodexPermissionProfiles.deliveryThreadConfiguration(
       readOnlyGitDirectory: readOnlyGitDirectory,
-      readOnlyProductDirectory: productDirectory,
       writableTransientStorageRoots: writableTransientStorageRoots
     )
     if let model, model != "default" {
@@ -490,11 +497,15 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     )
   }
 
+  /// `imageInputPaths` attaches local image files as additional turn input
+  /// items ahead of the text prompt, for callers whose evidence includes
+  /// images — the eval judge scoring committed image artifacts. Default empty.
   public func startStructuredTurn(
     threadID: String,
     prompt: String,
     effort: String,
     outputSchema: JSONValue,
+    imageInputPaths: [URL] = [],
     runtimeWorkspaceRoots: [URL] = [],
     responseTimeout: Duration? = nil
   ) async throws -> String {
@@ -503,6 +514,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       prompt: prompt,
       effort: effort,
       outputSchema: outputSchema,
+      imageInputPaths: imageInputPaths,
       runtimeWorkspaceRoots: runtimeWorkspaceRoots,
       responseTimeout: responseTimeout
     )
@@ -513,18 +525,27 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     prompt: String,
     effort: String,
     outputSchema: JSONValue?,
+    imageInputPaths: [URL] = [],
     runtimeWorkspaceRoots: [URL],
     responseTimeout: Duration?
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
+    let imageItems: [JSONValue] = imageInputPaths.map {
+      .object([
+        "type": .string("localImage"),
+        "path": .string($0.standardizedFileURL.path),
+      ])
+    }
     var params: [String: JSONValue] = [
       "effort": .string(effort),
-      "input": .array([
-        .object([
-          "text": .string(prompt),
-          "type": .string("text"),
-        ])
-      ]),
+      "input": .array(
+        imageItems + [
+          .object([
+            "text": .string(prompt),
+            "type": .string("text"),
+          ])
+        ]
+      ),
       "summary": .string("concise"),
       "threadId": .string(threadID),
     ]
@@ -565,7 +586,8 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     turnID: String,
     timeout: Duration = .seconds(60),
     reconciliationInterval: Duration = .seconds(2),
-    totalTimeout: Duration? = nil
+    totalTimeout: Duration? = nil,
+    ownerDecisionIsOutstanding: (@Sendable () async -> Bool)? = nil
   ) async throws -> String {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let messages = subscribeToInboundMessages(replayRecent: true)
@@ -676,7 +698,11 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               remaining = inactivityWindow
               continue
             }
-            if !(await isAwaitingApproval(threadID: threadID, turnID: turnID)) {
+            if !(await suspendsInactivity(
+              threadID: threadID,
+              turnID: turnID,
+              ownerDecisionIsOutstanding: ownerDecisionIsOutstanding
+            )) {
               remaining -= slice
             }
           }
@@ -896,11 +922,10 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       if let additionalPermissions = request.params["additionalPermissions"],
         additionalPermissions != .null
       {
-        detail = [
-          command,
-          "Additional access for this command:",
-          permissionDetail(additionalPermissions),
-        ].joined(separator: "\n\n")
+        detail =
+          command
+          + commandAdditionalAccessSeparator
+          + permissionDetail(additionalPermissions)
       } else {
         detail = command
       }
@@ -981,8 +1006,13 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     default:
       throw CodexApprovalError.unsupportedRequest(request.method)
     }
+    // The turn stays flagged as awaiting approval until this is cleared, and
+    // that flag suspends the inactivity timeout on the turn's wait. Clearing it
+    // only after a successful response means one failed delivery leaves the turn
+    // waiting with nothing left to time it out, which is a silent hang the owner
+    // sees as an agent that is working and never finishes.
+    defer { removePendingApproval(request) }
     try await transport.respond(id: request.id, result: result)
-    removePendingApproval(request)
   }
 
   public func rejectUnsupportedServerRequest(_ request: CodexServerRequest) async {
@@ -1162,6 +1192,29 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     !(pendingApprovalTurns["\(threadID)|\(turnID)"] ?? []).isEmpty
   }
 
+  /// Whether this turn may keep its inactivity timeout suspended.
+  ///
+  /// `pendingApprovalTurns` is transient operation state: it is this process's
+  /// record that a decision was asked for. Whether the product owner actually
+  /// owes one is durable domain state, and durable state is the authority.
+  ///
+  /// Two live runs proved why that distinction has to be enforced here rather
+  /// than assumed. Their turns finished, every permission request in their
+  /// database had reached a terminal status, and the board still reported a
+  /// working agent for the rest of the run — because a leaked entry in this map
+  /// suspended the only timeout that could have ended the wait. Suspension is
+  /// unbounded by design, since an owner may genuinely take an hour, so the
+  /// thing that grants it must be the thing that can be checked.
+  private func suspendsInactivity(
+    threadID: String,
+    turnID: String,
+    ownerDecisionIsOutstanding: (@Sendable () async -> Bool)?
+  ) async -> Bool {
+    guard isAwaitingApproval(threadID: threadID, turnID: turnID) else { return false }
+    guard let ownerDecisionIsOutstanding else { return true }
+    return await ownerDecisionIsOutstanding()
+  }
+
   private func removePendingApproval(_ request: CodexServerRequest) {
     let key = Self.approvalTurnKey(params: request.params)
     pendingApprovalTurns[key]?.remove(Self.requestKey(request.id))
@@ -1223,11 +1276,13 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         "additionalPermissions": params["additionalPermissions"] ?? .null,
       ])
     case "item/permissions/requestApproval":
-      let permissions = params["permissions"] ?? .object([:])
-      relevant =
-        AgentPermissionGrantPolicy.canonicalProductGrantValue(
-          for: permissions
-        ) ?? permissions
+      guard
+        let permissions = params["permissions"],
+        let canonical = AgentPermissionGrantPolicy.canonicalProductGrantValue(for: permissions)
+      else {
+        return nil
+      }
+      relevant = canonical
     default:
       return nil
     }
@@ -1237,11 +1292,39 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     return "\(method)|\(String(decoding: data, as: UTF8.self))"
   }
 
+  private nonisolated static let commandAdditionalAccessSeparator =
+    "\n\nAdditional access for this command:\n\n"
+
+  /// Splits a stored command-approval detail back into its exact command and
+  /// the additional access Codex bundled with it. The detail string is the
+  /// durable audit record, so presentation derives its sections from it
+  /// instead of storing a second representation.
+  public nonisolated static func commandApprovalSections(
+    fromDetail detail: String
+  ) -> (command: String, additionalAccess: String?) {
+    guard let range = detail.range(of: commandAdditionalAccessSeparator) else {
+      return (detail, nil)
+    }
+    let additionalAccess = String(detail[range.upperBound...])
+    return (
+      String(detail[..<range.lowerBound]),
+      additionalAccess.isEmpty ? nil : additionalAccess
+    )
+  }
+
   private nonisolated static func permissionDetail(_ value: JSONValue?) -> String {
     guard let value else { return "Codex requested access outside the ticket workspace." }
     var parts: [String] = []
-    if value["network"]?["enabled"]?.boolValue == true {
-      parts.append("Network access")
+    if let network = value["network"], network["enabled"]?.boolValue == true {
+      // The saved grant already distinguishes these. Wording them identically
+      // here asked the owner to allow full network access when the request was
+      // scoped, which is the wrong way round: the broader wording appeared
+      // where consent is given and the narrower one only where it is recorded.
+      parts.append(
+        AgentPermissionGrantPolicy.isUnrestrictedNetwork(network)
+          ? "Network access"
+          : "Restricted network access"
+      )
     }
     let entries = value["fileSystem"]?["entries"]?.arrayValue ?? []
     for entry in entries.prefix(4) {

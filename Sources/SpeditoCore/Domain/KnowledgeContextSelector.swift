@@ -100,7 +100,19 @@ public enum KnowledgeContextSelector {
 
     var references = mandatory
     var referenceIDs = mandatoryIDs
-    for page in direct + scored where references.count < max(mandatory.count, referenceLimit) {
+    // The canonical demo recipe for the ticket's contracted kind always
+    // reaches the run — it seeds the first turn of a new ticket, so delivery
+    // reuses the established recipe instead of re-deriving one.
+    if let contractedKind = item.demoKind?.presentationKind,
+      let recipePage = readable.first(where: {
+        $0.kind == .page && $0.slug == CanonicalDemoRecipeKnowledge.slug(for: contractedKind)
+      }),
+      referenceIDs.insert(recipePage.id).inserted
+    {
+      references.append(recipePage)
+    }
+    let referenceCap = max(references.count, referenceLimit)
+    for page in direct + scored where references.count < referenceCap {
       if referenceIDs.insert(page.id).inserted {
         references.append(page)
       }
@@ -113,6 +125,9 @@ public enum KnowledgeContextSelector {
           return isWithinDeliveryHistory(page, pagesByID: pagesByID) ? nil : page.id
         case .page:
           if page.slug == "ways-of-working" { return nil }
+          // The canonical demo recipe is derived from the accepted candidate
+          // at acceptance; no run may update it directly.
+          if CanonicalDemoRecipeKnowledge.kind(forSlug: page.slug) != nil { return nil }
           if page.slug == "environments" { return page.id }
           let isEmpty = KnowledgeMarkdown.normalizedBody(page.bodyMarkdown).isEmpty
           if isEmpty { return page.id }
@@ -249,6 +264,10 @@ public enum KnowledgeContextSelector {
       return "Product owner-approved team delivery practices only."
     case "known-limitations":
       return "Current caveats, unsupported cases, incidents, and recurring failure patterns."
+    case let slug where CanonicalDemoRecipeKnowledge.kind(forSlug: slug) != nil:
+      return
+        "The canonical demo recipe for this presentation kind, published at acceptance; "
+        + "reuse it and treat it as authoritative over README wording."
     default:
       return "Verified reusable knowledge within this page's existing subject."
     }

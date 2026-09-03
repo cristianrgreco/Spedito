@@ -228,7 +228,8 @@ struct SprintReportPresentationTests {
         workItemID: workItemID,
         profileID: profileID,
         status: .completed,
-        contextUsedTokens: 24_000,
+        contextUsedTokens: 12_000,
+        cumulativeUsedTokens: 24_000,
         activeDurationSeconds: 120
       ),
       AgentRun(
@@ -273,7 +274,7 @@ struct SprintReportPresentationTests {
       ).first
     )
     #expect(datum.plannedTokens == 40_000)
-    #expect(datum.reportedContextTokens == 24_000)
+    #expect(datum.reportedUsageTokens == 24_000)
     #expect(datum.cycleTime == 600)
     #expect(datum.activeAgentTime == 150)
     #expect(datum.outcomes == 1)
@@ -282,7 +283,7 @@ struct SprintReportPresentationTests {
     #expect(datum.acceptedImprovements == 1)
     #expect(
       SprintReportEvidenceMetric.allCases.map(\.title) == [
-        "Forecast and context",
+        "Forecast and usage",
         "Cycle time",
         "Delivered outcomes",
         "Correction cycles",
@@ -306,7 +307,7 @@ struct SprintReportPresentationTests {
     SprintReportDatum(
       sprintNumber: sprintNumber,
       plannedTokens: 0,
-      reportedContextTokens: nil,
+      reportedUsageTokens: nil,
       cycleTime: cycleTime,
       activeAgentTime: activeAgentTime,
       outcomes: outcomes,

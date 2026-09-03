@@ -605,8 +605,8 @@ struct CodexTransportApplicationTests {
     await recoveredModel.reload()
     await recoveredModel.restoreEpicPlanningConversation(for: epic)
 
-    #expect(recoveredModel.epicPlanningConversation?.messages == storedConversation.messages)
-    #expect(recoveredModel.epicPlanningConversation?.questions == [pendingQuestion])
+    #expect(recoveredModel.epicPlanningConversation(for: epic.id)?.messages == storedConversation.messages)
+    #expect(recoveredModel.epicPlanningConversation(for: epic.id)?.questions == [pendingQuestion])
     #expect(!recoveredModel.isEpicConversationMessageRunning)
     #expect(recoveredModel.epicConversationEpicID == nil)
 
@@ -883,6 +883,108 @@ struct CodexTransportApplicationTests {
         result: .object(["rateLimits": .object([:])])
       ),
     ]
+  }
+
+  @Test("A refinement that completes without questions resolves the ticket question")
+  func refinementCompletionResolvesTicketQuestion() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "spedito-refinement-resolve-\(UUID())",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let workspaces = root.appendingPathComponent("workspaces", isDirectory: true)
+    try FileManager.default.createDirectory(at: workspaces, withIntermediateDirectories: true)
+    let registry = try ProductStoreRegistry(productWorkspacesRootURL: workspaces)
+    let product = try await registry.createProduct(name: "Question resolution")
+    let store = try #require(registry.store(for: product.id))
+    let profiles = try await store.seedDefaultProfiles(productID: product.id)
+    let analyst = try #require(profiles.first { $0.role == .businessAnalyst })
+    let item = try await store.createWorkItem(
+      productID: product.id,
+      title: "Clarify the retention boundary"
+    )
+    _ = try await store.appendComment(
+      workItemID: item.id,
+      authorKind: .agent,
+      authorName: analyst.name,
+      body: "I need one decision before completing refinement.",
+      ownerQuestion: TicketOwnerQuestion(
+        prompt: "Where should saved searches be retained?",
+        options: ["On this Mac", "In the repository"]
+      )
+    )
+    let questionRow = OwnerNotification(
+      productID: product.id,
+      kind: .needsInput,
+      target: OwnerNotificationTarget(kind: .ticket, id: item.id),
+      title: "\(item.key) needs your input",
+      body: "Where should saved searches be retained?"
+    )
+    #expect(try await store.createOwnerNotification(questionRow))
+    let transport = ScriptedCodexTransport(
+      responses: Self.connectionResponses()
+        + [
+          .init(
+            method: "thread/start",
+            result: .object(["thread": .object(["id": .string("thread-resolve")])])
+          ),
+          .init(
+            method: "turn/start",
+            result: .object(["turn": .object(["id": .string("turn-resolve")])])
+          ),
+        ]
+    )
+    let model = Self.makeModel(
+      registry: registry,
+      selectedProductID: product.id,
+      transport: transport
+    )
+    await model.load()
+    // The load sweep keeps the unanswered question: its wait still exists.
+    #expect(
+      try await store.fetchActiveOwnerNotifications(productID: product.id)
+        .map(\.id) == [questionRow.id]
+    )
+
+    let refinementTask = Task { @MainActor in
+      try await model.refineTicket(item)
+    }
+    await transport.waitForRequest("turn/start")
+    await transport.emit(
+      Self.completedTurn(
+        threadID: "thread-resolve",
+        turnID: "turn-resolve",
+        text: #"""
+          {
+            "message": "Refinement is complete.",
+            "proposal": {
+              "baseVersion": \#(item.version),
+              "title": "Retain saved searches on this Mac",
+              "type": "\#(item.type.rawValue)",
+              "body": "Saved searches stay local to this Mac.",
+              "acceptanceCriteria": ["A saved search survives relaunch"],
+              "priority": "normal",
+              "role": "business_analyst",
+              "rationale": "The owner decision is applied.",
+              "dependencies": [],
+              "potentialDuplicates": [],
+              "splitRecommendation": null,
+              "missingQuestions": []
+            }
+          }
+          """#
+      )
+    )
+    _ = try await refinementTask.value
+
+    let active = try await store.fetchActiveOwnerNotifications(productID: product.id)
+      .filter { $0.target == OwnerNotificationTarget(kind: .ticket, id: item.id) }
+    #expect(active.map(\.kind) == [.refinementComplete])
+
+    await model.shutdown()
+    for productStore in registry.allStores {
+      await productStore.close()
+    }
   }
 
   private static func makeModel(

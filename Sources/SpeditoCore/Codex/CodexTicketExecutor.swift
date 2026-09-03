@@ -86,6 +86,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
   public let reviewInstructions: [String]
   public let decisionArtifact: TicketDecisionArtifact?
   public let demo: DemoLaunchSpecification?
+  public let proposedDemoKind: TicketDemoKind?
   public let retrospectiveWentWell: [String]
   public let retrospectiveCouldImprove: [String]
   public let retrospectiveActions: [RetrospectiveActionProposal]
@@ -104,6 +105,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     reviewInstructions: [String],
     decisionArtifact: TicketDecisionArtifact? = nil,
     demo: DemoLaunchSpecification? = nil,
+    proposedDemoKind: TicketDemoKind? = nil,
     retrospectiveWentWell: [String],
     retrospectiveCouldImprove: [String],
     retrospectiveActions: [RetrospectiveActionProposal],
@@ -121,6 +123,7 @@ public struct TicketExecutionResult: Codable, Equatable, Sendable {
     self.reviewInstructions = reviewInstructions
     self.decisionArtifact = decisionArtifact
     self.demo = demo
+    self.proposedDemoKind = proposedDemoKind
     self.retrospectiveWentWell = retrospectiveWentWell
     self.retrospectiveCouldImprove = retrospectiveCouldImprove
     self.retrospectiveActions = retrospectiveActions
@@ -249,7 +252,9 @@ public enum TicketDecisionArtifactValidator {
   }
 }
 
-public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError, Sendable {
+public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError,
+  OwnerFacingFailure, Sendable
+{
   case invalidResponse(String)
 
   public var errorDescription: String? {
@@ -257,6 +262,13 @@ public enum TicketExecutionGenerationError: Error, Equatable, LocalizedError, Se
     case .invalidResponse(let detail):
       "The delivery agent returned an invalid execution result: \(detail)"
     }
+  }
+
+  /// The owner cannot act on what was wrong with the result, only on the fact
+  /// that the work needs another attempt. The detail stays in the work log,
+  /// where the team member's own account of it belongs.
+  public var ownerFacingDescription: String {
+    "The team member's work could not be used as delivered. Retry the work to have them try again."
   }
 }
 
@@ -303,7 +315,8 @@ public enum CodexTicketExecutor {
     savedPermissionGrants: [AgentPermissionGrant] = []
   ) -> String {
     let lifecycle = CodexLifecycleGuidance.ticketDeliveryInstructions(
-      mode: CodexTicketDeliveryMode(assignee: assignee)
+      mode: CodexTicketDeliveryMode(assignee: assignee),
+      role: assignee.role
     )
     return """
       \(lifecycle)
@@ -453,6 +466,8 @@ public enum CodexTicketExecutor {
       Acceptance criteria:
       \(criteria)
 
+      \(demoKindContractContext(item, deliveryDemoPolicy: DeliveryDemoPolicy(assignee: assignee, item: item)))
+
       Completed prerequisite context:
       \(dependencyContext)
 
@@ -493,7 +508,9 @@ public enum CodexTicketExecutor {
     reviewer: AgentProfile,
     feedback: String,
     recentComments: [TicketComment],
-    adoptedBaseline: TicketRevisionBaseline? = nil
+    adoptedBaseline: TicketRevisionBaseline? = nil,
+    pinnedDemoRecipe: DemoLaunchSpecification? = nil,
+    deliveryDemoPolicy: DeliveryDemoPolicy = .anyKind
   ) -> String {
     let history =
       recentComments
@@ -513,6 +530,9 @@ public enum CodexTicketExecutor {
       Workspace baseline:
       \(adoptedBaseline?.promptContext ?? "The ticket workspace remains on the immutable candidate reviewed above.")
 
+      \(demoKindContractContext(item, deliveryDemoPolicy: deliveryDemoPolicy))
+
+      \(demoRecipePinContext(pinnedDemoRecipe))
 
       A review finding that asks for missing evidence remains implementation work.
       \(CodexLifecycleGuidance.failedCheckRecovery)
@@ -523,12 +543,83 @@ public enum CodexTicketExecutor {
       """
   }
 
+  /// Prompt context for the ticket's owner-approved review medium. The
+  /// contract is also enforced by the narrowed result schema; stating it
+  /// stops the turn from re-deriving a decision the plan already closed. A
+  /// pre-contract ticket whose delivery policy still contracts one kind (a
+  /// design ticket promising a prototype) states that derived medium for the
+  /// same reason; `.anyKind` renders only the stored contract.
+  static func demoKindContractContext(
+    _ item: WorkItem,
+    deliveryDemoPolicy: DeliveryDemoPolicy
+  ) -> String {
+    guard let contract = item.demoKind else {
+      if let derived = deliveryDemoPolicy.contractedKind,
+        let medium = TicketDemoKind(rawValue: derived.rawValue)
+      {
+        return """
+          Review medium contract: none was approved at planning, but this design ticket promises a
+          reviewable prototype, so its review medium is \(medium.rawValue) —
+          \(medium.ownerFacingReviewMediumClause). The demo recipe must use exactly this kind; the
+          result schema admits no other. If this medium is genuinely wrong for the delivered
+          outcome, return awaiting_owner with one question and proposedDemoKind instead of working
+          around it.
+          """
+      }
+      return """
+        Review medium contract: none was approved at planning. Decide the demo kind under the demo
+        guidance in your developer instructions.
+        """
+    }
+    if contract == .codeOnly {
+      return """
+        Review medium contract: the product owner approved this ticket as a code change with no
+        demo. Return a null demo and record the outcome in the completion handoff. If you conclude
+        a demo is genuinely required, return awaiting_owner with one question and proposedDemoKind.
+        """
+    }
+    return """
+      Review medium contract: the product owner approved reviewing this ticket as
+      \(contract.rawValue) — \(contract.ownerFacingReviewMediumClause). The demo recipe must
+      use exactly this kind; the result schema admits no other. If this medium is genuinely wrong
+      for the delivered outcome, return awaiting_owner with one question and proposedDemoKind
+      instead of working around it. When your verified knowledge context contains the canonical
+      demo recipe page for this kind, reuse that exact recipe; extend it only if this ticket adds
+      a new surface, and say so in the completion handoff.
+      """
+  }
+
+  /// Prompt context for a turn whose demo contract is pinned. The pin is also
+  /// enforced after the turn, but stating it stops the model from wasting the
+  /// turn re-deriving the recipe or rewriting documentation against a demo it
+  /// is not allowed to change.
+  static func demoRecipePinContext(_ recipe: DemoLaunchSpecification?) -> String {
+    guard let recipe else {
+      return "Demo recipe contract: decided by this turn under the demo guidance in your developer instructions."
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let json =
+      (try? encoder.encode(recipe)).flatMap { String(data: $0, encoding: .utf8) }
+      ?? "{\"title\": \"\(recipe.title)\", \"presentation\": {\"kind\": \"\(recipe.presentation.kind.rawValue)\"}}"
+    return """
+      Demo recipe contract:
+      The feedback for this turn does not request a demo change, so the validated demo recipe from
+      your previous candidate is carried forward unchanged. Return exactly this demo object in your
+      structured result, and keep documentation and review instructions consistent with it. Spedito
+      replaces a different demo in this turn's result with this pinned recipe:
+      \(json)
+      """
+  }
+
   public static func recoveryPrompt(
     item: WorkItem,
     interruptedPermission: AgentPermissionRequest?,
     recentComments: [TicketComment] = [],
     conversationIsAvailable: Bool = true,
-    adoptedBaseline: TicketRevisionBaseline? = nil
+    adoptedBaseline: TicketRevisionBaseline? = nil,
+    pinnedDemoRecipe: DemoLaunchSpecification? = nil,
+    deliveryDemoPolicy: DeliveryDemoPolicy = .anyKind
   ) -> String {
     let conversationContext =
       if conversationIsAvailable {
@@ -566,6 +657,10 @@ public enum CodexTicketExecutor {
       Workspace baseline:
       \(adoptedBaseline?.promptContext ?? "Spedito has not changed the ticket workspace baseline for this continuation.")
 
+      \(demoKindContractContext(item, deliveryDemoPolicy: deliveryDemoPolicy))
+
+      \(demoRecipePinContext(pinnedDemoRecipe))
+
       \(permissionContext)
 
       Recent ticket work log:
@@ -579,28 +674,46 @@ public enum CodexTicketExecutor {
 
   public static func repairPrompt(validationError: String) -> String {
     """
-    Your previous execution result could not be accepted:
+    Your previous structured execution result was rejected:
     \(validationError)
 
-    Continue the authorised ticket work in the existing workspace. Do not merely rewrite the JSON
-    or describe work you intend to do. Complete the ticket's actual durable outcome, run at least
-    one relevant check, and provide specific product owner review instructions that refer only to
-    evidence that now exists. Research may persist its outcome in the completion handoff and
-    proposed product knowledge without creating a repository file solely as delivery evidence.
-    Product-changing work must still leave its inspectable repository changes and managed demo.
-    If a material product owner decision, credential, secret, or external service prevents completion
-    after handling any required scoped capability, return awaiting_owner instead. A missing
-    sandbox filesystem or network capability is not an unavailable external dependency: use the
-    available `request_permissions` tool rather than asking the product owner to restore, enable,
-    add, or confirm access in an ordinary work log question. For awaiting_owner, return one question
-    and two to four options, empty knowledgePageProposals and followUpTicketProposals, and a null
-    demo. Put any existing workspace evidence needed for the decision in decisionArtifact; do not
-    turn an undecided outcome into a product knowledge proposal. Return only the JSON required by
+    Correct only the rejected result contract against the evidence already present in the existing
+    workspace. Preserve completed work, recorded checks, and the current demo artefacts. Do not
+    reinspect the repository, edit files, or rerun a successful check merely to repair a field,
+    nullable value, enum, or relationship in the result envelope. If the error identifies genuinely
+    missing or invalid workspace evidence, perform only that missing work and its narrow verification.
+    Never invent a check or artefact.
+
+    For a demo recipe error, re-select the presentation kind that matches the existing owner-facing
+    evidence, then follow that kind's exact shape from the demo guidance in your developer
+    instructions, emitting the presentation object and its kind before every other recipe field.
+    Never return a placeholder value or change to an unrelated presentation merely to fill fields.
+    A reviewed workspace directory that already contains index.html and needs no product-owned backend
+    is static_web, not artifact or command_output. A built .app bundle is mac_application, whose
+    launchCommand, port, and readiness are null; preparation commands may build the bundle and
+    Spedito opens it itself. An existing inert reviewable file — a PDF, image, Markdown, text, or
+    data file, such as a delivered visual screen set — is artifact, whose commands, port, and
+    readiness are all null or empty. A browser recipe is only for a real product-owned foreground service
+    whose readiness and presentation paths begin with "/"; a no-op placeholder such as true is not a
+    service, and a page directory with no product-owned backend is static_web. An interactive
+    terminal program is terminal_application, whose launchCommand names the built workspace-relative
+    executable and whose path, port, and readiness are null; a command run once for its printed
+    result is command_output. Every launch or preparation executable
+    must be the real non-shell executable or an executable workspace script; sh, bash, zsh, osascript,
+    pipelines, redirection, compound commands, and empty command fields are invalid.
+
+    Research may persist its outcome in the completion handoff and proposed product knowledge without
+    creating a repository file solely as delivery evidence. Product-changing work must still reference
+    its existing inspectable repository changes and a valid managed demo. If a material product owner
+    decision, credential, secret, or external service prevents completion after scoped capability
+    handling, return awaiting_owner. A missing sandbox capability must use `request_permissions`, not an
+    ordinary owner question. For awaiting_owner, return one question and two to four options, empty
+    knowledgePageProposals and followUpTicketProposals, and a null demo. Return only the JSON required by
     the supplied schema.
     """
   }
 
-  public static var outputSchema: JSONValue {
+  public static func outputSchema(deliveryDemoPolicy: DeliveryDemoPolicy) -> JSONValue {
     .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -616,6 +729,7 @@ public enum CodexTicketExecutor {
         .string("reviewInstructions"),
         .string("decisionArtifact"),
         .string("demo"),
+        .string("proposedDemoKind"),
         .string("retrospectiveWentWell"),
         .string("retrospectiveCouldImprove"),
         .string("retrospectiveActions"),
@@ -669,7 +783,22 @@ public enum CodexTicketExecutor {
           "items": .object(["type": .string("string")]),
         ]),
         "decisionArtifact": nullableDecisionArtifactSchema,
-        "demo": nullableDemoLaunchSpecificationSchema,
+        "demo": nullableDemoLaunchSpecificationSchema(
+          deliveryDemoPolicy: deliveryDemoPolicy
+        ),
+        "proposedDemoKind": .object([
+          "description": .string(
+            "Only when awaiting_owner contests the ticket's contracted review medium: "
+              + "the demo kind this delivery believes correct. Null otherwise."
+          ),
+          "anyOf": .array([
+            .object([
+              "type": .string("string"),
+              "enum": .array(TicketDemoKind.allCases.map { .string($0.rawValue) }),
+            ]),
+            .object(["type": .string("null")]),
+          ]),
+        ]),
         "retrospectiveWentWell": .object([
           "type": .string("array"),
           "items": .object(["type": .string("string")]),
@@ -733,7 +862,10 @@ public enum CodexTicketExecutor {
     ])
   }
 
-  public static func decode(_ text: String) throws -> TicketExecutionResult {
+  public static func decode(
+    _ text: String,
+    pinnedDemoRecipe: DemoLaunchSpecification? = nil
+  ) throws -> TicketExecutionResult {
     guard let data = text.data(using: .utf8) else {
       throw TicketExecutionGenerationError.invalidResponse("The response was not UTF-8.")
     }
@@ -743,6 +875,16 @@ public enum CodexTicketExecutor {
     } catch {
       throw TicketExecutionGenerationError.invalidResponse(error.localizedDescription)
     }
+    // The carried-forward contract replaces the turn's demo before the demo is
+    // validated, so a turn that re-decided a demo it was not asked to touch
+    // neither burns a repair turn nor fails a hard-stop. A result awaiting the
+    // owner keeps its contractual null demo.
+    let demo =
+      if let pinnedDemoRecipe, generated.status == .completed {
+        pinnedDemoRecipe
+      } else {
+        generated.demo
+      }
 
     let comment = generated.comment.trimmingCharacters(in: .whitespacesAndNewlines)
     let question = generated.question?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -780,6 +922,10 @@ public enum CodexTicketExecutor {
       throw TicketExecutionGenerationError.invalidResponse(
         "Completed results must use their managed demo rather than decisionArtifact."
       )
+    } else if generated.proposedDemoKind != nil {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "Only an awaiting_owner result may propose changing the contracted demo kind."
+      )
     }
     let summary = generated.summary.trimmingCharacters(in: .whitespacesAndNewlines)
     let changedFiles = clean(generated.changedFiles)
@@ -815,7 +961,7 @@ public enum CodexTicketExecutor {
     if reviewInstructions.count > 6 {
       reviewInstructions = Array(reviewInstructions.prefix(6))
     }
-    if let demo = generated.demo {
+    if let demo {
       do {
         try DemoLaunchSpecificationValidator.validate(demo)
       } catch {
@@ -872,7 +1018,8 @@ public enum CodexTicketExecutor {
       knowledgeNotes: clean(generated.knowledgeNotes),
       reviewInstructions: reviewInstructions,
       decisionArtifact: decisionArtifact,
-      demo: generated.demo,
+      demo: demo,
+      proposedDemoKind: generated.proposedDemoKind,
       retrospectiveWentWell: Array(clean(generated.retrospectiveWentWell).prefix(2)),
       retrospectiveCouldImprove: Array(clean(generated.retrospectiveCouldImprove).prefix(2)),
       retrospectiveActions: cleanActions(generated.retrospectiveActions),
@@ -1003,7 +1150,9 @@ public enum CodexTicketExecutor {
     ])
   }
 
-  static var demoLaunchSpecificationSchema: JSONValue {
+  static func demoLaunchSpecificationSchema(
+    deliveryDemoPolicy: DeliveryDemoPolicy
+  ) -> JSONValue {
     let command = JSONValue.object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
@@ -1014,13 +1163,23 @@ public enum CodexTicketExecutor {
         .string("timeoutSeconds"),
       ]),
       "properties": .object([
-        "executable": .object(["type": .string("string")]),
+        "executable": .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string(
+            "One executable path or name. Shells and AppleScript are invalid."
+          ),
+        ]),
         "arguments": .object([
           "type": .string("array"),
           "maxItems": .integer(64),
           "items": .object(["type": .string("string")]),
         ]),
-        "workingDirectory": .object(["type": .string("string")]),
+        "workingDirectory": .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string("A workspace-relative directory."),
+        ]),
         "timeoutSeconds": .object([
           "type": .string("integer"),
           "minimum": .integer(1),
@@ -1028,97 +1187,242 @@ public enum CodexTicketExecutor {
         ]),
       ]),
     ])
-    let nullableString = JSONValue.object([
-      "anyOf": .array([
-        .object(["type": .string("string")]),
-        .object(["type": .string("null")]),
-      ])
+    // The terminal app launch command is the reviewed program itself, so its
+    // executable description names the validator's workspace-relative rule;
+    // the rule stays a validator hard-stop, never a schema pattern.
+    let terminalProgramCommand: JSONValue = {
+      guard
+        case .object(var properties) = command,
+        case .object(var commandProperties)? = properties["properties"],
+        case .object(var executable)? = commandProperties["executable"]
+      else { return command }
+      executable["description"] = .string(
+        "The built program the product owner drives, as a workspace-relative path containing "
+          + "\"/\" such as bin/your-program. Never a bare tool name such as go, python3, or sh."
+      )
+      commandProperties["executable"] = .object(executable)
+      properties["properties"] = .object(commandProperties)
+      return .object(properties)
+    }()
+    let string = JSONValue.object([
+      "type": .string("string"),
+      "minLength": .integer(1),
     ])
-    let nullableCommand = JSONValue.object([
-      "anyOf": .array([
-        command,
-        .object(["type": .string("null")]),
-      ])
+    let null = JSONValue.object(["type": .string("null")])
+    let nullableString = JSONValue.object(["anyOf": .array([string, null])])
+    // Path rules stay in `DemoLaunchSpecificationValidator`, not in schema
+    // `pattern` constraints: three live iterations of patterned paths were
+    // rejected 2026-08-29 because constrained decoding then fabricates
+    // conforming-but-false paths and mis-selects kinds. The branch
+    // descriptions state the validator's rule; the validator hard-stops
+    // inside the turn where repairs are cheap.
+    let loopbackPath = JSONValue.object([
+      "type": .string("string"),
+      "description": .string("A loopback URL path beginning with \"/\"; no scheme or host."),
     ])
-    let readiness = JSONValue.object([
-      "type": .string("object"),
-      "additionalProperties": .bool(false),
-      "required": .array([
-        .string("kind"),
-        .string("path"),
-        .string("timeoutSeconds"),
-      ]),
-      "properties": .object([
-        "kind": .object([
+    let nullableLoopbackPath = JSONValue.object([
+      "anyOf": .array([loopbackPath, null])
+    ])
+    let preparationCommands = JSONValue.object([
+      "type": .string("array"),
+      "maxItems": .integer(6),
+      "items": command,
+    ])
+    let noCommands = JSONValue.object([
+      "type": .string("array"),
+      "maxItems": .integer(0),
+      "items": command,
+    ])
+
+    func readiness(kind: DemoReadinessKind) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([
+          .string("kind"),
+          .string("path"),
+          .string("timeoutSeconds"),
+        ]),
+        "properties": .object([
+          "kind": .object([
+            "type": .string("string"),
+            "enum": .array([.string(kind.rawValue)]),
+          ]),
+          "path": kind == .http ? nullableLoopbackPath : null,
+          "timeoutSeconds": .object([
+            "type": .string("integer"),
+            "minimum": .integer(1),
+            "maximum": .integer(120),
+          ]),
+        ]),
+      ])
+    }
+
+    func presentation(kind: DemoPresentationKind, path: JSONValue) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([.string("kind"), .string("path")]),
+        "properties": .object([
+          "kind": .object([
+            "type": .string("string"),
+            "enum": .array([.string(kind.rawValue)]),
+          ]),
+          "path": path,
+        ]),
+      ])
+    }
+
+    func specification(
+      preparation: JSONValue,
+      launch: JSONValue,
+      port: JSONValue,
+      readiness readinessSchema: JSONValue,
+      presentation presentationSchema: JSONValue
+    ) -> JSONValue {
+      .object([
+        "type": .string("object"),
+        "additionalProperties": .bool(false),
+        "required": .array([
+          .string("schemaVersion"),
+          .string("title"),
+          .string("preparationCommands"),
+          .string("launchCommand"),
+          .string("portEnvironmentVariable"),
+          .string("readiness"),
+          .string("presentation"),
+        ]),
+        "properties": .object([
+          "schemaVersion": .object([
+            "type": .string("integer"),
+            "enum": .array([.integer(1)]),
+          ]),
+          "title": .object([
+            "type": .string("string"),
+            "minLength": .integer(1),
+          ]),
+          "preparationCommands": preparation,
+          "launchCommand": launch,
+          "portEnvironmentVariable": port,
+          "readiness": readinessSchema,
+          "presentation": presentationSchema,
+        ]),
+      ])
+    }
+
+    let browser = specification(
+      preparation: preparationCommands,
+      launch: command,
+      port: nullableString,
+      readiness: readiness(kind: .http),
+      presentation: presentation(kind: .browser, path: nullableLoopbackPath)
+    )
+    let staticWeb = specification(
+      preparation: noCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .staticWeb,
+        path: .object([
           "type": .string("string"),
-          "enum": .array(DemoReadinessKind.allCases.map { .string($0.rawValue) }),
-        ]),
-        "path": nullableString,
-        "timeoutSeconds": .object([
-          "type": .string("integer"),
-          "minimum": .integer(1),
-          "maximum": .integer(120),
-        ]),
-      ]),
-    ])
-    let specification = JSONValue.object([
-      "type": .string("object"),
-      "additionalProperties": .bool(false),
-      "required": .array([
-        .string("schemaVersion"),
-        .string("title"),
-        .string("preparationCommands"),
-        .string("launchCommand"),
-        .string("portEnvironmentVariable"),
-        .string("readiness"),
-        .string("presentation"),
-      ]),
-      "properties": .object([
-        "schemaVersion": .object([
-          "type": .string("integer"),
-          "enum": .array([.integer(1)]),
-        ]),
-        "title": .object(["type": .string("string")]),
-        "preparationCommands": .object([
-          "type": .string("array"),
-          "maxItems": .integer(6),
-          "items": command,
-        ]),
-        "launchCommand": nullableCommand,
-        "portEnvironmentVariable": nullableString,
-        "readiness": .object([
-          "anyOf": .array([
-            readiness,
-            .object(["type": .string("null")]),
-          ])
-        ]),
-        "presentation": .object([
-          "type": .string("object"),
-          "additionalProperties": .bool(false),
-          "required": .array([
-            .string("kind"),
-            .string("path"),
-          ]),
-          "properties": .object([
-            "kind": .object([
-              "type": .string("string"),
-              "enum": .array(DemoPresentationKind.allCases.map { .string($0.rawValue) }),
-            ]),
-            "path": nullableString,
-          ]),
-        ]),
-      ]),
-    ])
-    return specification
+          "minLength": .integer(1),
+          "description": .string(
+            "Workspace-relative non-root directory containing index.html; Spedito serves it."
+          ),
+        ])
+      )
+    )
+    let macApplication = specification(
+      preparation: preparationCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .macApplication,
+        path: .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string(
+            "Workspace-relative built .app bundle path ending in .app."
+          ),
+        ])
+      )
+    )
+    let artifact = specification(
+      preparation: noCommands,
+      launch: null,
+      port: null,
+      readiness: null,
+      presentation: presentation(
+        kind: .artifact,
+        path: .object([
+          "type": .string("string"),
+          "minLength": .integer(1),
+          "description": .string(
+            "Workspace-relative existing inert file; accepted extensions: "
+              + DemoArtifactPolicy.allowedExtensions.sorted().joined(separator: ", ")
+              + "."
+          ),
+        ])
+      )
+    )
+    let commandOutput = specification(
+      preparation: preparationCommands,
+      launch: command,
+      port: null,
+      readiness: null,
+      presentation: presentation(kind: .commandOutput, path: null)
+    )
+    let terminalApplication = specification(
+      preparation: preparationCommands,
+      launch: terminalProgramCommand,
+      port: null,
+      readiness: null,
+      presentation: presentation(kind: .terminalApplication, path: null)
+    )
+    func branch(for kind: DemoPresentationKind) -> JSONValue {
+      switch kind {
+      case .browser: browser
+      case .staticWeb: staticWeb
+      case .macApplication: macApplication
+      case .artifact: artifact
+      case .commandOutput: commandOutput
+      case .terminalApplication: terminalApplication
+      }
+    }
+    let admittedKinds: [JSONValue] =
+      switch deliveryDemoPolicy {
+      case .anyKind:
+        [browser, staticWeb, macApplication, artifact, commandOutput, terminalApplication]
+      case .contracted(let kind): [branch(for: kind)]
+      case .codeOnly: []
+      }
+    guard !admittedKinds.isEmpty else {
+      // A code-only contract admits no recipe at all; the nullable wrapper
+      // below is the only caller that should reach this policy.
+      return JSONValue.object(["type": .string("null")])
+    }
+    return .object(["anyOf": .array(admittedKinds)])
   }
 
-  private static var nullableDemoLaunchSpecificationSchema: JSONValue {
-    .object([
+  private static func nullableDemoLaunchSpecificationSchema(
+    deliveryDemoPolicy: DeliveryDemoPolicy
+  ) -> JSONValue {
+    if deliveryDemoPolicy == .codeOnly {
+      return .object([
+        "description": .string(
+          "This ticket's contract is code-only work with no demo. Always null."
+        ),
+        "type": .string("null"),
+      ])
+    }
+    return .object([
       "description": .string(
         "Managed review recipe for a completed candidate. Must be null for awaiting_owner."
       ),
       "anyOf": .array([
-        demoLaunchSpecificationSchema,
+        demoLaunchSpecificationSchema(deliveryDemoPolicy: deliveryDemoPolicy),
         .object(["type": .string("null")]),
       ]),
     ])
@@ -1311,6 +1615,7 @@ private struct GeneratedTicketExecutionResult: Codable {
   let reviewInstructions: [String]
   let decisionArtifact: TicketDecisionArtifact?
   let demo: DemoLaunchSpecification?
+  let proposedDemoKind: TicketDemoKind?
   let retrospectiveWentWell: [String]
   let retrospectiveCouldImprove: [String]
   let retrospectiveActions: [RetrospectiveActionProposal]
@@ -1580,6 +1885,9 @@ public enum CodexTechLeadReviewer {
       Managed demo recipe:
       \(demoRecipe)
 
+      Contracted review medium:
+      \(reviewMediumContractContext(item))
+
       Proposed durable knowledge:
       \(implementation.knowledgeNotes.map { "- \($0)" }.joined(separator: "\n"))
 
@@ -1589,9 +1897,10 @@ public enum CodexTechLeadReviewer {
       Candidate-bound product knowledge lifecycle:
       - The proposal records above belong to the exact candidate revision under review. Review their
         complete proposed Markdown and candidate-captured base snapshots as delivery evidence.
-      - `agent_verified_knowledge` contains accepted canonical knowledge only. It is expected to remain
-        unchanged while these proposals are under review. Do not require a pending proposal to be
-        published there, or duplicated in an ordinary repository document, before approval.
+      - The verified product knowledge store contains accepted canonical knowledge only. It is
+        expected to remain unchanged while these proposals are under review. Do not require a pending
+        proposal to be published there, or duplicated in an ordinary repository document, before
+        approval.
       - Tech lead approval makes an accurate proposal eligible for candidate materialization. The
         reviewed Markdown becomes canonical product knowledge only when the product owner accepts the
         ticket. A missing, materially inaccurate, or destructive proposal may still block approval.
@@ -1609,6 +1918,33 @@ public enum CodexTechLeadReviewer {
       browse external sources, or request permissions. Treat a materially inaccurate canonical
       knowledge proposal as a blocker; minor incompleteness can be noted without preventing
       demonstration.
+      """
+  }
+
+  /// The owner-approved demo kind as review context. The contract, not the
+  /// reviewer's preference, decides the kind: a recipe that breaks the
+  /// contract is a material finding, and a kind demand with no contract
+  /// behind it is taste, which the review threshold already excludes.
+  static func reviewMediumContractContext(_ item: WorkItem) -> String {
+    guard let contract = item.demoKind else {
+      return """
+        No review medium contract is stored for this ticket. Assess the supplied recipe against the
+        delivered outcome under the demo policy above; do not demand a different kind on preference.
+        """
+    }
+    if contract == .codeOnly {
+      return """
+        The product owner approved this ticket as a code change with no demo. A null demo is the
+        contracted result; do not require a recipe. A supplied recipe contradicts the contract and
+        is a material finding.
+        """
+    }
+    return """
+      The product owner approved reviewing this ticket as \(contract.rawValue) —
+      \(contract.ownerFacingReviewMediumClause). Check the candidate's recipe against this
+      contract: a recipe of another kind is a material contract mismatch. Do not request a
+      different kind than the contract on preference; a genuinely wrong contract is the delivery
+      specialist's awaiting_owner decision, not a review finding.
       """
   }
 

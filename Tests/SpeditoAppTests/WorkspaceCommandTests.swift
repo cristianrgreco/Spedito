@@ -44,7 +44,7 @@ struct WorkspaceCommandTests {
       WorkspaceCommand.allCases.map(\.title) == [
         "Backlog",
         "Sprint board",
-        "App versions",
+        "Demos",
         "Retrospectives",
         "Reports",
         "Product knowledge",

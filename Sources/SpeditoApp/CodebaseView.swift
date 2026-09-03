@@ -747,7 +747,10 @@ enum CodebaseHistoryFilter {
   ) -> [GitCommitSummary] {
     switch scope {
     case .trunk:
-      return snapshot.commits.filter(\.isOnTrunk)
+      let supersededIntegrationSHAs = supersededIntegrationSHAs(in: revisions)
+      return snapshot.commits.filter {
+        $0.isOnTrunk && !supersededIntegrationSHAs.contains($0.sha)
+      }
     case .allActivity:
       return snapshot.commits
     case .ticket(let workItemID):
@@ -768,6 +771,31 @@ enum CodebaseHistoryFilter {
       }
       return snapshot.commits.filter { includedSHAs.contains($0.sha) }
     }
+  }
+
+  /// Integration merges from candidate versions that a later revision replaced.
+  /// A superseded integration stays in trunk ancestry for audit history, but the
+  /// trunk scope shows only each ticket's current integration.
+  private static func supersededIntegrationSHAs(
+    in revisions: [CodebaseTicketRevision]
+  ) -> Set<String> {
+    let latestVersions = Dictionary(
+      revisions.map { ($0.workItemID, $0.version) },
+      uniquingKeysWith: max
+    )
+    let currentIntegrationSHAs = Set(
+      revisions.compactMap { revision in
+        revision.version == latestVersions[revision.workItemID]
+          ? revision.integratedSHA
+          : nil
+      }
+    )
+    let supersededSHAs = revisions.compactMap { revision in
+      revision.version == latestVersions[revision.workItemID]
+        ? nil
+        : revision.integratedSHA
+    }
+    return Set(supersededSHAs).subtracting(currentIntegrationSHAs)
   }
 
   static func associatedRevision(

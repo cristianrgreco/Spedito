@@ -44,7 +44,19 @@ jobs:
             git show --check --format= HEAD
           fi
 
+      # The sandbox profile contract can only be proven against a real Codex
+      # runtime. Without one the guard fails rather than skips, because a
+      # skipping guard is what let a fully broken sandbox pass CI for weeks.
+      - name: Install Codex runtime
+        shell: bash
+        run: |
+          brew install --quiet --cask codex
+          test -x /opt/homebrew/bin/codex
+          /opt/homebrew/bin/codex --version
+
       - name: Run test suite
+        env:
+          SPEDITO_CODEX_PATH: /opt/homebrew/bin/codex
         run: |
           env \
             SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \

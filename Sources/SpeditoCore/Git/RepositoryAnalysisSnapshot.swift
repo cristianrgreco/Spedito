@@ -29,11 +29,18 @@ public struct RepositorySourcePathPolicy: Sendable {
     return true
   }
 
-  public func validate(
+  /// Checks a cited evidence path against the sanitized snapshot and returns the citation with
+  /// its line range bounded to the file.
+  ///
+  /// A path outside the snapshot stays a hard failure: it means the analysis reached beyond the
+  /// evidence it was given. A line range is only a pointer into a file the analyzer was already
+  /// shown in full, so a range that runs past the end of an available file is narrowed to what
+  /// the file contains rather than discarding the whole analysis.
+  public func normalized(
     evidence: RepositoryEvidence,
     snapshotURL: URL,
     allowedPaths: Set<String>
-  ) throws {
+  ) throws -> RepositoryEvidence {
     guard allowedPaths.contains(evidence.path),
       !evidence.path.hasPrefix("/"),
       !evidence.path.split(separator: "/").contains("..")
@@ -43,7 +50,9 @@ public struct RepositorySourcePathPolicy: Sendable {
     guard (evidence.startLine == nil) == (evidence.endLine == nil) else {
       throw RepositoryAnalysisSnapshotError.invalidEvidence(evidence.path)
     }
-    guard let startLine = evidence.startLine, let endLine = evidence.endLine else { return }
+    guard let startLine = evidence.startLine, let endLine = evidence.endLine else {
+      return evidence
+    }
     guard startLine > 0, endLine >= startLine else {
       throw RepositoryAnalysisSnapshotError.invalidEvidence(evidence.path)
     }
@@ -52,9 +61,14 @@ public struct RepositorySourcePathPolicy: Sendable {
       throw RepositoryAnalysisSnapshotError.invalidEvidence(evidence.path)
     }
     let lineCount = max(1, text.split(separator: "\n", omittingEmptySubsequences: false).count)
-    guard endLine <= lineCount else {
-      throw RepositoryAnalysisSnapshotError.invalidEvidence(evidence.path)
+    guard startLine <= lineCount else {
+      return RepositoryEvidence(path: evidence.path)
     }
+    return RepositoryEvidence(
+      path: evidence.path,
+      startLine: startLine,
+      endLine: min(endLine, lineCount)
+    )
   }
 }
 

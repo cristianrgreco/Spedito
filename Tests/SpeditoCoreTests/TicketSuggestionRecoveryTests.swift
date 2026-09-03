@@ -6,7 +6,7 @@ import Testing
 struct TicketSuggestionRecoveryTests {
   private let policy = TicketSuggestionRecoveryPolicy()
 
-  @Test("An interrupted generation resumes automatically")
+  @Test("An orphaned interrupted generation resumes automatically")
   func generatingSessionResumes() {
     let session = SuggestionSession(
       productID: UUID(),
@@ -14,7 +14,20 @@ struct TicketSuggestionRecoveryTests {
       status: .generating
     )
 
-    #expect(policy.action(for: session) == .resumeInterruptedGeneration)
+    #expect(
+      policy.action(for: session, hasLiveRun: false) == .resumeInterruptedGeneration
+    )
+  }
+
+  @Test("A generating session with a live planning run is left alone")
+  func liveRunIsNotRecovered() {
+    let session = SuggestionSession(
+      productID: UUID(),
+      epicID: UUID(),
+      status: .generating
+    )
+
+    #expect(policy.action(for: session, hasLiveRun: true) == .none)
   }
 
   @Test("The legacy relaunch failure retries automatically")
@@ -26,7 +39,7 @@ struct TicketSuggestionRecoveryTests {
       errorMessage: TicketSuggestionRecoveryPolicy.legacyInterruptionMessage
     )
 
-    #expect(policy.action(for: session) == .retryLegacyInterruption)
+    #expect(policy.action(for: session, hasLiveRun: false) == .retryLegacyInterruption)
   }
 
   @Test("A genuine planning failure remains owner-controlled")
@@ -38,6 +51,6 @@ struct TicketSuggestionRecoveryTests {
       errorMessage: "The business analyst returned an invalid proposal."
     )
 
-    #expect(policy.action(for: session) == .none)
+    #expect(policy.action(for: session, hasLiveRun: false) == .none)
   }
 }

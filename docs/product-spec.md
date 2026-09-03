@@ -23,7 +23,9 @@ The first release line is a macOS application. The product owner describes a
 product, connects a compatible Codex installation, and uses Spedito to
 manage product records, repositories, agent workspaces, local previews, and
 delivery history. It exposes product concepts—not terminals, CLIs, Git commands,
-or local runner configuration—as the normal workflow. Early builds may still
+or local runner configuration—as the normal workflow. Spedito never requires the
+owner to use a terminal; when the product itself is a terminal program, Demo
+opens it in Terminal for the owner. Early builds may still
 require local developer components and are not yet a self-contained production
 distribution.
 
@@ -848,6 +850,20 @@ decision-enabling research ticket. When every credible recommendation still
 requires the agreed product change, the initial epic plan also includes the
 downstream delivery tickets rather than waiting for research to rediscover them.
 
+Clarification normally settles every consequential product choice before
+planning. When the final planning turn still finds one unresolved — for
+example an external source that was neither chosen, delegated, nor given an
+authorised research ticket — the business analyst returns its remaining
+questions instead of a plan. Spedito resumes the clarification conversation
+with those questions using the same question cards, choices, and **Other**
+field as ordinary clarification; nothing is planned, invented, or silently
+deferred, and a plan never arrives together with outstanding questions. The
+owner's answers feed the next planning attempt. This escape is a last resort
+after clarification, not an invitation to defer: a question returned this way
+must name a consequential choice the plan cannot proceed without. Like every
+clarification question, these late questions are durable and survive
+application restarts.
+
 Epic clarification is durable across application restarts. If its underlying
 Codex thread has expired, Spedito starts a replacement read-only thread,
 supplies the preserved business analyst conversation and product owner answers,
@@ -880,6 +896,54 @@ proposal is:
 - **Implementer:** add a service only if caching, credential protection,
   aggregation, or another backend responsibility is justified. This may be a
   separate parallel ticket, but it does not require a permanent backend team member.
+
+For visible interface or interaction work, the business analyst makes the
+primary review medium explicit in the UX designer ticket's acceptance criteria.
+The managed Demo presents a working surface, interactive prototype, or visual
+screen set covering the material states. The default design medium is a
+self-contained HTML screen set or clickable prototype that Spedito serves in the
+browser (`static_web`): real markup and CSS, one page per screen or state with
+an index page linking them, so typography, spacing, and alignment are the
+browser's rather than a rasteriser's. A PDF or image screen set is reserved for
+explicitly document-first outcomes, because a rendered document loses
+typography, alignment, and interaction and the sandbox cannot check it. A
+screen set of any form is a high-fidelity design
+document with realistic renders set in real typefaces, never a schematic or
+pixel-font approximation; Markdown may explain the journey and decisions but is
+not the primary deliverable. A self-contained static web
+prototype does not require an established product runtime. A design ticket
+created before its review medium was planned, whose contract promises a
+prototype, also reviews as an interactive prototype; if that medium cannot show
+the delivered design truthfully, the team member asks the product owner to
+change it rather than substituting another. Explicitly
+document-first UX outcomes such as copy reviews, service blueprints, and
+accessibility audits may remain document-led.
+
+Every proposal also carries its review medium, decided at planning by a
+mechanical rule: setup and story tickets demo as the product surface the
+clarification round fixed — mac_application for a native macOS app, browser for
+a webapp, terminal_application only for a program the user keeps interacting
+with while it runs in a terminal (a TUI, a menu, a prompt loop), command_output
+for a program that is started once with its inputs and prints a result, even
+when the user starts it from a terminal — design tickets about a visible interface review as an
+HTML screen set or prototype in the browser (static_web), research tickets and
+explicitly document-first design outcomes review as a file the owner reads, and
+code-only work states plainly that it has no demo. A terminal
+program's proposal card and ticket read "Opens in Terminal". The proposal card shows the medium as "You'll review this
+as:" in plain language, so accepting the plan accepts the review medium, and
+the stored ticket keeps showing it. Delivery must present exactly that medium.
+If delivery concludes the approved medium is genuinely wrong, it pauses and
+asks the product owner one question proposing the change; only the owner's
+answer — or an owner decision — changes a stored ticket's review medium, never
+a delivery turn. Tickets created before this contract existed carry no medium,
+and their delivery decides the demo as before.
+
+When the owner accepts a delivered ticket, Spedito also records the accepted
+way to demo the product as a verified knowledge page — one per review medium
+the product has shipped, a terminal app's page being "Demo recipe: terminal
+app". Later tickets reuse that established recipe instead
+of rediscovering it, and the page, not README wording, is the authority for
+how the demo runs.
 
 The **Lead** reviews the resulting delivery against the approved ticket
 contract. Higher-risk work can add a separate Security Auditor or specialist
@@ -938,8 +1002,13 @@ rationale, acceptance criteria, and **Accept**, **Reject**, **Discuss**, and
 batch-review actions. Acceptance removes the proposal card and creates the
 normal backlog ticket; rejection never creates scope.
 
-Suggested tickets are not backlog records until the owner accepts them. Temporary
-references such as `S1` are shown separately and are never part of the ticket title. The
+Suggested tickets are not backlog records until the owner accepts them. Each
+proposal carries its final durable ticket key, such as `T7`, allocated from the
+product's single key sequence when the batch is stored; the key is shown
+separately and is never part of the ticket title. Cross-references between
+proposals in criteria and rationale cite those final keys, and acceptance keeps
+the exact key and text the owner reviewed. Rejecting a proposal or regenerating
+the plan retires its keys permanently, so gaps in the key sequence are normal. The
 owner can accept, edit, or reject each suggestion, inspect why one item blocks
 another, accept the remaining reviewed batch directly, or dismiss the remaining
 batch with confirmation. Bulk acceptance only creates backlog records; it never
@@ -1315,6 +1384,21 @@ Completion creates one of two immutable candidate kinds:
    recipe. Spedito commits the ticket workspace after fast deterministic checks.
    Delivery execution is non-interactive: it builds, tests, and packages GUI
    products but does not open applications or automate the product owner's desktop.
+   The recipe runs the readiness sequence the candidate documents: a build or
+   other preparation step that the README, completion handoff, or Environments
+   knowledge presents as required before the product runs also appears in the
+   recipe, so the managed smoke test exercises the documented claim. A team
+   member may not describe a readiness step or check as verified without having
+   run it, and the tech lead blocks a candidate whose recipe omits a documented
+   preparation step.
+   A self-contained static web prototype identifies a reviewed directory
+   containing `index.html`; it declares no commands or readiness settings.
+   Spedito smoke-tests and serves only that directory on its own loopback server,
+   blocks prototype network connections, and stops the server with the Demo
+   session.
+   A revision keeps the prior candidate's validated demo recipe unless the
+   feedback that caused it names the demo. How the product owner reviews a
+   ticket does not change as a side effect of an unrelated correction.
 2. A business analyst research or investigation ticket may complete with no actual
    repository changes. Its completion handoff, reported checks, review instructions,
    and proposed product knowledge are the durable outcome in SQLite. Spedito records
@@ -1356,7 +1440,10 @@ move directly from successful review to **Ready for demo**, where the work log
 presents the outcome for approval without a Demo or Codebase action. Product owner
 acceptance and repository promotion remain serialized.
 
-The Codebase view defaults to accepted trunk history. Its history selector offers
+The Codebase view defaults to accepted trunk history. Trunk history shows each
+ticket's current integration merge; integration merges from superseded candidate
+versions stay out of the trunk stream and remain auditable in All activity.
+Its history selector offers
 each ticket with recorded changes as a logical stream, including that ticket's
 candidate and detached integration commits, plus an All activity audit view. Commit
 icons and labels describe delivery meaning such as candidate, integration, product
@@ -1448,19 +1535,29 @@ is poor after repeated compaction, Spedito starts a fresh thread with a
 structured handoff while retaining the same ticket workspace. Previous previews
 and feedback remain available in the item history.
 
-The selected product has an **App versions** workspace. It lists any independently
+The selected product has a **Demos** workspace. It lists any independently
 verified imported-source version together with every accepted candidate that has
-a valid browser or macOS app launch recipe, newest first, and selects the latest
-by default. The product owner can open or revisit any listed revision; Spedito
-reconstructs its exact imported or integrated commit and owns its local service
-or application lifecycle. Opening another app version stops the currently
-running version first. Accepted artifacts and command-output results remain
-ticket evidence and never appear as app versions.
+a valid product browser, static web prototype, macOS app, or terminal app launch
+recipe, newest first, and selects the latest by default. The product owner can
+open or revisit any listed revision; Spedito reconstructs its exact imported or
+integrated commit and owns its local service, prototype server, application, or
+Terminal program lifecycle. Opening another demo stops the currently running
+version first. Accepted artifacts and command-output results remain ticket
+evidence and never appear as demos.
 
-During repository import, the business analyst may propose a complete typed web
-or macOS app build, run, and relaunch recipe backed by exact source evidence. A
+A terminal app demo builds the reviewed program inside the managed demo
+workspace and then opens a Terminal window that runs it from that checkout. The
+board explains that the program is running in Terminal. **Open demo** while it
+runs brings the Terminal window forward without starting a second copy; **Stop
+demo** ends the program, and the owner may also just close the window, after
+which **Demo** opens it again. Delivery never wraps a terminal program in a Mac
+app, a web page, or any other surface to satisfy a contracted medium; it
+contests the medium instead.
+
+During repository import, the business analyst may propose a complete typed web,
+macOS app, or terminal app build, run, and relaunch recipe backed by exact source evidence. A
 tech lead must independently approve that recipe before the imported revision
-appears in **App versions**. Import never executes a proposed recipe, parses
+appears in **Demos**. Import never executes a proposed recipe, parses
 product knowledge into a command, or guesses missing commands, arguments, paths,
 readiness checks, or presentation details. Native application preparation runs
 inside the managed demo workspace. Spedito validates the resulting application
@@ -1470,7 +1567,7 @@ otherwise useful analysis returns an invalid launch shape, Spedito asks the same
 business analyst once to correct the structured recipe before continuing. It
 never repairs a recipe by guessing.
 
-If import does not yield an approved recipe, **App versions** states that the
+If import does not yield an approved recipe, the **Demos** workspace states that the
 imported source is not runnable yet and offers **Check imported source**. That
 read-only check analyzes the exact imported revision solely for a launch recipe,
 cannot change Product knowledge, and still requires independent Tech Lead approval.
@@ -1653,28 +1750,46 @@ not interrupt ticket or epic refinement, ticket or epic conversation replies, or
 Chat replies; only product archival, an explicit stop, or application shutdown
 ends that work. If the exact ticket, epic, or Chat thread is visible while
 Spedito is active, the result appears inline and no banner is added. Otherwise an
-active Spedito window slides one transient banner in at the bottom right; an
-inactive app sends one macOS notification instead. Opening either presentation
-selects the product only after the product owner chooses the action and opens
-the exact source.
+active Spedito window pops one transient callout out of the notification bell,
+with an arrow pointing at the bell; an inactive app sends one macOS notification
+instead. The callout shows a thin line in the notification's tint that empties
+as its display time runs out. When it times out or is dismissed, it scales back
+into the bell, showing the owner where a missed item stays reachable. Opening
+either presentation selects the product only after the product owner chooses the
+action and opens the exact source.
 
 | Durable state | Entered by | SQLite evidence | What the owner sees | Available actions | Relaunch recovery |
 | --- | --- | --- | --- | --- | --- |
 | Needs input | A ticket or epic refinement turn returns one or more owner questions | The source conversation or work-log question plus an unresolved owner notification | Orange **Needs your input** treatment and one chime unless the source is already visible | Open the source and answer; dismissing or viewing does not resolve it | It remains discoverable until the answer is saved |
-| Refinement complete | A ticket refinement is applied or an epic plan is ready for review | The applied ticket version or completed epic suggestion session plus an unread owner notification | Purple **Refinement complete** or **Plan ready for review** treatment without a chime | Open the ticket or epic | Its unread indicator remains until the source is opened |
+| Refinement complete | A ticket refinement is applied | The applied ticket version plus an unread owner notification | Purple **Refinement complete** treatment without a chime | Open the ticket | Its unread indicator remains until the source is opened |
+| Plan ready for review | An epic plan lands with undecided proposals | The completed epic suggestion session with undecided proposals; the stored notification only carries the banner and macOS delivery | Purple **Plan ready for review** treatment without a chime; the bell row persists as an owed decision | Open the epic and decide the proposals; opening alone does not clear the bell row | The bell row is derived from the undecided batch, so it survives relaunch until every proposal is decided |
 | New reply | A team member appends a ticket, epic, or Chat reply | The durable reply plus an unread owner notification | Purple **New reply** treatment without a chime | Open the ticket, epic, or exact Chat thread | Its unread indicator remains until the source is opened |
 
 Unread updates are distinct from unresolved actions. Opening their exact source
 marks completion and reply notifications read. Answering a refinement question
-resolves its action notification. When either operation makes a delivered macOS
+resolves its action notification, and a **Needs your input** notification also
+resolves when its wait ends by any other route: the epic plan lands, the
+awaiting run moves on, or a refinement completes without questions. On launch,
+Spedito retires any needs-input notification whose wait no longer exists in
+durable state. When either operation makes a delivered macOS
 notification obsolete, Spedito removes that notification from Notification
 Center so a stale alert cannot route to an already-cleared state. Sidebar and
 row indicators identify unread backlog and Chat destinations; they do not turn
 ordinary completions or replies into **Needs your input** counts.
 
-This notification flow does not create a general notification center, notify
-for title-generation helpers, or replay historical results that predate its
-durable notification record.
+The notification bell sits at the top right of every workspace view. Its badge
+counts the items that still wait on the product owner across every product:
+live ticket questions and active notifications, one per source. Opening the
+bell lists those items grouped by product with the selected product first, and
+choosing an item opens its exact source through the same routing as the banner.
+Rows clear through the existing transitions — unread updates leave when their
+source is opened, action items leave when their question is answered, and a
+**Plan ready for review** row leaves only when every proposal in its batch is
+decided — so an empty bell means nothing waits on the owner.
+
+This notification flow does not keep a notification history: the bell lists
+only currently active items. It does not notify for title-generation helpers or
+replay historical results that predate its durable notification record.
 
 ### 10.2 State transition rules
 
@@ -2577,6 +2692,17 @@ workspace itself is missing, uncaptured changes are not recoverable;
 Spedito explains that fallback in the work log before preparing a fresh
 isolated workspace.
 
+Before a completed implementation becomes a candidate, Spedito validates its structured result,
+changed-file evidence, knowledge destinations, and managed Demo recipe against the preserved
+workspace. A rejected envelope receives up to two focused correction turns in the same conversation;
+each turn receives the latest validation error and the exact supported Demo shapes, while preserving
+the existing files and successful checks. Static directories containing `index.html` are identified
+as `static_web` prototypes rather than placeholder command or artifact recipes, and an interactive
+terminal program is identified as `terminal_application`, whose launch command names the built
+workspace-relative program and whose path, port, and readiness are empty. If the second
+correction is still invalid, the run fails with that exact evidence and **Retry work** continues from
+the same conversation and workspace instead of discarding the implementation.
+
 An interrupted tech lead review remains bound to its exact immutable revision.
 Spedito preserves the review run, conversation, reviewed SHA, and
 detached workspace. The revision is normally the ticket candidate, or the
@@ -2694,7 +2820,7 @@ the platform—it is not a permanent product-category restriction in the UI.
 14. The owner opens a local preview for the same commit, comments with changes
     if needed, sees the item return to active work, and then accepts a later
     preview revision.
-15. The owner opens the product's **App versions** workspace, selects any
+15. The owner opens the product's **Demos** workspace, selects any
     accepted runnable revision, and lets Spedito reconstruct and open it without
     a terminal. Opening another version stops the currently running version.
 16. The system drafts the ticket delivery note, documentation diffs, decisions,
@@ -2803,7 +2929,9 @@ GitHub issue before implementation.
 - Improve evidence, forecasting, context selection, and retrospective learning
   using only inspectable product-owned history.
 - Expand supported project environments through verified, repository-owned
-  build, test, run, and demo contracts.
+  build, test, run, and demo contracts. Delivered 2026-09-01: the
+  `terminal_application` demo kind, which opens the reviewed terminal program
+  in Terminal.
 - Add provider-neutral agent adapters only when each agent is certified per
   lifecycle against the same isolation, recovery, approval, and audit
   boundaries. ACP may provide the common agent transport, but stable ACP alone

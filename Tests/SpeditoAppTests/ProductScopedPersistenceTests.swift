@@ -59,7 +59,7 @@ struct ProductScopedPersistenceTests {
 
     await model.restoreEpicPlanningConversation(for: epic)
 
-    let conversation = try #require(model.epicPlanningConversation)
+    let conversation = try #require(model.epicPlanningConversation(for: epic.id))
     #expect(conversation.epicID == epic.id)
     #expect(conversation.isComplete)
     #expect(conversation.errorMessage == nil)

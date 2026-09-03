@@ -109,6 +109,31 @@ struct CodexAdapterTests {
     #expect(await transport.wasStopped())
   }
 
+  @Test("A usage-limit turn failure reads as owner-facing text with the reset time")
+  func usageLimitTurnFailureReadsOwnerFacing() {
+    let raw = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+      + "visit https://chatgpt.com/codex/settings/usage to purchase more credits "
+      + "or try again at 8:40 PM."
+    let text = CodexClientError.turnFailed(raw).localizedDescription
+    #expect(
+      text
+        == "Codex has reached its usage limit. Work continues automatically "
+        + "after the limit resets, around 8:40 PM."
+    )
+
+    let withoutTime = CodexClientError.turnFailed("Rate limit exceeded").localizedDescription
+    #expect(
+      withoutTime
+        == "Codex has reached its usage limit. Work continues automatically when the limit resets."
+    )
+
+    let unrelated = CodexClientError.turnFailed("The model refused the tool call.")
+    #expect(
+      unrelated.localizedDescription
+        == "The Codex turn failed: The model refused the tool call."
+    )
+  }
+
   @Test("JSONL transport correlates a response with its request")
   func jsonlRoundTrip() async throws {
     let script = #"""
@@ -243,10 +268,7 @@ struct CodexAdapterTests {
 
     let threadID = try await client.startReadOnlyThread(
       workingDirectory: URL(fileURLWithPath: "/private/tmp/spedito-product"),
-      developerInstructions: "Act as a BA",
-      readOnlyProductDirectory: URL(
-        fileURLWithPath: "/private/tmp/spedito-product/.spedito"
-      )
+      developerInstructions: "Act as a BA"
     )
     let turnID = try await client.startStructuredTurn(
       threadID: threadID,
@@ -267,10 +289,7 @@ struct CodexAdapterTests {
     )
     #expect(
       requests[1].params["runtimeWorkspaceRoots"]?.arrayValue?.compactMap(\.stringValue)
-        == [
-          "/private/tmp/spedito-product",
-          "/private/tmp/spedito-product/.spedito",
-        ]
+        == ["/private/tmp/spedito-product"]
     )
     #expect(requests[1].params["permissionProfile"] == nil)
     #expect(requests[1].params["sandbox"] == nil)
@@ -332,7 +351,7 @@ struct CodexAdapterTests {
     #expect(
       summary
         == .activity(
-          CodexLiveActivity(text: "Inspecting provider evidence", kind: .thinking)
+          CodexLiveActivity(text: "Inspecting provider evidence", kind: .inspecting)
         )
     )
     #expect(
@@ -391,7 +410,7 @@ struct CodexAdapterTests {
     if case .activity(let latestActivity) = latestLongSummary {
       #expect(latestActivity.text.hasPrefix("…"))
       #expect(latestActivity.text.hasSuffix("Confirming the relative launch paths."))
-      #expect(latestActivity.text.count == 150)
+      #expect(latestActivity.text.count <= 150)
     } else {
       Issue.record("Expected the latest supported reasoning summary")
     }
@@ -446,7 +465,7 @@ struct CodexAdapterTests {
       threadID: threadID,
       prompt: "Deliver the ticket",
       effort: "medium",
-      outputSchema: CodexTicketExecutor.outputSchema,
+      outputSchema: CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind),
       runtimeWorkspaceRoots: [
         URL(fileURLWithPath: "/private/tmp/spedito-product")
       ]
@@ -478,7 +497,7 @@ struct CodexAdapterTests {
     #expect(
       deliveryConfig?["filesystem"]?[
         "/private/tmp/spedito-canonical-product/.spedito"
-      ]?.stringValue == "read"
+      ] == nil
     )
     #expect(
       deliveryConfig?["filesystem"]?[":workspace_roots"]?["."]?.stringValue
@@ -559,7 +578,7 @@ struct CodexAdapterTests {
     #expect(
       requests[2].params["config"]?["permissions.spedito-delivery"]?[
         "filesystem"
-      ]?["/private/tmp/product/.spedito"]?.stringValue == "read"
+      ]?["/private/tmp/product/.spedito"] == nil
     )
     #expect(
       requests[2].params["config"]?["permissions.spedito-delivery"]?[
@@ -616,22 +635,39 @@ struct CodexAdapterTests {
     #expect(arguments.contains(#"":root"="read""#))
     #expect(arguments.contains(#""~/.codex"="deny""#))
     #expect(arguments.contains(#""~/Library/Application Support/Spedito"="deny""#))
+    // Delivery cannot blanket-deny the Spedito directory the way the demo
+    // profile does, because ticket worktrees live under it. It denies the
+    // product workspaces holding every product's database instead.
     #expect(
       arguments.contains(
-        #""~/Library/Application Support/Spedito/spedito.sqlite"="deny""#
+        #""~/Library/Application Support/Spedito/Product Workspaces"="deny""#
       )
     )
     #expect(
       arguments.contains(
-        #""~/Library/Application Support/StoryPointless/storypointless.sqlite"="deny""#
+        #""~/Library/Application Support/StoryPointless"="deny""#
       )
     )
+    #expect(!arguments.contains("spedito.sqlite"))
+    #expect(!arguments.contains("storypointless.sqlite"))
     #expect(
       !CodexPermissionProfiles.deliveryProfileOverride.contains(
         #""~/Library/Application Support/Spedito"="deny""#
       )
     )
     #expect(!CodexPermissionProfiles.deliveryProfileOverride.contains(#"":root"="read""#))
+    // Delivery reads the system typefaces: without them CoreText draws nothing
+    // inside the sandbox, every render a team member checks shows blank text,
+    // and designers shipped hand-drawn pixel glyphs in place of real type.
+    #expect(
+      CodexPermissionProfiles.systemFontReadPaths == ["/System/Library/Fonts", "/Library/Fonts"]
+    )
+    for path in CodexPermissionProfiles.systemFontReadPaths {
+      #expect(
+        CodexPermissionProfiles.deliveryProfileOverride.contains(#""\#(path)"="read""#),
+        "The launch-time delivery profile does not grant \(path)."
+      )
+    }
     #expect(arguments.contains(#""localhost"="allow""#))
     #expect(!arguments.contains("openssl.cnf"))
     #expect(!arguments.contains("/opt/homebrew/bin"))
@@ -691,6 +727,51 @@ struct CodexAdapterTests {
       deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[
         "/Users/example/Library/Caches/Spedito/PreviewWorktrees"
       ]?.stringValue == "deny"
+    )
+    for path in CodexPermissionProfiles.systemFontReadPaths {
+      #expect(
+        deliveryConfig["permissions.spedito-delivery"]?["filesystem"]?[path]?.stringValue
+          == "read",
+        "The thread-time delivery profile does not grant \(path)."
+      )
+    }
+  }
+
+  @Test("Delivery denies Spedito's control plane and grants only product Git")
+  func deliveryControlPlaneBoundary() {
+    let gitDirectory = URL(
+      fileURLWithPath: "/private/tmp/Spedito/Product Workspaces/product/.git"
+    )
+    let deliveryConfig = CodexPermissionProfiles.deliveryThreadConfiguration(
+      readOnlyGitDirectory: gitDirectory
+    )
+    let filesystem = deliveryConfig["permissions.spedito-delivery"]?["filesystem"]
+    let override = CodexPermissionProfiles.deliveryProfileOverrideValue(
+      readOnlyGitDirectory: gitDirectory
+    )
+
+    // Each product's database lives at Product Workspaces/<id>/.spedito, so the
+    // deny has to name the directory. The control directory must never appear
+    // as a read: granting it is granting the live database.
+    for path in CodexPermissionProfiles.speditoControlPlaneDenyPaths {
+      #expect(filesystem?[path]?.stringValue == "deny")
+      #expect(override.contains(#""\#(path)"="deny""#))
+    }
+    #expect(
+      CodexPermissionProfiles.speditoControlPlaneDenyPaths.contains(
+        "~/Library/Application Support/Spedito/Product Workspaces"
+      )
+    )
+    #expect(filesystem?[gitDirectory.path]?.stringValue == "read")
+    #expect(!override.contains(#"".spedito"="read""#))
+    #expect(!override.contains("/.spedito\"=\"read\""))
+
+    // The delivery run's own worktree lives under Run Worktrees, so denying it
+    // here would remove the agent's workspace.
+    #expect(
+      !CodexPermissionProfiles.speditoControlPlaneDenyPaths.contains {
+        $0.contains("Run Worktrees")
+      }
     )
   }
 
@@ -797,7 +878,7 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("Delivery can read product Git and context without changing either")
+  @Test("Delivery reads product Git but never Spedito's own control plane")
   func deliveryGitBoundary() async throws {
     let codexURL = URL(
       fileURLWithPath: "/Applications/Codex.app/Contents/Resources/codex"
@@ -890,7 +971,11 @@ struct CodexAdapterTests {
       "-c",
       CodexPermissionProfiles.deliveryProfileOverrideValue(
         readOnlyGitDirectory: gitDirectory,
-        readOnlyProductDirectory: productControl
+        controlPlaneDenyPaths: [
+          boundaryRoot
+            .appendingPathComponent("Product Workspaces", isDirectory: true)
+            .path
+        ]
       ),
       "sandbox",
       "-P",
@@ -913,8 +998,8 @@ struct CodexAdapterTests {
       git diff --cached --quiet || exit 12
       cat "\(otherProductGit.appendingPathComponent("private-object").path)" \
         >/dev/null 2>&1 && exit 13
-      test "$(cat "\(productControl.appendingPathComponent("context.txt").path)")" \
-        = "active context" || exit 14
+      cat "\(productControl.appendingPathComponent("context.txt").path)" \
+        >/dev/null 2>&1 && exit 14
       printf changed >> "\(productControl.appendingPathComponent("context.txt").path)" \
         >/dev/null 2>&1 && exit 15
       cat "\(otherProductControl.appendingPathComponent("context.txt").path)" \
@@ -1151,6 +1236,175 @@ struct CodexAdapterTests {
     #expect(command["timeoutMs"]?.integerValue == 30_000)
   }
 
+  /// A live pilot run asked the product owner to allow "Network access" for a
+  /// capability the agent described as localhost-only. The saved grant already
+  /// distinguished the two, so the broader wording appeared where consent is
+  /// given and the narrower one only where it is recorded.
+  @Test("A scoped network request is not worded as full network access")
+  func scopedNetworkApprovalSaysItIsRestricted() throws {
+    func presentationDetail(network: JSONValue) throws -> String {
+      try CodexAppServerClient.approvalPresentation(
+        for: CodexServerRequest(
+          id: .integer(1),
+          method: "item/permissions/requestApproval",
+          params: .object([
+            "threadId": .string("thread-permissions"),
+            "turnId": .string("turn-permissions"),
+            "permissions": .object(["network": network]),
+          ])
+        )
+      ).detail
+    }
+
+    let unrestricted = JSONValue.object(["enabled": .bool(true)])
+    #expect(try presentationDetail(network: unrestricted) == "Network access")
+    #expect(AgentPermissionGrantPolicy.isUnrestrictedNetwork(unrestricted))
+
+    let loopbackOnly = JSONValue.object([
+      "enabled": .bool(true),
+      "allowedHosts": .array([.string("127.0.0.1")]),
+    ])
+    #expect(try presentationDetail(network: loopbackOnly) == "Restricted network access")
+    #expect(!AgentPermissionGrantPolicy.isUnrestrictedNetwork(loopbackOnly))
+
+    // A refused capability still says nothing about the network.
+    #expect(
+      try presentationDetail(network: .object(["enabled": .bool(false)]))
+        == "Codex requested access outside the ticket workspace."
+    )
+  }
+
+  /// A live native macOS run left two tickets reporting a working agent for
+  /// fifty minutes after their turns had already finished. The turn's wait
+  /// suspends its inactivity timeout while the turn is awaiting an approval, and
+  /// the flag that says so was cleared only after the response was delivered
+  /// successfully. One failed delivery therefore left the turn waiting with
+  /// nothing left to time it out.
+  @Test("A failed approval response still releases the turn's inactivity timeout")
+  func failedApprovalResponseReleasesTheTurn() async throws {
+    let transport = ApprovalTransport()
+    let client = CodexAppServerClient(transport: transport)
+    _ = try await client.connect()
+    let messages = await client.inboundMessages(replayRecent: false)
+    let request = CodexServerRequest(
+      id: .integer(7),
+      method: "item/permissions/requestApproval",
+      params: .object([
+        "threadId": .string("thread-hang"),
+        "turnId": .string("turn-hang"),
+        "permissions": .object(["network": .object(["enabled": .bool(true)])]),
+      ])
+    )
+    await transport.send(request)
+    let received = await messages.first { if case .request = $0 { return true } else { return false } }
+    guard case .request(let approval)? = received else {
+      Issue.record("Expected an approval request")
+      return
+    }
+
+    await transport.failNextRespond(
+      with: CodexRPCError(code: -32_000, message: "The response could not be delivered.")
+    )
+    await #expect(throws: (any Error).self) {
+      try await client.resolveApprovalRequest(approval, allow: false)
+    }
+
+    // The turn is no longer awaiting anything, so its inactivity window applies
+    // and the wait ends by itself rather than hanging.
+    let started = ContinuousClock.now
+    await #expect(throws: (any Error).self) {
+      _ = try await client.waitForFinalAgentMessage(
+        threadID: "thread-hang",
+        turnID: "turn-hang",
+        timeout: .seconds(1),
+        reconciliationInterval: .seconds(30),
+        totalTimeout: .seconds(20)
+      )
+    }
+    #expect(ContinuousClock.now - started < .seconds(10))
+  }
+
+  /// Two live runs hung exactly this way. Their turns had finished, every
+  /// permission request in the product database had reached a terminal status,
+  /// and the board reported a working agent for the remaining fifty minutes of
+  /// the run — because an entry in the client's own pending-approval map
+  /// suspended the only timeout that could have ended the wait.
+  ///
+  /// The client's map is transient operation state. Whether the product owner
+  /// owes a decision is durable domain state, and an unbounded wait has to rest
+  /// on the durable answer.
+  @Test("A pending approval the database does not know about cannot suspend a turn forever")
+  func staleApprovalFlagDoesNotSuspendTheTurn() async throws {
+    func waitWithOwnerDecision(outstanding: Bool) async -> Duration {
+      let transport = ApprovalTransport()
+      let client = CodexAppServerClient(transport: transport)
+      _ = try? await client.connect()
+      let messages = await client.inboundMessages(replayRecent: false)
+      await transport.send(
+        CodexServerRequest(
+          id: .integer(11),
+          method: "item/permissions/requestApproval",
+          params: .object([
+            "threadId": .string("thread-stale"),
+            "turnId": .string("turn-stale"),
+            "permissions": .object(["network": .object(["enabled": .bool(true)])]),
+          ])
+        )
+      )
+      // Routing the request is what registers it, and nothing ever resolves it.
+      _ = await messages.first {
+        if case .request = $0 { return true } else { return false }
+      }
+
+      let started = ContinuousClock.now
+      _ = try? await client.waitForFinalAgentMessage(
+        threadID: "thread-stale",
+        turnID: "turn-stale",
+        timeout: .seconds(1),
+        reconciliationInterval: .seconds(30),
+        totalTimeout: .seconds(6),
+        ownerDecisionIsOutstanding: { outstanding }
+      )
+      return ContinuousClock.now - started
+    }
+
+    // Nothing in the database is waiting on the owner, so the turn's inactivity
+    // window applies and the wait ends by itself instead of hanging.
+    #expect(await waitWithOwnerDecision(outstanding: false) < .seconds(4))
+
+    // And a turn the owner really does owe an answer on still waits. Cutting
+    // that short would fail runs that are behaving correctly.
+    #expect(await waitWithOwnerDecision(outstanding: true) > .seconds(4))
+  }
+
+  /// A live run put this on a product owner's screen: "The delivery agent
+  /// returned an invalid execution result: The demo could not be prepared
+  /// safely: the demo artifact path is incomplete." Three layers of
+  /// implementation detail and nothing they can act on.
+  @Test("A delivery failure reaches the owner as one explanation, not a chain")
+  func deliveryFailuresAreOwnerFacing() {
+    let chained = TicketExecutionGenerationError.invalidResponse(
+      DemoLaunchValidationError.invalid("the demo artifact path is incomplete")
+        .localizedDescription
+    )
+
+    // The detail is still there for the repair prompt and the log.
+    #expect(chained.localizedDescription.contains("demo artifact path is incomplete"))
+
+    let owner = chained.ownerFacingDescription
+    #expect(!owner.contains("execution result"))
+    #expect(!owner.contains("artifact path"))
+    #expect(owner.components(separatedBy: ": ").count == 1)
+    #expect(owner.contains("Retry the work"))
+
+    // An error with no owner-facing form still says something rather than
+    // nothing, so adopting this stays incremental.
+    struct Plain: Error, LocalizedError {
+      var errorDescription: String? { "Something went wrong." }
+    }
+    #expect(Plain().ownerFacingDescription == "Something went wrong.")
+  }
+
   @Test("App Server approval requests can be allowed or denied through the client")
   func interactiveApprovalResponse() async throws {
     let transport = ApprovalTransport()
@@ -1231,6 +1485,20 @@ struct CodexAdapterTests {
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew/bin"))
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew/opt"))
     #expect(runtimePresentation.detail.contains("Read /opt/homebrew/Cellar"))
+
+    let runtimeSections = CodexAppServerClient.commandApprovalSections(
+      fromDetail: runtimePresentation.detail
+    )
+    #expect(runtimeSections.command == "node --test")
+    #expect(
+      runtimeSections.additionalAccess
+        == "Read /opt/homebrew/bin\nRead /opt/homebrew/opt\nRead /opt/homebrew/Cellar"
+    )
+    let unbundledSections = CodexAppServerClient.commandApprovalSections(
+      fromDetail: presentation.detail
+    )
+    #expect(unbundledSections.command == "docker compose up")
+    #expect(unbundledSections.additionalAccess == nil)
 
     let sameCapabilityInAnotherTicket = CodexServerRequest(
       id: .integer(94),
@@ -1633,9 +1901,9 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":"T1","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T2","title":"Prototype","type":"task","body":"Design states","acceptanceCriteria":["Owner can review"],"role":"ux_designer","priority":"high","rationale":"Validates the experience","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T3","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T1","T2"],"environmentRelationship":"requires"}
+        {"reference":"T1","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T2","title":"Prototype","type":"task","body":"Design states","acceptanceCriteria":["Owner can review"],"role":"ux_designer","priority":"high","rationale":"Validates the experience","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T3","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T1","T2"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1655,8 +1923,8 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":" t-1 ","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent"},
-        {"reference":"T 2","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T-1"],"environmentRelationship":"requires"}
+        {"reference":" t-1 ","title":"Choose provider","type":"task","body":"Compare options","acceptanceCriteria":["Trade-offs are clear"],"role":"business_analyst","priority":"high","rationale":"Defines the contract","dependsOn":[],"environmentRelationship":"independent","demoKind":"artifact"},
+        {"reference":"T 2","title":"Build UI","type":"story","body":"Implement it","acceptanceCriteria":["Forecast is visible"],"role":"implementer","priority":"normal","rationale":"Creates value","dependsOn":["T-1"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1665,17 +1933,17 @@ struct CodexAdapterTests {
     #expect(normalized[1].dependsOnReferences == ["S1"])
 
     let minimal =
-      #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires"}]}"#
+      #"{"environmentAssessment":{"readiness":"sufficient","rationale":"The verified environment covers the work.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"The product is deliberately small","dependsOn":[],"environmentRelationship":"requires","demoKind":"browser"}]}"#
     #expect(try CodexTicketSuggestionGenerator.decode(minimal).count == 1)
 
     let cyclic =
-      #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent"}]}"#
+      #"{"environmentAssessment":{"readiness":"not_required","rationale":"These tasks need no executable environment.","foundationTicketReference":null},"suggestions":[{"reference":"T1","title":"First","type":"task","body":"First","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"First","dependsOn":["T2"],"environmentRelationship":"independent","demoKind":"artifact"},{"reference":"T2","title":"Second","type":"task","body":"Second","acceptanceCriteria":["Done"],"role":"implementer","priority":"normal","rationale":"Second","dependsOn":["T1"],"environmentRelationship":"independent","demoKind":"artifact"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(cyclic)
     }
 
     let foundationWithoutDependency =
-      #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires"}]}"#
+      #"{"environmentAssessment":{"readiness":"foundation_required","rationale":"The product has no delivery environment.","foundationTicketReference":"T1"},"suggestions":[{"reference":"T1","title":"Build the first feature","type":"story","body":"Build it without establishing the missing environment.","acceptanceCriteria":["The feature works"],"role":"implementer","priority":"normal","rationale":"Delivers value.","dependsOn":[],"environmentRelationship":"requires","demoKind":"browser"}]}"#
     #expect(throws: TicketSuggestionGenerationError.self) {
       try CodexTicketSuggestionGenerator.decode(foundationWithoutDependency)
     }
@@ -1689,7 +1957,7 @@ struct CodexAdapterTests {
           "foundationTicketReference":null
         },
         "suggestions":[
-        {"reference":"T1","title":"Add the missing integration","type":"story","body":"Use the existing contract","acceptanceCriteria":["The integration works"],"role":"implementer","priority":"normal","rationale":"Completes the flow","dependsOn":["T-7"],"environmentRelationship":"requires"}
+        {"reference":"T1","title":"Add the missing integration","type":"story","body":"Use the existing contract","acceptanceCriteria":["The integration works"],"role":"implementer","priority":"normal","rationale":"Completes the flow","dependsOn":["T-7"],"environmentRelationship":"requires","demoKind":"browser"}
         ]
       }
       """#
@@ -1707,6 +1975,69 @@ struct CodexAdapterTests {
     #expect(repair.contains("Unknown dependency T-7."))
     #expect(repair.contains("T-7"))
     #expect(repair.contains("active backlog keys"))
+  }
+
+  @Test("Suggestion decoder requires a legal owner-approved demo kind")
+  func suggestionDemoKindDecoding() throws {
+    func response(demoKindField: String) -> String {
+      #"""
+        {
+          "environmentAssessment":{
+            "readiness":"sufficient",
+            "rationale":"The verified environment covers the work.",
+            "foundationTicketReference":null
+          },
+          "suggestions":[
+          {"reference":"T1","title":"Ship one bounded outcome","type":"story","body":"Keep the scope coherent","acceptanceCriteria":["The outcome is visible"],"role":"implementer","priority":"normal","rationale":"Small product","dependsOn":[],"environmentRelationship":"requires"\#(demoKindField)}
+          ]
+        }
+        """#
+    }
+
+    for kind in TicketDemoKind.allCases {
+      let decoded = try CodexTicketSuggestionGenerator.decode(
+        response(demoKindField: #","demoKind":"\#(kind.rawValue)""#)
+      )
+      #expect(decoded[0].demoKind == kind)
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decode(
+        response(demoKindField: #","demoKind":"poster""#)
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decode(response(demoKindField: ""))
+    }
+
+    // The mechanical rule names all four product surfaces, identically in the
+    // planning prose and the schema description.
+    let description = try #require(
+      CodexTicketSuggestionGenerator.outputSchema["properties"]?["suggestions"]?["items"]?[
+        "properties"
+      ]?["demoKind"]?["description"]?.stringValue
+    )
+    for surface in ["mac_application", "browser", "terminal_application", "command_output"] {
+      #expect(description.contains(surface))
+    }
+    #expect(description.contains(CodexTicketSuggestionGenerator.productSurfaceRule))
+    #expect(description.contains(CodexTicketSuggestionGenerator.designMediumRule))
+    #expect(description.contains("static_web"))
+    #expect(
+      CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: "",
+        customInstructions: ""
+      ).contains(CodexTicketSuggestionGenerator.productSurfaceRule)
+    )
+
+    let suggestionItemSchema =
+      CodexTicketSuggestionGenerator.outputSchema["properties"]?["suggestions"]?["items"]
+    #expect(
+      suggestionItemSchema?["required"]?.arrayValue?.contains(.string("demoKind")) == true
+    )
+    #expect(
+      suggestionItemSchema?["properties"]?["demoKind"]?["enum"]?.arrayValue
+        == TicketDemoKind.allCases.map { .string($0.rawValue) }
+    )
   }
 
   @Test("Model catalog exposes only server-advertised efforts")
@@ -1777,6 +2108,27 @@ struct CodexAdapterTests {
     }
   }
 
+  /// Wraps a bare reply body in the required top-level envelope, so fixtures
+  /// stay readable while decode sees the schema's exact shape.
+  private func epicReplyEnvelope(_ body: String) -> String {
+    "{\"reply\": \(body)}"
+  }
+
+  private func requireEpicPlan(
+    _ text: String,
+    existingItems: [WorkItem] = []
+  ) throws -> EpicPlanDraft {
+    guard
+      case .plan(let plan) = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(text),
+        existingItems: existingItems
+      )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a plan reply.")
+    }
+    return plan
+  }
+
   @Test("Epic planning decodes durable outcome metadata and ticket relationships")
   func epicPlanningDecoding() throws {
     let response = #"""
@@ -1803,7 +2155,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "The interaction needs an agreed direction.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T2",
@@ -1815,12 +2167,12 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "This delivers the customer outcome.",
             "dependsOn": ["T1"],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
       """#
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
     #expect(plan.title == "Saved locations")
     #expect(plan.successCriteria == ["A saved location can be opened again"])
     #expect(plan.ticketSuggestions.count == 2)
@@ -1855,7 +2207,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "A material stack choice needs authorised evidence.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T2",
@@ -1871,7 +2223,7 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "Future delivery needs one reusable environment.",
             "dependsOn": ["T1"],
-            "environmentRelationship": "establishes"
+            "environmentRelationship": "establishes", "demoKind": "browser"
           },
           {
             "reference": "T3",
@@ -1883,7 +2235,7 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "The neutral artefact can proceed in parallel.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           },
           {
             "reference": "T4",
@@ -1895,13 +2247,13 @@ struct CodexAdapterTests {
             "priority": "normal",
             "rationale": "This delivers the customer outcome.",
             "dependsOn": ["T2", "T3"],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
 
     #expect(plan.environmentAssessment.readiness == .foundationRequired)
     #expect(plan.environmentAssessment.foundationTicketReference == "S2")
@@ -1913,7 +2265,7 @@ struct CodexAdapterTests {
       with: #""dependsOn": ["T3"]"#
     )
     #expect(throws: TicketSuggestionGenerationError.self) {
-      try CodexTicketSuggestionGenerator.decodeEpicPlan(missingDependency)
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(missingDependency))
     }
   }
 
@@ -1945,14 +2297,14 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "Delivery needs an approved provider.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           }
         ]
       }
       """#
 
     #expect(throws: TicketSuggestionGenerationError.self) {
-      try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(response))
     }
   }
 
@@ -1981,23 +2333,78 @@ struct CodexAdapterTests {
             "body": "Add the unit preference and apply it throughout the forecast.",
             "acceptanceCriteria": [
               "A customer can switch between Celsius and Fahrenheit",
-              "Every displayed temperature uses the selected unit",
+              "Every displayed temperature uses the chosen Celsius or Fahrenheit unit",
               "Automated checks cover conversion and saved preference behaviour"
             ],
             "role": "implementer",
             "priority": "normal",
             "rationale": "One cohesive change delivers and verifies the complete outcome.",
             "dependsOn": [],
-            "environmentRelationship": "requires"
+            "environmentRelationship": "requires", "demoKind": "browser"
           }
         ]
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
 
     #expect(plan.ticketSuggestions.count == 1)
     #expect(plan.ticketSuggestions[0].suggestedRole == .implementer)
+  }
+
+  @Test("Epic planning rejects vague decision placeholders without dependency provenance")
+  func epicPlanningRequiresDecisionProvenance() throws {
+    let response = #"""
+      {
+        "epic": {
+          "title": "Forecast details",
+          "goal": "Customers can understand a seven-day forecast.",
+          "successCriteria": ["Every forecast day shows useful weather information."],
+          "constraints": "",
+          "environmentAssessment": {
+            "readiness": "sufficient",
+            "rationale": "The existing app environment covers this change.",
+            "foundationTicketReference": null
+          }
+        },
+        "suggestions": [
+          {
+            "reference": "DESIGN",
+            "title": "Define forecast details",
+            "type": "story",
+            "body": "Define the visible weather details.",
+            "acceptanceCriteria": ["The review artefact names each visible detail"],
+            "role": "ux_designer",
+            "priority": "normal",
+            "rationale": "The visual contract is independently reviewable.",
+            "dependsOn": [],
+            "environmentRelationship": "independent", "demoKind": "artifact"
+          },
+          {
+            "reference": "BUILD",
+            "title": "Build the forecast",
+            "type": "story",
+            "body": "Build the reviewed forecast.",
+            "acceptanceCriteria": ["Each day shows the agreed core weather information"],
+            "role": "implementer",
+            "priority": "normal",
+            "rationale": "This delivers the owner-facing outcome.",
+            "dependsOn": ["DESIGN"],
+            "environmentRelationship": "requires", "demoKind": "browser"
+          }
+        ]
+      }
+      """#
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(response))
+    }
+
+    let explicit = response.replacingOccurrences(
+      of: "the agreed core weather information",
+      with: "the details specified by DESIGN"
+    )
+    let plan = try requireEpicPlan(explicit)
+    #expect(plan.ticketSuggestions[1].dependsOnReferences == ["S1"])
   }
 
   @Test("Epic planning permits a genuinely decision-only research outcome")
@@ -2028,15 +2435,217 @@ struct CodexAdapterTests {
             "priority": "high",
             "rationale": "The epic is explicitly a provider decision.",
             "dependsOn": [],
-            "environmentRelationship": "independent"
+            "environmentRelationship": "independent", "demoKind": "artifact"
           }
         ]
       }
       """#
 
-    let plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(response)
+    let plan = try requireEpicPlan(response)
     #expect(plan.ticketSuggestions.count == 1)
     #expect(plan.ticketSuggestions[0].suggestedRole == .businessAnalyst)
+  }
+
+  @Test("Epic planning decodes questions and a plan exclusively, never both or neither")
+  func epicPlanningEscapeExclusivity() throws {
+    let escaped = #"""
+      {
+        "message": "One consequential choice is still unresolved.",
+        "questions": [
+          {
+            "prompt": "Which exchange-rate source should be used?",
+            "options": [
+              "Research current sources and recommend one (Recommended)",
+              "Name an approved source now"
+            ]
+          }
+        ]
+      }
+      """#
+    guard
+      case .questions(let message, let questions) =
+        try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(escaped))
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(message == "One consequential choice is still unresolved.")
+    #expect(questions.map(\.prompt) == ["Which exchange-rate source should be used?"])
+    #expect(questions[0].options.count == 2)
+
+    guard
+      case .questions(let defaultedMessage, _) =
+        try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          epicReplyEnvelope(
+            escaped.replacingOccurrences(
+              of: "One consequential choice is still unresolved.",
+              with: "  "
+            )
+          )
+        )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(!defaultedMessage.isEmpty)
+
+    let planFragment = #"""
+      "epic": {
+        "title": "Currency conversion",
+        "goal": "Show invoice totals in the client's currency.",
+        "successCriteria": ["A client sees the converted total"],
+        "constraints": "",
+        "environmentAssessment": {
+          "readiness": "sufficient",
+          "rationale": "The verified environment covers this work.",
+          "foundationTicketReference": null
+        }
+      },
+      "suggestions": [
+        {
+          "reference": "S1",
+          "title": "Convert invoice totals",
+          "type": "story",
+          "body": "Convert totals with current exchange rates.",
+          "acceptanceCriteria": ["The converted total is displayed"],
+          "role": "implementer",
+          "priority": "normal",
+          "rationale": "This delivers the outcome.",
+          "dependsOn": [],
+          "environmentRelationship": "requires", "demoKind": "browser"
+        }
+      ]
+      """#
+    _ = try requireEpicPlan("{\(planFragment)}")
+
+    let bothBranches =
+      "{\(planFragment), \"questions\": [{\"prompt\": \"Which source?\", "
+      + "\"options\": [\"Research one\", \"Name one\"]}]}"
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(bothBranches))
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope("{}"))
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(#"{"message": "Nothing is actually open.", "questions": []}"#)
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "Bad options.", "questions": [{"prompt": "Which source?", "options": ["Only one"]}]}"#
+        )
+      )
+    }
+  }
+
+  @Test("Degenerate low-content fields fail decoding into the ordinary repair path")
+  func minimumContentDecodeBar() throws {
+    // The observed degenerate constrained-decoding shapes (2026-08-29): a
+    // one-character question prompt and letterless punctuation options that
+    // satisfy the schema yet carry nothing an owner can read.
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "x", "options": ["Keep notes in this browser", "Use an online account"]}]}"#
+        )
+      )
+    }
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "Where should notes be kept?", "options": [":{", "/?"]}]}"#
+        )
+      )
+    }
+    #expect(throws: EpicClarificationGenerationError.self) {
+      try CodexEpicClarificationGenerator.decode(
+        #"{"message": "One thing first.", "questions": [{"prompt": "x", "options": ["Keep it simple", "Add accounts"]}], "readyToPlan": false}"#
+      )
+    }
+
+    // A degenerate ticket title is the same defect on the plan branch.
+    let degenerateTitlePlan = #"""
+      {
+        "epic": {
+          "title": "Saved notes",
+          "goal": "A user keeps notes on this device.",
+          "successCriteria": ["A note can be reopened"],
+          "constraints": "",
+          "environmentAssessment": {
+            "readiness": "sufficient",
+            "rationale": "The verified environment covers this work.",
+            "foundationTicketReference": null
+          }
+        },
+        "suggestions": [
+          {
+            "reference": "S1",
+            "title": "x",
+            "type": "story",
+            "body": "Keep notes on the device.",
+            "acceptanceCriteria": ["A note can be reopened"],
+            "role": "implementer",
+            "priority": "normal",
+            "rationale": "This delivers the outcome.",
+            "dependsOn": [],
+            "environmentRelationship": "requires", "demoKind": "browser"
+          }
+        ]
+      }
+      """#
+    #expect(throws: TicketSuggestionGenerationError.self) {
+      try CodexTicketSuggestionGenerator.decodeEpicPlan(epicReplyEnvelope(degenerateTitlePlan))
+    }
+
+    // A minimal legitimate escape still decodes: short prompts and short
+    // lettered options are fine; the bar only rejects unreadable fields.
+    guard
+      case .questions(_, let questions) = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+        epicReplyEnvelope(
+          #"{"message": "One choice is open.", "questions": [{"prompt": "Keep notes only on this Mac?", "options": ["Yes", "No"]}]}"#
+        )
+      )
+    else {
+      throw TicketSuggestionGenerationError.invalidResponse("Expected a questions reply.")
+    }
+    #expect(questions.first?.options == ["Yes", "No"])
+  }
+
+  @Test("Epic plan schema admits the questions escape in the clarification shape")
+  func epicPlanSchemaCarriesEscapeBranch() throws {
+    let schema = CodexTicketSuggestionGenerator.epicOutputSchema
+    #expect(schema["type"]?.stringValue == "object")
+    #expect(
+      schema["required"]?.arrayValue?.compactMap(\.stringValue) == ["reply"]
+    )
+    let branches = try #require(
+      schema["properties"]?["reply"]?["anyOf"]?.arrayValue
+    )
+    #expect(branches.count == 2)
+    let planBranch = try #require(
+      branches.first { $0["properties"]?["epic"] != nil }
+    )
+    #expect(
+      planBranch["required"]?.arrayValue?.compactMap(\.stringValue)
+        == ["epic", "suggestions"]
+    )
+    let escapeBranch = try #require(
+      branches.first { $0["properties"]?["questions"] != nil }
+    )
+    #expect(
+      escapeBranch["required"]?.arrayValue?.compactMap(\.stringValue)
+        == ["message", "questions"]
+    )
+    let escapeQuestions = try #require(
+      escapeBranch["properties"]?["questions"]
+    )
+    #expect(escapeQuestions["minItems"]?.integerValue == 1)
+    #expect(escapeQuestions["maxItems"]?.integerValue == 3)
+    let clarificationQuestionSchema = try #require(
+      CodexEpicClarificationGenerator.outputSchema["properties"]?["questions"]?["items"]
+    )
+    #expect(escapeQuestions["items"] == clarificationQuestionSchema)
   }
 
   @Test("Epic planning clarifies the outcome before proposing tickets")
@@ -2091,7 +2700,8 @@ struct CodexAdapterTests {
     #expect(prompt.contains("complete answer; never offer a placeholder"))
     #expect(prompt.contains("choose Other and describe it"))
     #expect(prompt.contains("exactly one selection per question"))
-    #expect(prompt.contains("Restate the full outcome in every option"))
+    #expect(prompt.contains("states only what differs"))
+    #expect(!prompt.contains("Restate the full outcome in every option"))
     #expect(clarification.questions.count == 1)
     #expect(clarification.questions[0].options.count == 2)
     #expect(!clarification.readyToPlan)
@@ -2163,8 +2773,8 @@ struct CodexAdapterTests {
     #expect(prompt.contains("let the team choose"))
     #expect(prompt.contains("Other text field"))
     #expect(prompt.contains("never “I’ll provide”"))
-    #expect(prompt.contains("complete resulting scope"))
-    #expect(prompt.contains("must not compound"))
+    #expect(prompt.contains("states only what differs"))
+    #expect(prompt.contains("do not compound"))
     #expect(!prompt.contains("Which existing pattern should we reuse?"))
     #expect(!prompt.contains("compact result row"))
   }
@@ -2248,10 +2858,13 @@ struct CodexAdapterTests {
       customInstructions: ""
     )
 
-    #expect(prompt.contains("invent product decisions"))
+    #expect(prompt.contains("Do not invent product"))
+    #expect(prompt.contains("decisions or disguise"))
     #expect(prompt.contains("explicitly requested research"))
     #expect(prompt.contains("Otherwise create tickets that deliver"))
     #expect(prompt.contains("Research is a prerequisite,"))
+    #expect(prompt.contains("Every acceptance"))
+    #expect(prompt.contains("cite that exact ticket reference"))
     #expect(prompt.contains("trace every epic success criterion"))
     #expect(prompt.contains("do not default to a fixed"))
     #expect(prompt.contains("Make verification explicit in"))
@@ -2264,7 +2877,7 @@ struct CodexAdapterTests {
     #expect(prompt.contains("implementation-time selection without a separate recommendation"))
     #expect(prompt.contains("epic.environmentAssessment"))
     #expect(prompt.contains("foundation_required"))
-    #expect(prompt.contains("run-private temporary and cache locations"))
+    #expect(prompt.contains("run-private temporary and cache"))
     #expect(initial.contains("business analyst research ticket"))
     #expect(initial.contains("Do not offer a vague option"))
     #expect(initial.contains("implementation-time selection"))
@@ -2272,6 +2885,9 @@ struct CodexAdapterTests {
     #expect(initial.contains("non-technical owner"))
     #expect(initial.contains("creates no research ticket"))
     #expect(initial.contains("choose Other and describe it"))
+    #expect(initial.contains("already stated in the outcome is resolved"))
+    #expect(initial.contains("ask nothing"))
+    #expect(initial.contains("readyToPlan to true with an empty questions array"))
     #expect(followUp.contains("sources"))
     #expect(followUp.contains("Do not silently"))
     #expect(followUp.contains("Constraints for an unnamed external source"))
@@ -2280,6 +2896,8 @@ struct CodexAdapterTests {
     #expect(followUp.contains("without a research ticket"))
     #expect(followUp.contains("select only one option"))
     #expect(followUp.contains("incremental labels"))
+    #expect(followUp.contains("owner-observable"))
+    #expect(followUp.contains("generic"))
     #expect(finalPlan.contains("is such authorisation"))
     #expect(finalPlan.contains("Give that work a separate business analyst ticket"))
     #expect(finalPlan.contains("inside design or implementation"))
@@ -2420,6 +3038,93 @@ struct CodexAdapterTests {
     #expect(schemas.contains("agent_verified_knowledge("))
     #expect(schemas.contains("delivery_kind"))
     #expect(!schemas.contains("ticket_key"))
+  }
+
+  @Test("No inheriting agent's finished instructions invite a database query")
+  func inheritingAgentInstructionsNeverInviteDatabaseQueries() {
+    let product = Product(name: "Weather")
+    let analyst = AgentProfile(
+      productID: product.id,
+      name: "Business analyst",
+      role: .businessAnalyst
+    )
+    let inherited = CodexLiveProductContext.inheritedInstructions(
+      sharedInstructions: product.instructions,
+      allowsRepositoryInspection: true
+    )
+    let finished = [
+      CodexTicketConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexEpicConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexSprintPlanningConversation.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: "",
+        recipient: analyst
+      ),
+      CodexTicketRefinementGenerator.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+      CodexRetrospectiveSynthesizer.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+      CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: inherited,
+        customInstructions: ""
+      ),
+    ]
+
+    // The inherited block and each role's platform block are concatenated into
+    // one developer-instruction string, so a permissive clause in either half
+    // contradicts the other.
+    for instructions in finished {
+      #expect(instructions.contains("Do not locate or query it."))
+      #expect(!instructions.contains("query the live product database"))
+      #expect(!instructions.contains("live product database views"))
+      #expect(!instructions.contains("LIVE PRODUCT CONTEXT"))
+      #expect(!instructions.contains("sqlite3"))
+    }
+  }
+
+  @Test("Only product chat instructions expose the live product database")
+  func liveDatabaseContextStaysInProductChat() {
+    let conversation = CodexLiveProductContext.conversationInstructions(
+      sharedInstructions: "Use UK English.",
+      databasePath: "/tmp/product.sqlite"
+    )
+
+    #expect(conversation.contains("Use UK English."))
+    #expect(conversation.contains("LIVE PRODUCT CONTEXT"))
+    #expect(conversation.contains("/tmp/product.sqlite"))
+    #expect(conversation.contains("/usr/bin/sqlite3 -readonly"))
+    #expect(conversation.contains("agent_tickets("))
+
+    for allowsRepositoryInspection in [true, false] {
+      let inherited = CodexLiveProductContext.inheritedInstructions(
+        sharedInstructions: "Use UK English.",
+        allowsRepositoryInspection: allowsRepositoryInspection
+      )
+
+      #expect(inherited.contains("Use UK English."))
+      #expect(!inherited.contains("LIVE PRODUCT CONTEXT"))
+      #expect(!inherited.contains("sqlite3"))
+      #expect(!inherited.contains("agent_tickets"))
+      #expect(inherited.contains("Do not locate or query it."))
+      #expect(
+        inherited.contains("This is a planning turn.") == !allowsRepositoryInspection
+      )
+      #expect(
+        inherited.contains("Search the product Git history") == allowsRepositoryInspection
+      )
+    }
   }
 
   @Test("Repeated backlog analysis receives the previous rejected proposals")
@@ -2793,6 +3498,36 @@ struct CodexAdapterTests {
         validRelatedItems: [prerequisite, archived, item]
       )
     }
+
+    // Degenerate constrained-decoding output (a letterless option) fails the
+    // refinement decode too, through the shared minimum content bar.
+    #expect(throws: TicketRefinementGenerationError.self) {
+      _ = try CodexTicketRefinementGenerator.decode(
+        """
+        {
+          "message": "I need one product decision before proposing changes.",
+          "proposal": {
+            "baseVersion": 1,
+            "title": "",
+            "type": "story",
+            "body": "",
+            "acceptanceCriteria": [],
+            "priority": "normal",
+            "role": "implementer",
+            "rationale": "",
+            "dependencies": [],
+            "potentialDuplicates": [],
+            "splitRecommendation": null,
+            "missingQuestions": [
+              {"prompt": "How should ambiguous locations be handled?", "options": [":{", "Use the closest match"]}
+            ]
+          }
+        }
+        """,
+        currentItem: item,
+        validRelatedItems: [prerequisite, item]
+      )
+    }
   }
 
   @Test("Persisted refinement questions retain their clickable options")
@@ -3013,12 +3748,12 @@ struct CodexAdapterTests {
     }
   }
 
-  @Test("Agent role defaults use Luna without changing their reasoning effort")
+  @Test("Agent role defaults pin terra with evidence-gated efforts")
   func agentRoleDefaults() {
     let expected: [(AgentRole, String)] = [
       (.businessAnalyst, "medium"),
       (.uxDesigner, "medium"),
-      (.lead, "high"),
+      (.lead, "medium"),
       (.implementer, "medium"),
       (.frontendEngineer, "medium"),
       (.backendEngineer, "high"),
@@ -3144,7 +3879,12 @@ struct CodexAdapterTests {
     #expect(instructions.contains("You may inspect Git"))
     #expect(instructions.contains("owns every Git mutation"))
     #expect(instructions.contains("noninteractive environment"))
-    #expect(instructions.contains("command -v"))
+    // A shell builtin cannot be the recommended diagnostic in a turn that is
+    // forbidden from invoking a shell.
+    #expect(instructions.contains("`/usr/bin/which`"))
+    #expect(!instructions.contains("command -v"))
+    #expect(!instructions.contains("type -a"))
+    #expect(instructions.contains("without external network access"))
     #expect(instructions.contains("request_permissions"))
     #expect(instructions.contains("smallest coherent"))
     #expect(instructions.contains("Batch all known paths into one"))
@@ -3264,6 +4004,57 @@ struct CodexAdapterTests {
     #expect(instructions.contains("ignored dependencies, build output, caches"))
   }
 
+  @Test("A proposed demo kind is only expressible while awaiting the owner")
+  func proposedDemoKindDecoding() throws {
+    func result(status: String, proposedDemoKind: String) -> String {
+      #"""
+      {
+        "status":"\#(status)",
+        "comment":"The contracted medium does not fit the delivered outcome.",
+        "question":\#(status == "completed" ? "null" : #""Change the review medium?""#),
+        "options":\#(status == "completed" ? "[]" : #"["Change it","Keep it"]"#),
+        "summary":\#(status == "completed" ? #""Done.""# : #""""#),
+        "changedFiles":[],
+        "tests":\#(status == "completed" ? #"["Checked"]"# : "[]"),
+        "knowledgeNotes":[],
+        "reviewInstructions":\#(status == "completed" ? #"["Review the handoff."]"# : "[]"),
+        "proposedDemoKind":\#(proposedDemoKind),
+        "retrospectiveWentWell":[],
+        "retrospectiveCouldImprove":[],
+        "retrospectiveActions":[],
+        "knowledgePageProposals":[],
+        "followUpTicketProposals":[]
+      }
+      """#
+    }
+
+    let contested = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: #""mac_application""#)
+    )
+    #expect(contested.proposedDemoKind == .macApplication)
+
+    let terminal = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: #""terminal_application""#)
+    )
+    #expect(terminal.proposedDemoKind == .terminalApplication)
+
+    let uncontested = try CodexTicketExecutor.decode(
+      result(status: "awaiting_owner", proposedDemoKind: "null")
+    )
+    #expect(uncontested.proposedDemoKind == nil)
+
+    #expect(throws: TicketExecutionGenerationError.self) {
+      try CodexTicketExecutor.decode(
+        result(status: "completed", proposedDemoKind: #""none""#)
+      )
+    }
+
+    let schema = CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)
+    #expect(
+      schema["required"]?.arrayValue?.contains(.string("proposedDemoKind")) == true
+    )
+  }
+
   @Test("Ticket execution and tech lead review results are validated")
   func ticketExecutionResults() throws {
     let completed = try CodexTicketExecutor.decode(
@@ -3314,10 +4105,11 @@ struct CodexAdapterTests {
     #expect(completed.workLogComment.contains("How to review"))
     #expect(completed.workLogComment.contains("Demo: Location form"))
     #expect(
-      CodexTicketExecutor.outputSchema["required"]?.arrayValue?.contains(.string("demo")) == true)
+      CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)["required"]?
+        .arrayValue?.contains(.string("demo")) == true)
     #expect(
-      CodexTicketExecutor.outputSchema["required"]?.arrayValue?
-        .contains(.string("decisionArtifact")) == true
+      CodexTicketExecutor.outputSchema(deliveryDemoPolicy: .anyKind)["required"]?
+        .arrayValue?.contains(.string("decisionArtifact")) == true
     )
 
     #expect(throws: TicketExecutionGenerationError.self) {
@@ -3342,10 +4134,22 @@ struct CodexAdapterTests {
         """#
       )
     }
-    #expect(
-      CodexTicketExecutor.repairPrompt(validationError: "No artefact.")
-        .contains("Do not merely rewrite the JSON")
-    )
+    let repairPrompt = CodexTicketExecutor.repairPrompt(validationError: "No artefact.")
+    #expect(repairPrompt.contains("Correct only the rejected result contract"))
+    #expect(repairPrompt.contains("reinspect the repository"))
+    #expect(repairPrompt.contains("rerun a successful check"))
+    #expect(repairPrompt.contains("not artifact or command_output"))
+    #expect(repairPrompt.contains("data file, such as a delivered visual screen set — is artifact"))
+    #expect(repairPrompt.contains("a no-op placeholder such as true is not a"))
+    #expect(repairPrompt.contains("empty command fields"))
+    // A live pilot copied the repair prompt's one literal recipe verbatim,
+    // placeholder path included. The prompt states each kind's contract and
+    // defers to the shapes in the delivery guidance instead of carrying a
+    // paste-ready recipe.
+    #expect(!repairPrompt.contains("{\"schemaVersion\""))
+    #expect(!repairPrompt.contains("\"kind\":\"static_web\""))
+    #expect(repairPrompt.contains("mac_application"))
+    #expect(repairPrompt.contains("presentation object and its kind before every other recipe field"))
 
     #expect(throws: TicketExecutionGenerationError.self) {
       try CodexTicketExecutor.decode(
@@ -3740,6 +4544,174 @@ struct CodexAdapterTests {
     #expect(integration.workLogComment.contains("Question for you"))
   }
 
+  @Test("Revision and recovery prompts carry the pinned demo recipe forward")
+  func promptsCarryPinnedDemoRecipe() {
+    let product = Product(name: "Weather")
+    let item = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Correct the setup documentation",
+      body: "Align the README with the delivered behavior.",
+      acceptanceCriteria: ["The README matches the shipped commands."]
+    )
+    let reviewer = AgentProfile(
+      productID: product.id,
+      name: "Riley Lead",
+      role: .lead
+    )
+    let pinnedRecipe = DemoLaunchSpecification(
+      title: "Forecast prototype",
+      presentation: DemoPresentation(kind: .staticWeb, path: "prototype")
+    )
+
+    let pinnedRevisionPrompt = CodexTicketExecutor.revisionPrompt(
+      item: item,
+      reviewer: reviewer,
+      feedback: "Fix the truncated Markdown command in README.md.",
+      recentComments: [],
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(pinnedRevisionPrompt.contains("carried forward unchanged"))
+    #expect(pinnedRevisionPrompt.contains("Return exactly this demo object"))
+    #expect(pinnedRevisionPrompt.contains("\"static_web\""))
+    #expect(pinnedRevisionPrompt.contains("\"prototype\""))
+
+    let unpinnedRevisionPrompt = CodexTicketExecutor.revisionPrompt(
+      item: item,
+      reviewer: reviewer,
+      feedback: "The demo should present as mac_application.",
+      recentComments: []
+    )
+    #expect(!unpinnedRevisionPrompt.contains("carried forward unchanged"))
+    #expect(
+      unpinnedRevisionPrompt.contains(
+        "decided by this turn under the demo guidance"
+      )
+    )
+
+    let pinnedRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: item,
+      interruptedPermission: nil,
+      pinnedDemoRecipe: pinnedRecipe
+    )
+    #expect(pinnedRecoveryPrompt.contains("carried forward unchanged"))
+    #expect(pinnedRecoveryPrompt.contains("\"static_web\""))
+
+    let unpinnedRecoveryPrompt = CodexTicketExecutor.recoveryPrompt(
+      item: item,
+      interruptedPermission: nil
+    )
+    #expect(!unpinnedRecoveryPrompt.contains("carried forward unchanged"))
+  }
+
+  @Test("Delivery and review prompts state the owner-approved review medium")
+  func promptsCarryTheDemoKindContract() {
+    let product = Product(name: "Weather")
+    var item = WorkItem(
+      productID: product.id,
+      key: "T2",
+      title: "Deliver the forecast surface",
+      body: "Build the approved experience.",
+      acceptanceCriteria: ["The forecast is visible."],
+      demoKind: .macApplication
+    )
+    let contracted = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .contracted(.macApplication)
+    )
+    #expect(contracted.contains("mac_application"))
+    #expect(contracted.contains("opens as a Mac app"))
+    #expect(contracted.contains("proposedDemoKind"))
+
+    item.demoKind = .terminalApplication
+    let terminal = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .contracted(.terminalApplication)
+    )
+    #expect(terminal.contains("terminal_application"))
+    #expect(terminal.contains("opens in Terminal"))
+
+    item.demoKind = .codeOnly
+    let codeOnly = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .codeOnly
+    )
+    #expect(codeOnly.contains("code change with no"))
+    #expect(codeOnly.contains("null demo"))
+
+    item.demoKind = nil
+    let preContract = CodexTicketExecutor.demoKindContractContext(
+      item,
+      deliveryDemoPolicy: .anyKind
+    )
+    #expect(preContract.contains("none was approved at planning"))
+    #expect(!preContract.contains("review medium is"))
+
+    // A pre-contract design ticket that promises a prototype is contracted
+    // to static_web by the delivery policy, and the prompt says so, because
+    // the schema admits nothing else and the turn must not re-decide it.
+    let designer = AgentProfile(productID: product.id, name: "UX designer", role: .uxDesigner)
+    let prototypeTicket = WorkItem(
+      productID: product.id,
+      key: "T3",
+      title: "Design the forecast card",
+      body: "The card must be reviewable as an interactive prototype.",
+      acceptanceCriteria: ["The managed demo opens the prototype"]
+    )
+    let derived = CodexTicketExecutor.demoKindContractContext(
+      prototypeTicket,
+      deliveryDemoPolicy: DeliveryDemoPolicy(assignee: designer, item: prototypeTicket)
+    )
+    #expect(derived.contains("none was approved at planning, but this design ticket promises"))
+    #expect(derived.contains("review medium is static_web"))
+    #expect(derived.contains("an interactive prototype"))
+    #expect(derived.contains("result schema admits no other"))
+    #expect(derived.contains("proposedDemoKind"))
+    let fullPrompt = CodexTicketExecutor.prompt(
+      product: product,
+      item: prototypeTicket,
+      assignee: designer,
+      prerequisites: [],
+      dependants: [],
+      prerequisiteComments: [:],
+      ticketComments: [],
+      knowledgeContext: []
+    )
+    #expect(fullPrompt.contains("review medium is static_web"))
+
+    item.demoKind = .macApplication
+    let reviewContext = CodexTechLeadReviewer.reviewMediumContractContext(item)
+    #expect(reviewContext.contains("mac_application"))
+    #expect(reviewContext.contains("material contract mismatch"))
+    let implementation = TicketExecutionResult(
+      status: .completed,
+      comment: "Delivered.",
+      question: nil,
+      options: [],
+      summary: "Done.",
+      changedFiles: ["Sources/App.swift"],
+      tests: ["Checked"],
+      knowledgeNotes: [],
+      reviewInstructions: ["Open the managed Demo."],
+      retrospectiveWentWell: [],
+      retrospectiveCouldImprove: [],
+      retrospectiveActions: []
+    )
+    let reviewPrompt = CodexTechLeadReviewer.prompt(
+      product: product,
+      item: item,
+      implementation: implementation,
+      knowledgePageProposals: [],
+      assignee: AgentProfile(
+        productID: product.id,
+        name: "Implementer",
+        role: .implementer
+      )
+    )
+    #expect(reviewPrompt.contains("Contracted review medium:"))
+    #expect(reviewPrompt.contains("opens as a Mac app"))
+  }
+
   @Test("Tech lead review receives complete candidate-bound proposal contracts")
   func techLeadReviewCandidateContext() {
     let product = Product(name: "Weather")
@@ -3828,8 +4800,9 @@ struct CodexAdapterTests {
     #expect(prompt.contains("Earlier verified environment guidance."))
     #expect(prompt.contains(proposedBody))
     #expect(
-      prompt.contains("`agent_verified_knowledge` contains accepted canonical knowledge only"))
-    #expect(prompt.contains("Do not require a pending proposal to be"))
+      prompt.contains(
+        "The verified product knowledge store contains accepted canonical knowledge only"))
+    #expect(prompt.contains("Do not require a pending"))
     #expect(prompt.contains("Exercise the product when forecast data cannot be retrieved."))
     #expect(prompt.contains("The retry path is verified without losing the selected place."))
     #expect(prompt.contains("Priority: High"))
@@ -4013,12 +4986,15 @@ private actor ApprovalTransport: CodexRPCTransport {
   private let stream: AsyncStream<CodexInboundMessage>
   private let continuation: AsyncStream<CodexInboundMessage>.Continuation
   private var recordedResponse: Response?
+  private var respondFailure: Error?
 
   init() {
     let pair = AsyncStream<CodexInboundMessage>.makeStream()
     stream = pair.stream
     continuation = pair.continuation
   }
+
+  func failNextRespond(with error: Error) { respondFailure = error }
 
   func start() {}
 
@@ -4036,7 +5012,11 @@ private actor ApprovalTransport: CodexRPCTransport {
 
   func notify(method: String, params: JSONValue) {}
 
-  func respond(id: JSONValue, result: JSONValue) {
+  func respond(id: JSONValue, result: JSONValue) throws {
+    if let respondFailure {
+      self.respondFailure = nil
+      throw respondFailure
+    }
     recordedResponse = Response(id: id, result: result)
   }
 

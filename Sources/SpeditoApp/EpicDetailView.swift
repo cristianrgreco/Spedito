@@ -194,7 +194,7 @@ struct EpicDetailView: View {
       await model.restoreEpicPlanningConversation(for: epic)
       startPlanningIfNeeded()
     }
-    .onChange(of: model.canPlanEpic) { _, _ in
+    .onChange(of: canPlanThisEpic) { _, _ in
       startPlanningIfNeeded()
     }
     .onChange(of: conversation?.isComplete == true) { _, isComplete in
@@ -240,8 +240,7 @@ struct EpicDetailView: View {
   }
 
   private var conversation: EpicPlanningConversationState? {
-    guard model.epicPlanningConversation?.epicID == epic.id else { return nil }
-    return model.epicPlanningConversation
+    model.epicPlanningConversation(for: epic.id)
   }
 
   private var detailSize: CGSize {
@@ -257,6 +256,12 @@ struct EpicDetailView: View {
       && !latestEpic.hasAnalyzedMetadata
       && activeEpicTickets.isEmpty
       && proposedEpicSuggestions.isEmpty
+  }
+
+  private var canPlanThisEpic: Bool {
+    model.canPlanEpic
+      && conversation?.isRunning != true
+      && conversation?.isGeneratingPlan != true
   }
 
   private var canSave: Bool {
@@ -434,7 +439,7 @@ struct EpicDetailView: View {
       !didStartPlanning,
       isOpen,
       needsInitialPlanning,
-      model.canPlanEpic
+      canPlanThisEpic
     else { return }
     didStartPlanning = true
     model.planEpic(latestEpic)
@@ -894,8 +899,7 @@ struct EpicPlanningConversationPanel: View {
   private let otherChoice = EpicPlanningAnswerSubmission.otherChoice
 
   private var conversation: EpicPlanningConversationState? {
-    guard model.epicPlanningConversation?.epicID == epic.id else { return nil }
-    return model.epicPlanningConversation
+    model.epicPlanningConversation(for: epic.id)
   }
 
   private var analyst: AgentProfile? {
@@ -1078,7 +1082,7 @@ struct EpicPlanningConversationPanel: View {
             conversation.isGeneratingPlan
             ? "is preparing the epic and tickets…"
             : "is thinking…",
-          onStop: model.cancelEpicPlanning
+          onStop: { model.cancelEpicPlanning(epicID: epic.id) }
         )
       } else if !conversation.questions.isEmpty {
         HStack {

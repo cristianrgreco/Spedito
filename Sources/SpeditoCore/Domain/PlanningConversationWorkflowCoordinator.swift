@@ -209,6 +209,7 @@ public final class PlanningConversationWorkflowCoordinator {
   private let onSnapshotChange: (PlanningConversationWorkflowSnapshot) -> Void
   private let onEpicConversationChange: (EpicPlanningConversationState, String?) -> Void
   private let onOwnerNotification: (OwnerNotification) async -> Void
+  private let onResolveOwnerNotification: (UUID, OwnerNotificationTarget) async -> Void
   private let onSelectedActivityChange: (UUID, [ActivityEvent]) -> Void
   private let onReloadSelectedProduct: (UUID) async -> Void
 
@@ -230,6 +231,7 @@ public final class PlanningConversationWorkflowCoordinator {
     onSnapshotChange: @escaping (PlanningConversationWorkflowSnapshot) -> Void,
     onEpicConversationChange: @escaping (EpicPlanningConversationState, String?) -> Void,
     onOwnerNotification: @escaping (OwnerNotification) async -> Void,
+    onResolveOwnerNotification: @escaping (UUID, OwnerNotificationTarget) async -> Void,
     onSelectedActivityChange: @escaping (UUID, [ActivityEvent]) -> Void,
     onReloadSelectedProduct: @escaping (UUID) async -> Void
   ) {
@@ -244,6 +246,7 @@ public final class PlanningConversationWorkflowCoordinator {
     self.onSnapshotChange = onSnapshotChange
     self.onEpicConversationChange = onEpicConversationChange
     self.onOwnerNotification = onOwnerNotification
+    self.onResolveOwnerNotification = onResolveOwnerNotification
     self.onSelectedActivityChange = onSelectedActivityChange
     self.onReloadSelectedProduct = onReloadSelectedProduct
   }
@@ -355,6 +358,12 @@ public final class PlanningConversationWorkflowCoordinator {
           reply.proposal,
           to: item,
           store: store
+        )
+        // A refinement that completes without questions ends the wait any
+        // earlier question notification announced for this ticket.
+        await onResolveOwnerNotification(
+          context.product.id,
+          OwnerNotificationTarget(kind: .ticket, id: item.id)
         )
         sourceComment = try? await store.appendComment(
           workItemID: item.id,
@@ -751,7 +760,7 @@ public final class PlanningConversationWorkflowCoordinator {
           productID: context.product.id,
           kind: .newReply,
           target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-          title: "\(recipient.name) replied on \(epic.title)",
+          title: "\(recipient.name) replied on \(epic.displayTitle)",
           body: reply.message,
           createdAt: agentMessage.createdAt
         )

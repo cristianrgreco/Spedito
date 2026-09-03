@@ -7,7 +7,6 @@ struct ProductOnboardingView: View {
   var body: some View {
     ZStack {
       ProductOnboardingBackdrop()
-        .ignoresSafeArea(.container, edges: .top)
 
       VStack(spacing: 22) {
         Image(systemName: "shippingbox.fill")
@@ -46,6 +45,7 @@ struct ProductOnboardingView: View {
       .padding(.vertical, 40)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .extendsUnderHiddenTitleBar()
     .sheet(isPresented: $showingProductLibrary) {
       ProductLibraryView(
         isPresented: $showingProductLibrary,

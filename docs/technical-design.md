@@ -108,8 +108,11 @@ for the same key. The old names remain accepted only by these migration and
 sandbox-denial paths; new data, runtime profiles, and artifacts use Spedito.
 Initial tables cover:
 
-- products with an indexed active/archive lifecycle state and a durable
-  curated display-color token;
+- products with an indexed active/archive lifecycle state, a durable curated
+  display-color token, and the product's durable ticket key counter — the
+  single allocation source for `T` keys, advanced inside the allocating
+  transaction and never rolled back by a rejection, so retired keys are never
+  reused;
 - work items and immutable contract versions;
 - Story/Task/Bug work-item classification and an optional epic foreign key;
   epic Created/Planned/In progress/Ready to complete progress remains derived
@@ -124,7 +127,10 @@ Initial tables cover:
 - built-in and custom persona identities, governed capability archetypes, and
   active/archive state;
 - ticket-suggestion sessions, proposals, proposal dependencies, and accepted
-  work-item dependency edges;
+  work-item dependency edges; a persisted proposal batch allocates final
+  durable ticket keys from the product counter and substitutes batch-internal
+  temporary references in its prose, so acceptance copies the reviewed key and
+  text verbatim instead of renumbering;
 - sprints, sprint assignments, forecast slots, dependency admission, internal
   safety limits, and frozen ticket snapshots;
 - immutable retrospective notes and action candidates from team runs, product
@@ -154,24 +160,32 @@ repeat work while the former shared database remains intact as a recovery
 backup. Runtime persistence contains no `schema_migrations` table or historical
 migration chain.
 
-Schema version 2 is the single upgrade a released database can need. It adds
-imported-repository and repository-knowledge provenance, remote repository
-connections, safe synchronization attempts, immutable publication attempts and
-their pull-request snapshots, external comment provenance and GitHub review
-context, a non-null candidate delivery kind, durable owner notifications, and
-durable agent-run execution constraints; it generalizes demo sessions from
-accepted candidates to any launch source; and it clears the placeholder
-draft-sprint goal. Status-specific compare-and-swap updates guard every remote
-transition, and active-operation partial indexes enforce one synchronization,
-one publication, and one repository-knowledge run at a time per Product. The
-migration runs in one immediate transaction with foreign-key enforcement in
-force and the resulting version validated before commit.
+Schema version 2, shipped by 0.2.0, is the single upgrade a released database
+can need. It adds imported-repository and repository-knowledge provenance,
+remote repository connections, safe synchronization attempts, immutable
+publication attempts and their pull-request snapshots, external comment
+provenance and GitHub review context, a non-null candidate delivery kind,
+durable owner notifications, durable agent-run execution constraints,
+delivery-settlement operation and candidate-version identities, immutable
+candidate review bindings, cumulative token usage that does not reset with
+context compaction, the durable ticket key counter, and the owner-approved demo
+kind on proposals and tickets. It generalizes demo sessions from accepted
+candidates to any launch source, clears the placeholder draft-sprint goal, and
+re-keys still-proposed ticket suggestions from the new counter so the key a
+proposal shows is the key the accepted ticket keeps. Status-specific
+compare-and-swap updates guard every remote transition, and active-operation
+partial indexes enforce one synchronization, one publication, and one
+repository-knowledge run at a time per Product. The upgrade runs in one
+immediate transaction with foreign-key enforcement in force.
 
-Versions the application only ever used before its first release are not
-reproduced. Development databases that carry one of those versions cannot be
-upgraded and are rejected with an explanation rather than repaired, and a
-database written by a newer Spedito is rejected as well. A fresh install and an
-upgraded 0.1.0 database are held to producing byte-identical schemas by test.
+Every step of the upgrade checks for the object it creates first, so the
+upgrade is idempotent. Development builds between 0.1.0 and 0.2.0 stamped
+their databases with versions 3 through 6; those fold forward to version 2
+through the same upgrade without data loss. A database stamped with version 2
+that lacks the objects the version implies, any other unreleased version, and a
+database written by a newer Spedito are rejected with an explanation rather
+than repaired. A fresh install and an upgraded 0.1.0 database are held to
+producing identical schemas by test.
 
 The application catalog is the set of valid product workspace identifiers and
 their databases. Cross-product operations enumerate these stores; product
@@ -263,6 +277,92 @@ worktree, allocated loopback port, bounded captured output, and recoverable
 failure explanation. The process object itself remains an in-memory operating
 system resource and is never inferred to be alive merely because SQLite says it
 was running.
+
+Before candidate creation, `TicketDeliveryWorkflowCoordinator` validates the structured execution
+result and its Demo recipe against the actual ticket-workspace changes. The model-facing JSON schema
+is a discriminated union on `presentation.kind` that mirrors
+`DemoLaunchSpecificationValidator`'s structural rules per branch: `artifact` forbids commands and
+takes an inert workspace-relative file path; `mac_application` takes a `.app` path with null launch
+command, port, and readiness; `command_output` requires a launch command and no path; `static_web`
+takes a non-root workspace-relative directory with no commands, port, or readiness; `browser`
+requires a launch command and an HTTP readiness check with loopback paths beginning with `/`;
+`terminal_application` requires a launch command whose executable is a workspace-relative path
+containing `/` (a bare tool name such as `go` or `python3` is rejected) with null path, port, and
+readiness, and its command timeout is ignored at launch because the session is interactive. Path
+content rules are stated in the branch descriptions but enforced only by the validator's hard-stops
+inside the turn's repair loop: schema `pattern` constraints were tried live and rejected
+(2026-08-29) because constrained decoding then fabricates conforming-but-false paths and
+mis-selects kinds. Empty
+command, title, and presentation-path fields stay inexpressible. The demo kind enum is itself derived per
+delivery turn from a demo policy. A ticket that stores an owner-approved demo kind — one of the six
+presentation kinds, `none` for code-only work, or SQL `NULL` for a pre-contract ticket — is the
+primary source: a contracted kind receives a schema admitting only that kind's branch, and a `none`
+contract admits only a null demo, so a contract-breaking recipe is structurally inexpressible instead
+of a repair turn. The suggestion generator requires the kind on every proposal under a mechanical
+product-surface rule — setup and story tickets take the product surface, design tickets about a
+visible interface take `static_web` (an HTML screen set or prototype), research and document-first
+design outcomes take `artifact` — persistence copies it from the accepted proposal onto the work item, and only
+the product owner — through the contested-kind question or an owner decision — may change it; a
+contracted delivery that concludes the kind is genuinely wrong returns `awaiting_owner` with
+`proposedDemoKind`, Spedito stores the question with its own canonical decision options, and the
+owner's exact answer option updates the work item durably before the continuation turn runs
+(`DemoKindContestPolicy`, `SQLiteStore.updateWorkItemDemoKind`). For a `NULL` contract the role
+heuristic survives as the fallback: a UX designer ticket whose contract promises a reviewable
+prototype is contracted by `DeliveryDemoPolicy` to `static_web` alone, exactly as a planned design
+ticket is, so the schema admits nothing else; the prompt states that derived medium, and a contest
+from such a ticket uses the derived kind as the "keep" option. Until 2 September 2026 that fallback
+admitted `browser` and `mac_application` too, and measured pre-contract UX turns committed to
+`browser` whenever the model emitted `launchCommand` or `readiness` before `presentation`, a key
+order the grammar does not fix and no wording controls; the product owner chose the structural
+narrowing. Every other pre-contract delivery turn keeps the full enum. A validation failure receives
+at most two
+focused repair turns on the same thread, each constrained by the same schema — including the
+delivering turn's narrowed demo policy — and the latest exact
+failure. Demo-specific repair guidance distinguishes a Spedito-hosted `static_web` directory from an
+inert artifact, bounded command output, an interactive terminal program (`terminal_application`,
+whose launch command names the built workspace-relative executable), and a product-owned browser
+service. Delivery and review guidance both forbid wrapping the product in another surface — a Cocoa
+window around a terminal program, a web page that embeds or launches a Mac app, a bundle around a
+script — to satisfy a contracted medium; the delivery contests the medium and the tech lead returns
+a wrapper with changes requested. A design prototype is not a wrapper: an HTML mock of a native
+window or of a web screen is `static_web`, never `mac_application` or `browser`. The delivery
+guidance carries one literal, validator-passing recipe shape per kind, presentation object first,
+and the catalogue is role-specific (`CodexLifecycleGuidance.ticketDeliveryInstructions(mode:role:)`):
+implementation roles read all six shapes, while the UX designer reads a two-shape design catalogue
+— `static_web` for a prototype or HTML screen set, `artifact` only for an explicitly document-first
+contract — followed by the rule that a design delivery never returns `browser`, `mac_application`,
+`command_output`, or `terminal_application`. Pre-contract UX delivery samples copied the shared
+catalogue's `browser` shape verbatim, placeholder path included, or handed the HTML directory over
+as a bundle whenever those shapes were in the designer's instructions. Repair never discards the
+workspace or repeats successful checks; a second invalid repair settles as a reviewable failed run
+whose existing thread and workspace remain available to **Retry work**.
+
+Acceptance of a repository-changing candidate also publishes or updates the
+product's canonical demo recipe knowledge page for that recipe's presentation
+kind (`SQLiteStore.upsertCanonicalDemoRecipePage`, rendered by
+`CanonicalDemoRecipeKnowledge` with the exact recipe JSON and a plain-language
+summary, under the canonical Operations section). The page is durable domain
+state derived at acceptance: owner-visible, included in every delivery run's
+context for the ticket's contracted kind with the instruction to reuse it and
+extend it only for a genuinely new surface, authoritative over README wording
+for how the demo runs, and idempotent under re-acceptance after a preserved
+interruption. It is never read back as authority for launching accepted
+versions — `AcceptedAppLaunchPolicy` still reads candidate rows — and no
+delivery run may update it directly. Within a ticket's revisions the Layer 1
+recipe pin wins; the canonical page seeds the first turn of a new ticket.
+
+A revision or continuation turn does not re-decide a demo contract its feedback
+did not name. When tech lead feedback requests no demo change,
+`DemoRecipeRevisionPolicy` pins the prior candidate's validated demo recipe: the
+revision prompt states the pinned recipe, and the coordinator replaces the
+turn's returned demo with it before validation, so an unrelated fix can neither
+change a working recipe nor fail a demo hard-stop it was not asked to touch. A
+result awaiting the product owner keeps its contractual null demo. Recovered
+continuations derive the same pin from durable state — the sent-back candidate
+row and the ticket comments made since it by anyone other than the implementer —
+so a demo-failure send-back or a reviewer naming the demo re-opens the recipe
+while unrelated direction does not. Only feedback that names the demo may change
+it.
 
 Every consequential state transition and its audit event are written in one
 transaction. Source, worktrees, previews, screenshots, build outputs, and large
@@ -714,12 +814,34 @@ GitHub to be available.
 ### 6.3 Managed candidate demos
 
 Every newly completed repository-changing delivery includes a typed demo recipe.
-Supported presentations are a loopback browser preview, a workspace-relative macOS
-application bundle, an inert workspace-relative artifact from an explicit
-allowlist, or captured output from a bounded scenario. Recipes contain executable
-and argument arrays, never shell command strings. Working directories,
-applications, and artifacts resolve inside the reviewed checkout, browser URLs
-contain only a path, and Spedito allocates and injects the loopback port.
+Supported presentations are a product-owned loopback browser preview, a
+Spedito-hosted static web prototype, a workspace-relative macOS application
+bundle, an interactive terminal program opened in Terminal.app from a built
+workspace-relative executable, an inert workspace-relative artifact from an
+explicit allowlist, or captured output from a bounded scenario. Product browser recipes contain
+executable and argument arrays, never shell command strings. Working directories,
+applications, prototypes, and artifacts resolve inside the reviewed checkout;
+product browser URLs contain only a path, and Spedito allocates and injects their
+loopback port.
+
+A static web recipe names a non-root workspace-relative directory containing
+`index.html` and has no preparation command, launch command, port variable, or
+readiness declaration. Spedito owns its loopback server and lifecycle, serves
+only regular files whose resolved path remains inside that exact directory, caps
+individual resources, disables caching and external connections through response
+policy, smoke-tests the entry page, and stops the server with the demo session.
+It therefore gives a blank Product an interactive prototype path without
+treating a machine runtime as approved product infrastructure.
+
+The recipe is the executable form of the readiness sequence the candidate
+documents in the repository, its completion handoff, or proposed Environments
+knowledge: every documented build, generation, or other preparation step the
+product needs before it runs appears in `preparationCommands` in documented
+order, so the clean-checkout smoke test proves the same claim the documentation
+makes. Delivery guidance forbids documenting a readiness step or check as
+verified unless the run executed it and reported it, and the tech lead treats a
+documented preparation step that the recipe omits as a materially false
+operational instruction that blocks review.
 
 Local outcomes have no demo recipe or demo session. Their **Ready for demo**
 presentation is an in-app review card containing the concise outcome, an
@@ -734,7 +856,21 @@ automate desktop interaction. For a macOS app recipe, sandboxed preparation
 builds the bundle and smoke testing verifies its workspace-relative path and
 executable without launching it. Only Spedito opens the validated bundle through
 Launch Services, and only after the product owner explicitly chooses **Demo** or
-opens an accepted app version. Rendered markdown strips non-HTTPS links, and the
+opens an accepted app version. For a terminal app recipe, sandboxed preparation
+builds the program and smoke testing requires the launch command's
+workspace-relative executable to be a regular, non-symlink, executable file
+inside the reviewed checkout without running it, because an interactive
+program would hang a bounded smoke. At launch Spedito writes a zsh launcher
+script (`TerminalDemoLaunchScript`) into the preview's
+`.spedito-demo-runtime/terminal/` directory with mode 0755 and opens it with
+Terminal.app through `NSWorkspace.open(_:withApplicationAt:configuration:)`;
+no AppleScript, Automation consent, or shell string is involved. The script
+sets the window title, moves into the recipe's working directory, exports the
+same `TMPDIR`, `XDG_CACHE_HOME`, and `SPEDITO_DEMO_DATA_DIRECTORY` that
+sandboxed demo commands receive, records its pid, and `exec`s the program. The
+program then runs on the host in the owner's login session with the owner's
+privileges, outside the `spedito-demo` sandbox, exactly as a Mac app bundle
+does once Launch Services opens it. Rendered markdown strips non-HTTPS links, and the
 application URL-opening boundary independently permits only credential-free
 HTTPS destinations with a host.
 
@@ -743,8 +879,8 @@ worktree pinned to the current integrated SHA and smoke-tests the recipe without
 opening its presentation. A candidate enters **Ready for demo** only after that
 test succeeds. The product owner's **Demo** action prepares the same exact
 revision, starts or reuses a managed service where the recipe requires one, and
-opens the browser, validated macOS application, inert artifact, or captured
-result.
+opens the browser, validated macOS application, Terminal window running the
+reviewed program, inert artifact, or captured result.
 
 Multiple independently reviewed candidates may integrate, receive any necessary
 conflict resolution and focused re-review, and prepare demos in parallel.
@@ -805,6 +941,15 @@ or configuration files, while only the current candidate is writable and
 credentials and `.env` files remain denied. Demo networking is enabled only for
 `localhost` and `127.0.0.1`.
 
+Before preparation runs, a reused preview checkout is reset to a clean detached
+state (tracked modifications restored, untracked and ignored artifacts removed)
+unless a live demo session may still be serving from it, so artifacts a previous
+preparation could not delete never poison the next attempt. A managed access
+probe then proves the sandbox honors the full create-and-delete lifecycle the
+product's own scripts rely on; a denial fails fast as a retryable host failure.
+Owner-facing preparation failure text rewrites absolute workspace paths as
+workspace-relative paths before it reaches an alert or a work log entry.
+
 Bounded commands disconnect their candidate-scoped App Server after capturing
 the result. Long-running commands retain that connection and use its process
 identifier while streaming output. Recipes must remain in the foreground;
@@ -813,12 +958,25 @@ detached or daemonized services are invalid because they cannot provide reliable
 disconnection terminate the managed command session. Feedback and approval
 additionally remove the acceptance preview worktree.
 
+A terminal program is owned through its pid, never through the Terminal
+window. The launcher reads the pid the script recorded before `exec` (polling
+up to five seconds after the script opens; a pid that never appears is a host
+`couldNotOpen` failure), keeps it as transient runtime state, and checks
+liveness with `kill(pid, 0)`. **Stop demo** sends `SIGTERM`, waits up to two
+seconds, then `SIGKILL`, and removes the pid file. Spedito never closes the
+Terminal window: like a browser tab, it may belong to the owner. Closing the
+window ends the program; the next **Open demo** sees the dead pid, drops the
+runtime, and relaunches. After a Spedito relaunch the durable session is marked
+stopped like every other kind and a stale pid file is ignored, never
+signalled.
+
 Repository analysis may return a structured imported-app launch proposal
-alongside product knowledge drafts. The proposal contains a validated browser
-`DemoLaunchSpecification` and exact snapshot evidence. It remains inert until
+alongside product knowledge drafts. The proposal contains a validated browser,
+macOS app, or terminal app `DemoLaunchSpecification` and exact snapshot
+evidence. It remains inert until
 an independent tech lead returns a separate decision for that exact proposal.
 An approved proposal is stored with its repository-analysis run and exact
-`analyzedSHA`. Native macOS application, executable artifact, and unsupported
+`analyzedSHA`. Artifact, command-output, executable-artifact, and unsupported
 URL presentations fail Core validation. If a proposed recipe fails Core
 validation, the same schema-constrained analyzer thread receives the exact
 validation failure and one correction turn. Product knowledge drafts from the
@@ -834,9 +992,10 @@ draft list, Core rejects knowledge mutations for the run, and the same independe
 review and evidence checks apply. Repository prose is never parsed or executed as
 an implicit recipe.
 
-The selected product's **App versions** workspace combines the approved imported
-browser or macOS app recipe, when present, with every accepted browser or macOS
-app candidate that has a valid schema-versioned recipe. Entries are ordered by
+The selected product's **Demos** workspace combines the approved imported
+browser, macOS app, or terminal app recipe, when present, with every accepted
+browser, static web prototype, macOS app, or terminal app candidate that has a
+valid schema-versioned recipe. Entries are ordered by
 their publication or acceptance time and the latest is selected by default. Any listed version
 recreates a managed preview from its exact imported or integrated SHA. Durable
 `DemoSession` identity is `(source_kind, launch_id)`, so imported analysis
@@ -852,9 +1011,9 @@ removes the previous latest accepted version's managed preview; historical
 accepted candidates and the imported source remain selectable.
 Accepting artifact or command-output evidence does not alter app version history
 or stop its current runtime. On restart, a previously active durable session is
-marked stopped rather than being mistaken for a live process. Browser tabs and
-shared document-viewer windows are not force-closed because they may belong to
-the product owner rather than the demo session.
+marked stopped rather than being mistaken for a live process. Browser tabs,
+Terminal windows, and shared document-viewer windows are not force-closed
+because they may belong to the product owner rather than the demo session.
 
 ## 7. Codex adapter boundary
 
@@ -931,21 +1090,33 @@ product-and-profile snapshot; presentation remains open and editable on failure
 instead of dismissing before persistence completes.
 
 Delivery selects the named `spedito-delivery` profile: Codex's minimal
-platform/runtime reads, one writable ticket worktree, exact read-only access to
-the active product's Git metadata and `.spedito` control directory,
-credential and other-product exclusions, and no network. The legacy shared
-database remains denied. The profile deliberately does not deny
-the ticket worktree's Spedito ancestor: the active macOS sandbox denies
-metadata traversal at that ancestor before a more specific runtime workspace
-root can take effect. Other products, sibling ticket worktrees, and the control
-plane instead remain inaccessible because delivery has no broad host read
-grant. Homebrew, compiler, SDK, local service, and other system capabilities
+platform/runtime reads, read-only system typeface directories
+(`/System/Library/Fonts` and `/Library/Fonts`), one writable ticket worktree,
+exact read-only access to the active product's Git metadata, credential and
+other-product exclusions, and no network. The typeface grant exists because the
+minimal read set leaves CoreText without fonts, so `sips`, `qlmanage`, and
+CoreText rendered every PDF or PNG a team member checked with blank text;
+designers responded by shipping hand-drawn pixel glyphs. The real-sandbox
+contract test proves that standard-font text rasterises under both managed
+profiles. No agent profile grants the `.spedito` control directory. That
+directory holds only `product.sqlite` and its journal files, so granting it is
+granting the live database; `Product Workspaces` is denied outright and the
+active product's `.git` directory is re-granted as a more specific read, the way
+the repository-analysis profile re-grants its snapshot beneath `":root"="deny"`.
+Naming database files rather than directories is what previously left the real
+per-product databases uncovered while denying a `spedito.sqlite` path that no
+longer exists. The profile deliberately does not deny the ticket worktree's
+Spedito ancestor under `Run Worktrees`: the active macOS sandbox denies metadata
+traversal at that ancestor before a more specific runtime workspace root can take
+effect. Sibling ticket worktrees remain inaccessible because delivery has no
+broad host read grant, and cross-worktree requests stay an approval-policy
+concern. Homebrew, compiler, SDK, local service, and other system capabilities
 outside the minimal runtime are requested through App Server approvals for the
 current turn. Delivery instructions prohibit copying or staging the workspace
 under `/tmp` or another root as a permission workaround. Each delivery thread
 overrides that named profile with read-only access to the exact active product's
-central `.git` and `.spedito` directories. The assigned worktree remains
-read/write, but Git metadata and product control data are not writable. Delivery
+central `.git` directory. The assigned worktree remains read/write, but Git
+metadata is not writable. Delivery
 turns inherit the thread-scoped profile;
 they do not reselect the process-wide delivery profile at `turn/start`, because
 that would discard the product-specific Git rule. The Spedito-owned App
@@ -1054,8 +1225,13 @@ parent PreviewWorktrees denial with a child exception because ordinary recursive
 directory creation must be able to traverse the existing parent.
 
 The broad Foundation cache root has a more-specific delivery deny for Spedito's
-PreviewWorktrees. Structured delivery requests are also checked against canonical
-Spedito product, Run, Integration, and Preview workspace roots. Own-ticket descendants
+PreviewWorktrees. Delivery requests are also checked against canonical
+Spedito product, Run, Integration, and Preview workspace roots. A command
+approval is checked the same way as a structured permissions request: Codex
+bundles a command's extra access under `additionalPermissions`, so the capability
+rules read that field rather than treating a command as opaque. Leaving it
+unread previously let a command carry filesystem access that no policy
+inspected, and made any command eligible to become a saved reusable grant. Own-ticket descendants
 retain their assigned workspace access; overlapping parent, sibling, or managed
 execution paths are declined automatically and persisted with a policy-denied status.
 They render as a non-actionable **Protected Spedito storage** work log item authored
@@ -1343,7 +1519,7 @@ then starts at most one child operation for the run identity.
 
 | State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
 | --- | --- | --- | --- | --- | --- |
-| Queued for capacity | Current Codex limits or safety back-pressure block an otherwise eligible implementation | `AgentRun.status = queued` plus typed constraint, observation time, optional retry time, and bounded evidence in SQLite | **Waiting for Codex capacity** or **Waiting for safe capacity**, an automatic-recovery explanation, and retry time/evidence when available | Stop or pause the Sprint through the existing delivery controls; no manual retry is required | A fresh coordinator preserves the wait while observations are unavailable or stale, clears it only from current available capacity, and admits one operation |
+| Queued for capacity | Current Codex limits or safety back-pressure block an otherwise eligible implementation | `AgentRun.status = queued` plus typed constraint, observation time, optional retry time, and bounded evidence in SQLite | **Usage limit reached** or **Codex safety pause**, an automatic-recovery explanation, and retry time/evidence when available | Stop or pause the Sprint through the existing delivery controls; no manual retry is required | A fresh coordinator preserves the wait while observations are unavailable or stale, clears it only from current available capacity, and admits one operation |
 
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral
@@ -1436,15 +1612,18 @@ Only reviewed knowledge is exposed as current truth. Basic “why/how” queries
 are part of the first vertical slice and must return citations or an explicit
 unknown.
 
-Agent instructions provide the exact active product database path and exact
-column schemas for stable read-only views covering tickets, dependencies, Work
-logs, epics, sprints, verified knowledge, decisions, provenance, retrospectives,
-and team members. This includes the durable ticket key as `item_key`. Planning
-prompts contain a bounded snapshot of active ticket contracts and selected
-verified knowledge, while other agent workflows can discover broader evidence
-live with read-only SQL and Git. Agents re-query mutable facts before
-consequential conclusions so a long-running conversation does not mistake an
-old read for current state.
+Product chat instructions alone provide the exact active product database path
+and exact column schemas for stable read-only views covering tickets,
+dependencies, work logs, epics, sprints, verified knowledge, decisions,
+provenance, retrospectives, and team members. This includes the durable ticket
+key as `item_key`. Chat re-queries mutable facts before consequential
+conclusions so a long-running conversation does not mistake an old read for
+current state. Every other agent workflow receives bounded prompt context of
+ticket contracts and selected verified knowledge, plus product Git history
+where its contract allows repository inspection. Their instructions do not
+name the Spedito database: it sits outside the delivery sandbox, so an
+invitation to read it can only surface as an owner permission request for
+Spedito's own control plane.
 
 Canonical page templates store an empty body until verified knowledge exists;
 empty-state instructions remain a presentation concern. Delivery context

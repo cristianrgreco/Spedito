@@ -166,12 +166,14 @@ struct ProductLibraryView: View {
         LazyVStack(spacing: 4) {
           if visibleProducts.isEmpty {
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-              ContentUnavailableView(
-                "No active products",
-                systemImage: "shippingbox",
-                description: Text("Create a product or restore one from the archive.")
-              )
-              .frame(maxWidth: .infinity, minHeight: 220)
+              if !displaysArchivedProducts || visibleArchivedProducts.isEmpty {
+                ContentUnavailableView(
+                  "No active products",
+                  systemImage: "shippingbox",
+                  description: Text("Create a product or restore one from the archive.")
+                )
+                .frame(maxWidth: .infinity, minHeight: 220)
+              }
             } else if !displaysArchivedProducts || visibleArchivedProducts.isEmpty {
               ContentUnavailableView.search(text: searchText)
                 .frame(maxWidth: .infinity, minHeight: 220)

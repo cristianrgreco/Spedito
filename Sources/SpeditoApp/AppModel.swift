@@ -180,6 +180,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     set { productLibraryFeature.archivedProducts = newValue }
   }
   @Published private(set) var ticketAttentionsByProductID: [UUID: [TicketAttention]] = [:]
+  @Published private(set) var epicPlanReviewsByProductID: [UUID: [EpicPlanReviewAttention]] = [:]
   @Published private(set) var ticketAttentionNavigationRequest: TicketAttentionNavigationRequest?
   @Published private(set) var ownerNotificationNavigationRequest:
     OwnerNotificationNavigationRequest?
@@ -324,8 +325,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   var ticketConversationResults: [UUID: TicketConversationSessionResult] {
     planningConversationFeature.snapshot.ticketConversationResults
   }
-  var epicPlanningConversation: EpicPlanningConversationState? {
-    epicPlanningFeature.snapshot.conversation
+  func epicPlanningConversation(for epicID: UUID) -> EpicPlanningConversationState? {
+    epicPlanningFeature.snapshot.conversations[epicID]
   }
   @Published private(set) var isAskingKnowledge = false
   var refiningWorkItemID: UUID? {
@@ -587,19 +588,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         isTicketConversationRunning: isTicketConversationMessageRunning,
         isEpicConversationRunning: isEpicConversationMessageRunning,
         refiningWorkItemID: refiningWorkItemID,
-        isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
-        isEpicPlanGenerating: epicPlanningConversation?.isGeneratingPlan == true
+        isEpicPlanningRunning: epicPlanningFeature.snapshot.isAnyConversationRunning,
+        isEpicPlanGenerating: epicPlanningFeature.snapshot.isAnyPlanGenerating
       )
     },
     workspaceURLProvider: { productID in
       try Self.productWorkspaceURL(productID: productID)
     },
     inheritedInstructions: { [weak self] product in
-      self?.inheritedAgentInstructions(
-        for: product,
-        includesMandatoryKnowledge: true,
-        allowsRepositoryInspection: true
-      ) ?? ""
+      self?.inheritedAgentInstructions(for: product) ?? ""
     },
     onReloadActivity: { [weak self] productID in
       try await self?.reloadSprintPlanningActivity(productID: productID)
@@ -667,8 +664,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
           isSuggestionGenerationRunning: suggestionBatches.contains {
             $0.session.status == .generating
           },
-          isEpicPlanningRunning: epicPlanningConversation?.isRunning == true,
-          isEpicPlanGenerationRunning: epicPlanningConversation?.isGeneratingPlan == true
+          isEpicPlanningRunning: epicPlanningFeature.snapshot.isAnyConversationRunning,
+          isEpicPlanGenerationRunning: epicPlanningFeature.snapshot.isAnyPlanGenerating
         )
       },
       workspaceProvider: { productID in
@@ -691,6 +688,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       },
       onOwnerNotification: { [weak self] notification in
         await self?.publishOwnerNotification(notification)
+      },
+      onResolveOwnerNotification: { [weak self] productID, target in
+        await self?.ownerNotificationCoordinator.resolve(
+          productID: productID,
+          target: target
+        )
       },
       onSelectedActivityChange: { [weak self] productID, activity in
         guard self?.selectedProductID == productID else { return }
@@ -720,7 +723,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       try Self.productWorkspaceURL(productID: productID)
     },
     inheritedInstructions: { [weak self] product in
-      self?.inheritedAgentInstructions(for: product) ?? ""
+      self?.conversationAgentInstructions(for: product) ?? ""
     },
     modelOptions: { [weak self] in self?.codexModels ?? [] },
     isShuttingDown: { [weak self] in self?.isShuttingDown ?? true },
@@ -1014,23 +1017,44 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     }
   }
 
-  private func fetchTicketAttentions(
-    products: [Product]
-  ) async -> [UUID: [TicketAttention]] {
+  private func fetchOwnerAttention(
+    product: Product,
+    store: SQLiteStore
+  ) async throws -> (
+    attentions: [TicketAttention], planReviews: [EpicPlanReviewAttention]
+  ) {
+    (
+      attentions: try await fetchTicketAttentions(product: product, store: store),
+      planReviews: EpicPlanReviewAttention.derive(
+        product: product,
+        epics: try await store.fetchEpics(productID: product.id),
+        batches: try await store.fetchOutstandingTicketSuggestionBatches(
+          productID: product.id
+        )
+      )
+    )
+  }
+
+  private func refreshOwnerAttentionState(products: [Product]) async {
     var attentionsByProductID: [UUID: [TicketAttention]] = [:]
+    var planReviewsByProductID: [UUID: [EpicPlanReviewAttention]] = [:]
     for product in products {
       guard
         let productStore = store(for: product.id),
-        let attentions = try? await fetchTicketAttentions(
+        let derived = try? await fetchOwnerAttention(
           product: product,
           store: productStore
         )
       else { continue }
-      if !attentions.isEmpty {
-        attentionsByProductID[product.id] = attentions
+      if !derived.attentions.isEmpty {
+        attentionsByProductID[product.id] = derived.attentions
+      }
+      if !derived.planReviews.isEmpty {
+        planReviewsByProductID[product.id] = derived.planReviews
       }
     }
-    return attentionsByProductID
+    ticketAttentionsByProductID = attentionsByProductID
+    epicPlanReviewsByProductID = planReviewsByProductID
   }
 
   private func refreshTicketAttentions(productID: UUID) async {
@@ -1039,18 +1063,24 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productStore = store(for: productID)
     else {
       ticketAttentionsByProductID.removeValue(forKey: productID)
+      epicPlanReviewsByProductID.removeValue(forKey: productID)
       return
     }
     guard
-      let attentions = try? await fetchTicketAttentions(
+      let derived = try? await fetchOwnerAttention(
         product: product,
         store: productStore
       )
     else { return }
-    if attentions.isEmpty {
+    if derived.attentions.isEmpty {
       ticketAttentionsByProductID.removeValue(forKey: productID)
     } else {
-      ticketAttentionsByProductID[productID] = attentions
+      ticketAttentionsByProductID[productID] = derived.attentions
+    }
+    if derived.planReviews.isEmpty {
+      epicPlanReviewsByProductID.removeValue(forKey: productID)
+    } else {
+      epicPlanReviewsByProductID[productID] = derived.planReviews
     }
   }
 
@@ -1204,11 +1234,15 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await reloadSelectedProduct()
     }
     ownerNotificationCoordinator.dismissPresented(id: attention.id)
+    guard
+      let current = ticketAttentionsByProductID[attention.productID]?
+        .first(where: { $0.workItemID == attention.workItemID })
+    else { return }
     ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
-      productID: attention.productID,
-      sprintID: attention.sprintID,
-      workItemIDs: [attention.workItemID],
-      openWorkItemID: attention.workItemID
+      productID: current.productID,
+      sprintID: current.sprintID,
+      workItemIDs: [current.workItemID],
+      openWorkItemID: current.workItemID
     )
   }
 
@@ -1222,12 +1256,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
 
   func openTicketAttentions(for product: Product) async {
-    let attentions = ticketAttentionsByProductID[product.id] ?? []
     if selectedProductID != product.id {
       await selectProduct(product)
     } else {
       await reloadSelectedProduct()
     }
+    let attentions = ticketAttentionsByProductID[product.id] ?? []
     guard !attentions.isEmpty else { return }
     if let presentedOwnerNotification,
       attentions.contains(where: { $0.id == presentedOwnerNotification.id })
@@ -1302,17 +1336,37 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     productID: UUID,
     target: OwnerNotificationTarget
   ) async {
+    var navigatesAsTicketAttention = false
+    var navigatesAsEpicPlanReview = false
     if let notificationID {
-      let matchesOwnerNotification =
-        ownerNotificationsByProductID[productID]?.contains(where: {
-          $0.id == notificationID && $0.target == target
-        }) == true
-      let matchesTicketAttention =
-        target.kind == .ticket
-        && ticketAttentionsByProductID[productID]?.contains(where: {
-          $0.id == notificationID && $0.workItemID == target.id
-        }) == true
-      guard matchesOwnerNotification || matchesTicketAttention else { return }
+      func matches() -> (ownerNotification: Bool, attention: Bool, planReview: Bool) {
+        (
+          ownerNotification: ownerNotificationsByProductID[productID]?.contains(where: {
+            $0.id == notificationID && $0.target == target
+          }) == true,
+          attention: target.kind == .ticket
+            && ticketAttentionsByProductID[productID]?.contains(where: {
+              $0.id == notificationID && $0.workItemID == target.id
+            }) == true,
+          planReview: target.kind == .epic
+            && epicPlanReviewsByProductID[productID]?.contains(where: {
+              $0.id == notificationID && $0.epicID == target.id
+            }) == true
+        )
+      }
+      var match = matches()
+      if !match.ownerNotification, !match.attention, !match.planReview {
+        // A macOS notification can arrive before the in-memory caches load.
+        // Refresh from the store before concluding the click is stale.
+        await ownerNotificationCoordinator.refresh(productID: productID)
+        await refreshTicketAttentions(productID: productID)
+        match = matches()
+      }
+      guard match.ownerNotification || match.attention || match.planReview
+      else { return }
+      navigatesAsTicketAttention = !match.ownerNotification && match.attention
+      navigatesAsEpicPlanReview =
+        !match.ownerNotification && !match.attention && match.planReview
     }
     guard let product = products.first(where: { $0.id == productID }) else {
       return
@@ -1321,6 +1375,22 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       await selectProduct(product)
     } else {
       await reloadSelectedProduct()
+    }
+    // The reload refreshed the derived caches; a row whose owed decision has
+    // since been made must drop instead of navigating as attention.
+    if navigatesAsTicketAttention, let notificationID,
+      ticketAttentionsByProductID[productID]?
+        .contains(where: { $0.workItemID == target.id }) != true
+    {
+      ownerNotificationCoordinator.dismissPresented(id: notificationID)
+      return
+    }
+    if navigatesAsEpicPlanReview, let notificationID,
+      epicPlanReviewsByProductID[productID]?
+        .contains(where: { $0.epicID == target.id }) != true
+    {
+      ownerNotificationCoordinator.dismissPresented(id: notificationID)
+      return
     }
     guard ownerNotificationTargetExists(target) else {
       await ownerNotificationCoordinator.markRead(
@@ -1449,8 +1519,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   var canPlanEpic: Bool {
     canAutosuggestTickets
-      && epicPlanningConversation?.isRunning != true
-      && epicPlanningConversation?.isGeneratingPlan != true
   }
 
   var canRefineTicket: Bool {
@@ -1965,7 +2033,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       selectedProductID = product.id
       repositoryKnowledgeSnapshot = repositoryKnowledgeCoordinator.snapshot(for: product.id)
@@ -2103,7 +2171,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       selectedProductID = products.first?.id
       if let selectedProductID {
@@ -2144,7 +2212,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       guard let restored = products.first(where: { $0.id == product.id }) else {
         throw PersistenceError.recordNotFound("restored product \(product.id)")
@@ -2950,7 +3018,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         specification: specification
       )
     } catch {
-      errorMessage = error.localizedDescription
+      errorMessage = error.ownerFacingDescription
       return false
     }
   }
@@ -3253,11 +3321,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       launchID.uuidString.lowercased(),
       isDirectory: true
     )
-    if let existingPath = await storedDemoSession(
+    let storedSession = await storedDemoSession(
       productID: productID,
       sourceKind: sourceKind,
       launchID: launchID
-    )?.previewWorktreePath,
+    )
+    if let existingPath = storedSession?.previewWorktreePath,
       URL(fileURLWithPath: existingPath).standardizedFileURL
         != expectedPreviewURL.standardizedFileURL
     {
@@ -3266,11 +3335,16 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         worktreeURL: URL(fileURLWithPath: existingPath, isDirectory: true)
       )
     }
+    // A starting or ready session may still be serving files out of the
+    // reused checkout, so only then is the pre-preparation reset skipped.
+    let sessionMayBeLive =
+      storedSession.map { $0.status == .starting || $0.status == .ready } ?? false
     return try await gitWorkspaceManager.preparePreviewWorkspace(
       repositoryURL: repositoryURL,
       previewsRootURL: previewsRootURL,
       candidateID: launchID,
-      integratedSHA: revisionSHA
+      integratedSHA: revisionSHA,
+      resetsExistingCheckout: !sessionMayBeLive
     )
   }
 
@@ -3738,7 +3812,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   func presentExecutionError(_ error: Error, productID: UUID) {
     guard selectedProductID == productID else { return }
-    errorMessage = error.localizedDescription
+    errorMessage = error.ownerFacingDescription
   }
 
   private func eligibleImplementationRuns(
@@ -3845,14 +3919,11 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         else { return }
 
         let now = Date()
-        let contextUsedTokens =
-          notification.method == "thread/tokenUsage/updated"
-          ? notification.params["tokenUsage"]?["last"]?["totalTokens"]?.integerValue.map(Int.init)
-          : nil
-        let contextWindowTokens =
-          notification.method == "thread/tokenUsage/updated"
-          ? notification.params["tokenUsage"]?["modelContextWindow"]?.integerValue.map(Int.init)
-          : nil
+        let tokenUsage = notification.method == "thread/tokenUsage/updated"
+          ? notification.params["tokenUsage"] : nil
+        let contextUsedTokens = tokenUsage?["last"]?["totalTokens"]?.integerValue.map(Int.init)
+        let contextWindowTokens = tokenUsage?["modelContextWindow"]?.integerValue.map(Int.init)
+        let cumulativeUsedTokens = tokenUsage?["total"]?["totalTokens"]?.integerValue.map(Int.init)
         let didCompact =
           notification.method == "item/completed"
           && notification.params["item"]?["type"]?.stringValue == "contextCompaction"
@@ -3865,12 +3936,14 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
             activity: activity,
             contextUsedTokens: contextUsedTokens,
             contextWindowTokens: contextWindowTokens,
+            cumulativeUsedTokens: cumulativeUsedTokens,
             didCompact: didCompact,
             at: now
           )
           lastHeartbeatAt = now
         } else if contextUsedTokens != nil
           || contextWindowTokens != nil
+          || cumulativeUsedTokens != nil
           || didCompact
           || now.timeIntervalSince(lastHeartbeatAt) >= 5
         {
@@ -3878,6 +3951,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
             runID: runID,
             contextUsedTokens: contextUsedTokens,
             contextWindowTokens: contextWindowTokens,
+            cumulativeUsedTokens: cumulativeUsedTokens,
             didCompact: didCompact,
             at: now
           )
@@ -3904,7 +3978,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     runID: UUID,
     activity: CodexLiveActivity? = nil,
     contextUsedTokens: Int? = nil,
-    contextWindowTokens: Int? = nil,
+    contextWindowTokens: Int? = nil, cumulativeUsedTokens: Int? = nil,
     didCompact: Bool = false,
     startsTurn: Bool = false,
     at: Date = Date()
@@ -3925,6 +3999,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         contextUsedTokens: contextUsedTokens,
         contextWindowTokens: contextWindowTokens,
         didCompact: didCompact,
+        cumulativeUsedTokens: cumulativeUsedTokens,
         startsTurn: startsTurn,
         at: at
       )
@@ -4265,51 +4340,22 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
 
   private func inheritedAgentInstructions(
     for product: Product,
-    includesMandatoryKnowledge: Bool = true,
     allowsRepositoryInspection: Bool = true
   ) -> String {
-    let shared = product.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+    CodexLiveProductContext.inheritedInstructions(
+      sharedInstructions: product.instructions,
+      allowsRepositoryInspection: allowsRepositoryInspection
+    )
+  }
+
+  private func conversationAgentInstructions(for product: Product) -> String {
     let databasePath =
       (try? Self.productDatabaseURL(productID: product.id).path)
       ?? ".spedito/product.sqlite"
-    let knowledgeScope =
-      includesMandatoryKnowledge
-      ? """
-      Read agent_verified_knowledge before acting on product or operating assumptions. Treat only
-      rows in that view as verified reusable knowledge.
-      """
-      : """
-      Query agent_verified_knowledge when the assigned ticket needs durable product context.
-      """
-    let repositoryScope =
-      allowsRepositoryInspection
-      ? """
-      Search the product Git history when repository evidence is useful.
-      """
-      : """
-      This is a planning turn. Use the ticket contracts and verified product knowledge supplied in the
-      prompt. Do not inspect repository files or Git history.
-      """
-    return [
-      shared,
-      """
-      LIVE PRODUCT CONTEXT
-      The authoritative, live product database is at:
-      \(databasePath)
-
-      You may inspect it read-only with `/usr/bin/sqlite3 -readonly`. Use the stable agent_product,
-      agent_team, agent_epics, agent_tickets, agent_ticket_dependencies, agent_work_log,
-      agent_sprints, agent_verified_knowledge, agent_decisions, agent_delivery_provenance, and
-      agent_retrospectives views. The exact stable view schemas are:
-      \(CodexLiveProductContext.stableViewSchemas)
-
-      \(repositoryScope)
-      The database can change while you work, so re-read a record before relying on mutable state.
-      \(knowledgeScope)
-      """,
-    ]
-    .filter { !$0.isEmpty }
-    .joined(separator: "\n\n")
+    return CodexLiveProductContext.conversationInstructions(
+      sharedInstructions: product.instructions,
+      databasePath: databasePath
+    )
   }
 
   private func recordKnowledgeContext(
@@ -4396,7 +4442,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       let productLists = try await fetchProductLists()
       products = productLists.active
       archivedProducts = productLists.archived
-      ticketAttentionsByProductID = await fetchTicketAttentions(products: products)
+      await refreshOwnerAttentionState(products: products)
       await ownerNotificationCoordinator.load(products: products)
       if !didResolveInitialProductSelection {
         didResolveInitialProductSelection = true
@@ -4488,6 +4534,7 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         productID: productID,
         threads: workspace.conversationThreads
       )
+      await refreshTicketAttentions(productID: productID)
     } catch {
       presentExecutionError(error, productID: productID)
     }
@@ -5072,14 +5119,8 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
     scheduleRetrospectiveSyntheses()
   }
 
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String {
-    inheritedAgentInstructions(
-      for: product,
-      includesMandatoryKnowledge: includesMandatoryKnowledge
-    )
+  func deliveryInheritedAgentInstructions(for product: Product) -> String {
+    inheritedAgentInstructions(for: product)
   }
 
   func deliveryAgentRunDidUpdate(previous: AgentRun, updated: AgentRun) async {
@@ -5088,11 +5129,21 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       newStatus: updated.status,
       isShuttingDown: isShuttingDown
     )
-    if previous.status == .awaitingOwner || updated.status == .awaitingOwner {
+    // The board projects durable run state, so every status change has to reach
+    // it. Refreshing only for attention transitions left the owner watching
+    // queued tickets while their agents were running and completing work, and
+    // left ready-for-demo attention rows arriving late or surviving approval.
+    if previous.status != updated.status {
+      await reloadSelectedProductIfCurrent(productID: updated.productID)
+    } else if updated.status == .awaitingOwner {
       await refreshTicketAttentions(productID: updated.productID)
     }
     if previous.status == .awaitingOwner && updated.status != .awaitingOwner {
       ownerNotificationCoordinator.dismissSystemNotification(id: previous.id)
+      await resolveOwnerNotifications(
+        productID: updated.productID,
+        target: OwnerNotificationTarget(kind: .ticket, id: updated.workItemID)
+      )
     }
     if newlyNeedsAttention,
       let attention = ticketAttentionsByProductID[updated.productID]?

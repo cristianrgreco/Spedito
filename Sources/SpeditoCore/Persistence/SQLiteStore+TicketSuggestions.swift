@@ -1,6 +1,59 @@
 import Foundation
 import SQLite3
 
+/// Maps a batch's temporary in-batch `S` references to the durable `T` keys
+/// allocated when the batch is persisted. Only word-boundary `S<digits>` tokens
+/// that name a reference in the batch are touched, so active-ticket `T` keys
+/// and unrelated prose keep their exact text.
+enum TicketSuggestionKeySubstitution {
+  private static let referencePattern = try! NSRegularExpression(pattern: #"\bS\d+\b"#)
+
+  static func substitute(
+    _ value: String,
+    keysByBatchReference: [String: String]
+  ) -> String {
+    let matches = referencePattern.matches(
+      in: value,
+      range: NSRange(value.startIndex..., in: value)
+    )
+    var result = value
+    for match in matches.reversed() {
+      guard
+        let range = Range(match.range, in: result),
+        let key = keysByBatchReference[String(result[range])]
+      else { continue }
+      result.replaceSubrange(range, with: key)
+    }
+    return result
+  }
+
+  static func residualBatchReference(
+    in value: String,
+    batchReferences: Set<String>
+  ) -> String? {
+    let matches = referencePattern.matches(
+      in: value,
+      range: NSRange(value.startIndex..., in: value)
+    )
+    for match in matches {
+      guard let range = Range(match.range, in: value) else { continue }
+      let token = String(value[range])
+      if batchReferences.contains(token) { return token }
+    }
+    return nil
+  }
+
+  static func durableKeyNumber(reference: String) -> Int? {
+    guard
+      reference.hasPrefix("T"),
+      let number = Int(reference.dropFirst()),
+      number > 0,
+      reference == "T\(number)"
+    else { return nil }
+    return number
+  }
+}
+
 extension SQLiteStore {
   public func beginTicketSuggestionSession(
     productID: UUID,
@@ -97,6 +150,7 @@ extension SQLiteStore {
       try insertTicketSuggestionDrafts(
         drafts,
         sessionID: sessionID,
+        productID: session.productID,
         idsByReference: insertContext.idsByReference,
         existingItemsByKey: insertContext.existingItemsByKey,
         now: now
@@ -112,6 +166,31 @@ extension SQLiteStore {
         try bind(now.timeIntervalSince1970, to: 1, in: statement)
         try bind(sessionID.uuidString, to: 2, in: statement)
         try stepDone(statement)
+      }
+      if let epicID = session.epicID {
+        try withStatement(
+          """
+          UPDATE suggestion_sessions
+          SET status = 'cancelled', error_message = NULL, updated_at = ?
+          WHERE epic_id = ?
+            AND id != ?
+            AND status = 'failed'
+            AND source_work_item_id IS NULL;
+          """
+        ) { statement in
+          try bind(now.timeIntervalSince1970, to: 1, in: statement)
+          try bind(epicID.uuidString, to: 2, in: statement)
+          try bind(sessionID.uuidString, to: 3, in: statement)
+          try stepDone(statement)
+        }
+        if sqlite3_changes(try requiredDatabase) > 0 {
+          _ = try insertEvent(
+            productID: session.productID,
+            kind: "ticket_suggestions.superseded",
+            actor: "system",
+            detail: "A completed plan replaced an earlier failed proposal"
+          )
+        }
       }
       _ = try insertEvent(
         productID: session.productID,
@@ -173,6 +252,7 @@ extension SQLiteStore {
       try insertTicketSuggestionDrafts(
         drafts,
         sessionID: session.id,
+        productID: source.productID,
         idsByReference: insertContext.idsByReference,
         existingItemsByKey: insertContext.existingItemsByKey,
         now: now
@@ -218,38 +298,83 @@ extension SQLiteStore {
   func insertTicketSuggestionDrafts(
     _ drafts: [TicketSuggestionDraft],
     sessionID: UUID,
+    productID: UUID,
     idsByReference: [String: UUID],
     existingItemsByKey: [String: WorkItem],
     now: Date
   ) throws {
+    // The keys allocated here are final: the reference the owner reads on a
+    // proposal is the key the accepted ticket keeps. The allocation and the
+    // prose substitution share the caller's transaction, so a failed persist
+    // rolls the counter back with everything else.
+    let firstKeyNumber = try allocateTicketKeyNumbers(
+      productID: productID,
+      count: drafts.count
+    )
+    var keysByBatchReference: [String: String] = [:]
     for (position, draft) in drafts.enumerated() {
-      guard let suggestionID = idsByReference[draft.reference] else {
+      keysByBatchReference[draft.reference] = "T\(firstKeyNumber + position)"
+    }
+    let batchReferences = Set(drafts.map(\.reference))
+
+    for (position, draft) in drafts.enumerated() {
+      guard
+        let suggestionID = idsByReference[draft.reference],
+        let assignedKey = keysByBatchReference[draft.reference]
+      else {
         throw PersistenceError.corruptData("Missing suggestion reference")
+      }
+      let body = TicketSuggestionKeySubstitution.substitute(
+        draft.body,
+        keysByBatchReference: keysByBatchReference
+      )
+      let rationale = TicketSuggestionKeySubstitution.substitute(
+        draft.rationale,
+        keysByBatchReference: keysByBatchReference
+      )
+      let acceptanceCriteria = draft.acceptanceCriteria.map {
+        TicketSuggestionKeySubstitution.substitute(
+          $0,
+          keysByBatchReference: keysByBatchReference
+        )
+      }
+      for value in [assignedKey, body, rationale] + acceptanceCriteria {
+        if let residual = TicketSuggestionKeySubstitution.residualBatchReference(
+          in: value,
+          batchReferences: batchReferences
+        ) {
+          throw PersistenceError.corruptData(
+            "The plan could not be stored because temporary reference \(residual) "
+              + "was not replaced by its durable ticket key. Generate the plan again."
+          )
+        }
       }
       try withStatement(
         """
         INSERT INTO ticket_suggestions (
             id, session_id, reference, position, title, body,
             acceptance_criteria_json, suggested_role, priority, rationale,
-            status, accepted_work_item_id, created_at, updated_at, ticket_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            status, accepted_work_item_id, created_at, updated_at, ticket_type,
+            demo_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
       ) { statement in
         try bind(suggestionID.uuidString, to: 1, in: statement)
         try bind(sessionID.uuidString, to: 2, in: statement)
-        try bind(draft.reference, to: 3, in: statement)
+        try bind(assignedKey, to: 3, in: statement)
         try bind(Int64(position), to: 4, in: statement)
         try bind(draft.title, to: 5, in: statement)
-        try bind(draft.body, to: 6, in: statement)
-        try bind(try encodeStringArray(draft.acceptanceCriteria), to: 7, in: statement)
+        try bind(body, to: 6, in: statement)
+        try bind(try encodeStringArray(acceptanceCriteria), to: 7, in: statement)
         try bind(draft.suggestedRole.rawValue, to: 8, in: statement)
         try bind(Int64(draft.priority.rawValue), to: 9, in: statement)
-        try bind(draft.rationale, to: 10, in: statement)
+        try bind(rationale, to: 10, in: statement)
         try bind(TicketSuggestionStatus.proposed.rawValue, to: 11, in: statement)
         try bindNull(to: 12, in: statement)
         try bind(now.timeIntervalSince1970, to: 13, in: statement)
         try bind(now.timeIntervalSince1970, to: 14, in: statement)
         try bind(draft.type.rawValue, to: 15, in: statement)
+        try bindOptionalString(draft.demoKind?.rawValue, to: 16, in: statement)
         try stepDone(statement)
       }
     }
@@ -349,6 +474,34 @@ extension SQLiteStore {
       )
     }
     return try fetchSuggestionSession(id: sessionID)
+  }
+
+  /// Settles a generating session whose final-plan turn legitimately returned
+  /// questions instead of a plan. The session ends cancelled — not failed — so
+  /// no retryable error surfaces and recovery does not resume it; the durable
+  /// outcome lives in the epic planning conversation's question payload.
+  public func escapeTicketSuggestionSessionToQuestions(sessionID: UUID) throws {
+    let session = try fetchSuggestionSession(id: sessionID)
+    guard session.status == .generating else { return }
+    try transaction {
+      try withStatement(
+        """
+        UPDATE suggestion_sessions
+        SET status = 'cancelled', error_message = NULL, updated_at = ?
+        WHERE id = ? AND status = 'generating';
+        """
+      ) { statement in
+        try bind(Date().timeIntervalSince1970, to: 1, in: statement)
+        try bind(sessionID.uuidString, to: 2, in: statement)
+        try stepDone(statement)
+      }
+      _ = try insertEvent(
+        productID: session.productID,
+        kind: "ticket_suggestions.escaped_to_questions",
+        actor: "system",
+        detail: "Planning returned questions for the product owner instead of a plan"
+      )
+    }
   }
 
   public func dismissTicketSuggestionSession(sessionID: UUID) throws {
@@ -575,6 +728,18 @@ extension SQLiteStore {
 
     try transaction {
       for affected in suggestionsToAccept {
+        // The proposal already carries its durable key from persist time;
+        // acceptance is a state change that copies the reviewed text
+        // verbatim, never a renumbering.
+        guard
+          let keyNumber = TicketSuggestionKeySubstitution.durableKeyNumber(
+            reference: affected.reference
+          )
+        else {
+          throw PersistenceError.corruptData(
+            "Proposal \(affected.reference) has no durable ticket key and cannot be accepted"
+          )
+        }
         let workItem = try insertWorkItem(
           productID: session.productID,
           title: affected.title,
@@ -582,7 +747,9 @@ extension SQLiteStore {
           body: affected.body,
           acceptanceCriteria: affected.acceptanceCriteria,
           priority: affected.priority,
-          epicID: session.epicID
+          epicID: session.epicID,
+          demoKind: affected.demoKind,
+          preassignedKeyNumber: keyNumber
         )
         _ = try insertEvent(
           productID: session.productID,

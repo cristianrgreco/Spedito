@@ -183,7 +183,11 @@ struct SprintPlanningView: View {
         SprintPlanningLine(
           item: item,
           owner: resolvedOwner(for: item),
-          forecast: SprintForecast.estimate(for: item),
+          forecast: SprintForecast.estimate(
+            for: item,
+            historicalRuns: model.runs,
+            workItems: model.workItems
+          ),
           wave: 0,
           risks: risks(
             for: item,

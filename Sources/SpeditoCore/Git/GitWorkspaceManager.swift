@@ -860,13 +860,30 @@ public actor GitWorkspaceManager {
     ticketKey: String,
     version: Int,
     authorName: String,
-    summary: String? = nil
+    summary: String? = nil,
+    settlementOperationID: UUID? = nil
   ) throws -> GitCandidateSnapshot {
     let branchName = try run(["branch", "--show-current"], at: ticketWorkspaceURL)
     guard branchName.hasPrefix("ticket/") else {
       throw GitWorkspaceError.invalidRepository(
         "\(ticketWorkspaceURL.path) is not on a ticket branch."
       )
+    }
+    let baseSHA: String
+    if let settlementOperationID {
+      let settlementRef =
+        "refs/spedito/delivery-settlements/\(settlementOperationID.uuidString.lowercased())"
+      if let persistedBase = try? run(["rev-parse", "--verify", settlementRef], at: ticketWorkspaceURL)
+      {
+        baseSHA = persistedBase
+      } else {
+        let currentHead = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+        baseSHA = try run(["merge-base", "trunk", currentHead], at: ticketWorkspaceURL)
+        _ = try run(["update-ref", settlementRef, baseSHA], at: ticketWorkspaceURL)
+      }
+    } else {
+      let currentHead = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
+      baseSHA = try run(["merge-base", "trunk", currentHead], at: ticketWorkspaceURL)
     }
     _ = try run(["add", "-A"], at: ticketWorkspaceURL)
     let trimmedSummary = summary?
@@ -879,15 +896,15 @@ public actor GitWorkspaceManager {
       } else {
         "\(ticketKey.uppercased()): candidate v\(version)"
       }
-    _ = try run(
-      [
-        "commit", "--no-gpg-sign", "--allow-empty", "-m", message,
-      ],
-      at: ticketWorkspaceURL,
-      authorName: authorName
-    )
+    let stagedChanges = try run(["diff", "--cached", "--name-only"], at: ticketWorkspaceURL)
+    if !stagedChanges.isEmpty {
+      _ = try run(
+        ["commit", "--no-gpg-sign", "-m", message],
+        at: ticketWorkspaceURL,
+        authorName: authorName
+      )
+    }
     let headSHA = try run(["rev-parse", "HEAD"], at: ticketWorkspaceURL)
-    let baseSHA = try run(["merge-base", "trunk", headSHA], at: ticketWorkspaceURL)
     let commitCountText = try run(
       ["rev-list", "--count", "\(baseSHA)..\(headSHA)"],
       at: ticketWorkspaceURL
@@ -980,7 +997,8 @@ public actor GitWorkspaceManager {
     integrationsRootURL: URL,
     candidateID: UUID,
     headSHA: String,
-    commitMessage: String? = nil
+    commitMessage: String? = nil,
+    reusableIntegratedSHA: String? = nil
   ) throws -> GitIntegrationSnapshot {
     _ = try checkpointTrunk(
       at: repositoryURL,
@@ -993,6 +1011,19 @@ public actor GitWorkspaceManager {
     )
     if fileManager.fileExists(atPath: integrationURL.path) {
       try removeWorktree(repositoryURL: repositoryURL, worktreeURL: integrationURL)
+    }
+    if reusableIntegratedSHA == headSHA,
+      try revision(
+        headSHA,
+        contains: try run(["rev-parse", "refs/heads/trunk"], at: repositoryURL),
+        at: repositoryURL
+      )
+    {
+      _ = try run(
+        ["worktree", "add", "--detach", integrationURL.path, headSHA],
+        at: repositoryURL
+      )
+      return GitIntegrationSnapshot(url: integrationURL, integratedSHA: headSHA)
     }
     _ = try run(
       ["worktree", "add", "--detach", integrationURL.path, "trunk"],
@@ -1218,11 +1249,16 @@ public actor GitWorkspaceManager {
     )
   }
 
+  /// `resetsExistingCheckout` restores a reused preview worktree to a clean
+  /// detached checkout before it is handed to demo preparation, so artifacts a
+  /// previous preparation could not delete never poison the next attempt. Pass
+  /// `false` only while a live demo may still be serving from the worktree.
   public func preparePreviewWorkspace(
     repositoryURL: URL,
     previewsRootURL: URL,
     candidateID: UUID,
-    integratedSHA: String
+    integratedSHA: String,
+    resetsExistingCheckout: Bool = true
   ) throws -> URL {
     try fileManager.createDirectory(at: previewsRootURL, withIntermediateDirectories: true)
     let previewURL = previewsRootURL.appendingPathComponent(
@@ -1232,6 +1268,10 @@ public actor GitWorkspaceManager {
     if fileManager.fileExists(atPath: previewURL.path) {
       let currentRevision = try? run(["rev-parse", "HEAD"], at: previewURL)
       if currentRevision == integratedSHA {
+        if resetsExistingCheckout {
+          _ = try run(["reset", "--hard", integratedSHA], at: previewURL)
+          _ = try run(["clean", "-ffdx"], at: previewURL)
+        }
         return previewURL
       }
       try removeWorktree(repositoryURL: repositoryURL, worktreeURL: previewURL)

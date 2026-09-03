@@ -28,8 +28,11 @@ public enum EpicClarificationGenerationError: Error, Equatable, LocalizedError, 
 }
 
 public enum CodexEpicClarificationGenerator {
-  public static var outputSchema: JSONValue {
-    let question: JSONValue = .object([
+  /// The single question shape shared by ordinary clarification replies and the
+  /// final-plan escape in `CodexTicketSuggestionGenerator.epicOutputSchema`, so
+  /// the conversation UI renders both without a second component.
+  static var questionSchema: JSONValue {
+    .object([
       "type": .string("object"),
       "additionalProperties": .bool(false),
       "required": .array([.string("prompt"), .string("options")]),
@@ -43,6 +46,47 @@ public enum CodexEpicClarificationGenerator {
         ]),
       ]),
     ])
+  }
+
+  /// Degenerate constrained-decoding output (recorded 2026-08-29: a question
+  /// prompt of "x", an option of ":{") satisfies the JSON schema yet carries
+  /// nothing an owner can read. A minimally meaningful owner-facing field has
+  /// at least two characters, at least one of them a letter; anything below
+  /// that bar fails decoding so the ordinary repair turn corrects it.
+  static func meetsMinimumContent(_ value: String) -> Bool {
+    value.count >= 2 && value.contains(where: \.isLetter)
+  }
+
+  /// Trims and validates owner-facing questions with the same rules whether
+  /// they arrive in a clarification reply, a final-plan escape, or a ticket
+  /// refinement. Returns nil when any prompt is duplicated or below the
+  /// minimum content bar, an option count is outside two to four, or an
+  /// option is duplicated, below the bar, or a literal "Other".
+  static func normalizedQuestions(
+    _ questions: [TicketRefinementQuestion]
+  ) -> [TicketRefinementQuestion]? {
+    let normalized = questions.map {
+      TicketRefinementQuestion(
+        prompt: $0.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+        options: $0.options.map {
+          $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+      )
+    }
+    guard
+      normalized.allSatisfy({
+        meetsMinimumContent($0.prompt)
+          && (2...4).contains($0.options.count)
+          && $0.options.allSatisfy { meetsMinimumContent($0) && $0.lowercased() != "other" }
+          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
+      }),
+      Set(normalized.map { $0.prompt.lowercased() }).count == normalized.count
+    else { return nil }
+    return normalized
+  }
+
+  public static var outputSchema: JSONValue {
+    let question = questionSchema
 
     return .object([
       "type": .string("object"),
@@ -92,7 +136,18 @@ public enum CodexEpicClarificationGenerator {
       - explicitly delegating implementation-time selection to the implementer without a separate
         recommendation.
       Recommend the research option when no choice is already approved and a responsible recommendation
-      needs external evidence. Do not offer a vague option such as “let the team choose.”
+      needs external evidence. Do not offer a vague option such as “let the team choose.” A choice that
+      gestures at a category without naming the actual candidate, such as “use a named approved
+      provider”, is not self-contained either.
+
+      Inventory the owner-observable information, interactions, and boundary states implied by the
+      outcome. Ask about any material choice whose omission would leave acceptance criteria referring
+      only to a generic result, an “agreed” detail, or a later design. Do not treat a restatement of the
+      outcome headline as enough detail to plan. The reverse also holds: a decision the product owner
+      has already stated in the outcome is resolved. Do not re-ask it, offer alternatives to it, or ask
+      how to interpret it when a plain reading settles it. Do not ask about presentation details,
+      wording, or edge states that a reasonable default settles; choose the default and record it in
+      the plan instead of asking.
 
       Before deciding the outcome is ready to plan, use the accepted ticket contracts and verified product
       knowledge supplied below, especially verified Environments knowledge. Planning is not source
@@ -107,12 +162,15 @@ public enum CodexEpicClarificationGenerator {
       paths, caches, or sandbox permissions
       unless they already expressed a relevant technical preference. Every choice must itself be a
       complete answer; never offer a placeholder such as “I’ll provide,” “we’ll decide later,” or “tell
-      the team separately.” The interface allows exactly one selection per question, so choices must be
-      mutually exclusive, self-contained descriptions of the complete resulting scope. Never make one
-      choice an addition to another with wording such as “add … as well,” “include … too,” or “also.”
-      Restate the full outcome in every option. If the owner may have an unlisted technology or hosting
-      constraint, say in the question that they can choose Other and describe it in the interface's text
-      field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
+      the team separately.” The interface allows exactly one selection per question, so the question
+      itself carries the context shared by every choice, and each choice states only what differs
+      between the decisions while still standing alone as a complete, mutually exclusive decision.
+      Do not repeat the outcome or any context common to every choice inside the choices. Never make
+      one choice an addition to another with wording such as “add … as well,” “include … too,” or
+      “also.” If the owner may have an unlisted technology or hosting
+      constraint, the question prompt — never an option — may say that they can
+      choose Other and describe it in the interface's text field. No option may mention Other or
+      its text field. Explain material cost, maintenance, privacy, portability, and deployment consequences in the
       choices.
 
       Resolve a standard foundation recommendation in this conversation when the supplied tickets and
@@ -133,10 +191,14 @@ public enum CodexEpicClarificationGenerator {
       Supplied planning evidence:
       \(evidence)
 
-      This is the first clarification turn. Ask one to three concise questions with two to four mutually
-      exclusive, business-friendly choices each. Put your recommended choice first and suffix it with
-      "(Recommended)". Do not include an "Other" option; the interface adds it. Keep the message short and
-      conversational. Set readyToPlan to false while questions remain. Do not propose tickets yet.
+      This is the first clarification turn. First decide whether any material choice is genuinely
+      unresolved after reading the outcome and the supplied evidence. If the outcome statement and
+      evidence already resolve every consequential choice, ask nothing: briefly confirm what you will
+      plan and set readyToPlan to true with an empty questions array. Otherwise ask one to three concise
+      questions with two to four mutually exclusive, business-friendly choices each. Put your
+      recommended choice first and suffix it with "(Recommended)". Do not include an "Other" option; the
+      interface adds it. Keep the message short and conversational. Set readyToPlan to false while
+      questions remain. Do not propose tickets yet.
       """
   }
 
@@ -157,9 +219,12 @@ public enum CodexEpicClarificationGenerator {
       resolve its selection. Treat an instruction to identify, compare, recommend, or choose it using
       current external evidence as authorisation for business analyst research. A broad answer such as
       “let the team choose” is ambiguous: ask whether the product owner wants a separate recommendation or
-      explicitly delegates implementation-time selection without one. If the outcome is sufficiently clear
-      to define a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and
-      briefly confirm any authorised research that the plan will include.
+      explicitly delegates implementation-time selection without one. Inventory the owner-observable
+      information, interactions, and boundary states still implied by the outcome. Do not declare
+      readiness while a material choice would leave acceptance criteria referring only to a generic
+      result, an “agreed” detail, or a later design. If the outcome is sufficiently clear to define a
+      coherent epic and delivery backlog, return no questions, set readyToPlan to true, and briefly confirm
+      any authorised research that the plan will include.
 
       Also re-check the accepted ticket contracts and verified Environments knowledge already supplied in
       this conversation. Do not inspect repository files or Git history. If likely executable work is not
@@ -167,9 +232,14 @@ public enum CodexEpicClarificationGenerator {
       readyToPlan to true. Recommend the simplest suitable option when the owner has no preference. Do not
       ask them to interpret runtime paths or permission details. Every choice must be a complete answer,
       never a promise to provide information later. Because the owner can select only one option per
-      question, every option must restate the complete resulting scope rather than add to a previous option;
-      never use incremental labels such as “as well,” “too,” or “also.” Direct an unlisted constraint
-      through the interface's Other text field. Distinguish using the supplied verified product evidence
+      question, the question carries the shared context and each option states only what differs while
+      still standing alone as a complete, mutually exclusive decision; do not repeat shared context in
+      every option, and never use incremental labels such as “as well,” “too,” or “also.” Write each
+      option as a short, distinct phrase naming only that choice — a few words the owner could say
+      aloud, never a sentence restating the outcome — and never list an option whose substance the
+      owner would still have to type into Other, such as “choose Other and name the service”. Only
+      the question prompt may direct an unlisted constraint
+      through the interface's Other text field; no option may mention Other. Distinguish using the supplied verified product evidence
       without a research ticket from authorising a time-boxed business analyst comparison of current
       options. Confirm whether the final plan must include an environment-establishment prerequisite, and
       authorise separate environment research only when the product owner agreed that current external
@@ -215,9 +285,12 @@ public enum CodexEpicClarificationGenerator {
       external source do not resolve its selection. Treat an instruction to identify, compare, recommend,
       or choose it using current external evidence as authorisation for business analyst research. A broad
       answer such as “let the team choose” is ambiguous: ask whether the product owner wants a separate
-      recommendation or explicitly delegates implementation-time selection without one. If the outcome is
-      sufficiently clear to define a coherent epic and delivery backlog, return no questions, set
-      readyToPlan to true, and briefly confirm any authorised research that the plan will include.
+      recommendation or explicitly delegates implementation-time selection without one. Re-check the
+      owner-observable information, interactions, and boundary states implied by the outcome. Do not
+      declare readiness while a material choice would leave acceptance criteria referring only to a
+      generic result, an “agreed” detail, or a later design. If the outcome is sufficiently clear to define
+      a coherent epic and delivery backlog, return no questions, set readyToPlan to true, and briefly
+      confirm any authorised research that the plan will include.
 
       Re-check the supplied accepted ticket contracts and verified Environments knowledge before declaring
       readiness. Do not inspect repository files or Git history. When likely executable work lacks a
@@ -225,9 +298,15 @@ public enum CodexEpicClarificationGenerator {
       question about an existing technology or hosting constraint versus a team recommendation. Never ask
       for package-manager paths, cache access, or other machine plumbing. Every choice must be a complete
       answer, never “I’ll provide” or another promise of a later answer. The owner can select exactly one
-      option per question, so every option must describe the complete resulting scope and must not compound
-      another option with “as well,” “too,” “also,” or equivalent wording. Tell the owner to use the
-      interface's Other text field for an unlisted constraint. Distinguish a recommendation made from
+      option per question, so the question carries the shared context and each option
+      states only what differs while remaining a self-contained, mutually exclusive decision; do not
+      repeat shared context in every option, and do not compound another option with “as well,” “too,”
+      “also,” or equivalent wording. Write each option as a short, distinct phrase naming only that
+      choice — a few words the owner could say aloud, never a sentence restating the outcome — and
+      never list an option whose substance the owner would still have to type into Other, such as
+      “choose Other and name the service”. Only the question prompt may tell the
+      owner to use the
+      interface's Other text field for an unlisted constraint; no option may mention Other. Distinguish a recommendation made from
       existing evidence without a research ticket from time-boxed research that creates one. Confirm that
       the final plan will include an environment-establishment prerequisite, with separate research only
       when the product owner authorised evidence gathering. Do not propose tickets in this response.
@@ -273,7 +352,11 @@ public enum CodexEpicClarificationGenerator {
       include the separately authorised business analyst recommendation before the establishment task.
       The establishment task must verify stable repository entry points, run-private temporary and cache
       locations, required capabilities, managed demo readiness, limitations, and the complete
-      Environments product knowledge update. Do not ask more questions in this response.
+      Environments product knowledge update. Do not ask more questions in this response unless a
+      consequential product choice genuinely survived the conversation unresolved — neither decided,
+      explicitly delegated, nor covered by authorised research. Only in that exact case, return the
+      questions form of the output schema instead of a plan, following its last-resort rules; never
+      return a plan alongside outstanding questions.
       """
   }
 
@@ -317,23 +400,7 @@ public enum CodexEpicClarificationGenerator {
       throw EpicClarificationGenerationError.invalidResponse(error.localizedDescription)
     }
 
-    let questions = generated.questions.map {
-      TicketRefinementQuestion(
-        prompt: $0.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-        options: $0.options.map {
-          $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-      )
-    }
-    guard
-      questions.allSatisfy({
-        !$0.prompt.isEmpty
-          && (2...4).contains($0.options.count)
-          && $0.options.allSatisfy { !$0.isEmpty && $0.lowercased() != "other" }
-          && Set($0.options.map { $0.lowercased() }).count == $0.options.count
-      }),
-      Set(questions.map { $0.prompt.lowercased() }).count == questions.count
-    else {
+    guard let questions = normalizedQuestions(generated.questions) else {
       throw EpicClarificationGenerationError.invalidResponse(
         "Every clarification needs a unique prompt and two to four distinct choices."
       )

@@ -180,13 +180,13 @@ Start at the state owner, not at a caller or view. Persistence entries name the
 | Repository import | `RepositoryImportCoordinator.swift`; composition in `RemoteRepositoryFeatureModel.swift` and `AppModel.swift` | `SQLiteStore+Products.swift`, `SQLiteStore+ProductRepositories.swift`, `SQLiteStore+RepositoryAnalysis.swift` | `ProductCreationView.swift`, `ProductOnboardingView.swift` | R01–R07 |
 | Repository knowledge | `RepositoryKnowledgeCoordinator.swift` and `RepositoryKnowledgeRecovery.swift` | `SQLiteStore+RepositoryAnalysis.swift`, `SQLiteStore+KnowledgePages.swift` | `ProductOnboardingView.swift`, `KnowledgeBaseView.swift` | R08–R09, V07 |
 | Remote repository | `RemoteRepositoryFeatureModel.swift`; `GitHubRemoteRepositoryService*.swift` | `SQLiteStore+RemoteConnections.swift`, `SQLiteStore+RemoteSafeSyncs.swift`, `SQLiteStore+RemotePublications.swift` | `RemoteRepositorySetupView.swift`, `RemoteRepositorySettingsView.swift`, `IncomingRepositoryReviewView.swift`, `SprintBoardRepositoryStatusView.swift` | R03–R06, R10–R14, D13, D17 |
-| Epics and suggestions | `EpicPlanningWorkflowCoordinator.swift` owns clarification, plan and suggestion generation, review decisions, interruption, and recovery; `PlanningConversationWorkflowCoordinator.swift` owns ordinary epic conversation; `AppModel.swift` composes both and projects `EpicPlanningFeatureModel` from `FeatureRuntimeOwners.swift` | `SQLiteStore+Epics.swift`, `SQLiteStore+TicketSuggestions.swift`, `SQLiteStore+Conversations.swift`, `SQLiteStore+WorkItems.swift`, `SQLiteStore+OwnerNotifications.swift` | `BacklogView.swift`, `EpicDetailView.swift` | E01–E15 |
+| Epics and suggestions | `EpicPlanningWorkflowCoordinator.swift` owns clarification, plan and suggestion generation, review decisions, interruption, and recovery; `PlanningConversationWorkflowCoordinator.swift` owns ordinary epic conversation; `AppModel.swift` composes both and projects `EpicPlanningFeatureModel` from `FeatureRuntimeOwners.swift` | `SQLiteStore+Epics.swift`, `SQLiteStore+TicketSuggestions.swift`, `SQLiteStore+Conversations.swift`, `SQLiteStore+WorkItems.swift`, `SQLiteStore+OwnerNotifications.swift` | `BacklogView.swift`, `EpicDetailView.swift` | E01–E16 |
 | Backlog and tickets | `PlanningConversationWorkflowCoordinator.swift` owns ticket refinement and conversation; `AppModel.swift` composes it and projects `PlanningConversationFeatureModel` from `FeatureRuntimeOwners.swift` | `SQLiteStore+WorkItems.swift`, `SQLiteStore+WorkItemHistory.swift`, `SQLiteStore+Epics.swift` | `BacklogView.swift`, `TicketDetailView.swift`, `TicketEditorComponents.swift` | B01–B11 |
 | Sprint planning | `SprintPlanningWorkflowCoordinator.swift` owns candidate scope, ticket-planning conversations, goal generation, draft persistence, readiness, start, interruption, and recovery; `AppModel.swift` composes it and projects `SprintPlanningFeatureModel` from `FeatureRuntimeOwners.swift` | `SQLiteStore+Sprints.swift`, `SQLiteStore+WorkItems.swift`, `SQLiteStore+WorkItemHistory.swift`, `SQLiteStore+Activity.swift` | `SprintPlanningView.swift`, `BacklogView.swift` | P01–P07 |
 | Delivery | `TicketDeliveryRuntimeCoordinator.swift` owns scheduler/task lifecycle; `TicketDeliveryWorkflowCoordinator.swift` owns implementation, review, integration, acceptance, pause/stop, and recovery transitions; `TicketDeliveryPermissionWorkflowCoordinator.swift` owns capability decisions; `AppModel.swift` composes adapters and forwards commands | `SQLiteStore+Sprints.swift`, `SQLiteStore+AgentRuns.swift`, `SQLiteStore+CandidateDelivery.swift`, `SQLiteStore+AgentPermissions.swift`, `SQLiteStore+WorkItemHistory.swift` | `SprintBoardView.swift`, `TicketDetailView.swift`, `TeamSidebar.swift` | D01–D23, A10–A11 |
-| Chat and notifications | `ProductConversationFeatureModel.swift`, `ProductConversationRuntime` in `FeatureRuntimeOwners.swift`, `OwnerNotificationCoordinator.swift` | `SQLiteStore+Conversations.swift`, `SQLiteStore+OwnerNotifications.swift`, `SQLiteStore+Activity.swift` | `ProductConversationView.swift`, `TicketDetailView.swift`, `EpicDetailView.swift`, `ContentView.swift` | C01–C11, E02, E05, B02, D03 |
+| Chat and notifications | `ProductConversationFeatureModel.swift`, `ProductConversationRuntime` in `FeatureRuntimeOwners.swift`, `OwnerNotificationCoordinator.swift` | `SQLiteStore+Conversations.swift`, `SQLiteStore+OwnerNotifications.swift`, `SQLiteStore+Activity.swift` | `ProductConversationView.swift`, `TicketDetailView.swift`, `EpicDetailView.swift`, `SprintBoardView.swift`, `OwnerNotificationTrayView.swift`, `ContentView.swift` | C01–C11, E02, E05, B02, D03 |
 | Knowledge | `AppModel.swift`; repository publication remains in `RepositoryKnowledgeCoordinator.swift` | `SQLiteStore+KnowledgePages.swift`, `SQLiteStore+KnowledgeProposals.swift`, `SQLiteStore+RepositoryAnalysis.swift` | `KnowledgeBaseView.swift`, `TicketDetailView.swift` | K01–K06, D16, D19 |
-| Codebase and app versions | `AppModel.swift`; `DemoSessionFeatureModel` in `FeatureRuntimeOwners.swift`; `MacOSDemoLauncher.swift` | `SQLiteStore+CandidateDelivery.swift`, `SQLiteStore+ProductRepositories.swift` | `CodebaseView.swift`, `AppVersionsView.swift`, `TicketDetailView.swift` | V01–V07, D14 |
+| Codebase and app versions | `AppModel.swift`; `DemoSessionFeatureModel` in `FeatureRuntimeOwners.swift`; `MacOSDemoLauncher.swift` | `SQLiteStore+CandidateDelivery.swift`, `SQLiteStore+ProductRepositories.swift` | `CodebaseView.swift`, `AppVersionsView.swift`, `TicketDetailView.swift` | V01–V07, D14, D24 |
 | Retrospectives and reports | `AppModel.swift`; `RetrospectiveSynthesisRuntime` in `FeatureRuntimeOwners.swift` | `SQLiteStore+Retrospectives.swift`, `SQLiteStore+Sprints.swift`, `SQLiteStore+AgentRuns.swift` | `RetrospectivesView.swift`, `ReportsView.swift` | I01–I10, D21 |
 | Settings and Codex | `AppModel.swift`; `CodexConnectionRuntime` in `FeatureRuntimeOwners.swift`; `CodexInstallation.swift` | `SQLiteStore+Products.swift`, `SQLiteStore+AgentProfiles.swift`, `SQLiteStore+AgentPermissions.swift` | `ProductSettingsView.swift`, `CodexStatusView.swift` | S01–S08 |
 
@@ -225,6 +225,17 @@ Agent permissions must remain least-privilege:
 - Do not weaken sandbox or approval behavior as a convenience fallback.
 - Capability-detect required runtime features and fail closed when safe
   isolation cannot be provided.
+- Never put a wildcard in a directory component of a deny path. Codex expands
+  each deny pattern into ancestor directory-unlink rules, so `**/.env` makes
+  every workspace directory undeletable and breaks all delivery. Put the
+  wildcard in the filename (`.env.*`) or name the directory. Deny paths live in
+  `CodexPermissionProfiles.workspaceDenyPaths`.
+
+A permission profile is only proven by running it. A test that skips when no
+Codex runtime is present reports an uncovered run as a passing one, so the
+sandbox guards fail instead, and CI installs a runtime. When you report a
+sandbox- or runtime-dependent result as green, name the binary and version that
+were exercised, or say plainly that none was.
 
 ## Dependency context and ticket handoffs
 
@@ -314,8 +325,11 @@ macOS behavior unless a custom control materially improves clarity.
 
 Completed prerequisites should not be presented as active blockers. Archived
 epics and tickets should not appear as active relationships. Suggested tickets
-may use temporary `S1`, `S2`, and similar references, but accepted tickets use
-the single durable product sequence `T1`, `T2`, and so on.
+carry final keys from the single durable product sequence `T1`, `T2`, and so
+on from the moment they are stored; the key a proposal shows is the key the
+accepted ticket keeps. Rejected and superseded proposals retire their keys, so
+gaps in the sequence are expected. Temporary `S1`-style references exist only
+inside the generation protocol and in decided historical suggestions.
 
 ## Making changes
 
@@ -587,6 +601,24 @@ Do not wait for a separate relaunch request.
 This is deliberately a simple development-only reset. Do not use it while
 preserving an active agent turn matters; normal user-initiated app quit still
 uses the asynchronous shutdown handler.
+
+## Communicating with the product owner
+
+Be concise and plain. Lead with the answer in one or two sentences, then give
+only the detail needed to act on it. Offer one recommendation, not a survey of
+options. Do not restate what the owner already knows or re-argue a decision
+they have made. A short answer is a feature, not a lack of rigor.
+
+Follow the core rules of Simplified Technical English (ASD-STE100), without
+its restricted dictionary: sentences of about 20 words, active voice, one
+idea per sentence, the same word for the same thing everywhere, and no
+stacked noun clusters. Prefer everyday words over jargon when both are
+precise.
+
+State findings directly, without narrative framing. No storytelling, no
+"the twist is", no building up to a reveal, and no re-deriving a conclusion
+the owner already accepted. Prefer a short list over paragraphs when the
+content is a set of facts or steps. Three short points beat five paragraphs.
 
 ## Handoff
 

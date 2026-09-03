@@ -6,6 +6,41 @@ import Testing
 
 @Suite("Epic planning presentation")
 struct EpicPlanningPresentationTests {
+  @Test("Only a first transient generation failure retries automatically")
+  func autoRetryPolicyGatesOnTransience() {
+    #expect(
+      EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnTimedOut(seconds: 60),
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnEndedWithoutOutput,
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnTimedOut(seconds: 60),
+        hasAutoRetried: true
+      )
+    )
+    // A usage limit fails again immediately; the owner should hear about it.
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: CodexClientError.turnFailed("You've hit your usage limit."),
+        hasAutoRetried: false
+      )
+    )
+    #expect(
+      !EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+        after: PersistenceError.recordNotFound("epic"),
+        hasAutoRetried: false
+      )
+    )
+  }
+
   @Test("Ticket and epic conversation details share the same adaptive sheet size")
   func conversationDetailsShareSheetSize() {
     let laptopWorkspace = CGSize(width: 1_440, height: 900)
@@ -670,24 +705,24 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let contract = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let design = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1,
       dependencyIDs: [contract.id]
     )
     let implementation = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S3",
+      reference: "T3",
       position: 2,
       dependencyIDs: [design.id]
     )
     let unrelated = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S4",
+      reference: "T4",
       position: 3
     )
     let suggestions = [implementation, unrelated, design, contract]
@@ -701,10 +736,10 @@ struct EpicPlanningPresentationTests {
       prerequisites: prerequisites
     )
 
-    #expect(prerequisites.map(\.reference) == ["S1", "S2"])
+    #expect(prerequisites.map(\.reference) == ["T1", "T2"])
     #expect(impact.requiresConfirmation)
     #expect(impact.actionTitle == "Accept 3 tickets")
-    #expect(impact.message.contains("S1, S2"))
+    #expect(impact.message.contains("T1, T2"))
     #expect(suggestions.allSatisfy { $0.status == .proposed })
   }
 
@@ -713,12 +748,12 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let prerequisite = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let target = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1,
       dependencyIDs: [prerequisite.id]
     )
@@ -730,10 +765,32 @@ struct EpicPlanningPresentationTests {
     #expect(target.rationale == "Required delivery work.")
     #expect(impact.requiresConfirmation)
     #expect(impact.actionTitle == "Accept 2 tickets")
-    #expect(impact.message.contains("S1"))
+    #expect(impact.message.contains("T1"))
     #expect(impact.message.contains("backlog"))
     #expect(impact.message.contains("does not add them to a sprint"))
     #expect([prerequisite, target].allSatisfy { $0.status == .proposed })
+  }
+
+  @Test("The proposal card states the review medium before acceptance")
+  func proposalCardStatesTheReviewMedium() {
+    let expectedLines: [TicketDemoKind: String] = [
+      .browser: "Opens in your browser",
+      .staticWeb: "An interactive prototype",
+      .macApplication: "Opens as a Mac app",
+      .artifact: "A file you read",
+      .commandOutput: "Command output",
+      .terminalApplication: "Opens in Terminal",
+      .codeOnly: "A code change with no demo",
+    ]
+    for kind in TicketDemoKind.allCases {
+      let metadata = TicketReviewMediumPresentation.metadata(for: kind)
+      #expect(metadata?.title == "You'll review this as")
+      #expect(metadata?.value == expectedLines[kind])
+    }
+    #expect(
+      TicketReviewMediumPresentation.metadata(for: nil) == nil,
+      "a pre-contract proposal shows no review-medium line"
+    )
   }
 
   @Test("E10 all-suggestion confirmations state exact scope and no sprint effect")
@@ -741,17 +798,17 @@ struct EpicPlanningPresentationTests {
     let sessionID = UUID()
     let first = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S1",
+      reference: "T1",
       position: 0
     )
     let second = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S2",
+      reference: "T2",
       position: 1
     )
     let alreadyAccepted = ticketSuggestion(
       sessionID: sessionID,
-      reference: "S3",
+      reference: "T3",
       position: 2,
       dependencyIDs: [first.id],
       status: .accepted,

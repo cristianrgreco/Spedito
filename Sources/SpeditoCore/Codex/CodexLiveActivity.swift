@@ -67,7 +67,7 @@ public struct CodexLiveActivityAccumulator: Sendable {
       else { return nil }
       emittedReasoningCharacterCountsByItemID[itemID] =
         reasoningSummariesByItemID[itemID, default: ""].count
-      return .activity(CodexLiveActivity(text: text, kind: .thinking))
+      return .activity(CodexLiveActivity(text: text, kind: Self.kind(for: text)))
 
     case "turn/plan/updated":
       let steps = notification.params["plan"]?.arrayValue ?? []
@@ -171,13 +171,38 @@ public struct CodexLiveActivityAccumulator: Sendable {
           )
           .replacingOccurrences(of: "**", with: "")
           .replacingOccurrences(of: "`", with: "")
+          .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
           .trimmingCharacters(in: CharacterSet(charactersIn: "#-• "))
       }
       .filter { !$0.isEmpty }
     guard var text = lines.last else { return nil }
     if text.count > 150 {
-      text = "…" + String(text.suffix(149))
+      var suffix = String(text.suffix(149))
+      if let boundary = suffix.firstIndex(of: " "), boundary != suffix.startIndex {
+        suffix = String(suffix[suffix.index(after: boundary)...])
+      }
+      text = "…" + suffix
     }
     return text
+  }
+
+  private static func kind(for text: String) -> CodexLiveActivityKind {
+    let normalized = text.lowercased()
+    if normalized.hasPrefix("inspect") || normalized.hasPrefix("review") {
+      return .inspecting
+    }
+    if normalized.hasPrefix("research") || normalized.hasPrefix("search") {
+      return .researching
+    }
+    if normalized.hasPrefix("plan") {
+      return .planning
+    }
+    if normalized.hasPrefix("run") || normalized.hasPrefix("test") {
+      return .runningChecks
+    }
+    if normalized.hasPrefix("edit") || normalized.hasPrefix("update") {
+      return .changingFiles
+    }
+    return .thinking
   }
 }

@@ -11,22 +11,34 @@ public struct EpicPlanningWorkflowAvailability: Equatable, Sendable {
 }
 
 public struct EpicPlanningWorkflowSnapshot: Equatable, Sendable {
-  public var conversation: EpicPlanningConversationState?
+  public var conversations: [UUID: EpicPlanningConversationState]
   public var suggestionBatches: [TicketSuggestionBatch]
   public var isDecidingSuggestions: Bool
 
   public init(
-    conversation: EpicPlanningConversationState? = nil,
+    conversations: [UUID: EpicPlanningConversationState] = [:],
     suggestionBatches: [TicketSuggestionBatch] = [],
     isDecidingSuggestions: Bool = false
   ) {
-    self.conversation = conversation
+    self.conversations = conversations
     self.suggestionBatches = suggestionBatches
     self.isDecidingSuggestions = isDecidingSuggestions
   }
 
+  public func conversation(for epicID: UUID) -> EpicPlanningConversationState? {
+    conversations[epicID]
+  }
+
   public var isPlanning: Bool {
-    conversation?.isRunning == true || conversation?.isGeneratingPlan == true
+    conversations.values.contains { $0.isRunning || $0.isGeneratingPlan }
+  }
+
+  public var isAnyConversationRunning: Bool {
+    conversations.values.contains { $0.isRunning }
+  }
+
+  public var isAnyPlanGenerating: Bool {
+    conversations.values.contains { $0.isGeneratingPlan }
   }
 
   public var isSuggestionGenerationRunning: Bool {
@@ -37,10 +49,10 @@ public struct EpicPlanningWorkflowSnapshot: Equatable, Sendable {
 @MainActor
 public final class EpicPlanningWorkflowCoordinator {
   private enum Operation: Hashable {
-    case planning
+    case planning(UUID)
     case suggestionGeneration
-    case persistence
-    case interruption
+    case persistence(UUID)
+    case interruption(UUID)
   }
 
   public private(set) var snapshot = EpicPlanningWorkflowSnapshot()
@@ -62,8 +74,13 @@ public final class EpicPlanningWorkflowCoordinator {
 
   private let operations = FeatureOperationRegistry<Operation>()
   private let ownerCommands = FeatureOperationRegistry<UUID>()
-  private var threadID: String?
+  private var threadIDs: [UUID: String] = [:]
   private var recoveredSessionIDs: Set<UUID> = []
+  /// Epics whose current plan-generation cycle already used its one silent
+  /// retry. Cleared when a plan completes, so the next cycle gets its own.
+  /// Transient on purpose: after a relaunch, recovery owns interrupted
+  /// sessions and the owner-facing retry takes over.
+  private var autoRetriedPlanEpicIDs: Set<UUID> = []
 
   public init(
     storeProvider: @escaping (UUID) -> SQLiteStore?,
@@ -98,15 +115,25 @@ public final class EpicPlanningWorkflowCoordinator {
   }
 
   public var isBusy: Bool {
-    operations.isActive(.planning) || operations.isActive(.suggestionGeneration)
+    !activePlanningEpicIDs.isEmpty || operations.isActive(.suggestionGeneration)
   }
 
   public var isPlanning: Bool {
-    operations.isActive(.planning)
+    !activePlanningEpicIDs.isEmpty
   }
 
-  public var activePlanningTurn: CodexTurnIdentity? {
-    operations.turn(for: .planning)
+  private var activePlanningEpicIDs: [UUID] {
+    operations.activeKeys.compactMap {
+      if case .planning(let epicID) = $0 { return epicID }
+      return nil
+    }
+  }
+
+  private var activePersistenceEpicIDs: [UUID] {
+    operations.activeKeys.compactMap {
+      if case .persistence(let epicID) = $0 { return epicID }
+      return nil
+    }
   }
 
   public func loadSuggestionBatches(_ batches: [TicketSuggestionBatch]) {
@@ -152,12 +179,14 @@ public final class EpicPlanningWorkflowCoordinator {
     _ conversation: EpicPlanningConversationState,
     threadID: String?
   ) {
-    self.threadID = threadID
-    updateSnapshot { $0.conversation = conversation }
+    threadIDs[conversation.epicID] = threadID
+    updateSnapshot { $0.conversations[conversation.epicID] = conversation }
   }
 
   public func awaitPersistence() async {
-    await operations.settle(.persistence)
+    for epicID in activePersistenceEpicIDs {
+      await operations.settle(.persistence(epicID))
+    }
     await ownerCommands.settleAll()
   }
   public func clearSelectedProductProjection() {
@@ -168,24 +197,17 @@ public final class EpicPlanningWorkflowCoordinator {
   }
 
   public func restoreEpicPlanningConversation(for epic: Epic) async {
-    guard snapshot.conversation?.epicID != epic.id else { return }
-    guard
-      snapshot.conversation?.isRunning != true,
-      snapshot.conversation?.isGeneratingPlan != true
-    else { return }
-    await operations.settle(.persistence)
+    guard snapshot.conversations[epic.id] == nil else { return }
+    await operations.settle(.persistence(epic.id))
     guard
       !Task.isCancelled,
-      selectedProductID() == epic.productID,
-      snapshot.conversation?.isRunning != true,
-      snapshot.conversation?.isGeneratingPlan != true,
+      snapshot.conversations[epic.id] == nil,
       let store = storeProvider(epic.productID)
     else { return }
 
     do {
       guard var durable = try await store.fetchEpicPlanningConversation(epicID: epic.id) else {
-        threadID = nil
-        updateSnapshot { $0.conversation = nil }
+        threadIDs[epic.id] = nil
         return
       }
       let planningSession = try await store.fetchLatestEpicPlanningSuggestionSession(
@@ -199,14 +221,12 @@ public final class EpicPlanningWorkflowCoordinator {
       }
       guard
         !Task.isCancelled,
-        selectedProductID() == epic.productID,
-        snapshot.conversation?.isRunning != true,
-        snapshot.conversation?.isGeneratingPlan != true
+        snapshot.conversations[epic.id] == nil
       else { return }
-      threadID = durable.threadID
+      threadIDs[epic.id] = durable.threadID
       let hasStartedPlanning = durable.hasStartedPlanning ?? true
       updateSnapshot {
-        $0.conversation = EpicPlanningConversationState(
+        $0.conversations[epic.id] = EpicPlanningConversationState(
           productID: epic.productID,
           epicID: durable.epicID,
           messages: durable.messages,
@@ -230,17 +250,16 @@ public final class EpicPlanningWorkflowCoordinator {
     guard
       availabilityProvider().canPlanEpic,
       selectedProductID() == epic.productID,
+      snapshot.conversations[epic.id]?.isRunning != true,
+      snapshot.conversations[epic.id]?.isGeneratingPlan != true,
       let product = productProvider(epic.productID),
       epic.status == .open,
       let store = storeProvider(epic.productID)
     else { return }
 
-    let existingMessages =
-      snapshot.conversation?.epicID == epic.id
-      ? snapshot.conversation?.messages ?? []
-      : []
+    let existingMessages = snapshot.conversations[epic.id]?.messages ?? []
     updateSnapshot {
-      $0.conversation = EpicPlanningConversationState(
+      $0.conversations[epic.id] = EpicPlanningConversationState(
         productID: epic.productID,
         epicID: epic.id,
         messages: existingMessages,
@@ -252,11 +271,21 @@ public final class EpicPlanningWorkflowCoordinator {
         errorMessage: nil
       )
     }
-    persistConversation()
-    operations.start(.planning, productID: product.id, replacing: true) { [weak self] token in
+    persistConversation(epicID: epic.id)
+    operations.start(
+      .planning(epic.id),
+      productID: product.id,
+      replacing: true
+    ) { [weak self] token in
       guard let self else { return }
       do {
         guard let client = clientProvider() else { throw CodexClientError.notConnected }
+        if existingMessages.isEmpty,
+          let durable = try await store.fetchEpicPlanningConversation(epicID: epic.id),
+          !durable.messages.isEmpty
+        {
+          updateConversation(for: epic.id) { $0.messages = durable.messages }
+        }
         let analyst = try await store.fetchAgentProfiles(productID: product.id)
           .first { $0.role == .businessAnalyst }
         let existingItems = try await store.fetchWorkItems(productID: product.id)
@@ -273,8 +302,8 @@ public final class EpicPlanningWorkflowCoordinator {
           ),
           model: analyst?.model
         )
-        threadID = newThreadID
-        persistConversation()
+        threadIDs[epic.id] = newThreadID
+        persistConversation(epicID: epic.id)
         let turnID = try await client.startStructuredTurn(
           threadID: newThreadID,
           prompt: CodexEpicClarificationGenerator.initialPrompt(
@@ -335,8 +364,7 @@ public final class EpicPlanningWorkflowCoordinator {
 
   public func retryEpicPlanning(_ epic: Epic) {
     guard
-      let conversation = snapshot.conversation,
-      conversation.epicID == epic.id,
+      let conversation = snapshot.conversations[epic.id],
       !conversation.isRunning,
       !conversation.isGeneratingPlan
     else { return }
@@ -361,7 +389,7 @@ public final class EpicPlanningWorkflowCoordinator {
         requiresReplacementThread: true
       )
     case .restartClarification:
-      threadID = nil
+      threadIDs[epic.id] = nil
       updateConversation(for: epic.id) {
         $0.questions = []
         $0.hasStartedPlanning = false
@@ -371,25 +399,29 @@ public final class EpicPlanningWorkflowCoordinator {
     }
   }
 
-  public func cancelEpicPlanning() {
-    operations.cancelTask(.planning)
-    guard let turn = operations.turn(for: .planning) else { return }
-    operations.start(.interruption, productID: nil, replacing: true) { [weak self] _ in
+  public func cancelEpicPlanning(epicID: UUID) {
+    operations.cancelTask(.planning(epicID))
+    guard let turn = operations.turn(for: .planning(epicID)) else { return }
+    operations.start(
+      .interruption(epicID),
+      productID: nil,
+      replacing: true
+    ) { [weak self] _ in
       guard let self, let client = clientProvider() else { return }
       try? await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
     }
   }
 
   public func clearEpicPlanningConversation(for epicID: UUID) {
-    guard
-      let conversation = snapshot.conversation,
-      conversation.epicID == epicID
-    else { return }
-    cancelEpicPlanning()
-    threadID = nil
-    updateSnapshot { $0.conversation = nil }
+    guard let conversation = snapshot.conversations[epicID] else { return }
+    cancelEpicPlanning(epicID: epicID)
+    threadIDs[epicID] = nil
+    updateSnapshot { $0.conversations[epicID] = nil }
     guard let store = storeProvider(conversation.productID) else { return }
-    operations.enqueue(.persistence, productID: conversation.productID) { [weak self] in
+    operations.enqueue(
+      .persistence(epicID),
+      productID: conversation.productID
+    ) { [weak self] in
       do {
         try await store.deleteEpicPlanningConversation(epicID: epicID)
       } catch {
@@ -399,7 +431,9 @@ public final class EpicPlanningWorkflowCoordinator {
   }
 
   public func settlePlanning() async {
-    await operations.settle(.planning)
+    while let epicID = activePlanningEpicIDs.first {
+      await operations.settle(.planning(epicID))
+    }
   }
 
   private func continueEpicPlanning(
@@ -412,9 +446,8 @@ public final class EpicPlanningWorkflowCoordinator {
     guard
       !answers.isEmpty,
       answers.count == answeredQuestions.count,
-      snapshot.conversation?.epicID == epic.id,
-      snapshot.conversation?.isRunning == false,
-      snapshot.conversation?.isGeneratingPlan == false,
+      snapshot.conversations[epic.id]?.isRunning == false,
+      snapshot.conversations[epic.id]?.isGeneratingPlan == false,
       let client = clientProvider(),
       selectedProductID() == epic.productID,
       let product = productProvider(epic.productID),
@@ -435,9 +468,13 @@ public final class EpicPlanningWorkflowCoordinator {
       $0.isRunning = true
       $0.errorMessage = nil
     }
-    let messages = snapshot.conversation?.messages ?? []
-    let preferredThreadID = requiresReplacementThread ? nil : threadID
-    operations.start(.planning, productID: product.id, replacing: true) { [weak self] token in
+    let messages = snapshot.conversations[epic.id]?.messages ?? []
+    let preferredThreadID = requiresReplacementThread ? nil : threadIDs[epic.id]
+    operations.start(
+      .planning(epic.id),
+      productID: product.id,
+      replacing: true
+    ) { [weak self] token in
       guard let self else { return }
       await onResolveOwnerNotification(
         product.id,
@@ -455,6 +492,7 @@ public final class EpicPlanningWorkflowCoordinator {
         let response = try await runEpicClarificationTurn(
           token: token,
           client: client,
+          epicID: epic.id,
           preferredThreadID: preferredThreadID,
           prompt: CodexEpicClarificationGenerator.followUpPrompt(answers: answers),
           recoveryPrompt: CodexEpicClarificationGenerator.recoveryPrompt(
@@ -491,6 +529,7 @@ public final class EpicPlanningWorkflowCoordinator {
   private func runEpicClarificationTurn(
     token: FeatureOperationToken<Operation>,
     client: CodexAppServerClient,
+    epicID: UUID,
     preferredThreadID: String?,
     prompt: String,
     recoveryPrompt: String,
@@ -519,8 +558,8 @@ public final class EpicPlanningWorkflowCoordinator {
       ),
       model: analyst.model
     )
-    threadID = replacementThreadID
-    persistConversation()
+    threadIDs[epicID] = replacementThreadID
+    persistConversation(epicID: epicID)
     return try await runEpicStructuredTurn(
       token: token,
       client: client,
@@ -560,7 +599,7 @@ public final class EpicPlanningWorkflowCoordinator {
       $0.questions = reply.questions
       $0.isRunning = false
     }
-    await operations.settle(.persistence)
+    await operations.settle(.persistence(epic.id))
     if let firstQuestion = reply.questions.first {
       await onOwnerNotification(
         OwnerNotification(
@@ -568,7 +607,7 @@ public final class EpicPlanningWorkflowCoordinator {
           productID: epic.productID,
           kind: .needsInput,
           target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-          title: "\(epic.title) needs your input",
+          title: "\(epic.displayTitle) needs your input",
           body: firstQuestion.prompt,
           createdAt: message.createdAt
         )
@@ -602,6 +641,25 @@ public struct EpicPlanningPolicy {
     }
     return .restartClarification
   }
+
+  /// Whether a failed plan-generation turn should be retried once without
+  /// involving the product owner.
+  ///
+  /// A turn that stalls or ends without output can succeed cleanly on the next
+  /// attempt, and the owner has nothing to decide, so notifying them first is
+  /// noise. Every other failure — a usage limit that would fail again
+  /// immediately, an invalid result the repair turn already could not fix —
+  /// goes to the owner, and so does a second transient failure.
+  public static func shouldAutoRetryPlanGeneration(
+    after error: Error,
+    hasAutoRetried: Bool
+  ) -> Bool {
+    guard !hasAutoRetried else { return false }
+    switch error as? CodexClientError {
+    case .turnTimedOut, .turnEndedWithoutOutput: return true
+    default: return false
+    }
+  }
 }
 
 extension EpicPlanningWorkflowCoordinator {
@@ -619,7 +677,11 @@ extension EpicPlanningWorkflowCoordinator {
       $0.isGeneratingPlan = true
       $0.errorMessage = nil
     }
-    operations.start(.planning, productID: product.id, replacing: true) { [weak self] token in
+    operations.start(
+      .planning(epic.id),
+      productID: product.id,
+      replacing: true
+    ) { [weak self] token in
       guard let self else { return }
       var session: SuggestionSession?
       do {
@@ -669,14 +731,14 @@ extension EpicPlanningWorkflowCoordinator {
           planningKnowledge: planningKnowledge
         )
         try Task.checkCancellation()
-        let plan: EpicPlanDraft
+        let reply: EpicPlanReply
         do {
-          plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
             response,
             existingItems: existingItems
           )
         } catch let validationError as TicketSuggestionGenerationError {
-          guard let repairThreadID = threadID else {
+          guard let repairThreadID = threadIDs[epic.id] else {
             throw CodexClientError.invalidThreadResponse
           }
           let repairedResponse = try await runEpicPlanStructuredTurn(
@@ -694,10 +756,26 @@ extension EpicPlanningWorkflowCoordinator {
             effort: analyst?.reasoningEffort ?? "medium"
           )
           try Task.checkCancellation()
-          plan = try CodexTicketSuggestionGenerator.decodeEpicPlan(
+          reply = try CodexTicketSuggestionGenerator.decodeEpicPlan(
             repairedResponse,
             existingItems: existingItems
           )
+        }
+
+        let plan: EpicPlanDraft
+        switch reply {
+        case .questions(let message, let questions):
+          operations.clearTurn(for: token)
+          try await escapeEpicPlanningToQuestions(
+            for: epic,
+            sessionID: startedSession.id,
+            message: message,
+            questions: questions,
+            fallbackMessages: durableMessages
+          )
+          return
+        case .plan(let decodedPlan):
+          plan = decodedPlan
         }
 
         let ownerReviewedMetadata = epic.hasAnalyzedMetadata
@@ -718,12 +796,19 @@ extension EpicPlanningWorkflowCoordinator {
           replaceSuggestionBatch(completedBatch)
         }
         operations.clearTurn(for: token)
+        autoRetriedPlanEpicIDs.remove(epic.id)
         await onReloadSelectedProduct(product.id)
         try await completeEpicPlanningConversation(
           for: epic,
           proposalCount: plan.ticketSuggestions.count,
           threadID: completedBatch.session.codexThreadID,
           fallbackMessages: durableMessages
+        )
+        // The landed plan ends every wait this epic announced — clarification
+        // questions answered by any route and failed generations now retried.
+        await onResolveOwnerNotification(
+          product.id,
+          OwnerNotificationTarget(kind: .epic, id: epic.id)
         )
         await onOwnerNotification(
           OwnerNotification(
@@ -764,10 +849,44 @@ extension EpicPlanningWorkflowCoordinator {
             replaceSuggestionBatch(failedBatch)
           }
         }
+        // A transient turn failure gets one silent retry: the owner has
+        // nothing to decide yet, so a notification would be noise. The failed
+        // session stays durable for audit; the retry restarts it.
+        if let session,
+          selectedProductID() == product.id,
+          EpicPlanningPolicy.shouldAutoRetryPlanGeneration(
+            after: error,
+            hasAutoRetried: autoRetriedPlanEpicIDs.contains(epic.id)
+          )
+        {
+          autoRetriedPlanEpicIDs.insert(epic.id)
+          updateConversation(for: epic.id) {
+            $0.isGeneratingPlan = false
+            $0.errorMessage = nil
+          }
+          retryEpicPlan(sessionID: session.id)
+          return
+        }
         updateConversation(for: epic.id) {
           $0.isGeneratingPlan = false
           $0.errorMessage = error.localizedDescription
         }
+        // Success posts "plan ready for review", so failure must post too. A
+        // live run generated for half an hour, timed out, and recorded the
+        // failure durably — while the owner surface stayed silent unless the
+        // epic screen happened to be open. Waiting for a plan is exactly when
+        // an owner walks away. The id must stay distinct from the session id:
+        // a retried session completes under its own id, and reusing it here
+        // silently swallowed both the repeat failure and the later success.
+        await onOwnerNotification(
+          OwnerNotification(
+            productID: product.id,
+            kind: .needsInput,
+            target: OwnerNotificationTarget(kind: .epic, id: epic.id),
+            title: "Planning needs another try",
+            body: error.localizedDescription
+          )
+        )
       }
     }
   }
@@ -791,7 +910,7 @@ extension EpicPlanningWorkflowCoordinator {
       customInstructions: analyst?.customInstructionText ?? ""
     )
     let workingDirectory = try workspaceProvider(product.id)
-    var preferredThreadID = threadID
+    var preferredThreadID = threadIDs[epic.id]
 
     if let recoveredThreadID = recoveredSession?.codexThreadID {
       do {
@@ -802,8 +921,8 @@ extension EpicPlanningWorkflowCoordinator {
           model: analyst?.model
         )
         preferredThreadID = resumedThreadID
-        threadID = resumedThreadID
-        persistConversation()
+        threadIDs[epic.id] = resumedThreadID
+        persistConversation(epicID: epic.id)
         if let recoveredTurnID = recoveredSession?.codexTurnID,
           let recoveredResponse = try? await client.completedAgentMessage(
             threadID: resumedThreadID,
@@ -845,8 +964,8 @@ extension EpicPlanningWorkflowCoordinator {
       developerInstructions: developerInstructions,
       model: analyst?.model
     )
-    threadID = replacementThreadID
-    persistConversation()
+    threadIDs[epic.id] = replacementThreadID
+    persistConversation(epicID: epic.id)
     return try await runEpicPlanStructuredTurn(
       token: token,
       client: client,
@@ -889,13 +1008,78 @@ extension EpicPlanningWorkflowCoordinator {
     return try await client.waitForFinalAgentMessage(threadID: threadID, turnID: turnID)
   }
 
+  /// Handles the sanctioned final-plan escape: the turn returned outstanding
+  /// questions instead of a plan, so the durable clarification conversation
+  /// resumes with those questions and the placeholder suggestion session ends
+  /// without a suggestion set. The durable write happens before the snapshot
+  /// projection so an interruption can only lose presentation, never the
+  /// questions.
+  private func escapeEpicPlanningToQuestions(
+    for epic: Epic,
+    sessionID: UUID,
+    message: String,
+    questions: [TicketRefinementQuestion],
+    fallbackMessages: [EpicPlanningConversationMessage]
+  ) async throws {
+    await operations.settle(.persistence(epic.id))
+    guard let store = storeProvider(epic.productID) else {
+      throw PersistenceError.recordNotFound("product store \(epic.productID)")
+    }
+    try await store.escapeTicketSuggestionSessionToQuestions(sessionID: sessionID)
+    if selectedProductID() == epic.productID {
+      removeSuggestionBatch(sessionID: sessionID)
+    }
+
+    let analystMessage = EpicPlanningConversationMessage(
+      author: .businessAnalyst,
+      body: message
+    )
+    var durable =
+      try await store.fetchEpicPlanningConversation(epicID: epic.id)
+      ?? EpicPlanningConversationSnapshot(
+        epicID: epic.id,
+        messages: fallbackMessages,
+        questions: [],
+        isComplete: false,
+        threadID: threadIDs[epic.id]
+      )
+    durable.messages.append(analystMessage)
+    durable.questions = questions
+    durable.isComplete = false
+    durable.threadID = threadIDs[epic.id] ?? durable.threadID
+    durable.updatedAt = Date()
+    try await store.saveEpicPlanningConversation(durable)
+
+    if var conversation = snapshot.conversations[epic.id] {
+      conversation.messages = durable.messages
+      conversation.questions = questions
+      conversation.isRunning = false
+      conversation.isGeneratingPlan = false
+      conversation.isComplete = false
+      conversation.errorMessage = nil
+      updateSnapshot { $0.conversations[epic.id] = conversation }
+    }
+
+    await onOwnerNotification(
+      OwnerNotification(
+        id: analystMessage.id,
+        productID: epic.productID,
+        kind: .needsInput,
+        target: OwnerNotificationTarget(kind: .epic, id: epic.id),
+        title: "\(epic.displayTitle) needs your input",
+        body: questions.first?.prompt ?? message,
+        createdAt: analystMessage.createdAt
+      )
+    )
+  }
+
   private func completeEpicPlanningConversation(
     for epic: Epic,
     proposalCount: Int,
     threadID: String?,
     fallbackMessages: [EpicPlanningConversationMessage]
   ) async throws {
-    await operations.settle(.persistence)
+    await operations.settle(.persistence(epic.id))
     guard let store = storeProvider(epic.productID) else {
       throw PersistenceError.recordNotFound("product store \(epic.productID)")
     }
@@ -926,11 +1110,7 @@ extension EpicPlanningWorkflowCoordinator {
     durable.updatedAt = Date()
     try await store.saveEpicPlanningConversation(durable)
 
-    guard
-      var conversation = snapshot.conversation,
-      conversation.productID == epic.productID,
-      conversation.epicID == epic.id
-    else { return }
+    guard var conversation = snapshot.conversations[epic.id] else { return }
     conversation.messages = durable.messages
     conversation.questions = []
     conversation.hasStartedPlanning = durable.hasStartedPlanning ?? true
@@ -938,27 +1118,27 @@ extension EpicPlanningWorkflowCoordinator {
     conversation.isGeneratingPlan = false
     conversation.isComplete = true
     conversation.errorMessage = nil
-    self.threadID = durable.threadID
-    updateSnapshot { $0.conversation = conversation }
+    threadIDs[epic.id] = durable.threadID
+    updateSnapshot { $0.conversations[epic.id] = conversation }
   }
 
   private func updateConversation(
     for epicID: UUID,
     _ update: (inout EpicPlanningConversationState) -> Void
   ) {
-    guard
-      var conversation = snapshot.conversation,
-      conversation.epicID == epicID
-    else { return }
+    guard var conversation = snapshot.conversations[epicID] else { return }
     update(&conversation)
-    updateSnapshot { $0.conversation = conversation }
-    persistConversation()
+    updateSnapshot { $0.conversations[epicID] = conversation }
+    persistConversation(epicID: epicID)
   }
 
-  private func persistConversation() {
-    guard let conversation = snapshot.conversation else { return }
-    let capturedThreadID = threadID
-    operations.enqueue(.persistence, productID: conversation.productID) { [weak self] in
+  private func persistConversation(epicID: UUID) {
+    guard let conversation = snapshot.conversations[epicID] else { return }
+    let capturedThreadID = threadIDs[epicID]
+    operations.enqueue(
+      .persistence(epicID),
+      productID: conversation.productID
+    ) { [weak self] in
       guard let self else { return }
       do {
         try await saveEpicPlanningConversation(
@@ -1432,10 +1612,13 @@ extension EpicPlanningWorkflowCoordinator {
 extension EpicPlanningWorkflowCoordinator {
   public func recoverTicketSuggestionSessionIfNeeded() async {
     guard
-      let batch = snapshot.suggestionBatches.first(where: {
-        !recoveredSessionIDs.contains($0.session.id)
-          && recoveryPolicy.action(for: $0.session) != .none
-          && $0.session.epicID != nil
+      let batch = snapshot.suggestionBatches.first(where: { candidate in
+        guard let epicID = candidate.session.epicID else { return false }
+        return !recoveredSessionIDs.contains(candidate.session.id)
+          && recoveryPolicy.action(
+            for: candidate.session,
+            hasLiveRun: operations.isActive(.planning(epicID))
+          ) != .none
       }),
       let store = storeProvider(batch.session.productID),
       clientProvider() != nil,
@@ -1447,7 +1630,10 @@ extension EpicPlanningWorkflowCoordinator {
     let session = batch.session
     let productID = session.productID
 
-    switch recoveryPolicy.action(for: session) {
+    switch recoveryPolicy.action(
+      for: session,
+      hasLiveRun: operations.isActive(.planning(epicID))
+    ) {
     case .none:
       return
     case .resumeInterruptedGeneration:
@@ -1493,16 +1679,23 @@ extension EpicPlanningWorkflowCoordinator {
       }
     }
     guard !preservingEpicPlanning else { return }
-    if operations.productID(for: .planning) == productID {
-      await operations.cancel(.planning) { [weak self] turn in
-        guard let client = self?.clientProvider() else { return }
-        try? await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
+    for key in operations.activeKeys(productID: productID) {
+      switch key {
+      case .planning:
+        await operations.cancel(key) { [weak self] turn in
+          guard let client = self?.clientProvider() else { return }
+          try? await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
+        }
+      case .persistence:
+        await operations.cancel(key)
+      case .suggestionGeneration, .interruption:
+        break
       }
     }
-    if operations.productID(for: .persistence) == productID {
-      await operations.cancel(.persistence)
+    for epicID in Array(threadIDs.keys)
+    where snapshot.conversations[epicID]?.productID == productID {
+      threadIDs[epicID] = nil
     }
-    threadID = nil
   }
 
   public func shutdown() async {
@@ -1512,7 +1705,7 @@ extension EpicPlanningWorkflowCoordinator {
       try? await client.interruptTurn(threadID: turn.threadID, turnID: turn.turnID)
     }
     await operations.settleAll()
-    threadID = nil
+    threadIDs = [:]
   }
 
   public func settleAll() async {

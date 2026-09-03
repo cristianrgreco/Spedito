@@ -148,7 +148,6 @@ public enum CodexPermissionProfiles {
       "-c",
       deliveryProfileOverrideValue(
         readOnlyGitDirectory: nil,
-        readOnlyProductDirectory: nil,
         writableTransientStorageRoots: writableTransientStorageRoots
       ),
       "-c",
@@ -174,9 +173,93 @@ public enum CodexPermissionProfiles {
     "~/Library/Keychains"="deny"
     """#
 
-  private static let workspaceRootEntries = #"""
-    ":workspace_roots"={"."="write","**/.env"="deny","**/.env.*"="deny"}
-    """#
+  /// Spedito's own control plane, denied to every delivery run.
+  ///
+  /// These are directories, not database filenames. Each product keeps its
+  /// database at `Product Workspaces/<id>/.spedito/product.sqlite`, so naming
+  /// files here would go stale the next time the layout moves — as the earlier
+  /// `spedito.sqlite` entries did, leaving the live databases uncovered.
+  /// Denying `Product Workspaces` also keeps one delivery run out of every
+  /// other product's repository.
+  ///
+  /// The current product's Git directory is re-granted as a more specific
+  /// `read`, the way the repository-analysis profile re-grants its snapshot
+  /// under `":root"="deny"`.
+  ///
+  /// Run and integration worktrees are deliberately absent: a delivery run's
+  /// own workspace lives under `Run Worktrees`, so a deny here would remove the
+  /// agent's own ticket worktree. Cross-worktree access stays an
+  /// approval-policy concern in `AgentPermissionGrantPolicy`.
+  static let speditoControlPlaneDenyPaths = [
+    "~/Library/Application Support/Spedito/Product Workspaces",
+    "~/Library/Application Support/StoryPointless",
+  ]
+
+  private static func speditoControlPlaneDenyEntries(
+    _ paths: [String]
+  ) -> String {
+    paths
+      .map { #""\#(tomlEscaped($0))"="deny","# }
+      .joined()
+  }
+
+  /// System typeface directories, readable by every delivery run.
+  ///
+  /// Codex's `:minimal` read set does not include them, so CoreText could not
+  /// load Helvetica, Courier, or any other installed face inside the sandbox.
+  /// Every rasteriser a team member can reach — `sips`, `qlmanage`, CoreText
+  /// from `swift` — then drew text as nothing. A designer checking its own PDF
+  /// saw blank pages, concluded the environment had no fonts, and shipped
+  /// hand-drawn 3×5 pixel glyphs instead of real type; three products' design
+  /// screen sets were delivered that way. Fonts hold no secrets and no product
+  /// state, so reading them keeps the profile least-privilege while letting
+  /// the sandbox render what the product owner will see.
+  ///
+  /// Rendered as TOML by `deliveryProtectedFilesystemEntries` and as JSON by
+  /// `deliveryThreadConfiguration`, so the launch-time and thread-time
+  /// profiles cannot drift apart.
+  public static let systemFontReadPaths = ["/System/Library/Fonts", "/Library/Fonts"]
+
+  private static var systemFontReadEntries: String {
+    systemFontReadPaths
+      .map { #""\#(tomlEscaped($0))"="read","# }
+      .joined()
+  }
+
+  /// Paths denied inside every workspace root, relative to that root.
+  ///
+  /// A deny pattern must never contain a wildcard in a **directory**
+  /// component. Codex compiles each deny pattern into additional
+  /// `deny file-write-unlink` rules for every ancestor of the pattern, so a
+  /// pattern such as `**/.env` expands to an ancestor matching every
+  /// directory and makes the whole workspace undeletable while files still
+  /// unlink. A wildcard in the final filename component is safe, because it
+  /// produces no wildcard ancestor.
+  ///
+  /// The cost of that rule is depth: these entries are workspace-root
+  /// relative, so a `.env` nested below the root is not denied. Delivery runs
+  /// have no network and demos reach loopback only, which bounds the
+  /// consequence. See
+  /// `docs/work-packets/2026-09-01-demo-preparation-parity-handover.md`.
+  static let workspaceDenyPaths = [".env", ".env.*"]
+
+  /// One definition, rendered as TOML here and as JSON in
+  /// `deliveryThreadConfiguration`, so the launch-time and thread-time
+  /// profiles cannot drift apart.
+  private static var workspaceRootEntries: String {
+    let entries =
+      [#""."="write""#]
+      + workspaceDenyPaths.map { #""\#(tomlEscaped($0))"="deny""# }
+    return #"":workspace_roots"={\#(entries.joined(separator: ","))}"#
+  }
+
+  static var workspaceRootsFilesystemEntries: [String: JSONValue] {
+    var entries: [String: JSONValue] = [".": .string("write")]
+    for path in workspaceDenyPaths {
+      entries[path] = .string("deny")
+    }
+    return entries
+  }
 
   public static var macOSUserTransientStorageRoots: [URL] {
     normalizedStorageRoots(
@@ -266,15 +349,11 @@ public enum CodexPermissionProfiles {
 
   private static func deliveryProtectedFilesystemEntries(
     readOnlyGitDirectory: URL?,
-    readOnlyProductDirectory: URL?,
-    writableTransientStorageRoots: [URL]
+    writableTransientStorageRoots: [URL],
+    controlPlaneDenyPaths: [String]
   ) -> String {
     let gitEntry =
       readOnlyGitDirectory.map {
-        #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
-      } ?? ""
-    let productEntry =
-      readOnlyProductDirectory.map {
         #""\#(tomlEscaped($0.standardizedFileURL.path))"="read","#
       } ?? ""
     let transientEntries = writableTransientStorageRoots.map {
@@ -287,20 +366,12 @@ public enum CodexPermissionProfiles {
       .joined()
     return normalizedFilesystemEntries(
       #"":minimal"="read","#
+        + systemFontReadEntries
         + credentialDenyEntries + ","
-        + #""~/Library/Application Support/Spedito/spedito.sqlite"="deny","#
-        + #""~/Library/Application Support/Spedito/spedito.sqlite-wal"="deny","#
-        + #""~/Library/Application Support/Spedito/spedito.sqlite-shm"="deny","#
-        + #""~/Library/Application Support/Spedito/storypointless.sqlite"="deny","#
-        + #""~/Library/Application Support/Spedito/storypointless.sqlite-wal"="deny","#
-        + #""~/Library/Application Support/Spedito/storypointless.sqlite-shm"="deny","#
-        + #""~/Library/Application Support/StoryPointless/storypointless.sqlite"="deny","#
-        + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-wal"="deny","#
-        + #""~/Library/Application Support/StoryPointless/storypointless.sqlite-shm"="deny","#
+        + speditoControlPlaneDenyEntries(controlPlaneDenyPaths)
         + transientEntries
         + protectedPreviewEntries
         + gitEntry
-        + productEntry
         + workspaceRootEntries
     )
   }
@@ -308,16 +379,15 @@ public enum CodexPermissionProfiles {
   static var deliveryProfileOverride: String {
     deliveryProfileOverrideValue(
       readOnlyGitDirectory: nil,
-      readOnlyProductDirectory: nil,
       writableTransientStorageRoots: macOSUserTransientStorageRoots
     )
   }
 
   static func deliveryThreadConfiguration(
     readOnlyGitDirectory: URL?,
-    readOnlyProductDirectory: URL? = nil,
     writableTransientStorageRoots: [URL] = macOSUserTransientStorageRoots,
-    protectedStorageRoots: [URL] = protectedSpeditoDeliveryStorageRoots
+    protectedStorageRoots: [URL] = protectedSpeditoDeliveryStorageRoots,
+    controlPlaneDenyPaths: [String] = speditoControlPlaneDenyPaths
   ) -> JSONValue {
     var filesystem: [String: JSONValue] = [
       ":minimal": .string("read"),
@@ -330,21 +400,14 @@ public enum CodexPermissionProfiles {
       "~/.git-credentials": .string("deny"),
       "~/.netrc": .string("deny"),
       "~/Library/Keychains": .string("deny"),
-      "~/Library/Application Support/Spedito/spedito.sqlite": .string("deny"),
-      "~/Library/Application Support/Spedito/spedito.sqlite-wal": .string("deny"),
-      "~/Library/Application Support/Spedito/spedito.sqlite-shm": .string("deny"),
-      "~/Library/Application Support/Spedito/storypointless.sqlite": .string("deny"),
-      "~/Library/Application Support/Spedito/storypointless.sqlite-wal": .string("deny"),
-      "~/Library/Application Support/Spedito/storypointless.sqlite-shm": .string("deny"),
-      "~/Library/Application Support/StoryPointless/storypointless.sqlite": .string("deny"),
-      "~/Library/Application Support/StoryPointless/storypointless.sqlite-wal": .string("deny"),
-      "~/Library/Application Support/StoryPointless/storypointless.sqlite-shm": .string("deny"),
-      ":workspace_roots": .object([
-        ".": .string("write"),
-        "**/.env": .string("deny"),
-        "**/.env.*": .string("deny"),
-      ]),
+      ":workspace_roots": .object(workspaceRootsFilesystemEntries),
     ]
+    for path in systemFontReadPaths {
+      filesystem[path] = .string("read")
+    }
+    for path in controlPlaneDenyPaths {
+      filesystem[path] = .string("deny")
+    }
     for root in writableTransientStorageRoots {
       filesystem[root.standardizedFileURL.resolvingSymlinksInPath().path] = .string("write")
     }
@@ -356,9 +419,6 @@ public enum CodexPermissionProfiles {
     }
     if let readOnlyGitDirectory {
       filesystem[readOnlyGitDirectory.standardizedFileURL.path] = .string("read")
-    }
-    if let readOnlyProductDirectory {
-      filesystem[readOnlyProductDirectory.standardizedFileURL.path] = .string("read")
     }
     return .object([
       "permissions.\(delivery)": .object([
@@ -373,10 +433,10 @@ public enum CodexPermissionProfiles {
 
   static func deliveryProfileOverrideValue(
     readOnlyGitDirectory: URL?,
-    readOnlyProductDirectory: URL? = nil,
-    writableTransientStorageRoots: [URL] = macOSUserTransientStorageRoots
+    writableTransientStorageRoots: [URL] = macOSUserTransientStorageRoots,
+    controlPlaneDenyPaths: [String] = speditoControlPlaneDenyPaths
   ) -> String {
-    #"permissions.\#(delivery)={description="Ticket worktree and macOS transient storage writes with read-only product Git",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory, readOnlyProductDirectory: readOnlyProductDirectory, writableTransientStorageRoots: writableTransientStorageRoots))},network={enabled=false}}"#
+    #"permissions.\#(delivery)={description="Ticket worktree and macOS transient storage writes with read-only product Git",filesystem={\#(deliveryProtectedFilesystemEntries(readOnlyGitDirectory: readOnlyGitDirectory, writableTransientStorageRoots: writableTransientStorageRoots, controlPlaneDenyPaths: controlPlaneDenyPaths))},network={enabled=false}}"#
   }
 
   private static func demoProtectedFilesystemEntries(

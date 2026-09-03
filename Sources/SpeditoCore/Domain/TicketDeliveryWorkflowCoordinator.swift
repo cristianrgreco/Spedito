@@ -26,6 +26,63 @@ public struct TicketDeliveryEvidencePolicy {
   }
 }
 
+enum TicketDeliveryRecoveryResolutionError: Error, Equatable, LocalizedError, Sendable {
+  case contradictoryRunState
+
+  var errorDescription: String? {
+    switch self {
+    case .contradictoryRunState:
+      "Spedito could not safely reconcile the preserved delivery work with its review candidate. No recovery changes were applied."
+    }
+  }
+}
+
+enum TicketDeliveryRecoveryRunConflictDisposition: Equatable, Sendable {
+  case alreadyRecovered
+  case failure(TicketDeliveryRecoveryResolutionError)
+}
+
+enum TicketDeliveryRecoveryRunConflictPolicy {
+  private static let recoveredCandidateStatuses: Set<CandidateRevisionStatus> = [
+    .queuedForReview,
+    .reviewing,
+    .queuedForIntegration,
+    .integrating,
+    .resolvingConflict,
+    .readyForDemo,
+    .promoting,
+    .accepted,
+  ]
+
+  static func disposition(
+    run: AgentRun,
+    productID: UUID,
+    workItemID: UUID,
+    candidates: [CandidateRevision]
+  ) -> TicketDeliveryRecoveryRunConflictDisposition {
+    guard
+      run.productID == productID,
+      run.workItemID == workItemID,
+      run.status == .completed,
+      candidates.contains(where: { candidate in
+        guard
+          candidate.productID == productID,
+          candidate.workItemID == workItemID,
+          candidate.implementationRunID == run.id,
+          recoveredCandidateStatuses.contains(candidate.status),
+          let result = try? CodexTicketExecutor.decode(candidate.executionResultJSON)
+        else {
+          return false
+        }
+        return result.status == .completed
+      })
+    else {
+      return .failure(.contradictoryRunState)
+    }
+    return .alreadyRecovered
+  }
+}
+
 public struct TicketDeliveryWorkflowContext: Sendable {
   public let product: Product
   public let plan: SprintPlan
@@ -142,10 +199,7 @@ public protocol TicketDeliveryWorkflowDelegate: AnyObject {
     removesPreview: Bool
   ) async
   func deliveryScheduleRetrospectiveSyntheses()
-  func deliveryInheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool
-  ) -> String
+  func deliveryInheritedAgentInstructions(for product: Product) -> String
   func deliveryAgentRunDidUpdate(previous: AgentRun, updated: AgentRun) async
   func deliveryReloadSelectedProductIfCurrent(productID: UUID) async
   func deliveryReplacePermissionRequest(_ request: AgentPermissionRequest)
@@ -202,6 +256,10 @@ public final class TicketDeliveryWorkflowCoordinator {
   private var ticketDeliveryRuntimeCoordinator: TicketDeliveryRuntimeCoordinator {
     runtimeCoordinator
   }
+
+  /// Products this process has already adopted delivery for. See
+  /// `recoverDelivery(productID:)`.
+  private var recoveredProductIDs: Set<UUID> = []
   private var sprintWorkRecoveryPolicy: SprintWorkRecoveryPolicy { recoveryPolicy }
 
   private var errorMessage: String? {
@@ -375,14 +433,8 @@ public final class TicketDeliveryWorkflowCoordinator {
     delegate?.deliveryScheduleRetrospectiveSyntheses()
   }
 
-  private func inheritedAgentInstructions(
-    for product: Product,
-    includesMandatoryKnowledge: Bool = true
-  ) -> String {
-    delegate?.deliveryInheritedAgentInstructions(
-      for: product,
-      includesMandatoryKnowledge: includesMandatoryKnowledge
-    ) ?? ""
+  private func inheritedAgentInstructions(for product: Product) -> String {
+    delegate?.deliveryInheritedAgentInstructions(for: product) ?? ""
   }
 
   private func reloadSelectedProductIfCurrent(productID: UUID) async {
@@ -442,6 +494,36 @@ public final class TicketDeliveryWorkflowCoordinator {
     }
   }
 
+
+  /// Confirms with the database that the product owner really owes a decision
+  /// on this run before a turn suspends its inactivity timeout.
+  ///
+  /// The Codex client keeps its own record of approvals it has asked for, and
+  /// that record is transient operation state. Whether the owner owes an answer
+  /// is durable domain state, and a turn waiting indefinitely is a serious
+  /// enough consequence that it must rest on the durable answer.
+  ///
+  /// Two live runs hung this way. Their turns had finished, every permission
+  /// request in their database had reached a terminal status, and the board
+  /// reported a working agent for the remaining fifty minutes of the run.
+  ///
+  /// A failed read keeps the suspension. A turn that genuinely awaits the owner
+  /// must not be cut short because the database was briefly unreadable, and a
+  /// database that stays unreadable is a larger failure than this one.
+  private nonisolated func ownerDecisionIsOutstanding(
+    runID: UUID,
+    productID: UUID,
+    store: SQLiteStore
+  ) -> @Sendable () async -> Bool {
+    {
+      guard
+        let requests = try? await store.fetchAgentPermissionRequests(productID: productID)
+      else { return true }
+      return requests.contains {
+        $0.agentRunID == runID && $0.status.needsOwnerDecision
+      }
+    }
+  }
 
   @discardableResult
   public func updateAgentRun(
@@ -582,10 +664,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       }
 
       let developerInstructions = CodexTicketExecutor.developerInstructions(
-        productInstructions: inheritedAgentInstructions(
-          for: product,
-          includesMandatoryKnowledge: false
-        ),
+        productInstructions: inheritedAgentInstructions(for: product),
         customInstructions: assignee.customInstructionText,
         assignee: assignee,
         savedPermissionGrants: context.permissionGrants
@@ -647,7 +726,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       )
       await reloadSelectedProductIfCurrent(productID: product.id)
 
-      let currentItem = workItems.first(where: { $0.id == item.id }) ?? item
+      var currentItem = workItems.first(where: { $0.id == item.id }) ?? item
       let prerequisiteIDs = Set(
         dependencies.filter { $0.workItemID == item.id }.map(\.dependsOnWorkItemID)
       )
@@ -665,6 +744,15 @@ public final class TicketDeliveryWorkflowCoordinator {
         )
       }
       let comments = try await store.fetchComments(workItemID: item.id)
+      let contractBeforeContest = currentItem.demoKind
+      currentItem = try await applyContestedDemoKindDecision(
+        item: currentItem,
+        comments: comments,
+        store: store
+      )
+      if currentItem.demoKind != contractBeforeContest {
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      }
       let knowledgeSelection = KnowledgeContextSelector.select(
         pages: knowledgePages,
         item: currentItem,
@@ -690,18 +778,35 @@ public final class TicketDeliveryWorkflowCoordinator {
         for: run.id,
         permissionRequests: permissionRequests
       )
+      let pinnedDemoRecipe =
+        isContinuation
+        ? DemoRecipeRevisionPolicy.pinnedRecipeForContinuation(
+          latestCandidate: latestCandidate,
+          runID: run.id,
+          implementerName: assignee.name,
+          comments: comments
+        )
+        : nil
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: assignee,
+        item: currentItem
+      )
       let continuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
         recentComments: comments,
-        adoptedBaseline: adoptedBaseline
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       let replacementContinuationPrompt = CodexTicketExecutor.recoveryPrompt(
         item: currentItem,
         interruptedPermission: interruptedPermission,
         recentComments: [],
         conversationIsAvailable: false,
-        adoptedBaseline: adoptedBaseline
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       let executionPrompt = CodexTicketExecutor.prompt(
         product: product,
@@ -730,7 +835,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: activeThreadID,
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             workspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -766,7 +873,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: activeThreadID,
           prompt: turnPrompt,
           effort: assignee.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             workspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -792,7 +901,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: activeThreadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: run.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: run.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: run.id)
@@ -803,8 +917,11 @@ public final class TicketDeliveryWorkflowCoordinator {
         runID: run.id,
         productID: product.id,
         assignee: assignee,
+        deliveryDemoPolicy: deliveryDemoPolicy,
         workspaceURL: workspace,
-        canonicalKnowledgePages: knowledgeSelection.directoryPages
+        canonicalKnowledgePages: knowledgeSelection.directoryPages,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        demoKindContract: currentItem.demoKind
       )
       await processExecutionResult(
         validated.result,
@@ -903,6 +1020,28 @@ public final class TicketDeliveryWorkflowCoordinator {
     }
   }
 
+  /// Applies the product owner's contested-kind answer to the ticket durably,
+  /// before any continuation turn runs, so the turn's schema and prompts are
+  /// built from the new contract even after a relaunch between the answer and
+  /// the turn. The answer is matched by its exact canonical option text, and
+  /// re-applying the same answer is a no-op, which keeps recovery idempotent.
+  func applyContestedDemoKindDecision(
+    item: WorkItem,
+    comments: [TicketComment],
+    store: SQLiteStore
+  ) async throws -> WorkItem {
+    guard
+      let acceptedKind = DemoKindContestPolicy.acceptedKindChange(comments: comments),
+      item.demoKind != acceptedKind
+    else {
+      return item
+    }
+    return try await store.updateWorkItemDemoKind(
+      id: item.id,
+      demoKind: acceptedKind
+    )
+  }
+
   public func validatedExecutionResult(
     _ response: String,
     client: CodexAppServerClient,
@@ -910,8 +1049,11 @@ public final class TicketDeliveryWorkflowCoordinator {
     runID: UUID,
     productID: UUID,
     assignee: AgentProfile,
+    deliveryDemoPolicy: DeliveryDemoPolicy,
     workspaceURL: URL,
-    canonicalKnowledgePages: [KnowledgePage]
+    canonicalKnowledgePages: [KnowledgePage],
+    pinnedDemoRecipe: DemoLaunchSpecification? = nil,
+    demoKindContract: TicketDemoKind? = nil
   ) async throws -> (result: TicketExecutionResult, deliveryKind: CandidateDeliveryKind) {
     guard let validationStore = store(for: productID) else {
       throw PersistenceError.recordNotFound("knowledge destinations for agent run \(runID)")
@@ -922,86 +1064,93 @@ public final class TicketDeliveryWorkflowCoordinator {
         .filter { $0.runID == runID }
         .map(\.pageID)
     )
-    do {
-      let result = try CodexTicketExecutor.decode(response)
-      try CodexTicketExecutor.validateKnowledgePageProposals(
-        in: result,
-        canonicalPages: canonicalKnowledgePages,
-        writablePageIDs: writableKnowledgePageIDs
-      )
-      try CodexTicketExecutor.validateFollowUpTicketProposals(
-        in: result,
-        assignee: assignee
-      )
-      let deliveryKind = try await validateDeliveryEvidence(
-        result,
-        assignee: assignee,
-        workspaceURL: workspaceURL
-      )
-      return (result, deliveryKind)
-    } catch let validationError as TicketExecutionGenerationError {
-      let repairTurnID = try await client.startStructuredTurn(
-        threadID: threadID,
-        prompt: CodexTicketExecutor.repairPrompt(
-          validationError: validationError.localizedDescription
-        ),
-        effort: assignee.reasoningEffort,
-        outputSchema: CodexTicketExecutor.outputSchema,
-        runtimeWorkspaceRoots: [
-          workspaceURL,
-          try productDatabaseURL(productID: productID).deletingLastPathComponent(),
-        ]
-      )
-      ticketDeliveryRuntimeCoordinator.registerActiveTurn(
-        runID: runID,
-        productID: productID,
-        threadID: threadID,
-        turnID: repairTurnID
-      )
-      monitorLiveActivity(
-        runID: runID,
-        productID: productID,
-        client: client,
-        threadID: threadID,
-        turnID: repairTurnID,
-        initialText: "Completing the missing delivery evidence…"
-      )
+    let maximumRepairAttempts = 2
+    var responseToValidate = response
+
+    for repairAttempt in 0...maximumRepairAttempts {
       do {
-        let repairedResponse = try await client.waitForFinalAgentMessage(
-          threadID: threadID,
-          turnID: repairTurnID,
-          timeout: .seconds(900)
+        let result = try CodexTicketExecutor.decode(
+          responseToValidate,
+          pinnedDemoRecipe: pinnedDemoRecipe
         )
-        stopLiveActivityMonitoring(runID: runID)
-        ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
-        let repairedResult = try CodexTicketExecutor.decode(repairedResponse)
         try CodexTicketExecutor.validateKnowledgePageProposals(
-          in: repairedResult,
+          in: result,
           canonicalPages: canonicalKnowledgePages,
           writablePageIDs: writableKnowledgePageIDs
         )
         try CodexTicketExecutor.validateFollowUpTicketProposals(
-          in: repairedResult,
+          in: result,
           assignee: assignee
         )
         let deliveryKind = try await validateDeliveryEvidence(
-          repairedResult,
+          result,
           assignee: assignee,
-          workspaceURL: workspaceURL
+          workspaceURL: workspaceURL,
+          demoKindContract: demoKindContract
         )
-        return (repairedResult, deliveryKind)
-      } catch {
-        stopLiveActivityMonitoring(runID: runID)
-        ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
-        throw error
+        return (result, deliveryKind)
+      } catch let validationError as TicketExecutionGenerationError {
+        guard repairAttempt < maximumRepairAttempts else {
+          throw validationError
+        }
+        let repairTurnID = try await client.startStructuredTurn(
+          threadID: threadID,
+          prompt: CodexTicketExecutor.repairPrompt(
+            validationError: validationError.localizedDescription
+          ),
+          effort: assignee.reasoningEffort,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
+          runtimeWorkspaceRoots: [
+            workspaceURL,
+            try productDatabaseURL(productID: productID).deletingLastPathComponent(),
+          ]
+        )
+        ticketDeliveryRuntimeCoordinator.registerActiveTurn(
+          runID: runID,
+          productID: productID,
+          threadID: threadID,
+          turnID: repairTurnID
+        )
+        monitorLiveActivity(
+          runID: runID,
+          productID: productID,
+          client: client,
+          threadID: threadID,
+          turnID: repairTurnID,
+          initialText:
+            "Correcting the delivery result (\(repairAttempt + 1) of \(maximumRepairAttempts))…"
+        )
+        do {
+          responseToValidate = try await client.waitForFinalAgentMessage(
+            threadID: threadID,
+            turnID: repairTurnID,
+            timeout: .seconds(900),
+            ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+              runID: runID,
+              productID: productID,
+              store: validationStore
+            )
+          )
+          stopLiveActivityMonitoring(runID: runID)
+          ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
+        } catch {
+          stopLiveActivityMonitoring(runID: runID)
+          ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: runID)
+          throw error
+        }
       }
     }
+
+    preconditionFailure("The bounded delivery-result repair loop did not settle.")
   }
 
   public func validateDeliveryEvidence(
     _ result: TicketExecutionResult,
     assignee: AgentProfile,
-    workspaceURL: URL
+    workspaceURL: URL,
+    demoKindContract: TicketDemoKind? = nil
   ) async throws -> CandidateDeliveryKind {
     let actualChangePaths: [String]
     if result.status == .completed || result.decisionArtifact != nil {
@@ -1051,9 +1200,28 @@ public final class TicketDeliveryWorkflowCoordinator {
       }
       return deliveryKind
     }
+    if demoKindContract == .codeOnly {
+      // The owner approved this ticket as a code change with no demo, so the
+      // null demo is the contracted result for repository-changing work.
+      guard result.demo == nil else {
+        throw TicketExecutionGenerationError.invalidResponse(
+          "This ticket is contracted as a code change with no demo; the result must not supply a recipe."
+        )
+      }
+      return deliveryKind
+    }
     guard let demo = result.demo else {
       throw TicketExecutionGenerationError.invalidResponse(
         "Repository-changing work needs a managed demo recipe for the product owner."
+      )
+    }
+    if let contractedKind = demoKindContract?.presentationKind,
+      demo.presentation.kind != contractedKind
+    {
+      throw TicketExecutionGenerationError.invalidResponse(
+        "The demo recipe uses \(demo.presentation.kind.rawValue), but the owner-approved review "
+          + "medium for this ticket is \(contractedKind.rawValue). Return that kind, or contest it "
+          + "with awaiting_owner and proposedDemoKind."
       )
     }
     do {
@@ -1101,34 +1269,44 @@ public final class TicketDeliveryWorkflowCoordinator {
     else { return }
     let productID = context.product.id
 
-    _ = try? await store.appendComment(
-      workItemID: item.id,
-      authorKind: .agent,
-      authorName: assignee.name,
-      body: result.workLogComment,
-      ownerQuestion:
-        result.status == .awaitingOwner
-        ? result.question.map {
-          TicketOwnerQuestion(
-            prompt: $0,
-            options: result.options,
+    if result.status == .awaitingOwner {
+      // A contested review medium gets Spedito's canonical decision options,
+      // not the agent's: the owner's exact answer is then the durable record
+      // the continuation applies to the ticket before its next turn.
+      // A pre-contract design ticket is contracted by the delivery policy
+      // itself, so its contest keeps that derived kind as the "keep" option.
+      let effectiveContract =
+        item.demoKind
+        ?? DeliveryDemoPolicy(assignee: assignee, item: item).contractedKind
+        .flatMap { TicketDemoKind(rawValue: $0.rawValue) }
+      let contestedKindQuestion: TicketOwnerQuestion? =
+        if let question = result.question,
+          let proposed = result.proposedDemoKind,
+          let contracted = effectiveContract,
+          proposed != contracted
+        {
+          DemoKindContestPolicy.question(
+            prompt: question,
+            current: contracted,
+            proposed: proposed,
             decisionArtifact: result.decisionArtifact
           )
+        } else {
+          nil
         }
-        : nil
-    )
-
-    if result.status == .completed {
-      try? await store.saveRetrospectiveNotes(
-        makeRetrospectiveNotes(
-          productID: item.productID,
-          sprintID: plan.sprint.id,
-          workItemID: item.id,
-          profile: assignee,
-          wentWell: result.retrospectiveWentWell,
-          couldImprove: result.retrospectiveCouldImprove,
-          actions: result.retrospectiveActions
-        )
+      _ = try? await store.appendComment(
+        workItemID: item.id,
+        authorKind: .agent,
+        authorName: assignee.name,
+        body: result.workLogComment,
+        ownerQuestion: contestedKindQuestion
+          ?? result.question.map {
+            TicketOwnerQuestion(
+              prompt: $0,
+              options: result.options,
+              decisionArtifact: result.decisionArtifact
+            )
+          }
       )
     }
 
@@ -1146,29 +1324,27 @@ public final class TicketDeliveryWorkflowCoordinator {
         guard let worktreePath = run.worktreePath else {
           throw GitWorkspaceError.invalidRepository("The agent run has no ticket workspace.")
         }
+        let settlement = try await store.prepareCompletedDeliverySettlement(runID: run.id)
+        if settlement.existingCandidate != nil {
+          await reloadSelectedProductIfCurrent(productID: productID)
+          return
+        }
+
         let deliveryNote = deliveryNoteMarkdown(
           item: item,
           result: result,
           authorName: assignee.name
         )
-        _ = try await store.upsertDeliveryNote(
-          productID: item.productID,
-          sprint: plan.sprint,
-          item: item,
-          bodyMarkdown: deliveryNote,
-          authorName: assignee.name
-        )
-
-        let version = try await store.nextCandidateRevisionVersion(workItemID: item.id)
         let workspaceURL = URL(fileURLWithPath: worktreePath, isDirectory: true)
         let snapshot =
           if deliveryKind.changesRepository {
             try await gitWorkspaceManager.createCandidate(
               ticketWorkspaceURL: workspaceURL,
               ticketKey: item.key,
-              version: version,
+              version: settlement.candidateVersion,
               authorName: assignee.name,
-              summary: result.summary
+              summary: result.summary,
+              settlementOperationID: settlement.operationID
             )
           } else {
             try await gitWorkspaceManager.snapshotLocalOutcomeCandidate(
@@ -1185,49 +1361,55 @@ public final class TicketDeliveryWorkflowCoordinator {
         guard let sprintItemID else {
           throw PersistenceError.corruptData("Candidate revision has no sprint item.")
         }
-        let candidate = try await store.createCandidateRevision(
-          CandidateRevision(
-            productID: item.productID,
-            sprintID: plan.sprint.id,
-            sprintItemID: sprintItemID,
-            workItemID: item.id,
-            implementationRunID: run.id,
-            version: version,
-            deliveryKind: deliveryKind,
-            branchName: snapshot.branchName,
-            baseSHA: snapshot.baseSHA,
-            headSHA: snapshot.headSHA,
-            worktreePath: worktreePath,
-            commitCount: snapshot.commitCount,
-            executionResultJSON: resultJSON
-          )
+        let candidate = CandidateRevision(
+          productID: item.productID,
+          sprintID: plan.sprint.id,
+          sprintItemID: sprintItemID,
+          workItemID: item.id,
+          implementationRunID: run.id,
+          version: settlement.candidateVersion,
+          deliveryKind: deliveryKind,
+          branchName: snapshot.branchName,
+          baseSHA: snapshot.baseSHA,
+          headSHA: snapshot.headSHA,
+          worktreePath: worktreePath,
+          commitCount: snapshot.commitCount,
+          executionResultJSON: resultJSON
         )
         let proposals = try await makeKnowledgePageProposals(
           drafts: result.knowledgePageProposals,
           candidate: candidate,
           runID: run.id
         )
-        try await store.createKnowledgePageProposals(proposals)
-        let currentState = (try await store.fetchWorkItems(productID: item.productID))
-          .first { $0.id == item.id }?.state
-        if currentState == .running {
-          _ = try await store.transitionWorkItem(
-            id: item.id,
-            to: .integrating,
-            actor: assignee.name,
-            reason: deliveryKind.changesRepository
-              ? "Candidate v\(candidate.version) queued for integration"
-              : "Outcome v\(candidate.version) queued for review"
-          )
-        }
-        _ = try await updateAgentRun(
-          id: run.id,
-          status: .completed,
+        let eventDetail =
+          deliveryKind.changesRepository
+          ? "Candidate v\(candidate.version) queued for integration"
+          : "Outcome v\(candidate.version) queued for review"
+        let completed = try await store.settleCompletedDelivery(
+          candidate: candidate,
+          operationID: settlement.operationID,
+          comment: TicketComment(
+            workItemID: item.id,
+            authorKind: .agent,
+            authorName: assignee.name,
+            body: result.workLogComment
+          ),
+          deliveryNoteMarkdown: deliveryNote,
+          sprint: plan.sprint,
+          knowledgePageProposals: proposals,
+          retrospectiveNotes: makeRetrospectiveNotes(
+            productID: item.productID,
+            sprintID: plan.sprint.id,
+            workItemID: item.id,
+            profile: assignee,
+            wentWell: result.retrospectiveWentWell,
+            couldImprove: result.retrospectiveCouldImprove,
+            actions: result.retrospectiveActions
+          ),
           eventActor: assignee.name,
-          eventDetail: deliveryKind.changesRepository
-            ? "Candidate v\(candidate.version) queued for integration"
-            : "Outcome v\(candidate.version) queued for review"
+          eventDetail: eventDetail
         )
+        await delegate?.deliveryAgentRunDidUpdate(previous: run, updated: completed.run)
         await reloadSelectedProductIfCurrent(productID: productID)
       } catch {
         _ = try? await updateAgentRun(
@@ -1512,8 +1694,7 @@ public final class TicketDeliveryWorkflowCoordinator {
             workingDirectory: reviewWorkspace.url,
             developerInstructions: developerInstructions,
             model: techLead.model,
-            allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-            readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+            allowsApprovals: CodexTechLeadReviewer.allowsApprovals
           )
           resumedReviewThreadID = resumedThreadID
           if let recoveredResponse = try? await client.latestCompletedAgentMessage(
@@ -1592,8 +1773,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-          readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+          allowsApprovals: CodexTechLeadReviewer.allowsApprovals
         )
         turnPrompt = fullReviewPrompt
         if replacedUnavailableThread {
@@ -1636,8 +1816,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           workingDirectory: reviewWorkspace.url,
           developerInstructions: developerInstructions,
           model: techLead.model,
-          allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-          readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+          allowsApprovals: CodexTechLeadReviewer.allowsApprovals
         )
         turnPrompt = fullReviewPrompt
         _ = try await updateAgentRun(
@@ -1684,7 +1863,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(600)
+        timeout: .seconds(600),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: reviewRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: reviewRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -1725,7 +1909,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         let repairedResponse = try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: repairTurnID,
-          timeout: .seconds(180)
+          timeout: .seconds(180),
+          ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+            runID: reviewRun.id,
+            productID: product.id,
+            store: store
+          )
         )
         stopLiveActivityMonitoring(runID: reviewRun.id)
         ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -1921,8 +2110,7 @@ public final class TicketDeliveryWorkflowCoordinator {
           reviewer: techLead
         ),
         model: techLead.model,
-        allowsApprovals: CodexTechLeadReviewer.allowsApprovals,
-        readOnlyProductDirectory: try productDatabaseURL(productID: product.id).deletingLastPathComponent()
+        allowsApprovals: CodexTechLeadReviewer.allowsApprovals
       )
       _ = try await updateAgentRun(
         id: reviewRun.id,
@@ -1985,7 +2173,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(600)
+        timeout: .seconds(600),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: reviewRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: reviewRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -2025,7 +2218,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         let repairedResponse = try await client.waitForFinalAgentMessage(
           threadID: threadID,
           turnID: repairTurnID,
-          timeout: .seconds(180)
+          timeout: .seconds(180),
+          ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+            runID: reviewRun.id,
+            productID: product.id,
+            store: store
+          )
         )
         stopLiveActivityMonitoring(runID: reviewRun.id)
         ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: reviewRun.id)
@@ -2195,6 +2393,13 @@ public final class TicketDeliveryWorkflowCoordinator {
     let repositoryURL = try productWorkspaceURL(productID: product.id)
     switch review.decision {
     case .approved:
+      let currentCandidate = try await store.fetchCandidateRevision(id: candidate.id)
+      _ = try await store.updateCandidateRevision(
+        id: candidate.id,
+        status: currentCandidate.status,
+        reviewedHeadSHA: candidate.headSHA,
+        reviewRunID: reviewRun.id
+      )
       try await store.verifyDeliveryNote(workItemID: item.id, authorName: techLead.name)
       try await store.markKnowledgePageProposals(
         candidateRevisionID: candidate.id,
@@ -2248,9 +2453,9 @@ public final class TicketDeliveryWorkflowCoordinator {
       } else {
         adoptedBaseline = nil
       }
-      _ = try await store.updateCandidateRevision(
-        id: candidate.id,
-        status: .changesRequested
+      _ = try await store.requestCandidateChanges(
+        candidateID: candidate.id,
+        implementationRunID: implementationRun.id
       )
       try await store.markKnowledgePageProposals(
         candidateRevisionID: candidate.id,
@@ -2322,12 +2527,22 @@ public final class TicketDeliveryWorkflowCoordinator {
         assignee: implementer,
         savedPermissionGrants: context.permissionGrants
       )
+      let pinnedDemoRecipe = DemoRecipeRevisionPolicy.pinnedRecipeForRevision(
+        reviewFeedback: review.workLogComment,
+        priorDemo: implementation.demo
+      )
+      let deliveryDemoPolicy = DeliveryDemoPolicy(
+        assignee: implementer,
+        item: item
+      )
       let revisionPrompt = CodexTicketExecutor.revisionPrompt(
         item: item,
         reviewer: techLead,
         feedback: review.workLogComment,
         recentComments: comments,
-        adoptedBaseline: adoptedBaseline
+        adoptedBaseline: adoptedBaseline,
+        pinnedDemoRecipe: pinnedDemoRecipe,
+        deliveryDemoPolicy: deliveryDemoPolicy
       )
       var revisionThreadID: String
       if let existingThreadID = implementationRun.codexThreadID {
@@ -2384,7 +2599,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: revisionThreadID,
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             revisionWorkspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -2419,7 +2636,9 @@ public final class TicketDeliveryWorkflowCoordinator {
           threadID: revisionThreadID,
           prompt: revisionPrompt,
           effort: implementer.reasoningEffort,
-          outputSchema: CodexTicketExecutor.outputSchema,
+          outputSchema: CodexTicketExecutor.outputSchema(
+            deliveryDemoPolicy: deliveryDemoPolicy
+          ),
           runtimeWorkspaceRoots: [
             revisionWorkspace,
             try productDatabaseURL(productID: product.id).deletingLastPathComponent(),
@@ -2443,23 +2662,63 @@ public final class TicketDeliveryWorkflowCoordinator {
       let revisionResponse = try await client.waitForFinalAgentMessage(
         threadID: revisionThreadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: implementationRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: implementationRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: implementationRun.id)
-      let revision = try await validatedExecutionResult(revisionResponse,
-      client: client,
-      threadID: revisionThreadID,
-      runID: implementationRun.id,
-      productID: product.id,
-      assignee: implementer,
-      workspaceURL: revisionWorkspace,
-      canonicalKnowledgePages: context.knowledgePages)
-      await processExecutionResult(revision.result,
-      deliveryKind: revision.deliveryKind,
-      implementationRunID: implementationRun.id,
-      reviewCycle: reviewCycle + 1,
-      plan: plan)
+      // A revision that cannot be made sense of has to reach the product owner
+      // here. The enclosing review flow drops a failure once its candidate has
+      // stopped awaiting a review outcome — which this one has, because
+      // requesting changes is what moved it on — so a revision failure raised
+      // past this point is discarded as stale and the run is left running with
+      // nothing to move it. A live run spent the rest of its sprint that way,
+      // after its agent returned three results that would not validate.
+      do {
+        let revision = try await validatedExecutionResult(
+          revisionResponse,
+          client: client,
+          threadID: revisionThreadID,
+          runID: implementationRun.id,
+          productID: product.id,
+          assignee: implementer,
+          deliveryDemoPolicy: deliveryDemoPolicy,
+          workspaceURL: revisionWorkspace,
+          canonicalKnowledgePages: context.knowledgePages,
+          pinnedDemoRecipe: pinnedDemoRecipe,
+          demoKindContract: item.demoKind
+        )
+        await processExecutionResult(
+          revision.result,
+          deliveryKind: revision.deliveryKind,
+          implementationRunID: implementationRun.id,
+          reviewCycle: reviewCycle + 1,
+          plan: plan
+        )
+      } catch {
+        guard !Task.isCancelled else { throw error }
+        _ = try? await updateAgentRun(
+          id: implementationRun.id,
+          status: .awaitingOwner,
+          eventActor: "Spedito",
+          eventDetail: "Applying the review feedback could not complete"
+        )
+        _ = try? await store.appendComment(
+          workItemID: item.id,
+          authorKind: .system,
+          authorName: "Spedito",
+          body:
+            "Applying the tech lead's feedback stopped unexpectedly: "
+            + "\(error.localizedDescription)\n\nComment on this ticket to retry from the "
+            + "preserved workspace."
+        )
+        presentExecutionError(error, productID: product.id)
+        await reloadSelectedProductIfCurrent(productID: product.id)
+      }
     }
   }
   @discardableResult
@@ -2724,6 +2983,11 @@ public final class TicketDeliveryWorkflowCoordinator {
         return
       }
       let repositoryURL = try productWorkspaceURL(productID: product.id)
+      let priorIntegratedSHA = try await store.fetchCandidateRevisions(productID: product.id)
+        .first(where: {
+          $0.workItemID == candidate.workItemID && $0.version == candidate.version - 1
+        })?
+        .integratedSHA
       var integration: GitIntegrationSnapshot
       do {
         integration = try await gitWorkspaceManager.integrateCandidate(
@@ -2731,7 +2995,8 @@ public final class TicketDeliveryWorkflowCoordinator {
           integrationsRootURL: integrationWorktreesRootURL(productID: product.id),
           candidateID: candidate.id,
           headSHA: candidate.headSHA,
-          commitMessage: "Integrate \(item.key): \(item.title)"
+          commitMessage: "Integrate \(item.key): \(item.title)",
+          reusableIntegratedSHA: priorIntegratedSHA
         )
       } catch GitWorkspaceError.mergeConflict(
         let worktreePath,
@@ -2790,6 +3055,31 @@ public final class TicketDeliveryWorkflowCoordinator {
       let implementation = try CodexTicketExecutor.decode(
         candidate.executionResultJSON
       )
+      if
+        candidate.reviewedHeadSHA == candidate.headSHA,
+        !remoteIntegration.incorporatedChanges
+      {
+        let reviewerName: String
+        if
+          let reviewRunID = candidate.reviewRunID,
+          let retainedReviewRun = try? await store.fetchAgentRun(id: reviewRunID),
+          let retainedReviewer = context.profiles.first(where: {
+            $0.id == retainedReviewRun.profileID
+          })
+        {
+          reviewerName = retainedReviewer.name
+        } else {
+          reviewerName = "Tech lead"
+        }
+        try await finalizeReviewedIntegration(
+          candidateID: candidate.id,
+          implementation: implementation,
+          implementationRun: implementationRun,
+          workItem: item,
+          reviewerName: reviewerName
+        )
+        return
+      }
       if remoteIntegration.incorporatedChanges, let remoteSHA = remoteIntegration.remoteSHA {
         let message =
           "Integrated verified GitHub changes at \(String(remoteSHA.prefix(8))) into this ticket before final review."
@@ -3111,7 +3401,12 @@ public final class TicketDeliveryWorkflowCoordinator {
       let response = try await client.waitForFinalAgentMessage(
         threadID: threadID,
         turnID: turnID,
-        timeout: .seconds(900)
+        timeout: .seconds(900),
+        ownerDecisionIsOutstanding: ownerDecisionIsOutstanding(
+          runID: resolutionRun.id,
+          productID: product.id,
+          store: store
+        )
       )
       stopLiveActivityMonitoring(runID: resolutionRun.id)
       ticketDeliveryRuntimeCoordinator.removeActiveTurn(runID: resolutionRun.id)
@@ -3464,9 +3759,9 @@ public final class TicketDeliveryWorkflowCoordinator {
       candidate: candidate,
       integratedSHA: integratedSHA
     )
-    _ = try await store.updateCandidateRevision(
-      id: candidate.id,
-      status: .changesRequested
+    _ = try await store.requestCandidateChanges(
+      candidateID: candidate.id,
+      implementationRunID: implementationRun.id
     )
     try await store.markKnowledgePageProposals(
       candidateRevisionID: candidate.id,
@@ -3746,7 +4041,8 @@ public final class TicketDeliveryWorkflowCoordinator {
 
       if let specification = executionResult.demo,
         specification.presentation.kind == .browser
-          || specification.presentation.kind == .macApplication,
+          || specification.presentation.kind == .macApplication
+          || specification.presentation.kind == .terminalApplication,
         (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
       {
         let previousLatestCandidateID = AcceptedAppLaunchPolicy.latest(in: candidates)?.candidate.id
@@ -3797,6 +4093,19 @@ public final class TicketDeliveryWorkflowCoordinator {
         )
       }
       _ = try await store.updateCandidateRevision(id: candidate.id, status: .accepted)
+      // Acceptance establishes the product's canonical demo recipe for this
+      // presentation kind in verified knowledge, so every later delivery turn
+      // inherits it instead of re-deriving one. The accepted candidate row
+      // remains the audit source and the only launch authority.
+      if candidate.deliveryKind.changesRepository,
+        let specification = executionResult.demo,
+        (try? DemoLaunchSpecificationValidator.validate(specification)) != nil
+      {
+        _ = try await store.upsertCanonicalDemoRecipePage(
+          productID: productID,
+          specification: specification
+        )
+      }
 
       var latest = try await store.fetchWorkItems(productID: productID)
         .first(where: { $0.id == current.id })
@@ -4083,13 +4392,77 @@ public final class TicketDeliveryWorkflowCoordinator {
         mutations: mutations
       )
       return true
+    } catch TicketDeliveryRecoveryError.staleRun {
+      do {
+        switch try await recoveryRunConflictDisposition(
+          productID: productID,
+          workItemID: workItemID,
+          store: store,
+          mutations: mutations
+        ) {
+        case .alreadyRecovered:
+          return true
+        case .failure(let error):
+          presentExecutionError(error, productID: productID)
+        }
+      } catch {
+        presentExecutionError(error, productID: productID)
+      }
+      return false
     } catch {
       presentExecutionError(error, productID: productID)
       return false
     }
   }
 
+  private func recoveryRunConflictDisposition(
+    productID: UUID,
+    workItemID: UUID,
+    store: SQLiteStore,
+    mutations: [TicketDeliveryRecoveryMutation]
+  ) async throws -> TicketDeliveryRecoveryRunConflictDisposition {
+    let runIDs = Set(
+      mutations.compactMap { mutation -> UUID? in
+        guard case .updateRun(let id, _, _, _, _) = mutation else { return nil }
+        return id
+      }
+    )
+    guard !runIDs.isEmpty else {
+      return .failure(.contradictoryRunState)
+    }
+    let candidates = try await store.fetchCandidateRevisions(productID: productID)
+    for runID in runIDs {
+      let run = try await store.fetchAgentRun(id: runID)
+      let disposition = TicketDeliveryRecoveryRunConflictPolicy.disposition(
+        run: run,
+        productID: productID,
+        workItemID: workItemID,
+        candidates: candidates
+      )
+      if case .failure = disposition {
+        return disposition
+      }
+    }
+    return .alreadyRecovered
+  }
+
+  /// Adopts delivery a previous process left behind, once per product.
+  ///
+  /// This is restart recovery: it resumes each run's Codex thread to look for a
+  /// result the stopped process never recorded, and requeues what it cannot
+  /// account for. Both are expensive and destructive to repeat. It is invoked
+  /// from `prepareScheduler`, which runs every time a scheduler is created, and
+  /// schedulers are created and retired constantly while a sprint is live.
+  ///
+  /// Left unbounded it becomes a loop that costs real money. A live pilot run
+  /// recorded 64 requeues in eight minutes, each one also resuming two agent
+  /// threads at roughly 175,000 input tokens a time — around fifteen million
+  /// tokens of the product owner's usage, for no delivered work.
+  ///
+  /// A genuine relaunch builds a new coordinator, so its set is empty and
+  /// recovery runs again exactly when it should.
   public func recoverDelivery(productID: UUID) async {
+    guard recoveredProductIDs.insert(productID).inserted else { return }
     guard
       let store = store(for: productID),
       let client = codexClient,
@@ -4112,6 +4485,17 @@ public final class TicketDeliveryWorkflowCoordinator {
         .filter { $0.role == .lead }
         .map(\.id)
     )
+    // Recovery adopts runs the database still calls running, on the assumption a
+    // process stopped and orphaned them. A scheduler is prepared every time one
+    // is created, not only at launch, so this runs repeatedly while delivery is
+    // live. Requeuing a run this process is executing interrupts its turn, and
+    // the next scheduler does it again: a live pilot run recorded 46 requeues in
+    // eight minutes after a tech lead requested changes, and the sprint stopped
+    // progressing entirely.
+    let executingRunIDs = ticketDeliveryRuntimeCoordinator.executingRunIDs(
+      productID: productID
+    )
+
     let expiredPermissionRuns = sprintWorkRecoveryPolicy.runsWithExpiredPermissionDecisions(
       runs: runs.filter { $0.productID == productID },
       permissionRequests: permissionRequests.filter { $0.productID == productID }
@@ -4305,6 +4689,7 @@ public final class TicketDeliveryWorkflowCoordinator {
       run.productID == productID
       && (run.status == .running || run.status == .failed)
       && implementerByItemID[run.workItemID] == run.profileID
+      && !executingRunIDs.contains(run.id)
     {
       guard
         let threadID = run.codexThreadID,
@@ -4356,7 +4741,12 @@ public final class TicketDeliveryWorkflowCoordinator {
         // Only a valid durable final response can supersede a stale run state.
       }
     }
-    for run in runs where run.productID == productID && run.status == .running {
+    for run in runs
+    where
+      run.productID == productID
+      && run.status == .running
+      && !executingRunIDs.contains(run.id)
+    {
       guard implementerByItemID[run.workItemID] == run.profileID else {
         let runCandidates = storedCandidates.filter {
           $0.workItemID == run.workItemID
@@ -4599,15 +4989,21 @@ public final class TicketDeliveryWorkflowCoordinator {
           candidateHeadSHA: candidate.headSHA,
           integratedSHA: integratedSHA
         )
-        var mutations: [TicketDeliveryRecoveryMutation] = [
-          .updateCandidate(
-            id: candidate.id,
-            expectedStatuses: [.reviewing],
-            status: .reviewing,
-            integratedSHA: integratedSHA,
-            integrationWorktreePath: reviewWorkspace.url.path
+        // A value-preserving refresh would still advance the candidate's
+        // updatedAt past the review run's createdAt, and latestReviewRun
+        // would never match that run again.
+        var mutations: [TicketDeliveryRecoveryMutation] = []
+        if candidate.integrationWorktreePath != reviewWorkspace.url.path {
+          mutations.append(
+            .updateCandidate(
+              id: candidate.id,
+              expectedStatuses: [.reviewing],
+              status: .reviewing,
+              integratedSHA: integratedSHA,
+              integrationWorktreePath: reviewWorkspace.url.path
+            )
           )
-        ]
+        }
         switch item.state {
         case .running:
           mutations.append(
@@ -4634,11 +5030,13 @@ public final class TicketDeliveryWorkflowCoordinator {
           break
         }
 
+        let matchedReviewRunID: UUID?
         if let reviewRun = sprintWorkRecoveryPolicy.latestReviewRun(
           for: candidate,
           runs: runs,
           reviewerProfileIDs: reviewerProfileIDs
         ) {
+          matchedReviewRunID = reviewRun.id
           if expiredPermissionRunIDs.contains(reviewRun.id) {
             mutations.append(
               .updateRun(
@@ -4660,6 +5058,7 @@ public final class TicketDeliveryWorkflowCoordinator {
             )
           }
         } else if let techLead = profiles.first(where: { $0.role == .lead }) {
+          matchedReviewRunID = nil
           mutations.append(
             .createRunIfAbsent(
               AgentRun(
@@ -4674,13 +5073,38 @@ public final class TicketDeliveryWorkflowCoordinator {
               notBefore: candidate.updatedAt
             )
           )
+        } else {
+          matchedReviewRunID = nil
         }
-        _ = await performTicketDeliveryRecovery(
-          productID: productID,
-          workItemID: item.id,
-          store: store,
-          mutations: mutations
-        )
+        // A queued review run older than the candidate's updatedAt can never
+        // match latestReviewRun again, so no drain will ever dispatch it.
+        for staleRun in runs
+        where
+          staleRun.workItemID == candidate.workItemID
+          && reviewerProfileIDs.contains(staleRun.profileID)
+          && staleRun.status == .queued
+          && staleRun.id != matchedReviewRunID
+          && staleRun.createdAt < candidate.updatedAt
+          && (staleRun.worktreePath == nil
+            || staleRun.worktreePath == reviewWorkspace.url.path)
+        {
+          mutations.append(
+            .updateRun(
+              id: staleRun.id,
+              expectedStatuses: [.queued],
+              status: .cancelled,
+              eventDetail: "Superseded queued tech lead review retired"
+            )
+          )
+        }
+        if !mutations.isEmpty {
+          _ = await performTicketDeliveryRecovery(
+            productID: productID,
+            workItemID: item.id,
+            store: store,
+            mutations: mutations
+          )
+        }
       } catch {
         await restoreCandidateToIntegrationQueue(
           candidate,

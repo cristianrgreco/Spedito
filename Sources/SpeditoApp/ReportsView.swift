@@ -227,7 +227,7 @@ enum SprintReportRange: String, CaseIterable, Identifiable {
 struct SprintReportDatum: Identifiable, Equatable {
   let sprintNumber: Int
   let plannedTokens: Int
-  let reportedContextTokens: Int?
+  let reportedUsageTokens: Int?
   let cycleTime: TimeInterval?
   let activeAgentTime: TimeInterval
   let outcomes: Int
@@ -264,7 +264,7 @@ enum SprintReportEvidence {
       let sprintID = plan.sprint.id
       let sprintCandidates = acceptedCandidates.filter { $0.sprintID == sprintID }
       let sprintRuns = runs.filter { $0.sprintID == sprintID }
-      let reportedContext = sprintRuns.compactMap(\.contextUsedTokens)
+      let reportedUsage = sprintRuns.compactMap(\.cumulativeUsedTokens)
       let cycleTime =
         if let startedAt = plan.sprint.startedAt,
           let completedAt = plan.sprint.completedAt
@@ -280,8 +280,8 @@ enum SprintReportEvidence {
       return SprintReportDatum(
         sprintNumber: plan.sprint.number,
         plannedTokens: plan.estimatedTokens,
-        reportedContextTokens: reportedContext.isEmpty
-          ? nil : reportedContext.reduce(0, +),
+        reportedUsageTokens: reportedUsage.isEmpty
+          ? nil : reportedUsage.reduce(0, +),
         cycleTime: cycleTime,
         activeAgentTime: activeAgentTime,
         outcomes: Set(sprintCandidates.map(\.workItemID)).count,
@@ -316,7 +316,7 @@ enum SprintReportEvidenceMetric: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .forecast: "Forecast and context"
+    case .forecast: "Forecast and usage"
     case .duration: "Cycle time"
     case .outcome: "Delivered outcomes"
     case .rework: "Correction cycles"
@@ -333,9 +333,9 @@ enum SprintReportEvidenceMetric: String, CaseIterable, Identifiable {
         ? "\(datum.plannedTokens.formatted()) planned"
         : "Not estimated"
       let reported =
-        datum.reportedContextTokens.map {
-          "\($0.formatted()) context"
-        } ?? "No context reported"
+        datum.reportedUsageTokens.map {
+          "\($0.formatted()) tokens used"
+        } ?? "No usage reported"
       return "\(planned) · \(reported)"
     case .duration:
       return datum.cycleTime.map(RunDurationFormatter.duration) ?? "Unavailable"

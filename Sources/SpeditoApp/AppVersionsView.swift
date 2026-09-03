@@ -69,7 +69,7 @@ struct AppVersionsView: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .center, spacing: 20) {
         VStack(alignment: .leading, spacing: 4) {
-          Text("App versions")
+          Text("Demos")
             .font(.largeTitle.bold())
             .accessibilityIdentifier("app.versions")
           Text("Open the imported source or any accepted app version.")
@@ -276,8 +276,9 @@ struct AppVersionsView: View {
 
   private func presentationSymbol(for version: AppVersion) -> String {
     switch version.specification.presentation.kind {
-    case .browser: "globe"
+    case .browser, .staticWeb: "globe"
     case .macApplication: "macwindow"
+    case .terminalApplication: "terminal"
     case .artifact, .commandOutput: "doc"
     }
   }

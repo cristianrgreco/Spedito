@@ -6,7 +6,7 @@ extension SQLiteStore {
     guard !notes.isEmpty else { return }
     try transaction {
       for note in notes {
-        try insertRetrospectiveNoteIfNeeded(note)
+        _ = try insertRetrospectiveNoteIfNeeded(note)
       }
     }
   }
@@ -43,16 +43,17 @@ extension SQLiteStore {
       body: actionIdea,
       isActionCandidate: true
     )
-    try transaction {
-      try insertRetrospectiveNoteIfNeeded(note)
+    let persistedID = try transaction {
+      let persistedID = try insertRetrospectiveNoteIfNeeded(note)
       _ = try insertEvent(
         productID: productID,
         kind: "retrospective.action_idea_captured",
         actor: "Product owner",
-        detail: note.id.uuidString
+        detail: persistedID.uuidString
       )
+      return persistedID
     }
-    return note
+    return try fetchRetrospectiveNote(id: persistedID)
   }
 
   public func deleteRetrospectiveActionIdea(noteID: UUID) throws {
@@ -140,16 +141,17 @@ extension SQLiteStore {
       actionStatus: .proposed,
       actionDestination: destination
     )
-    try transaction {
-      try insertRetrospectiveNoteIfNeeded(note)
+    let persistedID = try transaction {
+      let persistedID = try insertRetrospectiveNoteIfNeeded(note)
       _ = try insertEvent(
         productID: productID,
         kind: "retrospective.action_proposed",
         actor: "Product owner",
-        detail: note.id.uuidString
+        detail: persistedID.uuidString
       )
+      return persistedID
     }
-    return note
+    return try fetchRetrospectiveNote(id: persistedID)
   }
 
   public func fetchRetrospectiveNotes(productID: UUID) throws -> [RetrospectiveNote] {
@@ -438,7 +440,7 @@ extension SQLiteStore {
     synthesis.updatedAt = now
     try transaction {
       for (note, action) in zip(notes, actions) {
-        try insertRetrospectiveNoteIfNeeded(note)
+        let actionNoteID = try insertRetrospectiveNoteIfNeeded(note)
         for sourceNoteID in Set(action.sourceNoteIDs) {
           try withStatement(
             """
@@ -447,7 +449,7 @@ extension SQLiteStore {
             ) VALUES (?, ?);
             """
           ) { statement in
-            try bind(note.id.uuidString, to: 1, in: statement)
+            try bind(actionNoteID.uuidString, to: 1, in: statement)
             try bind(sourceNoteID.uuidString, to: 2, in: statement)
             try stepDone(statement)
           }
@@ -563,7 +565,31 @@ extension SQLiteStore {
     }
   }
 
-  func insertRetrospectiveNoteIfNeeded(_ note: RetrospectiveNote) throws {
+  func insertRetrospectiveNoteIfNeeded(_ note: RetrospectiveNote) throws -> UUID {
+    let alreadyPersistedID = try withStatement(
+      """
+      SELECT id
+      FROM retrospective_notes
+      WHERE sprint_id = ?
+        AND work_item_id IS ?
+        AND profile_id IS ?
+        AND category = ?
+        AND body = ?
+      LIMIT 1;
+      """
+    ) { statement -> UUID? in
+      try bind(note.sprintID.uuidString, to: 1, in: statement)
+      try bindOptionalUUID(note.workItemID, to: 2, in: statement)
+      try bindOptionalUUID(note.profileID, to: 3, in: statement)
+      try bind(note.category.rawValue, to: 4, in: statement)
+      try bind(note.body, to: 5, in: statement)
+      guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+      guard let id = UUID(uuidString: try text(statement, column: 0)) else {
+        throw PersistenceError.corruptData("Invalid retrospective note identity")
+      }
+      return id
+    }
+    if let alreadyPersistedID { return alreadyPersistedID }
     try withStatement(
       """
       INSERT OR IGNORE INTO retrospective_notes (
@@ -591,6 +617,7 @@ extension SQLiteStore {
       try bind(note.updatedAt.timeIntervalSince1970, to: 16, in: statement)
       try stepDone(statement)
     }
+    return note.id
   }
 
   func fetchRetrospectiveSynthesis(
