@@ -239,8 +239,7 @@ public enum CodexPermissionProfiles {
   /// The cost of that rule is depth: these entries are workspace-root
   /// relative, so a `.env` nested below the root is not denied. Delivery runs
   /// have no network and demos reach loopback only, which bounds the
-  /// consequence. See
-  /// `docs/work-packets/2026-09-01-demo-preparation-parity-handover.md`.
+  /// consequence.
   static let workspaceDenyPaths = [".env", ".env.*"]
 
   /// One definition, rendered as TOML here and as JSON in
