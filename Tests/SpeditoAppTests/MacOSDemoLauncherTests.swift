@@ -63,6 +63,7 @@ struct MacOSDemoLauncherTests {
       presentation: DemoPresentation(kind: .browser, path: "/index.html")
     )
 
+    ReadyLoopbackURLProtocol.resetProbedPorts()
     _ = try await launcher.smokeTest(
       candidateID: UUID(),
       specification: specification,
@@ -71,9 +72,11 @@ struct MacOSDemoLauncherTests {
     #expect(await executor.runningProcessCount() == 0)
     let request = try #require(await executor.startedRequests().first)
     let port = try #require(request.environment["PORT"])
-    #expect(Int(port) != nil)
+    let injectedPort = try #require(Int(port))
     #expect(request.command == ["test-browser-service", port])
     #expect(request.permissionProfile == CodexPermissionProfiles.demo)
+    let probedPorts = Set(ReadyLoopbackURLProtocol.probedPorts)
+    #expect(probedPorts == [injectedPort])
   }
 
   @Test("D14 static web prototype is served, reopened, and stopped without a product runtime")
@@ -325,9 +328,91 @@ struct MacOSDemoLauncherTests {
     }
     #expect(
       await executor.completedRequests().allSatisfy {
-        $0.command.first == "/bin/mkdir"
+        DemoCommandExecutorStub.isAccessCheck($0)
       }
     )
+  }
+
+  @Test("A workspace that allows creation but denies deletion fails before preparation")
+  func managedWorkspaceDeletionDenied() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let executor = DemoCommandExecutorStub(deniesManagedWorkspaceDeletion: true)
+    let launcher = MacOSDemoLauncher(executor: executor)
+    let specification = DemoLaunchSpecification(
+      title: "Candidate result",
+      preparationCommands: [
+        DemoCommand(executable: "scripts/prepare-demo.sh", timeoutSeconds: 30)
+      ],
+      launchCommand: DemoCommand(executable: "/usr/bin/printf", arguments: ["ready"]),
+      presentation: DemoPresentation(kind: .commandOutput)
+    )
+
+    do {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+      Issue.record("Expected the managed workspace deletion check to fail")
+    } catch let error as DemoLauncherError {
+      guard case .managedWorkspaceUnavailable = error else {
+        Issue.record("Expected a managed workspace failure, received \(error)")
+        return
+      }
+      #expect(error.localizedDescription.contains("Operation not permitted"))
+      #expect(!error.localizedDescription.contains(workspace.path))
+      #expect(!error.localizedDescription.lowercased().contains("worktree"))
+      #expect(
+        DemoPreparationFailurePolicy.disposition(for: error) == .retryPreparation
+      )
+    }
+    let requests = await executor.completedRequests()
+    #expect(requests.count == 1)
+    #expect(requests.allSatisfy { DemoCommandExecutorStub.isAccessCheck($0) })
+    let accessCheck = try #require(requests.first)
+    #expect(accessCheck.command.contains { $0.contains("rm -rf") })
+  }
+
+  @Test("Preparation failure text rewrites workspace paths as relative paths")
+  func preparationFailureTextHidesWorkspacePaths() async throws {
+    let workspace = try makeWorkspace()
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let executor = DemoCommandExecutorStub(
+      failingPreparationOutput: """
+        rm: \(workspace.path)/.demo/App.app/Contents/MacOS: Operation not permitted
+        rm: \(workspace.path)/.demo: Operation not permitted
+        """
+    )
+    let launcher = MacOSDemoLauncher(executor: executor)
+    let specification = DemoLaunchSpecification(
+      title: "Native preview",
+      preparationCommands: [
+        DemoCommand(executable: "failing-preparation", timeoutSeconds: 30)
+      ],
+      launchCommand: DemoCommand(executable: "/usr/bin/printf", arguments: ["ready"]),
+      presentation: DemoPresentation(kind: .commandOutput)
+    )
+
+    do {
+      _ = try await launcher.smokeTest(
+        candidateID: UUID(),
+        specification: specification,
+        workspaceURL: workspace
+      )
+      Issue.record("Expected the preparation to fail")
+    } catch let error as DemoLauncherError {
+      guard case .commandFailed(let detail) = error else {
+        Issue.record("Expected a preparation failure, received \(error)")
+        return
+      }
+      #expect(detail.contains("rm: .demo/App.app/Contents/MacOS: Operation not permitted"))
+      #expect(!detail.contains(workspace.path))
+      #expect(!detail.lowercased().contains("worktree"))
+      #expect(
+        DemoPreparationFailurePolicy.disposition(for: error) == .correctCandidate
+      )
+    }
   }
 
   @Test("Candidate-controlled demo failures return for correction")
@@ -565,6 +650,134 @@ struct MacOSDemoLauncherTests {
     await store.close()
   }
 
+  /// Real-sandbox parity: preparation scripts that create, overwrite, and
+  /// delete their own files and directories — including artifacts left by an
+  /// earlier preparation run in a separate sandbox instance — must succeed
+  /// against the real Codex runtime in the real preview worktree location.
+  ///
+  /// This is the executable form of the live failures where `rm` was denied
+  /// `file-write-unlink` on directories the product's own scripts created.
+  ///
+  /// It resolves the runtime the application itself resolves, and fails rather
+  /// than skips when none is found. The two tests this replaced did neither: a
+  /// hardcoded binary the app need not use, and a `SPEDITO_PILOT`-gated twin
+  /// the documented validation never ran. Both returned early — and so passed
+  /// — whenever the binary was absent, which is why CI reported green
+  /// throughout the outage.
+  @Test("Demo preparation can create and delete its own artifacts in the real sandbox")
+  func realSandboxCreateDeleteParity() async throws {
+    try await assertCreateDeleteParity(
+      codexURL: CodexSandboxRuntimeLocator.resolve()
+    )
+  }
+
+  /// The canonical demo recipe page must hand a downstream ticket a recipe
+  /// that actually executes, not one that is merely well-formed. This reuses
+  /// the create/delete parity fixture and round-trips the specification
+  /// through the published page body before smoke-testing it in the real
+  /// sandbox.
+  @Test("An inherited canonical recipe is executable in the real sandbox")
+  func inheritedCanonicalRecipeIsExecutable() async throws {
+    let codexURL = try CodexSandboxRuntimeLocator.resolve()
+    try await assertCreateDeleteParity(codexURL: codexURL) { accepted in
+      let body = try CanonicalDemoRecipeKnowledge.bodyMarkdown(for: accepted)
+      let inherited = try #require(
+        CanonicalDemoRecipeKnowledge.specification(fromBody: body)
+      )
+      #expect(inherited == accepted)
+      return inherited
+    }
+  }
+
+  private func assertCreateDeleteParity(
+    codexURL: URL,
+    transformingSpecification:
+      (DemoLaunchSpecification) throws -> DemoLaunchSpecification = { $0 }
+  ) async throws {
+    let cachesRoot = try #require(
+      FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+    )
+    let parityRoot = cachesRoot
+      .appendingPathComponent("Spedito", isDirectory: true)
+      .appendingPathComponent("PreviewWorktrees", isDirectory: true)
+      .appendingPathComponent("parity-test-\(UUID().uuidString.lowercased())", isDirectory: true)
+    let workspace = parityRoot.appendingPathComponent("ws", isDirectory: true)
+    let scriptsDirectory = workspace.appendingPathComponent("scripts", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: scriptsDirectory,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: parityRoot) }
+    func writeScript(named name: String, body: String) throws {
+      let scriptURL = scriptsDirectory.appendingPathComponent(name)
+      try Data("#!/bin/sh\nset -e\n\(body)\n".utf8).write(to: scriptURL)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: scriptURL.path
+      )
+    }
+    // A first sandbox instance builds a bundle-shaped artifact.
+    try writeScript(
+      named: "build-demo.sh",
+      body: """
+        mkdir -p .demo/App.app/Contents/MacOS
+        cp /bin/ls .demo/App.app/Contents/MacOS/App
+        printf x > .demo/App.app/Contents/Info.plist
+        """
+    )
+    // A later sandbox instance must be able to delete and rebuild it.
+    try writeScript(
+      named: "clean-demo.sh",
+      body: """
+        rm -rf .demo
+        test ! -e .demo
+        """
+    )
+    // The provided TMPDIR supports the mktemp build-directory pattern.
+    try writeScript(
+      named: "temp-build.sh",
+      body: """
+        build_dir="$(mktemp -d "$TMPDIR/parity-build.XXXXXX")"
+        touch "$build_dir/artifact"
+        rm -rf "$build_dir"
+        test ! -e "$build_dir"
+        """
+    )
+    let launcher = MacOSDemoLauncher(
+      executor: CodexWorkspaceCommandExecutor(executableURL: codexURL)
+    )
+    let specification = try transformingSpecification(
+      DemoLaunchSpecification(
+        title: "Sandbox parity",
+        preparationCommands: [
+          DemoCommand(executable: "scripts/build-demo.sh", timeoutSeconds: 120),
+          DemoCommand(executable: "scripts/clean-demo.sh", timeoutSeconds: 120),
+          DemoCommand(executable: "scripts/temp-build.sh", timeoutSeconds: 120),
+        ],
+        launchCommand: DemoCommand(
+          executable: "/usr/bin/printf",
+          arguments: ["parity"],
+          timeoutSeconds: 120
+        ),
+        presentation: DemoPresentation(kind: .commandOutput)
+      )
+    )
+
+    let output = try await launcher.smokeTest(
+      candidateID: UUID(),
+      specification: specification,
+      workspaceURL: workspace
+    )
+
+    #expect(output == "parity", "codex at \(codexURL.path)")
+    #expect(
+      !FileManager.default.fileExists(
+        atPath: workspace.appendingPathComponent(".demo").path
+      ),
+      "codex at \(codexURL.path)"
+    )
+  }
+
   private func makeWorkspace() throws -> URL {
     let workspace = FileManager.default.temporaryDirectory
       .appendingPathComponent("spedito-demo-launch-\(UUID())", isDirectory: true)
@@ -650,8 +863,23 @@ private final class DemoURLOpenerStub: DemoURLOpening {
 }
 
 private final class ReadyLoopbackURLProtocol: URLProtocol, @unchecked Sendable {
+  private static let lock = NSLock()
+  private static nonisolated(unsafe) var probedPortsStorage: [Int] = []
+
+  static var probedPorts: [Int] {
+    lock.withLock { probedPortsStorage }
+  }
+
+  static func resetProbedPorts() {
+    lock.withLock { probedPortsStorage = [] }
+  }
+
   override class func canInit(with request: URLRequest) -> Bool {
-    request.url?.host == "127.0.0.1" && request.url?.path == "/"
+    guard request.url?.host == "127.0.0.1", request.url?.path == "/" else { return false }
+    if let port = request.url?.port {
+      lock.withLock { probedPortsStorage.append(port) }
+    }
+    return true
   }
 
   override class func canonicalRequest(for request: URLRequest) -> URLRequest {
@@ -690,20 +918,50 @@ private actor DemoCommandExecutorStub: CodexManagedCommandExecuting {
   private var started: [CodexManagedCommandRequest] = []
   private var processes: [String: RunningProcess] = [:]
   private let failsManagedWorkspaceCheck: Bool
+  private let deniesManagedWorkspaceDeletion: Bool
+  private let failingPreparationOutput: String?
 
-  init(failsManagedWorkspaceCheck: Bool = false) {
+  init(
+    failsManagedWorkspaceCheck: Bool = false,
+    deniesManagedWorkspaceDeletion: Bool = false,
+    failingPreparationOutput: String? = nil
+  ) {
     self.failsManagedWorkspaceCheck = failsManagedWorkspaceCheck
+    self.deniesManagedWorkspaceDeletion = deniesManagedWorkspaceDeletion
+    self.failingPreparationOutput = failingPreparationOutput
+  }
+
+  static func isAccessCheck(_ request: CodexManagedCommandRequest) -> Bool {
+    request.command.first == "/bin/sh"
+      && request.command.contains { $0.contains("access-check") }
   }
 
   func runManagedCommand(
     _ request: CodexManagedCommandRequest
   ) async throws -> CodexManagedCommandResult {
     completed.append(request)
-    if request.command.first == "/bin/mkdir", failsManagedWorkspaceCheck {
+    if Self.isAccessCheck(request), failsManagedWorkspaceCheck {
       return CodexManagedCommandResult(
         exitCode: 1,
         standardOutput: "",
         standardError: "mkdir: Operation not permitted"
+      )
+    }
+    if Self.isAccessCheck(request), deniesManagedWorkspaceDeletion {
+      let accessCheckRoot = request.workspaceRoot
+        .appendingPathComponent(".spedito-demo-runtime/access-check")
+        .path
+      return CodexManagedCommandResult(
+        exitCode: 1,
+        standardOutput: "",
+        standardError: "rm: \(accessCheckRoot): Operation not permitted"
+      )
+    }
+    if request.command.first == "failing-preparation", let failingPreparationOutput {
+      return CodexManagedCommandResult(
+        exitCode: 1,
+        standardOutput: "",
+        standardError: failingPreparationOutput
       )
     }
     if request.command.first?.hasSuffix("printf") == true {

@@ -356,6 +356,34 @@ struct GitWorkspaceManagerTests {
     try Data("cached build\n".utf8).write(
       to: preview.appendingPathComponent(".demo-cache")
     )
+    let servingPreview = try await manager.preparePreviewWorkspace(
+      repositoryURL: repository,
+      previewsRootURL: preview.deletingLastPathComponent(),
+      candidateID: previewCandidateID,
+      integratedSHA: integration.integratedSHA,
+      resetsExistingCheckout: false
+    )
+    #expect(servingPreview == preview)
+    #expect(
+      FileManager.default.fileExists(
+        atPath: servingPreview.appendingPathComponent(".demo-cache").path
+      )
+    )
+
+    // A reused preview is reset to a clean detached checkout by default, so
+    // artifacts a previous preparation could not delete never poison the next
+    // demo attempt.
+    let strandedBundle = preview.appendingPathComponent(
+      ".demo/App.app/Contents/MacOS",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: strandedBundle,
+      withIntermediateDirectories: true
+    )
+    try Data("modified\n".utf8).write(
+      to: preview.appendingPathComponent("feature.txt")
+    )
     let reusedPreview = try await manager.preparePreviewWorkspace(
       repositoryURL: repository,
       previewsRootURL: preview.deletingLastPathComponent(),
@@ -363,10 +391,22 @@ struct GitWorkspaceManagerTests {
       integratedSHA: integration.integratedSHA
     )
     #expect(reusedPreview == preview)
+    #expect(try await manager.currentSHA(at: reusedPreview) == integration.integratedSHA)
     #expect(
-      FileManager.default.fileExists(
+      !FileManager.default.fileExists(
+        atPath: reusedPreview.appendingPathComponent(".demo").path
+      )
+    )
+    #expect(
+      !FileManager.default.fileExists(
         atPath: reusedPreview.appendingPathComponent(".demo-cache").path
       )
+    )
+    #expect(
+      try String(
+        contentsOf: reusedPreview.appendingPathComponent("feature.txt"),
+        encoding: .utf8
+      ) == "first implementation\n"
     )
 
     try await manager.promote(

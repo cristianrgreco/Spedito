@@ -1249,11 +1249,16 @@ public actor GitWorkspaceManager {
     )
   }
 
+  /// `resetsExistingCheckout` restores a reused preview worktree to a clean
+  /// detached checkout before it is handed to demo preparation, so artifacts a
+  /// previous preparation could not delete never poison the next attempt. Pass
+  /// `false` only while a live demo may still be serving from the worktree.
   public func preparePreviewWorkspace(
     repositoryURL: URL,
     previewsRootURL: URL,
     candidateID: UUID,
-    integratedSHA: String
+    integratedSHA: String,
+    resetsExistingCheckout: Bool = true
   ) throws -> URL {
     try fileManager.createDirectory(at: previewsRootURL, withIntermediateDirectories: true)
     let previewURL = previewsRootURL.appendingPathComponent(
@@ -1263,6 +1268,10 @@ public actor GitWorkspaceManager {
     if fileManager.fileExists(atPath: previewURL.path) {
       let currentRevision = try? run(["rev-parse", "HEAD"], at: previewURL)
       if currentRevision == integratedSHA {
+        if resetsExistingCheckout {
+          _ = try run(["reset", "--hard", integratedSHA], at: previewURL)
+          _ = try run(["clean", "-ffdx"], at: previewURL)
+        }
         return previewURL
       }
       try removeWorktree(repositoryURL: repositoryURL, worktreeURL: previewURL)

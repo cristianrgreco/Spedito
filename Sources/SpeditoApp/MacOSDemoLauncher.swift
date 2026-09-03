@@ -21,7 +21,7 @@ enum DemoLauncherError: Error, LocalizedError {
     case .appServerUnavailable:
       "The managed Codex runtime is not connected. Reconnect it before opening this demo."
     case .managedWorkspaceUnavailable(let detail):
-      "Spedito could not write inside the assigned managed demo workspace.\(detail.isEmpty ? "" : " \(detail)")"
+      "Spedito could not create and clean up files inside the assigned managed demo workspace. If this repeats, check the Codex installation selected in settings.\(detail.isEmpty ? "" : " \(detail)")"
     case .commandFailed(let detail):
       "The demo preparation did not finish successfully.\(detail.isEmpty ? "" : " \(detail)")"
     case .commandTimedOut(let name):
@@ -399,7 +399,8 @@ final class MacOSDemoLauncher {
       try await waitUntilReady(
         processID: processID,
         readiness: readiness,
-        port: port
+        port: port,
+        workspaceURL: workspaceURL
       )
     } catch {
       await executor?.terminateManagedCommand(processID: processID)
@@ -535,6 +536,10 @@ final class MacOSDemoLauncher {
     }
   }
 
+  /// Proves the managed sandbox honors the full lifecycle preparation scripts
+  /// rely on: creating directories and files inside the workspace and deleting
+  /// them again. Deleting is checked explicitly because live failures have
+  /// shown environments that allow creation while denying directory removal.
   private func verifyManagedWorkspaceAccess(workspaceURL: URL) async throws {
     guard let executor else { throw DemoLauncherError.appServerUnavailable }
     let accessCheckRoot =
@@ -545,10 +550,17 @@ final class MacOSDemoLauncher {
       accessCheckRoot
       .appendingPathComponent("nested", isDirectory: true)
     defer { try? fileManager.removeItem(at: accessCheckRoot) }
+    let script = """
+      set -e
+      mkdir -p "\(nestedDirectory.path)"
+      printf probe > "\(nestedDirectory.path)/probe"
+      rm -rf "\(accessCheckRoot.path)"
+      test ! -e "\(accessCheckRoot.path)"
+      """
     let request = try managedRequest(
       DemoCommand(
-        executable: "/bin/mkdir",
-        arguments: ["-p", nestedDirectory.path],
+        executable: "/bin/sh",
+        arguments: ["-c", script],
         workingDirectory: ".",
         timeoutSeconds: 10
       ),
@@ -559,7 +571,7 @@ final class MacOSDemoLauncher {
     let result = try await executor.runManagedCommand(request)
     guard result.exitCode == 0 else {
       throw DemoLauncherError.managedWorkspaceUnavailable(
-        ownerFacingLogSummary(result.combinedOutput)
+        ownerFacingLogSummary(result.combinedOutput, workspaceURL: workspaceURL)
       )
     }
   }
@@ -578,7 +590,9 @@ final class MacOSDemoLauncher {
     let result = try await executor.runManagedCommand(request)
     let output = result.combinedOutput
     guard result.exitCode == 0 else {
-      throw DemoLauncherError.commandFailed(ownerFacingLogSummary(output))
+      throw DemoLauncherError.commandFailed(
+        ownerFacingLogSummary(output, workspaceURL: workspaceURL)
+      )
     }
     return output.trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -655,14 +669,15 @@ final class MacOSDemoLauncher {
   private func waitUntilReady(
     processID: String,
     readiness: DemoReadinessCheck,
-    port: Int
+    port: Int,
+    workspaceURL: URL
   ) async throws {
     let deadline = ContinuousClock.now + .seconds(readiness.timeoutSeconds)
     var lastReadinessDetail = ""
     while ContinuousClock.now < deadline {
       guard await isRunning(processID: processID) else {
         throw DemoLauncherError.serviceStopped(
-          await outputSummary(processID: processID)
+          await outputSummary(processID: processID, workspaceURL: workspaceURL)
         )
       }
       switch readiness.kind {
@@ -692,7 +707,7 @@ final class MacOSDemoLauncher {
       }
       try await Task.sleep(for: .milliseconds(200))
     }
-    let processDetail = await outputSummary(processID: processID)
+    let processDetail = await outputSummary(processID: processID, workspaceURL: workspaceURL)
     throw DemoLauncherError.readinessTimedOut(
       [processDetail, lastReadinessDetail]
         .filter { !$0.isEmpty }
@@ -723,7 +738,7 @@ final class MacOSDemoLauncher {
     return false
   }
 
-  private func outputSummary(processID: String) async -> String {
+  private func outputSummary(processID: String, workspaceURL: URL) async -> String {
     guard let snapshot = await executor?.managedCommandSnapshot(processID: processID) else {
       return ""
     }
@@ -736,7 +751,7 @@ final class MacOSDemoLauncher {
     case .failed(let message):
       output = message
     }
-    return ownerFacingLogSummary(output)
+    return ownerFacingLogSummary(output, workspaceURL: workspaceURL)
   }
 
   private func artifactURL(
@@ -803,9 +818,18 @@ final class MacOSDemoLauncher {
     return Int(UInt16(bigEndian: address.sin_port))
   }
 
-  private func ownerFacingLogSummary(_ value: String) -> String {
+  /// Absolute paths inside the assigned workspace are internal machinery, so
+  /// they are rewritten as workspace-relative paths before the text can reach
+  /// the owner in an alert or a work log entry.
+  private func ownerFacingLogSummary(_ value: String, workspaceURL: URL) -> String {
+    let workspacePrefixes = Self.ownerHiddenPathPrefixes(workspaceURL: workspaceURL)
+    var sanitized = value
+    for prefix in workspacePrefixes {
+      sanitized = sanitized.replacingOccurrences(of: prefix + "/", with: "")
+      sanitized = sanitized.replacingOccurrences(of: prefix, with: "the demo workspace")
+    }
     let lines =
-      value
+      sanitized
       .split(whereSeparator: \.isNewline)
       .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
@@ -814,5 +838,19 @@ final class MacOSDemoLauncher {
     }
     return (Array(lines.prefix(6)) + ["…"] + Array(lines.suffix(4)))
       .joined(separator: " ")
+  }
+
+  private static func ownerHiddenPathPrefixes(workspaceURL: URL) -> [String] {
+    let standardized = workspaceURL.standardizedFileURL
+    var candidates = [
+      standardized.path,
+      standardized.resolvingSymlinksInPath().path,
+    ]
+    // Tool output frequently reports /var and /tmp under their /private form.
+    for path in candidates where !path.hasPrefix("/private/") {
+      candidates.append("/private" + path)
+    }
+    var seen: Set<String> = []
+    return candidates.filter { $0 != "/" && seen.insert($0).inserted }
   }
 }

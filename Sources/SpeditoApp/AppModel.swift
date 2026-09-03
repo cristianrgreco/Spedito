@@ -3251,11 +3251,12 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       launchID.uuidString.lowercased(),
       isDirectory: true
     )
-    if let existingPath = await storedDemoSession(
+    let storedSession = await storedDemoSession(
       productID: productID,
       sourceKind: sourceKind,
       launchID: launchID
-    )?.previewWorktreePath,
+    )
+    if let existingPath = storedSession?.previewWorktreePath,
       URL(fileURLWithPath: existingPath).standardizedFileURL
         != expectedPreviewURL.standardizedFileURL
     {
@@ -3264,11 +3265,16 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
         worktreeURL: URL(fileURLWithPath: existingPath, isDirectory: true)
       )
     }
+    // A starting or ready session may still be serving files out of the
+    // reused checkout, so only then is the pre-preparation reset skipped.
+    let sessionMayBeLive =
+      storedSession.map { $0.status == .starting || $0.status == .ready } ?? false
     return try await gitWorkspaceManager.preparePreviewWorkspace(
       repositoryURL: repositoryURL,
       previewsRootURL: previewsRootURL,
       candidateID: launchID,
-      integratedSHA: revisionSHA
+      integratedSHA: revisionSHA,
+      resetsExistingCheckout: !sessionMayBeLive
     )
   }
 

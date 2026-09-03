@@ -921,6 +921,15 @@ or configuration files, while only the current candidate is writable and
 credentials and `.env` files remain denied. Demo networking is enabled only for
 `localhost` and `127.0.0.1`.
 
+Before preparation runs, a reused preview checkout is reset to a clean detached
+state (tracked modifications restored, untracked and ignored artifacts removed)
+unless a live demo session may still be serving from it, so artifacts a previous
+preparation could not delete never poison the next attempt. A managed access
+probe then proves the sandbox honors the full create-and-delete lifecycle the
+product's own scripts rely on; a denial fails fast as a retryable host failure.
+Owner-facing preparation failure text rewrites absolute workspace paths as
+workspace-relative paths before it reaches an alert or a work log entry.
+
 Bounded commands disconnect their candidate-scoped App Server after capturing
 the result. Long-running commands retain that connection and use its process
 identifier while streaming output. Recipes must remain in the foreground;
