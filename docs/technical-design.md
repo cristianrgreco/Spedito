@@ -1514,7 +1514,7 @@ then starts at most one child operation for the run identity.
 
 | State | Entered by | Durable evidence | Owner sees | Available actions | Recovery |
 | --- | --- | --- | --- | --- | --- |
-| Queued for capacity | Current Codex limits or safety back-pressure block an otherwise eligible implementation | `AgentRun.status = queued` plus typed constraint, observation time, optional retry time, and bounded evidence in SQLite | **Waiting for Codex capacity** or **Waiting for safe capacity**, an automatic-recovery explanation, and retry time/evidence when available | Stop or pause the Sprint through the existing delivery controls; no manual retry is required | A fresh coordinator preserves the wait while observations are unavailable or stale, clears it only from current available capacity, and admits one operation |
+| Queued for capacity | Current Codex limits or safety back-pressure block an otherwise eligible implementation | `AgentRun.status = queued` plus typed constraint, observation time, optional retry time, and bounded evidence in SQLite | **Usage limit reached** or **Codex safety pause**, an automatic-recovery explanation, and retry time/evidence when available | Stop or pause the Sprint through the existing delivery controls; no manual retry is required | A fresh coordinator preserves the wait while observations are unavailable or stale, clears it only from current available capacity, and admits one operation |
 
 Implementation recovery is run-bound. App shutdown requeues the existing
 implementation AgentRun while preserving its ticket worktree and non-ephemeral

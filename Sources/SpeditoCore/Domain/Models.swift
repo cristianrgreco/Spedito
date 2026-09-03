@@ -1419,8 +1419,8 @@ public enum AgentRunExecutionConstraintKind: String, Codable, Hashable, Sendable
 
   public var ownerFacingTitle: String {
     switch self {
-    case .accountRateLimit: "Waiting for Codex capacity"
-    case .safetyBackPressure: "Waiting for a safe Codex window"
+    case .accountRateLimit: "Usage limit reached"
+    case .safetyBackPressure: "Codex safety pause"
     }
   }
 

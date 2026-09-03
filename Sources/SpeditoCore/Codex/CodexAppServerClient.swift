@@ -147,13 +147,44 @@ public enum CodexClientError: Error, Equatable, LocalizedError, Sendable {
     case .invalidInitializeResponse: "Codex App Server returned an invalid handshake."
     case .invalidThreadResponse: "Codex App Server returned an invalid thread."
     case .invalidTurnResponse: "Codex App Server returned an invalid turn."
-    case .turnFailed(let message): "The Codex turn failed: \(message)"
+    case .turnFailed(let message):
+      CodexTurnFailureText.ownerFacingDescription(for: message)
     case .turnEndedWithoutOutput: "The Codex turn finished without a proposal."
     case .turnTimedOut(let seconds):
       "The Codex turn had no activity for \(seconds) seconds."
     case .unsupportedPlatform(let platform):
       "This Spedito build cannot use a Codex runtime for \(platform)."
     }
+  }
+}
+
+/// Owner-facing text for a failed Codex turn.
+///
+/// Codex reports account capacity failures with upgrade and billing links. The
+/// product owner cannot act on those inside Spedito, so a capacity failure
+/// collapses to one plain explanation that keeps the reset time when Codex
+/// names one. Every other failure message passes through unchanged.
+public enum CodexTurnFailureText {
+  public static func ownerFacingDescription(for message: String) -> String {
+    let lowered = message.lowercased()
+    guard lowered.contains("usage limit") || lowered.contains("rate limit") else {
+      return "The Codex turn failed: \(message)"
+    }
+    guard let resetTime = resetTime(in: message) else {
+      return "Codex has reached its usage limit. Work continues automatically when the limit resets."
+    }
+    return "Codex has reached its usage limit. Work continues automatically "
+      + "after the limit resets, around \(resetTime)."
+  }
+
+  /// The reset time Codex names after "try again at", without the sentence tail.
+  private static func resetTime(in message: String) -> String? {
+    guard let marker = message.range(of: "try again at ", options: .caseInsensitive)
+    else { return nil }
+    let tail = message[marker.upperBound...]
+    let time = tail.prefix { $0 != "." && $0 != "," && $0 != "\n" }
+      .trimmingCharacters(in: .whitespaces)
+    return time.isEmpty ? nil : time
   }
 }
 

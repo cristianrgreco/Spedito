@@ -109,6 +109,31 @@ struct CodexAdapterTests {
     #expect(await transport.wasStopped())
   }
 
+  @Test("A usage-limit turn failure reads as owner-facing text with the reset time")
+  func usageLimitTurnFailureReadsOwnerFacing() {
+    let raw = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+      + "visit https://chatgpt.com/codex/settings/usage to purchase more credits "
+      + "or try again at 8:40 PM."
+    let text = CodexClientError.turnFailed(raw).localizedDescription
+    #expect(
+      text
+        == "Codex has reached its usage limit. Work continues automatically "
+        + "after the limit resets, around 8:40 PM."
+    )
+
+    let withoutTime = CodexClientError.turnFailed("Rate limit exceeded").localizedDescription
+    #expect(
+      withoutTime
+        == "Codex has reached its usage limit. Work continues automatically when the limit resets."
+    )
+
+    let unrelated = CodexClientError.turnFailed("The model refused the tool call.")
+    #expect(
+      unrelated.localizedDescription
+        == "The Codex turn failed: The model refused the tool call."
+    )
+  }
+
   @Test("JSONL transport correlates a response with its request")
   func jsonlRoundTrip() async throws {
     let script = #"""
