@@ -172,38 +172,11 @@ struct TicketAttentionTests {
         )
       )
     )
+    #expect(model.selectedProductID == sourceProduct.id)
     let ownerRequest = try #require(model.ownerNotificationNavigationRequest)
     #expect(ownerRequest.productID == sourceProduct.id)
     #expect(ownerRequest.target == OwnerNotificationTarget(kind: .ticket, id: item.id))
     model.consumeOwnerNotificationNavigationRequest(id: ownerRequest.id)
-
-    await model.openTicketAttentions(for: sourceProduct)
-
-    #expect(model.selectedProductID == sourceProduct.id)
-    let request = try #require(model.ticketAttentionNavigationRequest)
-    #expect(request.productID == sourceProduct.id)
-    #expect(request.workItemIDs == [item.id])
-    #expect(request.openWorkItemID == item.id)
-
-    let secondItem = try await sourceStore.createWorkItem(
-      productID: sourceProduct.id,
-      title: "Answer another delivery question"
-    )
-    _ = try await sourceStore.createAgentRun(
-      AgentRun(
-        productID: sourceProduct.id,
-        workItemID: secondItem.id,
-        profileID: profile.id,
-        status: .awaitingOwner
-      )
-    )
-    await model.reload()
-
-    await model.openTicketAttentions(for: sourceProduct)
-
-    let multipleRequest = try #require(model.ticketAttentionNavigationRequest)
-    #expect(multipleRequest.workItemIDs == [item.id, secondItem.id])
-    #expect(multipleRequest.openWorkItemID == nil)
 
     for store in registry.allStores {
       await store.close()
@@ -575,48 +548,6 @@ struct TicketAttentionTests {
     }
   }
 
-  @Test("A single background result routes from the product attention count")
-  func productAttentionRoutesSingleBackgroundResult() async throws {
-    let fixture = try TicketAttentionFixture()
-    defer { fixture.remove() }
-    let registry = try ProductStoreRegistry(
-      productWorkspacesRootURL: fixture.workspacesURL
-    )
-    let sourceProduct = try await registry.createProduct(name: "Background result")
-    let selectedProduct = try await registry.createProduct(name: "Current product")
-    let store = try #require(registry.store(for: sourceProduct.id))
-    let epic = try await store.createEpic(
-      productID: sourceProduct.id,
-      outcome: "Review the proposed delivery plan"
-    )
-    let notification = OwnerNotification(
-      productID: sourceProduct.id,
-      kind: .refinementComplete,
-      target: OwnerNotificationTarget(kind: .epic, id: epic.id),
-      title: "Plan ready for review",
-      body: "The proposed tickets are ready."
-    )
-    #expect(try await store.createOwnerNotification(notification))
-    let model = AppModel(
-      storeRegistry: registry,
-      selectedProductID: selectedProduct.id,
-      ownerNotificationSoundPlayer: NotificationSoundSpy(),
-      ownerNotificationSystemNotifier: NotificationSystemSpy()
-    )
-    await model.reload()
-
-    #expect(model.ownerAttentionCount(excluding: selectedProduct.id) == 1)
-    await model.openOwnerAttentions(for: sourceProduct)
-
-    #expect(model.selectedProductID == sourceProduct.id)
-    let request = try #require(model.ownerNotificationNavigationRequest)
-    #expect(request.target == notification.target)
-
-    for store in registry.allStores {
-      await store.close()
-    }
-  }
-
   /// Existing partial coverage:
   /// - `reloadAggregatesBackgroundProductAttention`
   /// - `openingAttentionTargetsTicket`
@@ -654,20 +585,25 @@ struct TicketAttentionTests {
     let model = AppModel(storeRegistry: registry, selectedProductID: sourceProduct.id)
     await model.reload()
 
-    await model.openTicketAttentions(for: sourceProduct)
-    let firstOpen = try #require(model.ticketAttentionNavigationRequest)
-    #expect(firstOpen.openWorkItemID == item.id)
-    model.consumeTicketAttentionNavigationRequest(id: firstOpen.id)
-    #expect(model.ticketAttentionNavigationRequest == nil)
-
     await model.selectProduct(otherProduct)
     #expect(model.selectedProductID == otherProduct.id)
-    await model.openTicketAttentions(for: sourceProduct)
-    let returned = try #require(model.ticketAttentionNavigationRequest)
+    let attention = try #require(
+      model.ticketAttentionsByProductID[sourceProduct.id]?.first
+    )
+    #expect(attention.workItemID == item.id)
+    await model.openOwnerNotification(
+      try #require(
+        OwnerNotificationRoute(
+          userInfo: OwnerNotificationRoute.userInfo(
+            for: OwnerNotificationPresentation(attention: attention)
+          )
+        )
+      )
+    )
+    let returned = try #require(model.ownerNotificationNavigationRequest)
     #expect(model.selectedProductID == sourceProduct.id)
     #expect(returned.productID == sourceProduct.id)
-    #expect(returned.workItemIDs == [item.id])
-    #expect(returned.openWorkItemID == item.id)
+    #expect(returned.target == OwnerNotificationTarget(kind: .ticket, id: item.id))
     #expect(
       try await sourceStore.fetchWorkItems(productID: sourceProduct.id)
         .first { $0.id == item.id }?.state == .refining
@@ -680,7 +616,7 @@ struct TicketAttentionTests {
   }
 
   /// Existing partial coverage:
-  /// - `productAttentionRoutesSingleBackgroundResult`
+  /// - `openingAttentionTargetsTicket`
   /// - `notificationRouteRoundTrips`
   /// This test covers only C07's cross-Product Chat focus and target-scoped unread clearing.
   @Test("C07 background Chat opens its exact thread and clears only that unread target")
@@ -1016,7 +952,6 @@ struct TicketAttentionTests {
     )
 
     #expect(model.ownerNotificationNavigationRequest == nil)
-    #expect(model.ticketAttentionNavigationRequest == nil)
     #expect(model.ticketAttentionCount(for: product.id) == 0)
 
     await model.shutdown()

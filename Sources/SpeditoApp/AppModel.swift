@@ -181,7 +181,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
   }
   @Published private(set) var ticketAttentionsByProductID: [UUID: [TicketAttention]] = [:]
   @Published private(set) var epicPlanReviewsByProductID: [UUID: [EpicPlanReviewAttention]] = [:]
-  @Published private(set) var ticketAttentionNavigationRequest: TicketAttentionNavigationRequest?
   @Published private(set) var ownerNotificationNavigationRequest:
     OwnerNotificationNavigationRequest?
   @Published private(set) var epics: [Epic] = []
@@ -1222,97 +1221,6 @@ final class AppModel: ObservableObject, TicketDeliveryWorkflowDelegate {
       productID: productID,
       target: target
     )
-  }
-
-  func openTicketAttention(_ attention: TicketAttention) async {
-    guard
-      let product = products.first(where: { $0.id == attention.productID })
-    else { return }
-    if selectedProductID != product.id {
-      await selectProduct(product)
-    } else {
-      await reloadSelectedProduct()
-    }
-    ownerNotificationCoordinator.dismissPresented(id: attention.id)
-    guard
-      let current = ticketAttentionsByProductID[attention.productID]?
-        .first(where: { $0.workItemID == attention.workItemID })
-    else { return }
-    ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
-      productID: current.productID,
-      sprintID: current.sprintID,
-      workItemIDs: [current.workItemID],
-      openWorkItemID: current.workItemID
-    )
-  }
-
-  func openTicketAttention(productID: UUID, workItemID: UUID) async {
-    await refreshTicketAttentions(productID: productID)
-    guard
-      let attention = ticketAttentionsByProductID[productID]?
-        .first(where: { $0.workItemID == workItemID })
-    else { return }
-    await openTicketAttention(attention)
-  }
-
-  func openTicketAttentions(for product: Product) async {
-    if selectedProductID != product.id {
-      await selectProduct(product)
-    } else {
-      await reloadSelectedProduct()
-    }
-    let attentions = ticketAttentionsByProductID[product.id] ?? []
-    guard !attentions.isEmpty else { return }
-    if let presentedOwnerNotification,
-      attentions.contains(where: { $0.id == presentedOwnerNotification.id })
-    {
-      ownerNotificationCoordinator.dismissPresented(id: presentedOwnerNotification.id)
-    }
-    ticketAttentionNavigationRequest = TicketAttentionNavigationRequest(
-      productID: product.id,
-      sprintID: attentions.first?.sprintID,
-      workItemIDs: Set(attentions.map(\.workItemID)),
-      openWorkItemID: attentions.count == 1 ? attentions[0].workItemID : nil
-    )
-  }
-
-  func openOwnerAttentions(for product: Product) async {
-    let targets = ownerAttentionTargets(productID: product.id)
-    guard !targets.isEmpty else {
-      await selectProduct(product)
-      return
-    }
-    if targets.count == 1, let target = targets.first {
-      if let notification = ownerNotificationsByProductID[product.id]?
-        .first(where: { $0.target == target })
-      {
-        await openOwnerNotification(
-          notificationID: notification.id,
-          productID: product.id,
-          target: target
-        )
-        return
-      }
-      if target.kind == .ticket,
-        let attention = ticketAttentionsByProductID[product.id]?
-          .first(where: { $0.workItemID == target.id })
-      {
-        await openTicketAttention(attention)
-        return
-      }
-    }
-    if ownerNotificationsByProductID[product.id, default: []].isEmpty {
-      await openTicketAttentions(for: product)
-    } else if selectedProductID != product.id {
-      await selectProduct(product)
-    } else {
-      await reloadSelectedProduct()
-    }
-  }
-
-  func consumeTicketAttentionNavigationRequest(id: UUID) {
-    guard ticketAttentionNavigationRequest?.id == id else { return }
-    ticketAttentionNavigationRequest = nil
   }
 
   func openOwnerNotification(_ presentation: OwnerNotificationPresentation) async {

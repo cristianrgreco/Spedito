@@ -48,7 +48,6 @@ extension SprintLane {
 struct SprintBoardView: View {
   @EnvironmentObject private var model: AppModel
   @Binding var selectedSprintID: UUID?
-  @Binding var attentionWorkItemIDs: Set<UUID>?
   let onShowBacklog: () -> Void
   let onEditPlan: () -> Void
   let onShowRetrospective: () -> Void
@@ -75,22 +74,6 @@ struct SprintBoardView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
                 .background(sprintPhaseTint(for: plan).opacity(0.1), in: Capsule())
-            }
-            if let attentionWorkItemIDs, !attentionWorkItemIDs.isEmpty {
-              Button {
-                self.attentionWorkItemIDs = nil
-              } label: {
-                Label(
-                  attentionWorkItemIDs.count == 1
-                    ? "1 needs your attention"
-                    : "\(attentionWorkItemIDs.count) need your attention",
-                  systemImage: "line.3.horizontal.decrease.circle.fill"
-                )
-              }
-              .buttonStyle(.bordered)
-              .tint(.orange)
-              .controlSize(.small)
-              .help("Show every sprint ticket")
             }
           }
           Text("Track each ticket from ready to pick through review, demo, and done.")
@@ -242,9 +225,6 @@ struct SprintBoardView: View {
       if let plan = selectedPlan {
         VStack(spacing: 0) {
           let planItemIDs = Set(plan.items.map(\.workItemID))
-          let displayedItemIDs =
-            attentionWorkItemIDs.map { planItemIDs.intersection($0) }
-            ?? planItemIDs
           GeometryReader { proxy in
             let horizontalPadding: CGFloat = 40
             let interColumnSpacing: CGFloat = 10
@@ -264,7 +244,7 @@ struct SprintBoardView: View {
                     items: boardItems(
                       for: lane,
                       plan: plan,
-                      itemIDs: displayedItemIDs
+                      itemIDs: planItemIDs
                     ),
                     columnWidth: columnWidth,
                     motionNamespace: ticketMotionNamespace,
@@ -276,7 +256,7 @@ struct SprintBoardView: View {
               .frame(maxHeight: .infinity, alignment: .top)
               .animation(
                 .spring(response: 0.42, dampingFraction: 0.86),
-                value: boardPositionSignature(itemIDs: displayedItemIDs)
+                value: boardPositionSignature(itemIDs: planItemIDs)
               )
             }
             .accessibilityIdentifier("sprint.board.columns")
@@ -402,7 +382,6 @@ struct SprintBoardView: View {
   }
 
   private func selectSprint(_ sprintID: UUID?) {
-    attentionWorkItemIDs = nil
     selectedSprintID = sprintID
     guard let productID = model.selectedProductID else { return }
     SprintBoardSelectionDefaults.select(sprintID, for: productID)

@@ -1298,9 +1298,7 @@ destination.
 A newly waiting run publishes one transient in-app presentation containing its
 product, ticket, and summary. It slides in from the bottom-right edge. Its action
 selects the owning product only after the product owner chooses it, then opens
-the ticket. Product-library navigation opens a single attention ticket directly
-or publishes a multi-ticket sprint-board filter.
-When the app is inactive, `UNUserNotificationCenter` receives an alert
+the ticket. When the app is inactive, `UNUserNotificationCenter` receives an alert
 without an additional sound. Notification metadata contains only notification,
 product, target-kind, and target identifiers; the application delegate resolves
 the click through the same durable attention projection and navigation path.
