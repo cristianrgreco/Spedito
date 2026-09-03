@@ -52,7 +52,10 @@ and launch is where owner-visible delivery most often breaks.
 | `web-reading-list` | `browser` | build step, mid-sprint scope change |
 | `native-notes` | `macApplication` | native launch, app versions, persistence |
 | `native-timer` | `macApplication` | native launch, notification behaviour |
-| `script-log-summary` | `commandOutput` | non-visual delivery outcome |
+| `native-weather` | `macApplication` | the owner's real launch brief: location and network permissions, native launch |
+| `web-markdown-notes` | `browser` | the owner's real launch brief: committed storage default, no escape question |
+| `script-log-summary` | `commandOutput` | non-visual delivery outcome; proves the terminal rule does not capture one-shot programs |
+| `terminal-todo` | `terminalApplication` | program opened in Terminal, keyboard-driven, persistence, stop and reopen |
 | `library-csv` | `artifact` | review-only delivery, test evidence |
 | `vague-dashboard` | `browser` | must ask a consequential product question |
 | `import-repository` | `artifact` | repository import, knowledge analysis, delivery into existing history |

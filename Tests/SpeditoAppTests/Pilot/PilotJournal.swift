@@ -36,6 +36,10 @@ final class PilotJournal: @unchecked Sendable {
       case leakedDiagnostic
       /// Something took implausibly long without owner-visible progress.
       case stalled
+      /// The host environment denied an operation the product's own scripts
+      /// legitimately perform, so reviewed work failed outside the candidate's
+      /// control.
+      case environmentParity
     }
 
     let category: Category

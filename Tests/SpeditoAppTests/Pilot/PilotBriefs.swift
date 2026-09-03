@@ -61,6 +61,27 @@ enum PilotBriefCatalog {
       expectsNetworkPermission: false,
       midSprintFollowUp: "I'd also like to search what I've saved."
     ),
+    // The two products the owner creates by hand after every release, kept
+    // verbatim so the pilot exercises exactly what a real launch exercises.
+    PilotBrief(
+      id: "native-weather",
+      productName: "Weather",
+      outcome: "Create a native macOS app which uses the user's location to show a "
+        + "7 day weather forecast, use open-meteo free non-commercial.",
+      source: .blank,
+      expectedDemoKind: .macApplication,
+      expectsNetworkPermission: true,
+      midSprintFollowUp: nil
+    ),
+    PilotBrief(
+      id: "web-markdown-notes",
+      productName: "Markdown notes",
+      outcome: "Create a webapp which lets a user create and manage notes in markdown.",
+      source: .blank,
+      expectedDemoKind: .browser,
+      expectsNetworkPermission: false,
+      midSprintFollowUp: nil
+    ),
     PilotBrief(
       id: "native-notes",
       productName: "Quick notes",
@@ -87,6 +108,16 @@ enum PilotBriefCatalog {
         "Something I can run that reads a folder of log files and tells me the most common errors.",
       source: .blank,
       expectedDemoKind: .commandOutput,
+      expectsNetworkPermission: false,
+      midSprintFollowUp: nil
+    ),
+    PilotBrief(
+      id: "terminal-todo",
+      productName: "Terminal to-do",
+      outcome:
+        "A terminal app where I keep a to-do list: add items, tick them off with the keyboard, and see them again next time.",
+      source: .blank,
+      expectedDemoKind: .terminalApplication,
       expectsNetworkPermission: false,
       midSprintFollowUp: nil
     ),

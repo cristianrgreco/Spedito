@@ -31,6 +31,14 @@ enum PilotConventions {
     "execution result",
     "worktree",
     "candidate revision",
+    // Codex account-capacity failures arrive with the provider's upgrade and
+    // billing links. A live run pasted "Upgrade to Pro (https://chatgpt.com/...)"
+    // into a work log; the owner cannot act on provider marketing inside
+    // Spedito, so any of it reaching an owner-facing surface is a leak.
+    "chatgpt.com",
+    "upgrade to pro",
+    "purchase more credits",
+    "hit your usage limit",
   ]
 
   struct Violation {

@@ -23,6 +23,12 @@ struct PilotSnapshot: Sendable {
     let waitingOnPrerequisites: [String]
     /// Owner-facing things that can be done to this ticket right now.
     let availableActions: [String]
+    /// Why delivery is deliberately holding this ticket's run, when a recorded
+    /// execution constraint (a Codex usage limit or safety pause) is doing so,
+    /// and when delivery expects to retry. The board shows both, so a run held
+    /// this way is explained, not stranded.
+    let waitingReason: String?
+    let waitingRetryAt: Date?
     /// The last thing this ticket's run reported, and when.
     ///
     /// A board line that says `run=running` cannot distinguish an agent that is
@@ -133,6 +139,7 @@ enum PilotSnapshotRenderer {
       let needsInput =
         run?.status == .awaitingOwner
         || model.pendingPermissionRequest(workItemID: item.id) != nil
+      let constraint = run?.executionConstraint
       return PilotSnapshot.TicketView(
         key: item.key,
         title: item.title,
@@ -147,6 +154,8 @@ enum PilotSnapshotRenderer {
           candidate: candidate,
           needsInput: needsInput
         ),
+        waitingReason: constraint?.kind.ownerFacingTitle,
+        waitingRetryAt: constraint?.retryAt,
         lastActivityText: run?.lastActivityText,
         quietForSeconds: run?.lastActivityAt.map {
           Int(renderedAt.timeIntervalSince($0).rounded())
@@ -279,6 +288,12 @@ enum PilotSnapshotRenderer {
         if let run = ticket.latestRunStatus { line += " run=\(run.rawValue)" }
         if !ticket.waitingOnPrerequisites.isEmpty {
           line += " waiting-on=\(ticket.waitingOnPrerequisites.joined(separator: "+"))"
+        }
+        if let reason = ticket.waitingReason {
+          line += " waiting=\"\(reason)\""
+          if let retryAt = ticket.waitingRetryAt {
+            line += " retry-in=\(Int(retryAt.timeIntervalSince(snapshot.renderedAt)))s"
+          }
         }
         line += " actions=[\(ticket.availableActions.joined(separator: ", "))]"
         if let activity = ticket.lastActivityText, !activity.isEmpty {

@@ -24,6 +24,26 @@ enum PilotInvariants {
   /// the turn ended without anyone noticing, not that it is thinking hard.
   static let silentRunTolerance: TimeInterval = 600
 
+  /// How long past a constraint's promised retry time delivery may stay quiet
+  /// before the hold stops counting as an explanation. The dispatcher retries on
+  /// its own cadence, so the promised instant itself is not a deadline.
+  static let constraintRetryGrace: TimeInterval = 180
+
+  /// True while the run is deliberately held by a recorded execution constraint
+  /// (a Codex usage limit or safety pause) whose retry time has not clearly
+  /// passed. The board explains such a hold, so it is a wait, not a stall — a
+  /// live weather run filed a dead end and a stall against exactly this state
+  /// while the board was correctly showing "Usage limit reached".
+  static func isDeliberatelyHeld(
+    reason: String?,
+    retryAt: Date?,
+    at now: Date
+  ) -> Bool {
+    guard reason != nil else { return false }
+    guard let retryAt else { return true }
+    return retryAt.addingTimeInterval(constraintRetryGrace) > now
+  }
+
   struct Context {
     let snapshot: PilotSnapshot
     let brief: PilotBrief
@@ -62,6 +82,11 @@ enum PilotInvariants {
       // running. A board full of queued runs and no running one is frozen,
       // however busy it claims to be.
       if ticket.latestRunStatus == .queued, context.anyRunIsRunning { return nil }
+      if isDeliberatelyHeld(
+        reason: ticket.waitingReason,
+        retryAt: ticket.waitingRetryAt,
+        at: now
+      ) { return nil }
       guard let since = context.unchangedSince[ticket.key],
         now.timeIntervalSince(since) > deadEndTolerance
       else { return nil }
@@ -141,6 +166,25 @@ enum PilotInvariants {
         let hasSession = model.demoSessions.contains { $0.status.isActive }
         let failed = model.demoSessions.first { $0.errorMessage != nil }
         guard let failed, !hasSession else { return nil }
+        let errorText = failed.errorMessage ?? "unknown"
+        if let environmentSignature = demoEnvironmentFailureSignature(in: errorText) {
+          return PilotJournal.Finding(
+            category: .environmentParity,
+            title:
+              "Demo preparation was denied an operation the product's scripts perform",
+            evidence: """
+              Candidate: \(candidate.id) version \(candidate.version)
+              Delivery kind: \(candidate.deliveryKind.rawValue)
+              Environment signature: \(environmentSignature)
+              Demo error: \(errorText)
+
+              The candidate passed review; the demo runtime, not the work,
+              rejected an ordinary filesystem or network operation.
+              """,
+            locationHint: "Sources/SpeditoApp/MacOSDemoLauncher.swift",
+            at: Date()
+          )
+        }
         return PilotJournal.Finding(
           category: .functional,
           title: "A candidate reached ready for demo but its demo failed to run",
@@ -148,7 +192,7 @@ enum PilotInvariants {
             Candidate: \(candidate.id) version \(candidate.version)
             Delivery kind: \(candidate.deliveryKind.rawValue)
             Expected demo kind for this product: \(context.brief.expectedDemoKind.rawValue)
-            Demo error: \(failed.errorMessage ?? "unknown")
+            Demo error: \(errorText)
 
             Ready for demo is an owner-facing promise that the work can be
             watched running.
@@ -157,6 +201,19 @@ enum PilotInvariants {
           at: Date()
         )
       }
+  }
+
+  /// Environment-parity failures come from the demo runtime denying ordinary
+  /// operations, not from the candidate. They are matched on stable denial and
+  /// loopback-connectivity signatures observed in live failures.
+  static func demoEnvironmentFailureSignature(in errorText: String) -> String? {
+    let signatures = [
+      "Operation not permitted",
+      "could not create and clean up files inside the assigned managed demo workspace",
+      "Failed to connect to 127.0.0.1",
+      "Couldn't connect to server",
+    ]
+    return signatures.first { errorText.localizedCaseInsensitiveContains($0) }
   }
 
   /// Every completed ticket must leave a self-contained handoff in its work log,
@@ -221,6 +278,13 @@ enum PilotInvariants {
     return model.runs
       .filter { $0.status == .queued }
       .filter { now.timeIntervalSince($0.updatedAt) > queuedTolerance }
+      .filter { run in
+        !isDeliberatelyHeld(
+          reason: run.executionConstraint?.kind.ownerFacingTitle,
+          retryAt: run.executionConstraint?.retryAt,
+          at: now
+        )
+      }
       .compactMap { run in
         guard let item = model.workItems.first(where: { $0.id == run.workItemID })
         else { return nil }
@@ -353,6 +417,12 @@ enum PilotInvariants {
         : "Delivery does not consider this run eligible."
     )
     lines.append("Eligible runs right now: \(eligible.count)")
+    if let constraint = run.executionConstraint {
+      lines.append(
+        "Recorded constraint: \(constraint.kind.ownerFacingTitle), retry at "
+          + (constraint.retryAt.map(String.init(describing:)) ?? "unknown") + "."
+      )
+    }
     lines.append("Last thing this run reported: \(run.lastActivityText ?? "nothing")")
     let requests = model.permissionRequests.filter { $0.agentRunID == run.id }
     lines.append(

@@ -241,6 +241,33 @@ struct PilotSupervisionTests {
   /// A live native macOS run put this on the owner's screen and the pilot said
   /// nothing, because its leaked-diagnostic check looked for a fixed list of
   /// markers and none of them appeared.
+  @Test("A run held by a recorded constraint is a wait, not a stall")
+  func constraintHoldIsAWaitUntilItsRetryTimePasses() {
+    let now = Date()
+    // Held: the board explains the wait and delivery resumes on its own.
+    #expect(
+      PilotInvariants.isDeliberatelyHeld(
+        reason: "Usage limit reached",
+        retryAt: now.addingTimeInterval(3600),
+        at: now
+      )
+    )
+    // A constraint with no promised retry time still explains the hold.
+    #expect(
+      PilotInvariants.isDeliberatelyHeld(reason: "Usage limit reached", retryAt: nil, at: now)
+    )
+    // Once the promised retry time is clearly past, the hold no longer
+    // explains anything and the stall rules must fire again.
+    #expect(
+      !PilotInvariants.isDeliberatelyHeld(
+        reason: "Usage limit reached",
+        retryAt: now.addingTimeInterval(-PilotInvariants.constraintRetryGrace - 1),
+        at: now
+      )
+    )
+    #expect(!PilotInvariants.isDeliberatelyHeld(reason: nil, retryAt: nil, at: now))
+  }
+
   @Test("A failure built from chained internal errors is reported")
   func chainedFailureTextIsReported() {
     let chained = """

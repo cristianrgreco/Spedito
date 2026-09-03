@@ -310,7 +310,7 @@ with an obvious fix. **Report it; do not invent a policy.**
 ./scripts/pilot.sh native-notes 3600    # a named brief and budget in seconds
 ```
 
-Nine briefs, spanning every `DemoPresentationKind`. `import-repository` needs
+Twelve briefs, spanning every `DemoPresentationKind`. `import-repository` needs
 `SPEDITO_PILOT_REPO` set to a repository the owner nominates; it has no default
 on purpose.
 

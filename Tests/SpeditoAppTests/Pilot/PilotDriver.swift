@@ -486,19 +486,43 @@ final class PilotDriver {
 
     // Answer clarification rounds until the plan is ready or the budget runs out.
     var rounds = 0
+    var didRetryPlanning = false
     while Date() < deadline, rounds < 8 {
+      // A batch whose session is still generating is not progress — a live run
+      // treated one as the plan, stopped watching the conversation, and never
+      // saw the generation turn time out. Only a decided outcome moves the
+      // owner: questions, a completed conversation, an error, proposed
+      // tickets, or a failed session.
       let progressed = await waitUntil("clarification or plan") { model in
-        let conversation = model.epicPlanningFeature.snapshot.conversation
-        guard let conversation, conversation.epicID == epic.id else { return false }
+        guard
+          let conversation = model.epicPlanningFeature.snapshot.conversations[epic.id]
+        else { return false }
         if !conversation.questions.isEmpty { return true }
         if conversation.isComplete { return true }
         if conversation.errorMessage != nil { return true }
-        return !model.suggestionBatches.isEmpty
+        return model.suggestionBatches.contains { batch in
+          batch.session.status == .failed
+            || batch.suggestions.contains { $0.status == .proposed }
+        }
       }
       guard progressed else { break }
 
-      let conversation = model.epicPlanningFeature.snapshot.conversation
-      if let failure = conversation?.errorMessage {
+      let conversation = model.epicPlanningFeature.snapshot.conversations[epic.id]
+      let failedSession = model.suggestionBatches
+        .first { $0.session.status == .failed }?
+        .session
+      if let failure = conversation?.errorMessage ?? failedSession?.errorMessage {
+        // A real owner who is told planning failed presses Try again before
+        // giving up; a generation turn that stalls once can succeed cleanly on
+        // the next attempt.
+        if !didRetryPlanning {
+          didRetryPlanning = true
+          journal.record(.ownerCommand, "Try planning again", detail: failure)
+          model.epicPlanningWorkflowCoordinator.retryEpicPlanning(epic)
+          rounds += 1
+          await settle(for: .seconds(2))
+          continue
+        }
         journal.file(
           PilotJournal.Finding(
             category: .functional,
@@ -508,7 +532,10 @@ final class PilotDriver {
             at: Date()
           )
         )
-        return
+        // Without a plan there is nothing downstream to supervise. Returning
+        // here once left the run waiting out its whole budget for suggested
+        // tickets that could never arrive.
+        throw PilotError.planningFailed(failure)
       }
       guard let questions = conversation?.questions, !questions.isEmpty else { break }
 
@@ -550,7 +577,10 @@ final class PilotDriver {
 
   private func acceptThePlan() async throws {
     guard let model else { throw PilotError.notConnected }
-    let arrived = await waitUntil("suggested tickets") { model in
+    // Bounded: when the plan is coming at all it arrives well inside ten
+    // minutes, and a run that reaches here without one should report and end
+    // rather than hold the machine for the rest of the budget.
+    let arrived = await waitUntil("suggested tickets", limit: .seconds(600)) { model in
       model.suggestionBatches.contains { batch in
         batch.suggestions.contains { $0.status == .proposed }
       }
@@ -824,6 +854,10 @@ final class PilotDriver {
           .max(by: { $0.updatedAt < $1.updatedAt }),
         failed.status == .failed || failed.status == .interrupted
       else { continue }
+      // A run held by a recorded execution constraint resumes on its own once
+      // the constraint clears; retrying cannot start work the account limit is
+      // holding, and a real owner is told so by the board.
+      guard failed.executionConstraint == nil else { continue }
       let attempts = retryAttemptsByRunID[failed.id, default: 0]
       guard attempts < 2 else { continue }
       retryAttemptsByRunID[failed.id] = attempts + 1
@@ -953,6 +987,26 @@ final class PilotDriver {
         detail: "Demo kind: \(offered?.rawValue ?? "none declared"), "
           + "expected \(brief.expectedDemoKind.rawValue)"
       )
+      if let offered,
+        offered != brief.expectedDemoKind,
+        let item = model.workItems.first(where: { $0.id == candidate.workItemID }),
+        item.type == .story
+      {
+        fileOnce(
+          PilotJournal.Finding(
+            category: .functional,
+            title: "A story ticket was planned with the wrong review medium",
+            evidence: """
+              Ticket: \(item.key) “\(item.title)”
+              Stored review medium: \(item.demoKind?.rawValue ?? "none")
+              Candidate: \(candidate.branchName) version \(candidate.version) declares \(offered.rawValue)
+              Expected product surface: \(brief.expectedDemoKind.rawValue)
+              """,
+            locationHint: "Sources/SpeditoCore/Codex/CodexTicketSuggestionGenerator.swift",
+            at: Date()
+          )
+        )
+      }
       let launched = await model.launchDemo(for: candidate)
       if !launched {
         fileOnce(
@@ -978,11 +1032,15 @@ final class PilotDriver {
   /// to be shown.
   ///
   /// The brief catalog is organised by `DemoPresentationKind`, because demo
-  /// preparation is where owner-visible delivery most often breaks. Until now a
-  /// run's evidence never recorded which kind it actually reached, so "this
-  /// brief exercises `macApplication`" was an intention rather than a fact. A
-  /// mismatch is recorded, not filed: the agent may reasonably choose a
-  /// different presentation, and this loop has paid for noisy findings before.
+  /// preparation is where owner-visible delivery most often breaks. Every run
+  /// records the kind each candidate actually reached. For a setup or
+  /// supporting ticket a mismatch stays a recorded fact: the agent may
+  /// reasonably choose a different presentation, and this loop has paid for
+  /// noisy findings before. For a story ticket the kind is the product
+  /// surface the planner's mechanical rule fixed, so a mismatch is a planning
+  /// defect and is filed against the suggestion generator — the live
+  /// Battersea product planned a Go terminal program as a Mac app and
+  /// delivery wrapped it in a Cocoa window to comply.
   private func demoKind(of candidate: CandidateRevision) -> DemoPresentationKind? {
     try? CodexTicketExecutor.decode(candidate.executionResultJSON).demo?.presentation.kind
   }
@@ -1139,6 +1197,7 @@ enum PilotError: Error, CustomStringConvertible {
   case commandRefused(String)
   case stalled(String)
   case invalidBrief(String)
+  case planningFailed(String)
 
   var description: String {
     switch self {
@@ -1146,6 +1205,7 @@ enum PilotError: Error, CustomStringConvertible {
     case .commandRefused(let command): "The app refused \(command)."
     case .stalled(let what): "Nothing happened while waiting for \(what)."
     case .invalidBrief(let detail): detail
+    case .planningFailed(let reason): "Planning failed, so the journey ended: \(reason)"
     }
   }
 }
