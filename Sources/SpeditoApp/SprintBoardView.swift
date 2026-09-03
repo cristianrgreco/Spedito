@@ -97,133 +97,132 @@ struct SprintBoardView: View {
             .foregroundStyle(.secondary)
         }
         Spacer()
-        VStack(alignment: .trailing, spacing: 8) {
-          HStack(spacing: 0) {
-            if availablePlans.count > 1 {
-              Picker("Sprint", selection: selectedSprintBinding) {
-                ForEach(availablePlans, id: \.sprint.id) { plan in
-                  Text(
-                    "Sprint \(plan.sprint.number) · \(sprintSelectorTitle(for: plan))"
-                  )
-                  .tag(plan.sprint.id)
-                }
-              }
-              .labelsHidden()
-              .frame(width: 190, alignment: .trailing)
-            }
-
-            if availablePlans.count > 1, hasHeaderActions {
-              Divider()
-                .frame(height: 22)
-                .padding(.horizontal, 12)
-            }
-
-            HStack(spacing: 6) {
-              if let plan = selectedPlan, plan.sprint.state == .active {
-                Button {
-                  updateSprintState {
-                    await model.pauseSprint(plan.sprint)
-                  }
-                } label: {
-                  Image(systemName: "pause.fill")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.bordered)
-                .tint(.orange)
-                .disabled(isUpdatingSprintState)
-                .accessibilityLabel(isUpdatingSprintState ? "Pausing sprint" : "Pause sprint")
-                .help("Pause delivery and preserve work so this sprint can resume later")
-              }
-              if let plan = selectedPlan, plan.sprint.state == .paused {
-                Button {
-                  updateSprintState {
-                    await model.resumeSprint(plan.sprint)
-                  }
-                } label: {
-                  Image(systemName: "play.fill")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.bordered)
-                .tint(.green)
-                .disabled(isUpdatingSprintState)
-                .accessibilityLabel(
-                  isUpdatingSprintState ? "Resuming sprint" : "Resume sprint"
+        HStack(spacing: 0) {
+          if availablePlans.count > 1 {
+            Picker("Sprint", selection: selectedSprintBinding) {
+              ForEach(availablePlans, id: \.sprint.id) { plan in
+                Text(
+                  "Sprint \(plan.sprint.number) · \(sprintSelectorTitle(for: plan))"
                 )
-                .help("Continue preserved work in this sprint")
-              }
-              if let plan = selectedPlan, plan.sprint.state.isInProgress {
-                Button(role: .destructive) {
-                  showingStopSprintConfirmation = true
-                } label: {
-                  Image(systemName: "stop.fill")
-                    .font(.callout.weight(.semibold))
-                    .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .disabled(isUpdatingSprintState)
-                .accessibilityLabel("Stop sprint")
-                .help("Stop this sprint and return unfinished tickets to Ready")
-              }
-              if let plan = selectedPlan, plan.sprint.state == .completed {
-                Button("View report", action: onShowReports)
-                Button(
-                  plan.sprint.retrospectiveConcludedAt == nil
-                    ? "Continue to retrospective"
-                    : "View retrospective",
-                  action: onShowRetrospective
-                )
-                .buttonStyle(.borderedProminent)
-              }
-              if let draftPlan = selectedDraftPlan {
-                let startAvailability = SprintStartAvailability(
-                  draft: draftPlan,
-                  plans: availablePlans
-                )
-                if model.sprintReadinessIssues.isEmpty {
-                  Button("Review plan", action: onEditPlan)
-                    .buttonStyle(.bordered)
-                    .help("Review the sprint plan")
-                } else {
-                  Button(action: onEditPlan) {
-                    Label(
-                      "Review plan · \(model.sprintReadinessIssues.count) \(model.sprintReadinessIssues.count == 1 ? "issue" : "issues")",
-                      systemImage: "exclamationmark.triangle.fill"
-                    )
-                  }
-                  .buttonStyle(.borderedProminent)
-                  .tint(.orange)
-                  .help(model.sprintReadinessIssues.map(\.message).joined(separator: "\n"))
-                  .accessibilityLabel(
-                    model.sprintReadinessIssues.map(\.message).joined(separator: "\n")
-                  )
-                  .accessibilityIdentifier("sprint.readiness.issues")
-                }
-                Button("Start sprint") {
-                  Task {
-                    _ = await model.startSprint()
-                  }
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("sprint.start")
-                .disabled(
-                  draftPlan.items.isEmpty
-                    || !model.sprintReadinessIssues.isEmpty
-                    || startAvailability.isBlocked
-                )
-                .help(startAvailability.explanation ?? "Start the sprint")
+                .tag(plan.sprint.id)
               }
             }
+            .labelsHidden()
+            .frame(width: 190, alignment: .trailing)
           }
 
-          if let plan = selectedPlan {
-            SprintBoardGoalView(plan: plan)
+          if availablePlans.count > 1, hasHeaderActions {
+            Divider()
+              .frame(height: 22)
+              .padding(.horizontal, 12)
+          }
+
+          HStack(spacing: 6) {
+            if let plan = selectedPlan, plan.sprint.state == .active {
+              Button {
+                updateSprintState {
+                  await model.pauseSprint(plan.sprint)
+                }
+              } label: {
+                Image(systemName: "pause.fill")
+                  .font(.callout.weight(.semibold))
+                  .frame(width: 18, height: 18)
+              }
+              .buttonStyle(.bordered)
+              .tint(.orange)
+              .disabled(isUpdatingSprintState)
+              .accessibilityLabel(isUpdatingSprintState ? "Pausing sprint" : "Pause sprint")
+              .help("Pause delivery and preserve work so this sprint can resume later")
+            }
+            if let plan = selectedPlan, plan.sprint.state == .paused {
+              Button {
+                updateSprintState {
+                  await model.resumeSprint(plan.sprint)
+                }
+              } label: {
+                Image(systemName: "play.fill")
+                  .font(.callout.weight(.semibold))
+                  .frame(width: 18, height: 18)
+              }
+              .buttonStyle(.bordered)
+              .tint(.green)
+              .disabled(isUpdatingSprintState)
+              .accessibilityLabel(
+                isUpdatingSprintState ? "Resuming sprint" : "Resume sprint"
+              )
+              .help("Continue preserved work in this sprint")
+            }
+            if let plan = selectedPlan, plan.sprint.state.isInProgress {
+              Button(role: .destructive) {
+                showingStopSprintConfirmation = true
+              } label: {
+                Image(systemName: "stop.fill")
+                  .font(.callout.weight(.semibold))
+                  .frame(width: 18, height: 18)
+              }
+              .buttonStyle(.bordered)
+              .tint(.red)
+              .disabled(isUpdatingSprintState)
+              .accessibilityLabel("Stop sprint")
+              .help("Stop this sprint and return unfinished tickets to Ready")
+            }
+            if let plan = selectedPlan, plan.sprint.state == .completed {
+              Button("View report", action: onShowReports)
+              Button(
+                plan.sprint.retrospectiveConcludedAt == nil
+                  ? "Continue to retrospective"
+                  : "View retrospective",
+                action: onShowRetrospective
+              )
+              .buttonStyle(.borderedProminent)
+            }
+            if let draftPlan = selectedDraftPlan {
+              let startAvailability = SprintStartAvailability(
+                draft: draftPlan,
+                plans: availablePlans
+              )
+              if model.sprintReadinessIssues.isEmpty {
+                Button("Review plan", action: onEditPlan)
+                  .buttonStyle(.bordered)
+                  .help("Review the sprint plan")
+              } else {
+                Button(action: onEditPlan) {
+                  Label(
+                    "Review plan · \(model.sprintReadinessIssues.count) \(model.sprintReadinessIssues.count == 1 ? "issue" : "issues")",
+                    systemImage: "exclamationmark.triangle.fill"
+                  )
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .help(model.sprintReadinessIssues.map(\.message).joined(separator: "\n"))
+                .accessibilityLabel(
+                  model.sprintReadinessIssues.map(\.message).joined(separator: "\n")
+                )
+                .accessibilityIdentifier("sprint.readiness.issues")
+              }
+              Button("Start sprint") {
+                Task {
+                  _ = await model.startSprint()
+                }
+              }
+              .buttonStyle(.borderedProminent)
+              .accessibilityIdentifier("sprint.start")
+              .disabled(
+                draftPlan.items.isEmpty
+                  || !model.sprintReadinessIssues.isEmpty
+                  || startAvailability.isBlocked
+              )
+              .help(startAvailability.explanation ?? "Start the sprint")
+            }
           }
         }
       }
-      .workspaceHeaderLayout()
+      .workspaceHeaderLayout {
+        if let plan = selectedPlan {
+          SprintBoardGoalView(plan: plan)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+      }
 
       Divider()
 

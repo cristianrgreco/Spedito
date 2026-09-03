@@ -82,7 +82,7 @@ struct KnowledgeBaseView: View {
     GeometryReader { proxy in
       VStack(alignment: .leading, spacing: 0) {
         header
-          .workspaceHeaderLayout()
+          .workspaceHeaderLayout { askField }
 
         Divider()
 
@@ -143,53 +143,53 @@ struct KnowledgeBaseView: View {
   }
 
   private var header: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .firstTextBaseline) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Product")
-            .font(.largeTitle.bold())
-          Text("Verified product knowledge, decisions, runbooks, and delivery history.")
+    HStack(alignment: .firstTextBaseline) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Product")
+          .font(.largeTitle.bold())
+        Text("Verified product knowledge, decisions, runbooks, and delivery history.")
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Button {
+        newPageTitle = ""
+        showingNewPage = true
+      } label: {
+        Label("New page", systemImage: "plus")
+      }
+      .buttonStyle(.borderedProminent)
+    }
+    .disabled(repositoryKnowledgeIsRunning)
+  }
+
+  private var askField: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "sparkle.magnifyingglass")
+        .foregroundStyle(.indigo)
+      TextField("Ask…", text: $question)
+        .textFieldStyle(.plain)
+        .onSubmit { askKnowledge() }
+        .disabled(model.isAskingKnowledge)
+        .help("Press Return to ask")
+        .accessibilityIdentifier("knowledge.ask")
+      if !question.isEmpty {
+        Button {
+          question = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
             .foregroundStyle(.secondary)
         }
-        Spacer()
-        Button {
-          newPageTitle = ""
-          showingNewPage = true
-        } label: {
-          Label("New page", systemImage: "plus")
-        }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.plain)
+        .help("Clear question")
       }
-      .disabled(repositoryKnowledgeIsRunning)
-
-      HStack(spacing: 8) {
-        Image(systemName: "sparkle.magnifyingglass")
-          .foregroundStyle(.indigo)
-        TextField("Ask…", text: $question)
-          .textFieldStyle(.plain)
-          .onSubmit { askKnowledge() }
-          .disabled(model.isAskingKnowledge)
-          .help("Press Return to ask")
-          .accessibilityIdentifier("knowledge.ask")
-        if !question.isEmpty {
-          Button {
-            question = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-              .foregroundStyle(.secondary)
-          }
-          .buttonStyle(.plain)
-          .help("Clear question")
-        }
-        if model.isAskingKnowledge {
-          ProgressView()
-            .controlSize(.small)
-        }
+      if model.isAskingKnowledge {
+        ProgressView()
+          .controlSize(.small)
       }
-      .padding(.horizontal, 12)
-      .frame(height: 38)
-      .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
     }
+    .padding(.horizontal, 12)
+    .frame(height: 38)
+    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 9))
   }
 
   private var repositoryKnowledgeIsRunning: Bool {
