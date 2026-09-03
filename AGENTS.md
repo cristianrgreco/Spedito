@@ -237,6 +237,27 @@ sandbox guards fail instead, and CI installs a runtime. When you report a
 sandbox- or runtime-dependent result as green, name the binary and version that
 were exercised, or say plainly that none was.
 
+### Which Codex runtime runs by default
+
+Do not re-derive this. The app and the sandbox contract tests resolve the
+same runtime, in this order:
+
+1. `SPEDITO_CODEX_PATH`, when it names an executable. Tests only; CI sets it.
+2. The Codex desktop app, found through Launch Services by bundle identifier
+   `com.openai.codex`, at `<Codex.app>/Contents/Resources/codex`. On the
+   product owner's Mac this is `/Applications/Codex.app`.
+3. `/opt/homebrew/bin/codex`, then `/usr/local/bin/codex`. Tests only.
+
+The app discovers installations in that order too: the Codex desktop app,
+then the included Codex, then custom installations the product owner added.
+The owner's selection in Settings decides which one delivery uses. A Homebrew
+`codex` on the owner's Mac is a different build from the desktop app's and is
+not what delivery or the contract tests exercise unless the desktop app is
+absent. To name the exercised binary and version in a handoff, run
+`/Applications/Codex.app/Contents/Resources/codex --version`. Resolution
+lives in `CodexInstallationDiscovery` (`CodexInstallation.swift`) and
+`CodexSandboxRuntimeLocator` (`CodexSandboxProfileContractTests.swift`).
+
 ## Dependency context and ticket handoffs
 
 Dependencies are durable delivery relationships, not placeholders for tickets
