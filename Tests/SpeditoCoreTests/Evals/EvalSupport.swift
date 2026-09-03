@@ -219,10 +219,15 @@ struct EvalFixtureWorkspace {
     return EvalFixtureWorkspace(rootURL: rootURL, sharedRepository: sharedRepository)
   }
 
-  func makeRepository(name: String, files: [String: String]) throws -> EvalFixtureRepository {
+  func makeRepository(
+    name: String,
+    files: [String: String],
+    executablePaths: Set<String> = []
+  ) throws -> EvalFixtureRepository {
     try EvalFixtureRepository.create(
       at: rootURL.appendingPathComponent(name, isDirectory: true),
-      files: files
+      files: files,
+      executablePaths: executablePaths
     )
   }
 
@@ -251,16 +256,22 @@ struct EvalFixtureWorkspace {
 struct EvalFixtureRepository {
   let rootURL: URL
 
-  static func create(at rootURL: URL, files: [String: String]) throws -> EvalFixtureRepository {
+  static func create(
+    at rootURL: URL,
+    files: [String: String],
+    executablePaths: Set<String> = []
+  ) throws -> EvalFixtureRepository {
     let repository = EvalFixtureRepository(rootURL: rootURL)
     try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
     try repository.git(["init", "--quiet"])
-    try repository.write(files: files)
+    try repository.write(files: files, executablePaths: executablePaths)
     _ = try repository.commitAll(message: "Initial fixture")
     return repository
   }
 
-  func write(files: [String: String]) throws {
+  /// Writes literal file contents; paths named in `executablePaths` receive
+  /// the execute bit so Git records them as scripts a recipe can run.
+  func write(files: [String: String], executablePaths: Set<String> = []) throws {
     for (path, contents) in files {
       let fileURL = rootURL.appendingPathComponent(path)
       try FileManager.default.createDirectory(
@@ -268,6 +279,12 @@ struct EvalFixtureRepository {
         withIntermediateDirectories: true
       )
       try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+      if executablePaths.contains(path) {
+        try FileManager.default.setAttributes(
+          [.posixPermissions: 0o755],
+          ofItemAtPath: fileURL.path
+        )
+      }
     }
   }
 

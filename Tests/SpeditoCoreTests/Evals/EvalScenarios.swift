@@ -252,7 +252,11 @@ enum EvalScenarioCatalog {
       outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema,
       rubric: rubric,
       evaluate: { response in
-        evaluateEpicPlan(response, existingItems: []) { plan, checks in
+        evaluateEpicPlan(
+          response,
+          existingItems: [],
+          expectedTicketCountRange: 2...5
+        ) { plan, checks in
           checks.append(
             EvalCheck(
               name: "readinessIsFoundationRequired",
@@ -305,12 +309,22 @@ enum EvalScenarioCatalog {
       outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema,
       rubric: rubric,
       evaluate: { response in
-        evaluateEpicPlan(response, existingItems: establishedItems) { plan, checks in
+        evaluateEpicPlan(
+          response,
+          existingItems: establishedItems,
+          expectedTicketCountRange: 1...3
+        ) { plan, checks in
           checks.append(
             EvalCheck(
               name: "readinessIsSufficient",
               passed: plan.environmentAssessment.readiness == .sufficient,
               detail: "readiness was \(plan.environmentAssessment.readiness.rawValue)"
+            )
+          )
+          checks.append(
+            EvalEpicPlanChecks.plannedDemoKindMatchesProductSurface(
+              plan,
+              productSurface: .browser
             )
           )
           checks.append(
@@ -417,7 +431,302 @@ enum EvalScenarioCatalog {
       }
     )
 
-    return [greenfield, established, unresolvedProvider]
+    return [
+      greenfield, established, unresolvedProvider,
+      launchBriefScenario(
+        id: "epic-plan/native-weather",
+        productName: "Weather",
+        outcome: "Create a native macOS app which uses the user's location to show a "
+          + "7 day weather forecast, use open-meteo free non-commercial.",
+        productSurface: .macApplication,
+        rubric: rubric
+      ),
+      launchBriefScenario(
+        id: "epic-plan/web-markdown-notes",
+        productName: "Markdown notes",
+        outcome: "Create a webapp which lets a user create and manage notes in markdown.",
+        productSurface: .browser,
+        rubric: rubric,
+        briefAddendum: """
+          The brief leaves the storage approach unstated and a default committing no \
+          external service exists (notes stay in the browser on the user's device), so \
+          the expected reply is a plan, not an escape to a storage question, with that \
+          committed default stated plainly in an owner-facing field — for example \
+          "notes are saved in this browser on this device". Escaping to ask where \
+          notes should be stored is the failure this cell probes.
+          """,
+        extraChecks: { plan, checks in
+          checks.append(committedDefaultIsStatedCheck(plan))
+        }
+      ),
+      // The live Battersea product (2026-09-01): the epic says "Go terminal
+      // application", the planner's two-surface rule turned every setup and
+      // story ticket into a Mac app, and delivery wrapped the Go program in a
+      // Cocoa window to honour the contract. The mechanical rule now names
+      // terminal_application; this cell measures that the planner applies it
+      // and that no criterion carries a Mac app into delivery.
+      launchBriefScenario(
+        id: "epic-plan/terminal-battersea",
+        productName: "Battersea dogs",
+        outcome: "Help a user find currently available Battersea dogs by breed in a Go "
+          + "terminal application and open a selected dog's official web page.",
+        // The live product's clarification transcript, verbatim: the analyst
+        // asked one source-access question, the owner chose the recommended
+        // research option, and the analyst confirmed it was ready to plan. A
+        // bare brief (bundle 20260901-223658) and the post-plan epic text
+        // alone (bundle 20260902-012505) both made the planner escape on the
+        // source question instead of exercising the surface rule.
+        clarification: [
+          EpicPlanningConversationMessage(
+            author: .businessAnalyst,
+            body: "One source-access choice will determine the delivery plan."
+          ),
+          EpicPlanningConversationMessage(
+            author: .owner,
+            body: "",
+            answeredQuestions: [
+              EpicPlanningAnsweredQuestion(
+                question: TicketRefinementQuestion(
+                  prompt: "How should we confirm the TUI can obtain live availability from "
+                    + "the Battersea website?",
+                  options: [
+                    "Compare the Battersea site’s current access options and recommend a "
+                      + "permitted, reliable approach before build work begins; this creates "
+                      + "a short research task and avoids relying on an unsupported data "
+                      + "feed. (Recommended)",
+                    "Use Battersea’s public dog pages as the approved source and have the "
+                      + "implementer choose the access method during delivery; this avoids a "
+                      + "research task but accepts the risk that access changes or is "
+                      + "restricted.",
+                  ]
+                ),
+                selectedOption: "Compare the Battersea site’s current access options and "
+                  + "recommend a permitted, reliable approach before build work begins; this "
+                  + "creates a short research task and avoids relying on an unsupported data "
+                  + "feed. (Recommended)",
+                answer: "Compare the Battersea site’s current access options and recommend a "
+                  + "permitted, reliable approach before build work begins; this creates a "
+                  + "short research task and avoids relying on an unsupported data feed. "
+                  + "(Recommended)"
+              )
+            ]
+          ),
+          EpicPlanningConversationMessage(
+            author: .businessAnalyst,
+            body: "Ready to plan. The backlog will include time-boxed research to compare "
+              + "permitted, reliable ways to read the live Battersea listings and recommend "
+              + "one for approval. It will also include a separate setup task so the Go TUI "
+              + "can be built, tested, and demonstrated consistently before delivery work "
+              + "starts."
+          ),
+        ],
+        productSurface: .terminalApplication,
+        rubric: rubric,
+        briefAddendum: """
+          The product is a Go terminal application the user drives interactively, so \
+          every setup and story ticket plans as terminal_application and no ticket \
+          text describes a Mac app; the live failure this cell probes planned the \
+          TUI as a Mac app and delivery then wrapped the Go program in a Cocoa window. \
+          The owner's clarification round is in the transcript: the owner chose \
+          time-boxed business analyst research to recommend a permitted, reliable \
+          way to read the live Battersea listings, so the expected reply is a plan \
+          with that research ticket ahead of delivery, not an escape to the \
+          data-source question.
+          """,
+        extraChecks: { plan, checks in
+          checks.append(criteriaNeverNameAMacApp(plan))
+        }
+      ),
+      // The one-shot counterpart: a program run once for its printed result
+      // stays command_output, so the terminal rule does not over-capture it.
+      launchBriefScenario(
+        id: "epic-plan/script-log-summary",
+        productName: "Log summary",
+        outcome: "Something I can run that reads a folder of log files and tells me the "
+          + "most common errors.",
+        // What a clarification round fixes for this brief, stored on the epic
+        // as the live product would store it: the bare brief made every
+        // sample escape on "what counts as an error" (bundle 20260901-223957).
+        successCriteria: [
+          "A user runs the program once with a folder of log files and sees the most "
+            + "common errors with how often each occurred.",
+          "Lines that are not errors are ignored.",
+          "The result is printed once and the program exits; there is no interactive "
+            + "session.",
+        ],
+        constraints: "The product is a program run once from the command line for its "
+          + "printed result. An error is any log line containing the word ERROR or the "
+          + "start of a stack trace; two entries are the same error when their text "
+          + "matches after timestamps and numbers are removed.",
+        // The live pilot planned this brief inside the clarification thread
+        // without asking a question; from the epic alone the planner escaped
+        // on error recognition in every sample (bundles 20260901-223957 and
+        // 20260902-012738), so the cell plans through the transcript path
+        // with the analyst's confirmed scope.
+        clarification: [
+          EpicPlanningConversationMessage(
+            author: .businessAnalyst,
+            body: "Ready to plan. The first version is a command run once with a folder "
+              + "path: it reads every log file there, treats any line containing the word "
+              + "ERROR or the start of a stack trace as an error, groups entries whose text "
+              + "matches after timestamps and numbers are removed, and prints the most "
+              + "common errors with their counts, then exits. No further product decision "
+              + "is needed before planning."
+          )
+        ],
+        productSurface: .commandOutput,
+        rubric: rubric,
+        briefAddendum: """
+          The product is a program run once for its printed result, so setup and \
+          story tickets plan as command_output, never terminal_application; this \
+          cell proves the terminal rule does not over-capture one-shot programs. \
+          The owner's clarification answers are already in the epic (what counts \
+          as an error and when two entries are the same), so the expected reply is \
+          a plan, not an escape to that question.
+          """
+      ),
+    ]
+  }
+
+  /// A terminal product's plan must never describe a Mac app: the Battersea
+  /// criteria "start the managed Mac application demo" were what delivery
+  /// honoured when it wrapped the Go program in a Cocoa window.
+  private static func criteriaNeverNameAMacApp(_ plan: EpicPlanDraft) -> EvalCheck {
+    let forbidden = ["mac app", "macos app", "mac application", ".app"]
+    var findings: [String] = []
+    for suggestion in plan.ticketSuggestions {
+      for text in [suggestion.title, suggestion.body] + suggestion.acceptanceCriteria {
+        let lowercased = text.lowercased()
+        if let hit = forbidden.first(where: { lowercased.contains($0) }) {
+          findings.append(
+            "\(suggestion.reference) says “\(hit)”: \(text.prefix(80))"
+          )
+        }
+      }
+    }
+    return EvalCheck(
+      name: "criteriaNeverNameAMacApp",
+      passed: findings.isEmpty,
+      detail: findings.isEmpty
+        ? "no ticket text describes a Mac app for a terminal product"
+        : findings.joined(separator: "; ")
+    )
+  }
+
+  /// A cell built from one of the owner's real launch briefs, verbatim from
+  /// the pilot catalogue, so the improvement loop measures exactly what he
+  /// runs after every release: a greenfield product with an empty backlog and
+  /// no verified knowledge.
+  private static func launchBriefScenario(
+    id: String,
+    productName: String,
+    outcome: String,
+    successCriteria: [String] = [],
+    constraints: String = "",
+    clarification: [EpicPlanningConversationMessage] = [],
+    productSurface: TicketDemoKind,
+    rubric: [EvalRubricDimension],
+    briefAddendum: String = "",
+    extraChecks: (@Sendable (EpicPlanDraft, inout [EvalCheck]) -> Void)? = nil
+  ) -> EvalScenario {
+    let product = Product(name: productName)
+    let epic = Epic(
+      productID: product.id,
+      title: "",
+      goal: outcome,
+      successCriteria: successCriteria,
+      constraints: constraints
+    )
+    // A brief whose clarification round answered a material question plans
+    // through the transcript path the live product uses; a bare brief plans
+    // from the epic alone.
+    let prompt =
+      clarification.isEmpty
+      ? CodexTicketSuggestionGenerator.epicPrompt(
+        product: product,
+        epic: epic,
+        existingItems: [],
+        verifiedKnowledge: []
+      )
+      : CodexEpicClarificationGenerator.finalPlanRecoveryPrompt(
+        product: product,
+        epic: epic,
+        existingItems: [],
+        rejectedSuggestions: [],
+        messages: clarification,
+        verifiedKnowledge: []
+      )
+    return EvalScenario(
+      id: id,
+      generator: "epicPlan",
+      brief: """
+        The owner's real launch brief, verbatim from the pilot catalogue: a \
+        greenfield product with an empty backlog and no verified environment \
+        knowledge. Greenfield shape applies — an implementer-owned environment \
+        foundation task, design work that proceeds in parallel with it, and \
+        criteria free of calendar deadlines and exact-format demo mandates.
+        """ + (briefAddendum.isEmpty ? "" : " " + briefAddendum),
+      developerInstructions: CodexTicketSuggestionGenerator.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: ""
+      ),
+      prompt: prompt,
+      outputSchema: CodexTicketSuggestionGenerator.epicOutputSchema,
+      rubric: rubric,
+      evaluate: { response in
+        evaluateEpicPlan(
+          response,
+          existingItems: [],
+          expectedTicketCountRange: 2...5
+        ) { plan, checks in
+          checks.append(
+            EvalCheck(
+              name: "readinessIsFoundationRequired",
+              passed: plan.environmentAssessment.readiness == .foundationRequired,
+              detail: "readiness was \(plan.environmentAssessment.readiness.rawValue)"
+            )
+          )
+          checks.append(
+            EvalEpicPlanChecks.plannedDemoKindMatchesProductSurface(
+              plan,
+              productSurface: productSurface
+            )
+          )
+          extraChecks?(plan, &checks)
+        }
+      }
+    )
+  }
+
+  /// Decision 3 (2026-09-01): a launch brief that leaves the storage approach
+  /// unstated gets the no-external-service default committed — and stated
+  /// plainly in an owner-facing field, never silently. The terms are phrases,
+  /// not the bare word "browser": every sample that actually committed the
+  /// default said where notes live in one of these forms, while a bare word
+  /// would also match an ordinary demo sentence ("open the demo in a
+  /// browser") and pass a plan that never told the owner anything. The judge
+  /// stays the layer for whether the statement is prominent enough.
+  static let committedStorageStatementTerms = [
+    "in this browser", "in the same browser", "on this device", "on the same device",
+    "saved locally",
+  ]
+
+  static func committedDefaultIsStatedCheck(_ plan: EpicPlanDraft) -> EvalCheck {
+    let ownerFacingText = (
+      [plan.goal] + plan.successCriteria
+        + plan.ticketSuggestions.flatMap { [$0.title, $0.body] + $0.acceptanceCriteria }
+    )
+    .joined(separator: "\n")
+    .lowercased()
+    let stated = committedStorageStatementTerms.contains { ownerFacingText.contains($0) }
+    return EvalCheck(
+      name: "committedDefaultIsStated",
+      passed: stated,
+      detail: stated
+        ? "an owner-facing field names where notes are kept"
+        : "no owner-facing field names where notes are kept (looked for: "
+          + committedStorageStatementTerms.joined(separator: ", ") + ")"
+    )
   }
 
   private static func evaluateUnresolvedChoiceReply(
@@ -486,9 +795,12 @@ enum EvalScenarioCatalog {
   /// vocabulary in owner-facing ticket fields. The term list stays small and
   /// literal — every entry was observed in recorded judge rationales; the
   /// judge remains the qualitative layer for wording this list cannot catch.
-  private static let ownerFacingJargonTerms = [
+  static let ownerFacingJargonTerms = [
     "repository", "repo", "localhost", "cache", "caches", "toolchain",
     "readiness check", "capability boundary",
+    // Mined 2026-09-01 from the 20260901-104954 judge rationales: the
+    // setup-ticket vocabulary the list above still missed.
+    "managed check", "cached files", "team-owned commands", "stored build data",
   ]
 
   /// Theme 2's mined markers: acceptance-criteria phrases that defer what
@@ -526,7 +838,7 @@ enum EvalScenarioCatalog {
     )
   }
 
-  private static func ownerJargonCheck(_ plan: EpicPlanDraft) -> EvalCheck {
+  static func ownerJargonCheck(_ plan: EpicPlanDraft) -> EvalCheck {
     var findings: [String] = []
     for suggestion in plan.ticketSuggestions {
       let text = ([suggestion.title, suggestion.body] + suggestion.acceptanceCriteria)
@@ -556,6 +868,8 @@ enum EvalScenarioCatalog {
   private static func evaluateEpicPlan(
     _ response: String,
     existingItems: [WorkItem],
+    expectedTicketCountRange: ClosedRange<Int>,
+    legitimateExistingDependencyKeys: Set<String> = [],
     extraChecks: (EpicPlanDraft, inout [EvalCheck]) -> Void
   ) -> EvalDeterministicOutcome {
     do {
@@ -597,6 +911,14 @@ enum EvalScenarioCatalog {
       )
       checks.append(ownerJargonCheck(plan))
       checks.append(vagueCriteriaCheck(plan))
+      checks.append(
+        contentsOf: EvalEpicPlanChecks.structuralChecks(
+          plan,
+          existingItems: existingItems,
+          expectedTicketCountRange: expectedTicketCountRange,
+          legitimateExistingDependencyKeys: legitimateExistingDependencyKeys
+        )
+      )
       extraChecks(plan, &checks)
       let dependencyEdges = plan.ticketSuggestions.reduce(0) {
         $0 + $1.dependsOnReferences.count + $1.dependsOnExistingWorkItemKeys.count
@@ -606,17 +928,19 @@ enum EvalScenarioCatalog {
         .sorted { $0.key < $1.key }
         .map { "\($0.key): \($0.value)" }
         .joined(separator: ", ")
+      var facts = [
+        "ticketCount": String(plan.ticketSuggestions.count),
+        "dependencyEdges": String(dependencyEdges),
+        "readiness": plan.environmentAssessment.readiness.rawValue,
+        "foundationReference": plan.environmentAssessment.foundationTicketReference ?? "none",
+        "roles": roles,
+      ]
+      facts.merge(EvalEpicPlanChecks.metricFacts(plan)) { existing, _ in existing }
       return EvalDeterministicOutcome(
         decodePassed: true,
         decodeFailure: nil,
         checks: checks,
-        facts: [
-          "ticketCount": String(plan.ticketSuggestions.count),
-          "dependencyEdges": String(dependencyEdges),
-          "readiness": plan.environmentAssessment.readiness.rawValue,
-          "foundationReference": plan.environmentAssessment.foundationTicketReference ?? "none",
-          "roles": roles,
-        ]
+        facts: facts
       )
     } catch {
       return EvalDeterministicOutcome(
@@ -1724,11 +2048,13 @@ enum EvalScenarioCatalog {
       name: String,
       branch: String,
       extraFiles: [String: String],
-      baseFiles: [String: String] = EvalFixtureWorkspace.sharedRepositoryFiles
+      baseFiles: [String: String] = EvalFixtureWorkspace.sharedRepositoryFiles,
+      executablePaths: Set<String> = []
     ) throws -> (worktreeURL: URL, gitDirectoryURL: URL, baseSHA: String) {
       let repository = try workspace.makeRepository(
         name: name,
-        files: baseFiles.merging(extraFiles) { _, new in new }
+        files: baseFiles.merging(extraFiles) { _, new in new },
+        executablePaths: executablePaths
       )
       let worktreeURL = workspace.rootURL.appendingPathComponent(
         "\(name)-worktree",
@@ -2315,7 +2641,460 @@ enum EvalScenarioCatalog {
       )
     )
 
-    return [implement, uxDesign, nativeUX]
+    // Terminal program: the product surface is an interactive program the
+    // owner drives in Terminal. The fixture is a Swift standard-library menu
+    // with a build script, so the only truthful demo is terminal_application
+    // naming the built bin/menu; the live Battersea failure was a Cocoa
+    // window wrapped around a Go program to satisfy a mac_application
+    // contract.
+    let terminalFixtureFiles: [String: String] = [
+      "README.md": """
+        # Ledgerline menu
+
+        A small terminal program for freelancers who prefer the keyboard: it \
+        lists a few actions and runs the one whose key is typed. It is written \
+        in Swift with the standard library only.
+
+        ## Development
+
+        `scripts/build.sh` compiles `Sources/main.swift` with `swiftc` into \
+        `bin/menu`. Run `bin/menu` in a terminal and choose entries by typing \
+        their key, then Return.
+        """,
+      "scripts/build.sh": """
+        #!/bin/sh
+        set -e
+        cd "$(dirname "$0")/.."
+        mkdir -p bin
+        swiftc -O -o bin/menu Sources/main.swift
+        """,
+      "Sources/main.swift": """
+        import Foundation
+
+        // Ledgerline menu: a small interactive terminal program.
+        let entries: [(key: String, title: String)] = [
+          ("1", "Show the invoice count"),
+          ("q", "Quit"),
+        ]
+
+        func render() {
+          print("Ledgerline menu")
+          for entry in entries {
+            print("  \\(entry.key)) \\(entry.title)")
+          }
+          print("Choose an entry: ", terminator: "")
+        }
+
+        render()
+        while let line = readLine() {
+          switch line.trimmingCharacters(in: .whitespaces) {
+          case "1":
+            print("3 invoices on file")
+          case "q":
+            exit(0)
+          default:
+            print("Unknown entry")
+          }
+          render()
+        }
+        """,
+      ".gitignore": "bin/\n",
+    ]
+    let terminalEnvironments = KnowledgePage(
+      productID: product.id,
+      title: "Environments",
+      slug: "environments",
+      bodyMarkdown: """
+        Ledgerline menu is a Swift terminal program with no dependencies beyond \
+        the standard library. `scripts/build.sh` compiles it with `swiftc` into \
+        `bin/menu`; run that program in a terminal and type an entry's key. \
+        There is no web server, no application bundle, and no test runner.
+        """
+    )
+    let terminalFixture = try makeWorktree(
+      name: "delivery-terminal",
+      branch: "ticket/T9",
+      extraFiles: [:],
+      baseFiles: terminalFixtureFiles,
+      executablePaths: ["scripts/build.sh"]
+    )
+    let terminalItem = WorkItem(
+      productID: product.id,
+      key: "T9",
+      title: "Add a menu entry that shows the version",
+      body: """
+        Freelancers ask which build of the menu they are running. Add an entry \
+        to the menu that prints the version, 1.0, and keep the existing entries \
+        working exactly as they do today.
+        """,
+      acceptanceCriteria: [
+        "The menu lists a new entry that shows the version",
+        "Choosing that entry prints menu 1.0",
+        "The managed demo opens the menu in Terminal for the product owner",
+      ],
+      state: .running,
+      demoKind: .terminalApplication
+    )
+    let terminalFeature = EvalScenario(
+      id: "delivery/terminal-feature",
+      generator: "delivery",
+      brief: """
+        A real write-enabled delivery run for an implementer ticket on a Swift \
+        terminal program contracted as terminal_application. A good run adds \
+        the version entry, keeps the build script the recipe, returns a \
+        terminal_application recipe whose launch command names the built \
+        bin/menu, never wraps the program in a Mac app or a web page, and \
+        leaves an honest completion handoff.
+        """,
+      developerInstructions: CodexTicketExecutor.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: "",
+        assignee: implementer
+      ),
+      prompt: CodexTicketExecutor.prompt(
+        product: product,
+        item: terminalItem,
+        assignee: implementer,
+        prerequisites: [],
+        dependants: [],
+        prerequisiteComments: [:],
+        ticketComments: [],
+        knowledgeContext: [terminalEnvironments]
+      ),
+      outputSchema: CodexTicketExecutor.outputSchema(
+        deliveryDemoPolicy: DeliveryDemoPolicy(assignee: implementer, item: terminalItem)
+      ),
+      threadKind: .workspace(
+        worktreeURL: terminalFixture.worktreeURL,
+        readOnlyGitDirectoryURL: terminalFixture.gitDirectoryURL,
+        baseSHA: terminalFixture.baseSHA
+      ),
+      rubric: [
+        deliveryOwnerClarity,
+        EvalRubricDimension(
+          name: "implementationQuality",
+          guidance: """
+            The actual diff is minimal and idiomatic for this small program: it \
+            adds the version entry without unrelated churn, speculative \
+            abstraction, or drive-by edits, and the existing entries still work.
+            """
+        ),
+        EvalRubricDimension(
+          name: "handoffQuality",
+          guidance: """
+            The completion handoff is self-contained: delivered outcome, \
+            material decisions, evidence of the checks run, caveats, and what \
+            dependant tickets may safely assume — without restating the whole \
+            diff or leaking internal diagnostics.
+            """
+        ),
+        deliveryRetrospectiveDiscipline,
+        deliveryPermissionDiscipline,
+        deliveryKnowledgeDiscipline,
+      ],
+      evaluate: { response in
+        deliveryChecks(
+          response: response,
+          worktreeURL: terminalFixture.worktreeURL,
+          baseSHA: terminalFixture.baseSHA,
+          assignee: implementer,
+          requiresPassingTests: false
+        ) { result, checks in
+          checks.append(
+            EvalCheck(
+              name: "providesManagedDemo",
+              passed: result.demo != nil,
+              detail: result.demo != nil
+                ? "managed demo recipe supplied"
+                : "no managed demo, but a terminal program has an owner-visible surface"
+            )
+          )
+          if let demo = result.demo {
+            checks.append(
+              EvalCheck(
+                name: "demoIsTerminalApplication",
+                passed: demo.presentation.kind == .terminalApplication,
+                detail: "demo presentation kind is \(demo.presentation.kind.rawValue); "
+                  + "an interactive terminal program is terminal_application"
+              )
+            )
+            let executable = demo.launchCommand?.executable ?? ""
+            let namesBuiltExecutable =
+              executable.hasPrefix("bin/") && executable.contains("/")
+              && !executable.hasPrefix("/") && !executable.contains("..")
+            checks.append(
+              EvalCheck(
+                name: "launchCommandNamesBuiltExecutable",
+                passed: namesBuiltExecutable,
+                detail: namesBuiltExecutable
+                  ? "launch command names the built program \(executable)"
+                  : "launch command executable is "
+                    + (executable.isEmpty ? "missing" : "“\(executable)”")
+                    + ", not the built workspace-relative program under bin/"
+              )
+            )
+          }
+          checks.append(
+            noWrapperSurfaceCheck(
+              worktreeURL: terminalFixture.worktreeURL,
+              baseSHA: terminalFixture.baseSHA
+            )
+          )
+          checks.append(versionEntryCheck(worktreeURL: terminalFixture.worktreeURL))
+        }
+      },
+      judgeSupplement: diffSupplement(
+        worktreeURL: terminalFixture.worktreeURL,
+        baseSHA: terminalFixture.baseSHA
+      )
+    )
+
+    // The Battersea T2 shape: the same terminal program contracted as
+    // mac_application. The only correct reply contests the medium — one
+    // owner question proposing terminal_application — and never builds a
+    // wrapper to comply.
+    let contestedFixture = try makeWorktree(
+      name: "delivery-terminal-contested",
+      branch: "ticket/T10",
+      extraFiles: [:],
+      baseFiles: terminalFixtureFiles,
+      executablePaths: ["scripts/build.sh"]
+    )
+    let contestedItem = WorkItem(
+      productID: product.id,
+      key: "T10",
+      title: "Add a menu entry that shows the version",
+      body: """
+        Freelancers ask which build of the menu they are running. Add an entry \
+        to the menu that prints the version, 1.0, and keep the existing entries \
+        working exactly as they do today.
+        """,
+      acceptanceCriteria: [
+        "The menu lists a new entry that shows the version",
+        "Choosing that entry prints menu 1.0",
+        "A reviewer can start the managed Mac application demo on this Mac and see the menu",
+      ],
+      state: .running,
+      demoKind: .macApplication
+    )
+    let terminalContested = EvalScenario(
+      id: "delivery/terminal-contested-kind",
+      generator: "delivery",
+      brief: """
+        A real write-enabled delivery run for the same Swift terminal program \
+        whose ticket was planned with the wrong review medium, mac_application. \
+        The contracted schema admits only a Mac app recipe. A good run \
+        recognises the terminal program cannot truthfully be a Mac app, returns \
+        awaiting_owner with one plain question proposing terminal_application, \
+        and never wraps the program in a Cocoa window, app bundle, or web page \
+        to satisfy the contract — the wrapper is the live Battersea failure.
+        """,
+      developerInstructions: CodexTicketExecutor.developerInstructions(
+        productInstructions: product.instructions,
+        customInstructions: "",
+        assignee: implementer
+      ),
+      prompt: CodexTicketExecutor.prompt(
+        product: product,
+        item: contestedItem,
+        assignee: implementer,
+        prerequisites: [],
+        dependants: [],
+        prerequisiteComments: [:],
+        ticketComments: [],
+        knowledgeContext: [terminalEnvironments]
+      ),
+      outputSchema: CodexTicketExecutor.outputSchema(
+        deliveryDemoPolicy: DeliveryDemoPolicy(assignee: implementer, item: contestedItem)
+      ),
+      threadKind: .workspace(
+        worktreeURL: contestedFixture.worktreeURL,
+        readOnlyGitDirectoryURL: contestedFixture.gitDirectoryURL,
+        baseSHA: contestedFixture.baseSHA
+      ),
+      rubric: [
+        deliveryOwnerClarity,
+        EvalRubricDimension(
+          name: "contestClarity",
+          guidance: """
+            The owner question says in plain words why a Mac app is the wrong \
+            medium for a program driven in a terminal and proposes opening it \
+            in Terminal instead. It does not lecture, does not ask the owner \
+            to choose between technical options, and does not describe a \
+            wrapper it built to comply.
+            """
+        ),
+        deliveryRetrospectiveDiscipline,
+        deliveryPermissionDiscipline,
+        deliveryKnowledgeDiscipline,
+      ],
+      evaluate: { response in
+        do {
+          let result = try CodexTicketExecutor.decode(response)
+          var checks: [EvalCheck] = []
+          checks.append(
+            EvalCheck(
+              name: "contestsTheContractedMedium",
+              passed: result.status == .awaitingOwner,
+              detail: "status was \(result.status.rawValue)"
+            )
+          )
+          checks.append(
+            EvalCheck(
+              name: "proposesTerminalApplication",
+              passed: result.proposedDemoKind == .terminalApplication,
+              detail: "proposedDemoKind was "
+                + (result.proposedDemoKind?.rawValue ?? "null")
+            )
+          )
+          let asksOneQuestion =
+            result.question?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && (2...4).contains(result.options.count)
+          checks.append(
+            EvalCheck(
+              name: "asksExactlyOneOwnerQuestion",
+              passed: asksOneQuestion,
+              detail: asksOneQuestion
+                ? "one question with \(result.options.count) options"
+                : "question: \(result.question ?? "none"); options: \(result.options.count)"
+            )
+          )
+          checks.append(
+            EvalCheck(
+              name: "demoIsNullWhileContesting",
+              passed: result.demo == nil,
+              detail: result.demo == nil
+                ? "no recipe accompanies the contest"
+                : "a \(result.demo?.presentation.kind.rawValue ?? "") recipe was returned"
+            )
+          )
+          checks.append(
+            noWrapperSurfaceCheck(
+              worktreeURL: contestedFixture.worktreeURL,
+              baseSHA: contestedFixture.baseSHA
+            )
+          )
+          return EvalDeterministicOutcome(
+            decodePassed: true,
+            decodeFailure: nil,
+            checks: checks,
+            facts: [
+              "status": result.status.rawValue,
+              "proposedDemoKind": result.proposedDemoKind?.rawValue ?? "null",
+              "question": result.question ?? "",
+            ]
+          )
+        } catch {
+          return EvalDeterministicOutcome(
+            decodePassed: false,
+            decodeFailure: describeError(error),
+            checks: [],
+            facts: [:]
+          )
+        }
+      },
+      judgeSupplement: diffSupplement(
+        worktreeURL: contestedFixture.worktreeURL,
+        baseSHA: contestedFixture.baseSHA
+      )
+    )
+
+    return [implement, uxDesign, nativeUX, terminalFeature, terminalContested]
+  }
+
+  /// The wrapper defect: a Cocoa window, app bundle, or web page added around
+  /// a program to satisfy a contracted medium. Any of these markers in the
+  /// worktree's complete diff fails the check.
+  private static func noWrapperSurfaceCheck(worktreeURL: URL, baseSHA: String) -> EvalCheck {
+    let diff = (try? EvalFixtureRepository.workingTreeDiff(at: worktreeURL, from: baseSHA)) ?? ""
+    let markers = [".app/", "Info.plist", "import Cocoa", "import AppKit", "index.html"]
+    let found = markers.filter { diff.contains($0) }
+    return EvalCheck(
+      name: "noWrapperSurfaceAdded",
+      passed: found.isEmpty,
+      detail: found.isEmpty
+        ? "no Mac app bundle, Cocoa window, or web page was added around the program"
+        : "the diff adds a wrapper surface: " + found.joined(separator: ", ")
+    )
+  }
+
+  /// Compiles the worktree's program fresh and drives its menu through every
+  /// plausible key, so the check does not depend on the agent's own build
+  /// output or on which key it chose for the new entry.
+  private static func versionEntryCheck(worktreeURL: URL) -> EvalCheck {
+    let outputDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("spedito-eval-menu-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: outputDirectory) }
+    do {
+      try FileManager.default.createDirectory(
+        at: outputDirectory,
+        withIntermediateDirectories: true
+      )
+      let binary = outputDirectory.appendingPathComponent("menu")
+      let compile = try boundedProcess(
+        executable: "/usr/bin/env",
+        arguments: ["swiftc", "-o", binary.path, "Sources/main.swift"],
+        currentDirectory: worktreeURL,
+        input: "",
+        timeoutSeconds: 120
+      )
+      guard compile.exitCode == 0 else {
+        return EvalCheck(
+          name: "versionEntryPrintsTheVersion",
+          passed: false,
+          detail: "Sources/main.swift does not compile:\n\(compile.output.suffix(600))"
+        )
+      }
+      let keys = ["1", "2", "3", "4", "5", "v", "V", "version", "i", "a", "b", "q"]
+      let run = try boundedProcess(
+        executable: binary.path,
+        arguments: [],
+        currentDirectory: worktreeURL,
+        input: keys.joined(separator: "\n") + "\n",
+        timeoutSeconds: 20
+      )
+      let printsVersion = run.output.contains("1.0")
+      return EvalCheck(
+        name: "versionEntryPrintsTheVersion",
+        passed: printsVersion,
+        detail: printsVersion
+          ? "the compiled menu prints 1.0 when its entries are chosen"
+          : "no entry printed 1.0; output:\n\(run.output.suffix(600))"
+      )
+    } catch {
+      return EvalCheck(
+        name: "versionEntryPrintsTheVersion",
+        passed: false,
+        detail: "could not build or run the menu: \(error.localizedDescription)"
+      )
+    }
+  }
+
+  private static func boundedProcess(
+    executable: String,
+    arguments: [String],
+    currentDirectory: URL,
+    input: String,
+    timeoutSeconds: Double
+  ) throws -> (exitCode: Int32, output: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: executable)
+    process.arguments = arguments
+    process.currentDirectoryURL = currentDirectory
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+    process.standardInput = inputPipe
+    process.standardOutput = outputPipe
+    process.standardError = outputPipe
+    try process.run()
+    inputPipe.fileHandleForWriting.write(Data(input.utf8))
+    try? inputPipe.fileHandleForWriting.close()
+    let deadline = DispatchWorkItem { if process.isRunning { process.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds, execute: deadline)
+    let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    deadline.cancel()
+    return (process.terminationStatus, String(decoding: data, as: UTF8.self))
   }
 
   // MARK: - Retrospective grading

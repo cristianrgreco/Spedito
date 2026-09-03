@@ -139,6 +139,26 @@ enum EvalReport {
           lines.append("| \(row.dimension) | " + cells.joined(separator: " | ") + " |")
         }
       }
+
+      let consistency = consistencyRows(for: generatorRecords)
+      if !consistency.isEmpty {
+        lines.append("")
+        lines.append(
+          "Cross-sample consistency (per cell, so a prompt change's effect on "
+            + "plan-shape stability is visible):"
+        )
+        lines.append("")
+        lines.append(
+          "| Cell | Samples | Ticket count | Parallelism width | Archetype presence |"
+        )
+        lines.append("| --- | --- | --- | --- | --- |")
+        for row in consistency {
+          lines.append(
+            "| \(row.cell) | \(row.samples) | \(row.ticketCountSpread) "
+              + "| \(row.parallelismWidthSpread) | \(row.archetypePresence) |"
+          )
+        }
+      }
     }
 
     lines.append("")
@@ -174,6 +194,66 @@ enum EvalReport {
   private struct DimensionRow {
     let dimension: String
     let meanByColumn: [String: Double]
+  }
+
+  struct ConsistencyRow: Equatable {
+    let cell: String
+    let samples: String
+    let ticketCountSpread: String
+    let parallelismWidthSpread: String
+    let archetypePresence: String
+  }
+
+  /// Aggregates the per-sample structural facts of every cell that ran with
+  /// multiple samples: ticket-count spread, parallelism-width spread, and how
+  /// often each ticket archetype appeared. A cell whose samples never decoded
+  /// a plan, or that ran once, produces no row.
+  static func consistencyRows(for records: [EvalCellRecord]) -> [ConsistencyRow] {
+    var order: [String] = []
+    var groups: [String: [EvalCellRecord]] = [:]
+    for record in records {
+      let cell = "\(record.scenarioID) · \(record.model) \(record.effort)"
+      if groups[cell] == nil { order.append(cell) }
+      groups[cell, default: []].append(record)
+    }
+    return order.compactMap { cell in
+      let group = groups[cell] ?? []
+      guard group.count >= 2 else { return nil }
+      let decoded = group.filter { $0.facts["ticketCount"] != nil }
+      guard !decoded.isEmpty else { return nil }
+      let counts = decoded.compactMap { Int($0.facts["ticketCount"] ?? "") }
+      let widths = decoded.compactMap { Double($0.facts["parallelismWidth"] ?? "") }
+      let archetypeSets = decoded.map { record in
+        Set(
+          (record.facts["archetypes"] ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        )
+      }
+      let observedArchetypes = archetypeSets.reduce(into: Set<String>()) { $0.formUnion($1) }
+      let presence = EvalEpicPlanChecks.archetypeNames
+        .filter(observedArchetypes.contains)
+        .map { name in
+          "\(name) \(archetypeSets.count { $0.contains(name) })/\(decoded.count)"
+        }
+        .joined(separator: ", ")
+      return ConsistencyRow(
+        cell: cell,
+        samples: decoded.count == group.count
+          ? "\(group.count)"
+          : "\(decoded.count) of \(group.count) decoded",
+        ticketCountSpread: spread(counts.map { Double($0) }, decimals: 0),
+        parallelismWidthSpread: spread(widths, decimals: 2),
+        archetypePresence: presence.isEmpty ? "—" : presence
+      )
+    }
+  }
+
+  private static func spread(_ values: [Double], decimals: Int) -> String {
+    guard let low = values.min(), let high = values.max() else { return "—" }
+    let render = { String(format: "%.\(decimals)f", $0) }
+    return low == high ? render(low) : "\(render(low))–\(render(high))"
   }
 
   private static func dimensionAverages(
