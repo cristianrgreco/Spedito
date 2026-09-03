@@ -588,6 +588,24 @@ This is deliberately a simple development-only reset. Do not use it while
 preserving an active agent turn matters; normal user-initiated app quit still
 uses the asynchronous shutdown handler.
 
+## Communicating with the product owner
+
+Be concise and plain. Lead with the answer in one or two sentences, then give
+only the detail needed to act on it. Offer one recommendation, not a survey of
+options. Do not restate what the owner already knows or re-argue a decision
+they have made. A short answer is a feature, not a lack of rigor.
+
+Follow the core rules of Simplified Technical English (ASD-STE100), without
+its restricted dictionary: sentences of about 20 words, active voice, one
+idea per sentence, the same word for the same thing everywhere, and no
+stacked noun clusters. Prefer everyday words over jargon when both are
+precise.
+
+State findings directly, without narrative framing. No storytelling, no
+"the twist is", no building up to a reveal, and no re-deriving a conclusion
+the owner already accepted. Prefer a short list over paragraphs when the
+content is a set of facts or steps. Three short points beat five paragraphs.
+
 ## Handoff
 
 Lead with the user-visible outcome. Mention the files or areas changed, the
