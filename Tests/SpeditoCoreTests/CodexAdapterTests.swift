@@ -1280,10 +1280,14 @@ struct CodexAdapterTests {
   /// the flag that says so was cleared only after the response was delivered
   /// successfully. One failed delivery therefore left the turn waiting with
   /// nothing left to time it out.
-  @Test("A failed approval response still releases the turn's inactivity timeout")
+  @Test(
+    "A failed approval response still releases the turn's inactivity timeout",
+    .timeLimit(.minutes(1))
+  )
   func failedApprovalResponseReleasesTheTurn() async throws {
     let transport = ApprovalTransport()
-    let client = CodexAppServerClient(transport: transport)
+    let timing = ManualTurnWaitTiming()
+    let client = CodexAppServerClient(transport: transport, timing: timing)
     _ = try await client.connect()
     let messages = await client.inboundMessages(replayRecent: false)
     let request = CodexServerRequest(
@@ -1310,18 +1314,25 @@ struct CodexAdapterTests {
     }
 
     // The turn is no longer awaiting anything, so its inactivity window applies
-    // and the wait ends by itself rather than hanging.
-    let started = ContinuousClock.now
-    await #expect(throws: (any Error).self) {
-      _ = try await client.waitForFinalAgentMessage(
-        threadID: "thread-hang",
-        turnID: "turn-hang",
-        timeout: .seconds(1),
-        reconciliationInterval: .seconds(30),
-        totalTimeout: .seconds(20)
-      )
+    // and the wait ends by itself rather than hanging: four polls exhaust the
+    // one-second window long before the total timeout.
+    async let wait = client.waitForFinalAgentMessage(
+      threadID: "thread-hang",
+      turnID: "turn-hang",
+      timeout: .seconds(1),
+      reconciliationInterval: .seconds(30),
+      totalTimeout: .seconds(20)
+    )
+    for _ in 0..<4 {
+      try await timing.resume(CodexAppServerClient.inactivityPollInterval)
     }
-    #expect(ContinuousClock.now - started < .seconds(10))
+    let outcome: Result<String, any Error>
+    do {
+      outcome = .success(try await wait)
+    } catch {
+      outcome = .failure(error)
+    }
+    #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) { try outcome.get() }
   }
 
   /// Two live runs hung exactly this way. Their turns had finished, every
@@ -1333,12 +1344,20 @@ struct CodexAdapterTests {
   /// The client's map is transient operation state. Whether the product owner
   /// owes a decision is durable domain state, and an unbounded wait has to rest
   /// on the durable answer.
-  @Test("A pending approval the database does not know about cannot suspend a turn forever")
+  @Test(
+    "A pending approval the database does not know about cannot suspend a turn forever",
+    .timeLimit(.minutes(1))
+  )
   func staleApprovalFlagDoesNotSuspendTheTurn() async throws {
-    func waitWithOwnerDecision(outstanding: Bool) async -> Duration {
+    let poll = CodexAppServerClient.inactivityPollInterval
+
+    func connectWithUnresolvedApproval() async throws -> (
+      timing: ManualTurnWaitTiming, client: CodexAppServerClient
+    ) {
       let transport = ApprovalTransport()
-      let client = CodexAppServerClient(transport: transport)
-      _ = try? await client.connect()
+      let timing = ManualTurnWaitTiming()
+      let client = CodexAppServerClient(transport: transport, timing: timing)
+      _ = try await client.connect()
       let messages = await client.inboundMessages(replayRecent: false)
       await transport.send(
         CodexServerRequest(
@@ -1355,26 +1374,57 @@ struct CodexAdapterTests {
       _ = await messages.first {
         if case .request = $0 { return true } else { return false }
       }
-
-      let started = ContinuousClock.now
-      _ = try? await client.waitForFinalAgentMessage(
-        threadID: "thread-stale",
-        turnID: "turn-stale",
-        timeout: .seconds(1),
-        reconciliationInterval: .seconds(30),
-        totalTimeout: .seconds(6),
-        ownerDecisionIsOutstanding: { outstanding }
-      )
-      return ContinuousClock.now - started
+      return (timing, client)
     }
 
     // Nothing in the database is waiting on the owner, so the turn's inactivity
-    // window applies and the wait ends by itself instead of hanging.
-    #expect(await waitWithOwnerDecision(outstanding: false) < .seconds(4))
+    // window applies: four polls exhaust the one-second window and the wait
+    // ends by itself instead of hanging.
+    let released = try await connectWithUnresolvedApproval()
+    async let releasedWait = released.client.waitForFinalAgentMessage(
+      threadID: "thread-stale",
+      turnID: "turn-stale",
+      timeout: .seconds(1),
+      reconciliationInterval: .seconds(30),
+      totalTimeout: .seconds(6),
+      ownerDecisionIsOutstanding: { false }
+    )
+    for _ in 0..<4 {
+      try await released.timing.resume(poll)
+    }
+    let releasedOutcome: Result<String, any Error>
+    do {
+      releasedOutcome = .success(try await releasedWait)
+    } catch {
+      releasedOutcome = .failure(error)
+    }
+    #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) { try releasedOutcome.get() }
 
     // And a turn the owner really does owe an answer on still waits. Cutting
-    // that short would fail runs that are behaving correctly.
-    #expect(await waitWithOwnerDecision(outstanding: true) > .seconds(4))
+    // that short would fail runs that are behaving correctly. Twice the window
+    // passes in polls without the inactivity timeout firing, and only the total
+    // timeout ends the wait.
+    let owed = try await connectWithUnresolvedApproval()
+    async let owedWait = owed.client.waitForFinalAgentMessage(
+      threadID: "thread-stale",
+      turnID: "turn-stale",
+      timeout: .seconds(1),
+      reconciliationInterval: .seconds(30),
+      totalTimeout: .seconds(6),
+      ownerDecisionIsOutstanding: { true }
+    )
+    for _ in 0..<8 {
+      try await owed.timing.resume(poll)
+    }
+    try await owed.timing.waitForPending(poll)
+    try await owed.timing.resume(.seconds(6))
+    let owedOutcome: Result<String, any Error>
+    do {
+      owedOutcome = .success(try await owedWait)
+    } catch {
+      owedOutcome = .failure(error)
+    }
+    #expect(throws: CodexClientError.turnTimedOut(seconds: 6)) { try owedOutcome.get() }
   }
 
   /// A live run put this on a product owner's screen: "The delivery agent
@@ -1638,19 +1688,29 @@ struct CodexAdapterTests {
     #expect(response.result["decision"]?.stringValue == "decline")
   }
 
-  @Test("An inactive turn times out and is interrupted")
+  @Test("An inactive turn times out and is interrupted", .timeLimit(.minutes(1)))
   func hungTurnIsInterrupted() async throws {
     let transport = HangingTurnTransport()
-    let client = CodexAppServerClient(transport: transport)
+    let timing = ManualTurnWaitTiming()
+    let client = CodexAppServerClient(transport: transport, timing: timing)
     _ = try await client.connect()
 
-    await #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) {
-      _ = try await client.waitForFinalAgentMessage(
-        threadID: "thread-hung",
-        turnID: "turn-hung",
-        timeout: .milliseconds(20)
-      )
+    async let wait = client.waitForFinalAgentMessage(
+      threadID: "thread-hung",
+      turnID: "turn-hung",
+      timeout: .seconds(1)
+    )
+    // Four polls exhaust the one-second window with nothing heard.
+    for _ in 0..<4 {
+      try await timing.resume(CodexAppServerClient.inactivityPollInterval)
     }
+    let outcome: Result<String, any Error>
+    do {
+      outcome = .success(try await wait)
+    } catch {
+      outcome = .failure(error)
+    }
+    #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) { try outcome.get() }
     let requests = await transport.requests()
     #expect(
       requests.map(\.method)
@@ -1660,11 +1720,16 @@ struct CodexAdapterTests {
     #expect(requests.last?.params["turnId"]?.stringValue == "turn-hung")
   }
 
-  @Test("Matching turn activity restarts the inactivity timeout")
+  @Test(
+    "Matching turn activity restarts the inactivity timeout",
+    .timeLimit(.minutes(1))
+  )
   func turnActivityRestartsTimeout() async throws {
     let transport = ConcurrentTurnTransport()
-    let client = CodexAppServerClient(transport: transport)
+    let timing = ManualTurnWaitTiming()
+    let client = CodexAppServerClient(transport: transport, timing: timing)
     _ = try await client.connect()
+    let poll = CodexAppServerClient.inactivityPollInterval
 
     async let result = client.waitForFinalAgentMessage(
       threadID: "thread-active",
@@ -1672,50 +1737,70 @@ struct CodexAdapterTests {
       timeout: .seconds(1)
     )
 
-    try await Task.sleep(for: .milliseconds(400))
+    // Three polls leave one slice of the window; the comment then restarts it.
+    for _ in 0..<3 {
+      try await timing.resume(poll)
+    }
     await transport.comment(
       threadID: "thread-active",
       turnID: "turn-active",
       text: "Inspecting supplied ticket context."
     )
-    try await Task.sleep(for: .milliseconds(700))
+    try await timing.waitForActivity()
+
+    // Seven polls in total is beyond the original window, and the wait is still
+    // polling rather than timed out.
+    for _ in 0..<4 {
+      try await timing.resume(poll)
+    }
+    try await timing.waitForPending(poll)
+
     await transport.complete(
       threadID: "thread-active",
       turnID: "turn-active",
       text: #"{"message":"Completed after more than the original timeout."}"#
     )
-
     #expect(
       try await result
         == #"{"message":"Completed after more than the original timeout."}"#
     )
   }
 
-  @Test("A total turn timeout is not extended by activity")
+  @Test("A total turn timeout is not extended by activity", .timeLimit(.minutes(1)))
   func totalTurnTimeoutIsNotExtended() async throws {
     let transport = ConcurrentTurnTransport()
-    let client = CodexAppServerClient(transport: transport)
+    let timing = ManualTurnWaitTiming()
+    let client = CodexAppServerClient(transport: transport, timing: timing)
     _ = try await client.connect()
+    let poll = CodexAppServerClient.inactivityPollInterval
 
-    let result = Task {
-      try await client.waitForFinalAgentMessage(
-        threadID: "thread-total-timeout",
-        turnID: "turn-total-timeout",
-        timeout: .seconds(1),
-        totalTimeout: .milliseconds(50)
-      )
-    }
+    async let result = client.waitForFinalAgentMessage(
+      threadID: "thread-total-timeout",
+      turnID: "turn-total-timeout",
+      timeout: .seconds(1),
+      totalTimeout: .seconds(5)
+    )
 
-    try await Task.sleep(for: .milliseconds(20))
     await transport.comment(
       threadID: "thread-total-timeout",
       turnID: "turn-total-timeout",
       text: "Still working."
     )
+    try await timing.waitForActivity()
+    // The next poll sees the activity and restarts the inactivity window, but
+    // the total timer is the one sleep it always was.
+    try await timing.resume(poll)
+    try await timing.waitForPending(poll)
+    #expect(await timing.sleepCount(for: .seconds(5)) == 1)
 
-    await #expect(throws: CodexClientError.turnTimedOut(seconds: 1)) {
-      _ = try await result.value
+    try await timing.resume(.seconds(5))
+    let outcome: Result<String, any Error>
+    do {
+      outcome = .success(try await result)
+    } catch {
+      outcome = .failure(error)
     }
+    #expect(throws: CodexClientError.turnTimedOut(seconds: 5)) { try outcome.get() }
   }
 
   @Test("A missed completion notification is recovered from durable thread state")
@@ -1857,21 +1942,20 @@ struct CodexAdapterTests {
     )
   }
 
-  @Test("A final-answer item does not finish the waiter before its turn completes")
+  @Test(
+    "A final-answer item does not finish the waiter before its turn completes",
+    .timeLimit(.minutes(1))
+  )
   func finalAnswerWaitsForTurnCompletion() async throws {
     let transport = ConcurrentTurnTransport()
-    let client = CodexAppServerClient(transport: transport)
-    let completion = CompletionProbe()
+    let timing = ManualTurnWaitTiming()
+    let client = CodexAppServerClient(transport: transport, timing: timing)
     _ = try await client.connect()
 
-    let waiter = Task {
-      let result = try await client.waitForFinalAgentMessage(
-        threadID: "thread-ordering",
-        turnID: "turn-ordering"
-      )
-      await completion.markFinished()
-      return result
-    }
+    async let result = client.waitForFinalAgentMessage(
+      threadID: "thread-ordering",
+      turnID: "turn-ordering"
+    )
 
     let expected = #"{"status":"awaiting_owner","question":"Choose one"}"#
     await transport.completeMessageOnly(
@@ -1879,16 +1963,20 @@ struct CodexAdapterTests {
       turnID: "turn-ordering",
       text: expected
     )
-    try await Task.sleep(for: .milliseconds(20))
-    #expect(!(await completion.isFinished))
+    // The waiter is still consuming its turn after the final-answer item: it
+    // hears a later comment on the same turn, which a finished wait could not.
+    await transport.comment(
+      threadID: "thread-ordering",
+      turnID: "turn-ordering",
+      text: "Still closing the turn."
+    )
+    try await timing.waitForActivity(count: 2)
 
     await transport.finishTurn(
       threadID: "thread-ordering",
       turnID: "turn-ordering"
     )
-
-    #expect(try await waiter.value == expected)
-    #expect(await completion.isFinished)
+    #expect(try await result == expected)
   }
 
   @Test("Suggestion decoder validates roles and dependency references")
@@ -5026,6 +5114,141 @@ private actor ApprovalTransport: CodexRPCTransport {
   func response() -> Response? { recordedResponse }
 }
 
+/// A turn-wait timing environment the test drives by hand. Each sleep suspends
+/// until the test ends it or the client cancels it, and the test can wait for
+/// the client to record turn activity, so a timeout or a restarted window is
+/// proven by what the client does and never by how long a loaded machine took
+/// to get there. Every wait honours cancellation, so a regression fails the
+/// test at its time limit instead of hanging the run.
+private actor ManualTurnWaitTiming: CodexTurnWaitTiming {
+  private enum Role {
+    case sleeping
+    case resuming
+    case observing
+    case awaitingActivity
+  }
+
+  private struct Suspension {
+    let role: Role
+    let duration: Duration
+    let continuation: CheckedContinuation<Void, any Error>
+  }
+
+  private var suspensions: [UUID: Suspension] = [:]
+  private var order: [UUID] = []
+  private var cancelledBeforeSuspending: Set<UUID> = []
+  private var sleepCounts: [Duration: Int] = [:]
+  private var activityCount = 0
+
+  func sleep(for duration: Duration) async throws {
+    sleepCounts[duration, default: 0] += 1
+    try await suspend(as: .sleeping, for: duration)
+  }
+
+  func turnActivityRecorded() {
+    activityCount += 1
+    for waiter in takeAll(.awaitingActivity, .zero) {
+      waiter.continuation.resume()
+    }
+  }
+
+  /// Returns once the client has recorded at least `count` matching activity
+  /// notifications, so the next poll is guaranteed to see the restarted window.
+  func waitForActivity(count: Int = 1) async throws {
+    while activityCount < count {
+      try await suspend(as: .awaitingActivity, for: .zero)
+    }
+  }
+
+  /// How many sleeps of `duration` the client has requested so far.
+  func sleepCount(for duration: Duration) -> Int {
+    sleepCounts[duration, default: 0]
+  }
+
+  /// Ends the oldest pending sleep of `duration`, waiting for one to start when
+  /// none is pending yet.
+  func resume(_ duration: Duration) async throws {
+    try await suspend(as: .resuming, for: duration)
+  }
+
+  /// Returns once a sleep of `duration` is pending.
+  func waitForPending(_ duration: Duration) async throws {
+    try await suspend(as: .observing, for: duration)
+  }
+
+  private func suspend(as role: Role, for duration: Duration) async throws {
+    let id = UUID()
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, any Error>) in
+        if cancelledBeforeSuspending.remove(id) != nil {
+          continuation.resume(throwing: CancellationError())
+          return
+        }
+        switch role {
+        case .sleeping:
+          for observer in takeAll(.observing, duration) {
+            observer.continuation.resume()
+          }
+          if let resumer = takeFirst(.resuming, duration) {
+            resumer.continuation.resume()
+            continuation.resume()
+            return
+          }
+        case .resuming:
+          if let sleeper = takeFirst(.sleeping, duration) {
+            sleeper.continuation.resume()
+            continuation.resume()
+            return
+          }
+        case .observing:
+          if suspensions.values.contains(where: {
+            $0.role == .sleeping && $0.duration == duration
+          }) {
+            continuation.resume()
+            return
+          }
+        case .awaitingActivity:
+          break
+        }
+        suspensions[id] = Suspension(role: role, duration: duration, continuation: continuation)
+        order.append(id)
+      }
+    } onCancel: {
+      Task {
+        await self.cancel(id: id)
+      }
+    }
+  }
+
+  private func takeFirst(_ role: Role, _ duration: Duration) -> Suspension? {
+    guard
+      let id = order.first(where: {
+        suspensions[$0]?.role == role && suspensions[$0]?.duration == duration
+      })
+    else { return nil }
+    order.removeAll { $0 == id }
+    return suspensions.removeValue(forKey: id)
+  }
+
+  private func takeAll(_ role: Role, _ duration: Duration) -> [Suspension] {
+    var taken: [Suspension] = []
+    while let next = takeFirst(role, duration) {
+      taken.append(next)
+    }
+    return taken
+  }
+
+  private func cancel(id: UUID) {
+    guard let suspension = suspensions.removeValue(forKey: id) else {
+      cancelledBeforeSuspending.insert(id)
+      return
+    }
+    order.removeAll { $0 == id }
+    suspension.continuation.resume(throwing: CancellationError())
+  }
+}
+
 private actor ConcurrentTurnTransport: CodexRPCTransport {
   private let stream: AsyncStream<CodexInboundMessage>
   private let continuation: AsyncStream<CodexInboundMessage>.Continuation
@@ -5134,14 +5357,6 @@ private actor ConcurrentTurnTransport: CodexRPCTransport {
         )
       )
     )
-  }
-}
-
-private actor CompletionProbe {
-  private(set) var isFinished = false
-
-  func markFinished() {
-    isFinished = true
   }
 }
 

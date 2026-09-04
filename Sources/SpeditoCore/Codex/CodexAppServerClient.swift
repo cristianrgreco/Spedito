@@ -196,7 +196,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     var errorMessage: String?
   }
 
+  /// How often the inactivity timeout re-checks whether the turn is still
+  /// suspended on an owner decision.
+  static let inactivityPollInterval: Duration = .milliseconds(250)
+
   private let transport: any CodexRPCTransport
+  private let timing: any CodexTurnWaitTiming
   private var connectionInfo: CodexConnectionInfo?
   private var inboundRoutingTask: Task<Void, Never>?
   private var inboundSubscribers: [UUID: AsyncStream<CodexInboundMessage>.Continuation] = [:]
@@ -205,8 +210,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
   private var managedCommandTasks: [String: Task<Void, Never>] = [:]
   private var pendingApprovalTurns: [String: Set<String>] = [:]
 
-  public init(transport: any CodexRPCTransport) {
+  public init(
+    transport: any CodexRPCTransport,
+    timing: any CodexTurnWaitTiming = ContinuousCodexTurnWaitTiming()
+  ) {
     self.transport = transport
+    self.timing = timing
   }
 
   public func connect() async throws -> CodexConnectionInfo {
@@ -592,6 +601,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
     guard connectionInfo != nil else { throw CodexClientError.notConnected }
     let messages = subscribeToInboundMessages(replayRecent: true)
     let activity = CodexTurnActivity()
+    let timing = self.timing
     let timeoutSeconds = max(1, Int(timeout.components.seconds))
     let totalTimeoutSeconds = totalTimeout.map {
       max(1, Int(ceil(Self.seconds(in: $0))))
@@ -614,6 +624,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
               ?? notification.params["turn"]?["id"]?.stringValue
             guard notificationTurnID == turnID else { continue }
             await activity.record()
+            await timing.turnActivityRecorded()
 
             if notification.method == "item/agentMessage/delta",
               let delta = notification.params["delta"]?.stringValue
@@ -662,7 +673,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         }
         group.addTask { [self] in
           while !Task.isCancelled {
-            try await Task.sleep(for: reconciliationInterval)
+            try await timing.sleep(for: reconciliationInterval)
             do {
               if let result = try await completedTurnResponse(
                 threadID: threadID,
@@ -687,11 +698,12 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         }
         group.addTask { [self] in
           let inactivityWindow = Self.seconds(in: timeout)
+          let pollInterval = Self.seconds(in: Self.inactivityPollInterval)
           var remaining = inactivityWindow
           var activityRevision = await activity.revision()
           while remaining > 0 {
-            let slice = min(remaining, 0.25)
-            try await Task.sleep(for: .milliseconds(Int64(max(1, slice * 1_000))))
+            let slice = min(remaining, pollInterval)
+            try await timing.sleep(for: .milliseconds(Int64(max(1, slice * 1_000))))
             let currentRevision = await activity.revision()
             if currentRevision != activityRevision {
               activityRevision = currentRevision
@@ -710,7 +722,7 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
         }
         if let totalTimeout, let totalTimeoutSeconds {
           group.addTask {
-            try await Task.sleep(for: totalTimeout)
+            try await timing.sleep(for: totalTimeout)
             throw CodexClientError.turnTimedOut(seconds: totalTimeoutSeconds)
           }
         }
@@ -1361,6 +1373,29 @@ public actor CodexAppServerClient: CodexManagedCommandExecuting {
       $0["phase"] == nil
     }
     return (finalAnswer ?? legacyFinalAnswer)?["text"]?.stringValue
+  }
+}
+
+/// The timing environment of a turn wait: the sleeps behind its timers, and
+/// the moment matching turn activity restarts its inactivity window.
+/// Production sleeps on the continuous clock and ignores the activity mark. A
+/// test resumes each sleep by hand and waits for the mark, so a timeout or a
+/// restarted window is observed as the client's behaviour rather than as
+/// elapsed wall-clock time, which a loaded machine cannot keep.
+public protocol CodexTurnWaitTiming: Sendable {
+  func sleep(for duration: Duration) async throws
+  func turnActivityRecorded() async
+}
+
+extension CodexTurnWaitTiming {
+  public func turnActivityRecorded() async {}
+}
+
+public struct ContinuousCodexTurnWaitTiming: CodexTurnWaitTiming {
+  public init() {}
+
+  public func sleep(for duration: Duration) async throws {
+    try await Task.sleep(for: duration)
   }
 }
 
