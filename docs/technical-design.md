@@ -36,6 +36,10 @@ simulate agents moving cards or treat agent-authored narration as authority.
 - **Deployment target:** macOS 14+, Apple Silicon for early builds.
 - **Application data:** one system SQLite database per product, with no database
   daemon or third-party dependency.
+- **Third-party code:** Chroma, a pure-Swift tokeniser, colours diff text by
+  file language in the Codebase view and work log review excerpts. It is pinned
+  to an exact version, adds no JavaScript runtime, and is the only external
+  package.
 - **Generated source:** local Git repository and isolated worktrees; source and
   large artifacts never live in SQLite.
 - **Agent engine:** the official installed Codex app by default, or an

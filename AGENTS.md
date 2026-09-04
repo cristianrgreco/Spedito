@@ -386,13 +386,20 @@ inside the generation protocol and in decided historical suggestions.
    relaunch.
 8. Ask the product owner to inspect the named journey when visual judgment is
    required.
-9. Commit the accepted packet before beginning another unrelated packet.
+9. Commit the accepted packet before beginning another unrelated packet, and
+   delete its work-packet file in that same commit. The commit message, the
+   tests, and the durable documents carry the record; the packet file does
+   not outlive the packet.
 10. If the packet cannot be accepted, keep it isolated and record the exact
-    failing acceptance criterion.
+    failing acceptance criterion. Delete the packet file when the packet is
+    abandoned.
 
 ### Standard work-packet template
 
-Use this template when starting every extraction or later feature:
+Use this template when starting every extraction or later feature. A packet
+file is scratch for the packet's lifetime only: keep it out of the repository,
+or remove it in the commit that completes or abandons the packet. Do not leave
+handover documents behind for a later session to find.
 
 ```markdown
 # Work packet: <owner-visible outcome or architecture boundary>
@@ -474,8 +481,9 @@ Review uses these architecture ratchets:
 - A migration leaves one active implementation path; remove replaced task
   registries, state projections, aliases, and fallback protocols in the same
   packet.
-- Commit an accepted work packet before starting unrelated implementation, and
-  do not rewrite prior history to create that checkpoint.
+- Commit an accepted work packet before starting unrelated implementation,
+  remove its packet file in that commit, and do not rewrite prior history to
+  create that checkpoint.
 - Lower a value in `scripts/architecture_ratchets.baseline` whenever an
   extraction improves it, so the improvement is locked in. Raising a baseline
   requires an explicit reason in the accepted work packet. The two line-count

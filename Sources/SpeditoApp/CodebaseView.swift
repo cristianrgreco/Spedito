@@ -1554,6 +1554,15 @@ private struct CodebaseDiffViewer: View {
   let isLoading: Bool
   let emptyDescription: String
   @State private var layout = CodebaseDiffLayoutPreference.load()
+  @State private var highlighted: HighlightedDiffDocument?
+
+  /// The coloured document once it is ready, otherwise the same lines plain.
+  private var document: HighlightedDiffDocument {
+    if let highlighted, highlighted.source == unifiedDiff {
+      return highlighted
+    }
+    return .plain(unifiedDiff: unifiedDiff)
+  }
 
   var body: some View {
     if unifiedDiff.isEmpty {
@@ -1611,6 +1620,11 @@ private struct CodebaseDiffViewer: View {
       .background(Color(nsColor: .textBackgroundColor))
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .clipped()
+      // Bounded presentation work: it projects the diff string, touches no
+      // durable state, and SwiftUI cancels it with the view or on a new diff.
+      .task(id: unifiedDiff) {
+        highlighted = await HighlightedDiffDocument.highlighted(unifiedDiff: unifiedDiff)
+      }
     }
   }
 
@@ -1618,10 +1632,10 @@ private struct CodebaseDiffViewer: View {
     minimumWidth: CGFloat,
     minimumHeight: CGFloat
   ) -> some View {
-    let lines = unifiedDiff.components(separatedBy: "\n")
+    let lines = document.lines
     return ScrollView(.vertical) {
       LazyVStack(alignment: .leading, spacing: 0) {
-        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+        ForEach(lines) { line in
           UnifiedDiffLineRow(line: line)
         }
         truncationNotice
@@ -1640,22 +1654,20 @@ private struct CodebaseDiffViewer: View {
     minimumWidth: CGFloat,
     minimumHeight: CGFloat
   ) -> some View {
-    let rows = SideBySideDiffRow.rows(from: unifiedDiff)
+    let rows = SideBySideDiffRow.rows(from: document)
     let dividerWidth: CGFloat = 1
     let paneWidth = max((minimumWidth - dividerWidth) / 2, 0)
     return ScrollView(.vertical) {
       LazyVStack(alignment: .leading, spacing: 0) {
         ForEach(rows) { row in
           if let metadata = row.metadata {
-            let presentation = UnifiedDiffLinePresentation(line: metadata)
-            Text(metadata.isEmpty ? " " : metadata)
+            Text(metadata.attributedText)
               .font(.system(size: 11, design: .monospaced))
-              .foregroundStyle(presentation.foreground)
               .fixedSize(horizontal: false, vertical: true)
               .padding(.horizontal, 10)
               .padding(.vertical, 2)
               .frame(width: minimumWidth, alignment: .leading)
-              .background(presentation.background)
+              .background(metadata.presentation.background)
           } else {
             HStack(spacing: 0) {
               splitCell(
@@ -1686,13 +1698,13 @@ private struct CodebaseDiffViewer: View {
   }
 
   private func splitCell(
-    _ text: String?,
+    _ line: HighlightedDiffLine?,
     kind: SideBySideDiffRow.Kind,
     width: CGFloat
   ) -> some View {
-    Text(text?.isEmpty == false ? text! : " ")
+    let content = line?.attributedContent ?? AttributedString()
+    return Text(content.characters.isEmpty ? AttributedString(" ") : content)
       .font(.system(size: 11, design: .monospaced))
-      .foregroundStyle(kind == .removed ? .red : kind == .added ? .green : .primary)
       .fixedSize(horizontal: false, vertical: true)
       .padding(.horizontal, 10)
       .padding(.vertical, 1)
@@ -1742,6 +1754,7 @@ enum UnifiedDiffLinePresentation: Equatable {
     }
   }
 
+  /// The colour of the line's marker, or of the whole line when it has none.
   var foreground: Color {
     switch self {
     case .context: .primary
@@ -1763,17 +1776,12 @@ enum UnifiedDiffLinePresentation: Equatable {
 }
 
 struct UnifiedDiffLineRow: View {
-  let line: String
+  let line: HighlightedDiffLine
   var fillsAvailableWidth = true
 
-  private var presentation: UnifiedDiffLinePresentation {
-    UnifiedDiffLinePresentation(line: line)
-  }
-
   var body: some View {
-    Text(line.isEmpty ? " " : line)
+    Text(line.attributedText)
       .font(.system(size: 11, design: .monospaced))
-      .foregroundStyle(presentation.foreground)
       .fixedSize(horizontal: !fillsAvailableWidth, vertical: true)
       .padding(.horizontal, 10)
       .padding(.vertical, 1)
@@ -1781,7 +1789,38 @@ struct UnifiedDiffLineRow: View {
         maxWidth: fillsAvailableWidth ? .infinity : nil,
         alignment: .leading
       )
-      .background(presentation.background)
+      .background(line.presentation.background)
+  }
+}
+
+/// Unified diff lines coloured by language, for a bounded excerpt such as a
+/// reviewed hunk in the work log. `defaultPath` names the file when the
+/// excerpt carries no `diff --git` header.
+struct HighlightedDiffLinesView: View {
+  let unifiedDiff: String
+  let defaultPath: String?
+  @State private var highlighted: HighlightedDiffDocument?
+
+  private var document: HighlightedDiffDocument {
+    if let highlighted, highlighted.source == unifiedDiff {
+      return highlighted
+    }
+    return .plain(unifiedDiff: unifiedDiff)
+  }
+
+  var body: some View {
+    LazyVStack(alignment: .leading, spacing: 0) {
+      ForEach(document.lines) { line in
+        UnifiedDiffLineRow(line: line)
+      }
+    }
+    // Bounded presentation work, cancelled with the view or on a new excerpt.
+    .task(id: unifiedDiff) {
+      highlighted = await HighlightedDiffDocument.highlighted(
+        unifiedDiff: unifiedDiff,
+        defaultPath: defaultPath
+      )
+    }
   }
 }
 
@@ -1793,17 +1832,17 @@ private struct SideBySideDiffRow: Identifiable {
     case empty
   }
 
-  let id = UUID()
-  let metadata: String?
-  let left: String?
-  let right: String?
+  let id: Int
+  let metadata: HighlightedDiffLine?
+  let left: HighlightedDiffLine?
+  let right: HighlightedDiffLine?
   let leftKind: Kind
   let rightKind: Kind
 
-  static func rows(from diff: String) -> [Self] {
+  static func rows(from document: HighlightedDiffDocument) -> [Self] {
     var rows: [Self] = []
-    var removals: [String] = []
-    var additions: [String] = []
+    var removals: [HighlightedDiffLine] = []
+    var additions: [HighlightedDiffLine] = []
 
     func flushChanges() {
       let count = max(removals.count, additions.count)
@@ -1811,6 +1850,7 @@ private struct SideBySideDiffRow: Identifiable {
       for index in 0..<count {
         rows.append(
           Self(
+            id: rows.count,
             metadata: nil,
             left: index < removals.count ? removals[index] : nil,
             right: index < additions.count ? additions[index] : nil,
@@ -1823,35 +1863,36 @@ private struct SideBySideDiffRow: Identifiable {
       additions.removeAll(keepingCapacity: true)
     }
 
-    for line in diff.components(separatedBy: "\n") {
-      if line.hasPrefix("-"), !line.hasPrefix("---") {
-        removals.append(String(line.dropFirst()))
-      } else if line.hasPrefix("+"), !line.hasPrefix("+++") {
-        additions.append(String(line.dropFirst()))
-      } else {
+    for line in document.lines {
+      switch line.marker {
+      case "-":
+        removals.append(line)
+      case "+":
+        additions.append(line)
+      case " ":
         flushChanges()
-        if line.hasPrefix(" ") {
-          let content = String(line.dropFirst())
-          rows.append(
-            Self(
-              metadata: nil,
-              left: content,
-              right: content,
-              leftKind: .context,
-              rightKind: .context
-            )
+        rows.append(
+          Self(
+            id: rows.count,
+            metadata: nil,
+            left: line,
+            right: line,
+            leftKind: .context,
+            rightKind: .context
           )
-        } else {
-          rows.append(
-            Self(
-              metadata: line,
-              left: nil,
-              right: nil,
-              leftKind: .empty,
-              rightKind: .empty
-            )
+        )
+      default:
+        flushChanges()
+        rows.append(
+          Self(
+            id: rows.count,
+            metadata: line,
+            left: nil,
+            right: nil,
+            leftKind: .empty,
+            rightKind: .empty
           )
-        }
+        )
       }
     }
     flushChanges()

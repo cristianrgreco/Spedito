@@ -1448,7 +1448,10 @@ each ticket with recorded changes as a logical stream, including that ticket's
 candidate and detached integration commits, plus an All activity audit view. Commit
 icons and labels describe delivery meaning such as candidate, integration, product
 knowledge, and workspace update rather than exposing Git branch topology as the
-primary explanation.
+primary explanation. Diffs in the Codebase view and reviewed-code excerpts in
+work logs colour code by the file's language, in both light and dark
+appearance; added and removed rows keep their tinted backgrounds and markers,
+and files with no recognised language render plain.
 
 If trunk advances before an integrated candidate is accepted, the queue must
 stop its stale preview, re-integrate it, and repeat demo preparation. A clean

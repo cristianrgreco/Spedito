@@ -17,6 +17,11 @@ let package = Package(
       targets: ["SpeditoApp"]
     ),
   ],
+  dependencies: [
+    // Pure-Swift tokeniser for diff syntax colouring. Pinned exactly: the
+    // project is pre-1.0 and every token-kind change is owner-visible.
+    .package(url: "https://github.com/onevcat/Chroma.git", exact: "0.3.1")
+  ],
   targets: [
     .target(
       name: "SpeditoCore",
@@ -27,7 +32,10 @@ let package = Package(
     ),
     .executableTarget(
       name: "SpeditoApp",
-      dependencies: ["SpeditoCore"],
+      dependencies: [
+        "SpeditoCore",
+        .product(name: "Chroma", package: "Chroma"),
+      ],
       resources: [
         .copy("Resources/AppIcon.icns"),
         .copy("Resources/AppIcon.png"),
