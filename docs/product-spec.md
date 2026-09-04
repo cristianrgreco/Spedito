@@ -1740,11 +1740,9 @@ destination, so two visible counts never describe the same required navigation.
 The product library places affected non-selected products in a **Needs your
 attention** section. Its section count and product labels use orange when an
 unresolved action is present and purple when the product contains only unread
-updates. Opening a different product with one target opens that exact ticket,
-epic, or Chat thread. Opening one with several targets selects the product and
-leaves its workspace and row indicators visible; the existing multiple-ticket
-**Needs your input** filter remains available when every target is an active
-sprint ticket. Unresolved action labels remain until the underlying question is
+updates. Opening a product from the library selects it and restores its last
+workspace destination; the notification bell is the route to each attention
+target. Unresolved action labels remain until the underlying question is
 answered, while unread update labels clear when their exact source is opened.
 
 Background agent results use the same presentation and deep-linking conventions

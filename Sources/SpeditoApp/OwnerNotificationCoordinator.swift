@@ -15,14 +15,6 @@ struct TicketAttention: Identifiable, Equatable, Sendable {
   let updatedAt: Date
 }
 
-struct TicketAttentionNavigationRequest: Identifiable, Equatable, Sendable {
-  let id = UUID()
-  let productID: UUID
-  let sprintID: UUID?
-  let workItemIDs: Set<UUID>
-  let openWorkItemID: UUID?
-}
-
 /// A derived bell row for an epic whose suggestion batch is still undecided.
 /// The owed decision persists until every proposal is decided; the stored
 /// one-shot plan-ready notification only carries banner and system delivery.

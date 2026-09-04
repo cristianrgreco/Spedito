@@ -307,8 +307,6 @@ struct ProductLibraryView: View {
     Task {
       if selectedProduct.id == model.selectedProductID {
         await model.reloadSelectedProduct()
-      } else if model.ownerAttentionCount(for: selectedProduct.id) > 0 {
-        await model.openOwnerAttentions(for: selectedProduct)
       } else {
         await model.selectProduct(selectedProduct)
       }

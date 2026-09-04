@@ -230,7 +230,6 @@ struct ProductWorkspaceView: View {
   @State private var showingProductLibrary = false
   @State private var ticketDetailPresentation: TicketDetailPresentation?
   @State private var selectedSprintID: UUID?
-  @State private var attentionWorkItemIDs: Set<UUID>?
 
   var body: some View {
     NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -257,7 +256,6 @@ struct ProductWorkspaceView: View {
         case .sprint:
           SprintBoardView(
             selectedSprintID: $selectedSprintID,
-            attentionWorkItemIDs: $attentionWorkItemIDs,
             onShowBacklog: { destination = .backlog },
             onEditPlan: { showingSprintPlanning = true },
             onShowRetrospective: { destination = .retrospectives },
@@ -296,9 +294,6 @@ struct ProductWorkspaceView: View {
     }
     .onAppear {
       restoreDestination(for: model.selectedProductID)
-      if let request = model.ticketAttentionNavigationRequest {
-        handleAttentionNavigationRequest(request)
-      }
       if let request = model.ownerNotificationNavigationRequest {
         handleOwnerNotificationNavigationRequest(request)
       }
@@ -310,7 +305,6 @@ struct ProductWorkspaceView: View {
       showingSprintPlanning = false
       ticketDetailPresentation = nil
       selectedSprintID = nil
-      attentionWorkItemIDs = nil
       restoreDestination(for: productID)
     }
     .onChange(of: destination) { _, destination in
@@ -324,11 +318,6 @@ struct ProductWorkspaceView: View {
     .onChange(of: model.knowledgeFocusPageID) { _, pageID in
       if pageID != nil {
         destination = .knowledge
-      }
-    }
-    .onChange(of: model.ticketAttentionNavigationRequest) { _, request in
-      if let request {
-        handleAttentionNavigationRequest(request)
       }
     }
     .onChange(of: model.ownerNotificationNavigationRequest) { _, request in
@@ -414,27 +403,6 @@ struct ProductWorkspaceView: View {
     destination = .sprint
   }
 
-  private func handleAttentionNavigationRequest(
-    _ request: TicketAttentionNavigationRequest
-  ) {
-    guard model.selectedProductID == request.productID else { return }
-    destination = .sprint
-    selectedSprintID = request.sprintID
-    if let workItemID = request.openWorkItemID,
-      let item = model.workItems.first(where: { $0.id == workItemID })
-    {
-      attentionWorkItemIDs = nil
-      ticketDetailPresentation = TicketDetailPresentation(
-        item: item,
-        startRefinementOnAppear: false,
-        mode: .delivery
-      )
-    } else {
-      attentionWorkItemIDs = request.workItemIDs
-    }
-    model.consumeTicketAttentionNavigationRequest(id: request.id)
-  }
-
   private func handleOwnerNotificationNavigationRequest(
     _ request: OwnerNotificationNavigationRequest
   ) {
@@ -451,7 +419,6 @@ struct ProductWorkspaceView: View {
       )
       destination = presentation.mode == .delivery ? .sprint : .backlog
       selectedSprintID = presentation.mode == .delivery ? model.sprintPlan?.sprint.id : nil
-      attentionWorkItemIDs = nil
       ticketDetailPresentation = presentation
 
     case .epic:
