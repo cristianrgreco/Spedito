@@ -242,7 +242,8 @@ were exercised, or say plainly that none was.
 Do not re-derive this. The app and the sandbox contract tests resolve the
 same runtime, in this order:
 
-1. `SPEDITO_CODEX_PATH`, when it names an executable. Tests only; CI sets it.
+1. `SPEDITO_CODEX_PATH`, when it names an executable. Tests only; the CI and
+   release workflows set it.
 2. The Codex desktop app, found through Launch Services by bundle identifier
    `com.openai.codex`, at `<Codex.app>/Contents/Resources/codex`. On the
    product owner's Mac this is `/Applications/Codex.app`.
