@@ -61,7 +61,18 @@ jobs:
           printf '%s\n' "$xcode_version"
           swift --version
 
+      # The release gate runs the same sandbox profile contract as CI, which
+      # fails rather than skips when no real Codex runtime is present.
+      - name: Install Codex runtime
+        shell: bash
+        run: |
+          brew install --quiet --cask codex
+          test -x /opt/homebrew/bin/codex
+          /opt/homebrew/bin/codex --version
+
       - name: Run test suite
+        env:
+          SPEDITO_CODEX_PATH: /opt/homebrew/bin/codex
         run: |
           env \
             SWIFT_MODULECACHE_PATH="$PWD/.build/module-cache" \
